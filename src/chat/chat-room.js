@@ -72,6 +72,7 @@ class ChatRoom extends EventEmitter {
     this.idleWaiters = [];
     this.discussionActive = false;
     this.discussionRequested = false;
+    this.specialistActive = false;
     this.cancels = new Set();
     this.typingCounts = new Map();
     this.activeRuns = 0;
@@ -375,7 +376,10 @@ class ChatRoom extends EventEmitter {
     // 큐에서 기다리는 사이 참가자가 비활성화되거나 CLI가 사라졌다면 실행하지 않습니다.
     const currentAgent = this.findAgent(agent.id);
     if (!currentAgent || !currentAgent.available || currentAgent.enabled === false) return;
-    agent = currentAgent;
+    agent = {
+      ...currentAgent,
+      ...(context.agentConfig || {}),
+    };
 
     const mentionDepth = context.mentionDepth || 0;
 
@@ -386,7 +390,9 @@ class ChatRoom extends EventEmitter {
       maxMessages: this.maxPromptMessages,
       permissionMode: this.meta.permissionMode,
       projectContext: this.meta.projectContext,
+      memoryContext: this.meta.memoryContext,
       discussion: context.discussion || null,
+      specialist: context.specialist || null,
       broadcast: context.broadcast || null,
       mentionsEnabled: !context.discussion && mentionDepth < this.mentionChainLimit,
     });
@@ -467,9 +473,15 @@ class ChatRoom extends EventEmitter {
 
     let rawText = String(result.text || "").trim();
     let discussionSignal = null;
+    let specialistSignal = null;
     if (context.discussion) {
       const match = rawText.match(/\[\[CODEPET_DISCUSSION:(CONTINUE|AGREE|PASS|CONCLUDE)\]\]\s*$/i);
       discussionSignal = match ? match[1].toUpperCase() : "CONTINUE";
+      if (match) rawText = rawText.slice(0, match.index).trim();
+    }
+    if (context.specialist?.stage === "review") {
+      const match = rawText.match(/\[\[CODEPET_REVIEW:(PASS|REVISE)\]\]\s*$/i);
+      specialistSignal = match ? match[1].toUpperCase() : "REVISE";
       if (match) rawText = rawText.slice(0, match.index).trim();
     }
 
@@ -490,11 +502,12 @@ class ChatRoom extends EventEmitter {
         model: agent.model || "default",
         effort: agent.effort || "default",
         version: agent.version || "",
+        ...(context.specialist?.stage ? { specialistStage: context.specialist.stage } : {}),
       },
       ...(result.deliveries ? { deliveries: result.deliveries } : {}),
     });
     // 토론 모드는 자체 턴 오케스트레이션이 있으므로 멘션 호출을 만들지 않습니다.
-    if (!context.discussion) {
+    if (!context.discussion && !context.specialist) {
       this.scheduleMentionReplies(
         agent,
         text,
@@ -503,7 +516,7 @@ class ChatRoom extends EventEmitter {
         context.turnRootId
       );
     }
-    return { ok: true, discussionSignal };
+    return { ok: true, discussionSignal, specialistSignal, text, runId };
   }
 
   // 에이전트가 @이름으로 부르면 그 에이전트가 실제로 이어서 응답합니다.
@@ -518,6 +531,100 @@ class ChatRoom extends EventEmitter {
       if (!target || !target.available || target.enabled === false) continue;
       this.scheduleResponse(target, { mentionDepth: depth + 1, attachments, turnRootId });
     }
+  }
+
+  // 전문 모드: 사용자가 확정한 방향을 구현하고, 검토 결과가 수정 필요이면
+  // 제한된 횟수 안에서 구현 단계로 되돌립니다. 새 workflow framework를 만들지
+  // 않고 기존 단일 턴 큐를 재사용합니다.
+  async startSpecialist(options = {}) {
+    if (this.discussionRequested || this.discussionActive || this.specialistActive) {
+      return { ok: false, error: "이미 다른 전문 작업이나 토론이 진행 중입니다." };
+    }
+    const stages = options.stages || {};
+    const implementation = stages.implementation;
+    const review = stages.review;
+    const recorder = stages.recorder;
+    if (!implementation?.agent || !review?.agent || !recorder?.agent) {
+      return { ok: false, error: "전문 모드의 구현·검토·기록 담당자를 프로젝트 설정에서 지정해 주세요." };
+    }
+
+    const requestedGeneration = this.generation;
+    this.specialistActive = true;
+    await this.waitForIdle();
+    if (requestedGeneration !== this.generation) {
+      this.specialistActive = false;
+      return { ok: false, cancelled: true };
+    }
+
+    const maxIterations = Number.isInteger(options.maxIterations) && options.maxIterations > 0
+      ? Math.min(options.maxIterations, 3)
+      : 3;
+    this.appendSystem(`전문 모드 시작 · 구현 @${implementation.agent.id} · 검토 @${review.agent.id}`);
+
+    let feedback = "";
+    let completedIterations = 0;
+    let passed = false;
+    let recorderResult = null;
+    try {
+      for (let round = 1; round <= maxIterations; round += 1) {
+        if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
+        completedIterations = round;
+        const implementationResult = await this.scheduleResponse(implementation.agent, {
+          specialist: { stage: "implementation", round, maxRounds: maxIterations, feedback },
+          agentConfig: implementation.agentConfig,
+        });
+        if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
+        if (!implementationResult?.ok) return { ok: false, stage: "implementation", completedIterations };
+
+        const reviewResult = await this.scheduleResponse(review.agent, {
+          specialist: { stage: "review", round, maxRounds: maxIterations },
+          agentConfig: review.agentConfig,
+        });
+        if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
+        if (!reviewResult?.ok) return { ok: false, stage: "review", completedIterations };
+        if (reviewResult.specialistSignal === "PASS") {
+          passed = true;
+          break;
+        }
+        feedback = reviewResult.text || "검토자가 수정이 필요하다고 판단했습니다. 문제를 다시 확인하세요.";
+        this.appendSystem(
+          round >= maxIterations
+            ? `검토에서 수정 필요가 ${maxIterations}회 발생해 사용자 판단이 필요합니다.`
+            : `검토 결과 수정 필요 · 구현 단계로 돌아갑니다 (${round}/${maxIterations})`
+        );
+      }
+
+      if (!passed) {
+        return { ok: false, stage: "review", completedIterations, needsUserDecision: true };
+      }
+
+      recorderResult = await this.scheduleResponse(recorder.agent, {
+        specialist: { stage: "recorder", round: completedIterations, maxRounds: maxIterations },
+        agentConfig: recorder.agentConfig,
+      });
+      if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
+      this.appendSystem("전문 모드 구현·검토가 통과했고 기록관이 결과를 정리했습니다.");
+      return {
+        ok: true,
+        completedIterations,
+        recorded: Boolean(recorderResult?.ok),
+        recording: recorderResult?.text || "",
+      };
+    } finally {
+      this.specialistActive = false;
+    }
+  }
+
+  async runRecorder(options = {}) {
+    if (!options.agent) return { ok: false, error: "기록관 담당자가 없습니다." };
+    return this.scheduleResponse(options.agent, {
+      specialist: {
+        stage: "recorder",
+        round: options.round || 1,
+        maxRounds: options.maxRounds || 1,
+      },
+      agentConfig: options.agentConfig,
+    });
   }
 
   // 자율 토론: 차례대로 말하되 합의/패스/결론 신호에 따라 일찍 끝냅니다.

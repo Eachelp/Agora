@@ -13,6 +13,8 @@ const INVOKE = Object.freeze({
   PROJECTS_WORKSPACE_CHOOSE: "chat:projects:workspace:choose",
   WORKSPACE_PICK: "chat:workspace:pick",
   PROJECTS_WORKSPACE_CLEAR: "chat:projects:workspace:clear",
+  MEMORY_READ: "chat:memory:read",
+  MEMORY_APPEND: "chat:memory:append",
   DECISIONS_CREATE: "chat:decisions:create",
   DECISIONS_UPDATE: "chat:decisions:update",
   DECISIONS_DELETE: "chat:decisions:delete",
@@ -29,6 +31,7 @@ const INVOKE = Object.freeze({
   TURN_INTERJECT: "chat:turn:interject",
   TURN_CANCEL: "chat:turn:cancel",
   DISCUSSION_START: "chat:discussion:start",
+  SPECIALIST_START: "chat:specialist:start",
   APPROVAL_RESPOND: "chat:approval:respond",
   WORKSPACE_CHOOSE: "chat:workspace:choose",
   WORKSPACE_CLEAR: "chat:workspace:clear",
@@ -63,6 +66,9 @@ contextBridge.exposeInMainWorld("chatApi", {
     ipcRenderer.invoke(INVOKE.PROJECTS_WORKSPACE_CHOOSE, { projectId }),
   projectsWorkspaceClear: (projectId) =>
     ipcRenderer.invoke(INVOKE.PROJECTS_WORKSPACE_CLEAR, { projectId }),
+  memoryRead: (projectId) => ipcRenderer.invoke(INVOKE.MEMORY_READ, { projectId }),
+  memoryAppend: (projectId, content, title) =>
+    ipcRenderer.invoke(INVOKE.MEMORY_APPEND, { projectId, content, title }),
 
   decisionsCreate: (input) => ipcRenderer.invoke(INVOKE.DECISIONS_CREATE, input),
   decisionsUpdate: (projectId, decisionId, patch) =>
@@ -90,6 +96,7 @@ contextBridge.exposeInMainWorld("chatApi", {
     ipcRenderer.invoke(INVOKE.TURN_CANCEL, { sessionId, turnId }),
   discussionStart: (sessionId, agentIds) =>
     ipcRenderer.invoke(INVOKE.DISCUSSION_START, { sessionId, agentIds }),
+  specialistStart: (sessionId) => ipcRenderer.invoke(INVOKE.SPECIALIST_START, { sessionId }),
   approvalRespond: (sessionId, approvalId, decision) =>
     ipcRenderer.invoke(INVOKE.APPROVAL_RESPOND, { sessionId, approvalId, decision }),
 

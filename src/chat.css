@@ -1587,6 +1587,18 @@ textarea:focus-visible {
   background: var(--accent-strong);
 }
 
+.specialist-button {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: var(--surface);
+  font-weight: 700;
+}
+
+.specialist-button:hover {
+  border-color: var(--accent-strong);
+  background: var(--accent-strong);
+}
+
 .enforcement-hint {
   margin-left: 2px;
 }
@@ -1881,6 +1893,11 @@ textarea:focus-visible {
   border-radius: 8px;
   padding: 5px 6px;
   background: var(--surface);
+}
+
+.memory-preview {
+  color: var(--muted);
+  background: var(--page);
 }
 
 .project-workspace-field {

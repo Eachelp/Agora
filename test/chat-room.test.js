@@ -88,6 +88,47 @@ test("에이전트 실행 전 준비 단계를 기다리고 실제 오류를 대
   assert.match(error.text, /프록시 복구 실패: 포트 연결 거부/);
 });
 
+test("전문 모드는 구현 결과를 검토하고 수정 필요면 구현으로 되돌린다", async () => {
+  const calls = [];
+  const replies = {
+    codex: [
+      { ok: true, text: "첫 구현" },
+      { ok: true, text: "수정 구현" },
+    ],
+    claude: [
+      { ok: true, text: "테스트가 부족합니다.\n[[CODEPET_REVIEW:REVISE]]" },
+      { ok: true, text: "검토 통과\n[[CODEPET_REVIEW:PASS]]" },
+      { ok: true, text: "## 완료\n- 구현과 검토가 끝났습니다." },
+    ],
+  };
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: ({ agent, prompt }) => {
+      calls.push({ agentId: agent.id, model: agent.model, prompt });
+      const reply = replies[agent.id].shift();
+      return { promise: Promise.resolve(reply), cancel: () => {} };
+    },
+  });
+
+  const result = await room.startSpecialist({
+    stages: {
+      implementation: { agent: room.findAgent("codex"), agentConfig: { model: "gpt-5" } },
+      review: { agent: room.findAgent("claude"), agentConfig: { model: "claude-review" } },
+      recorder: { agent: room.findAgent("claude"), agentConfig: { model: "claude-record" } },
+    },
+    maxIterations: 3,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.completedIterations, 2);
+  assert.equal(result.recording, "## 완료\n- 구현과 검토가 끝났습니다.");
+  assert.deepEqual(calls.map((call) => call.agentId), ["codex", "claude", "codex", "claude", "claude"]);
+  assert.deepEqual(calls.map((call) => call.model), ["gpt-5", "claude-review", "gpt-5", "claude-review", "claude-record"]);
+  assert.match(calls[2].prompt, /테스트가 부족합니다/);
+  assert.match(calls[4].prompt, /Memory Bank에 저장될 기록/);
+  assert.equal(room.messages.filter((message) => message.authorType === "agent").length, 5);
+});
+
 test("멘션이 없으면 세션에 참여 중인 모든 에이전트가 응답한다", async () => {
   const calls = [];
   const room = new ChatRoom({ agents: makeAgents(), runAgent: fakeRunner({}, calls) });

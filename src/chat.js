@@ -24,6 +24,7 @@ const permissionSelect = document.getElementById("permission-select");
 const enforcementHint = document.getElementById("enforcement-hint");
 const discussionButton = document.getElementById("btn-discussion");
 const workflowButton = document.getElementById("btn-workflow");
+const specialistButton = document.getElementById("btn-specialist");
 const storeWarning = document.getElementById("store-warning");
 const popover = document.getElementById("popover");
 const popoverBackdrop = document.getElementById("popover-backdrop");
@@ -60,6 +61,7 @@ const typingAgents = new Set();
 const liveRuns = new Map(); // runId → { item, textEl, statusEl, text }
 let mentionState = null;
 let noticeTimer = null;
+let specialistRunning = false;
 
 const SIDEBAR_WIDTH_KEY = "agora.chat.sidebarWidth";
 const SIDEBAR_COLLAPSED_KEY = "agora.chat.sidebarCollapsed";
@@ -229,6 +231,19 @@ function effortOptionsForModel(provider, modelId) {
   const model = modelOptionsForProvider(provider, true).find((entry) => entry.id === modelId);
   const efforts = Array.isArray(model?.efforts) ? model.efforts : provider.efforts || [];
   return efforts.filter((effort) => effort !== "default");
+}
+
+function roleConfigFromProject(project, roleId) {
+  const raw = project?.defaultRoles?.[roleId];
+  if (typeof raw === "string") return { agentId: raw, model: "", effort: "" };
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { agentId: "", model: "", effort: "" };
+  }
+  return {
+    agentId: String(raw.agentId || ""),
+    model: String(raw.model || ""),
+    effort: String(raw.effort || ""),
+  };
 }
 
 function doctorStatus(diagnostic) {
@@ -563,10 +578,10 @@ function openProjectSettings(anchor, project) {
     const roleSection = document.createElement("section");
     roleSection.className = "project-default-section";
     const roleTitle = document.createElement("strong");
-    roleTitle.textContent = "역할 기본 담당자";
+    roleTitle.textContent = "전문 모드 역할 설정";
     const roleHint = document.createElement("p");
     roleHint.className = "popover-hint";
-    roleHint.textContent = "작업을 만들 때 자동으로 채워집니다.";
+    roleHint.textContent = "기본 모드는 현재 채팅 설정을 쓰고, 전문 모드는 여기 지정한 담당자·모델을 씁니다.";
     roleSection.append(roleTitle, roleHint);
     const roleDefs = workflow.roles?.length
       ? workflow.roles
@@ -574,8 +589,10 @@ function openProjectSettings(anchor, project) {
           { id: "planning", label: "기획" },
           { id: "implementation", label: "구현" },
           { id: "review", label: "검토" },
+          { id: "recorder", label: "기록" },
         ];
     for (const role of roleDefs) {
+      const savedRole = roleConfigFromProject(project, role.id);
       const select = document.createElement("select");
       const none = document.createElement("option");
       none.value = "";
@@ -587,10 +604,121 @@ function openProjectSettings(anchor, project) {
         option.textContent = `@${agent.id} · ${agent.name}`;
         select.append(option);
       }
-      select.value = project.defaultRoles?.[role.id] || "";
-      roleSection.append(makeField(role.label || role.id, select));
-      roleControls.set(role.id, select);
+      select.value = savedRole.agentId || "";
+
+      const model = document.createElement("select");
+      const effort = document.createElement("select");
+      const roleRow = document.createElement("div");
+      roleRow.className = "project-agent-default";
+
+      const populateEfforts = (provider, selected) => {
+        effort.textContent = "";
+        const defaultOption = document.createElement("option");
+        defaultOption.value = "default";
+        defaultOption.textContent = "공급자 기본값";
+        effort.append(defaultOption);
+        const options = provider ? effortOptionsForModel(provider, model.value) : [];
+        for (const value of options) {
+          const item = document.createElement("option");
+          item.value = value;
+          item.textContent = effortLabel(value);
+          effort.append(item);
+        }
+        effort.value = options.includes(selected) ? selected : "default";
+        effort.disabled = !provider || options.length === 0;
+      };
+
+      const populateModels = (selectedModel = "default", selectedEffort = "default") => {
+        model.textContent = "";
+        const agent = agentById(select.value);
+        const provider = agent ? providerById(agent.id) : null;
+        if (!provider) {
+          const item = document.createElement("option");
+          item.value = "default";
+          item.textContent = "담당자를 먼저 선택하세요";
+          model.append(item);
+          model.value = "default";
+          model.disabled = true;
+          populateEfforts(null, "default");
+          return;
+        }
+        const options = modelOptionsForProvider(provider, true);
+        if (selectedModel && !options.some((option) => option.id === selectedModel)) {
+          options.push({ id: selectedModel, label: `${selectedModel} (현재 설정)`, efforts: [] });
+        }
+        for (const option of options) {
+          const item = document.createElement("option");
+          item.value = option.id;
+          item.textContent = option.label || option.id;
+          model.append(item);
+        }
+        model.value = selectedModel || "default";
+        model.disabled = !agent.available;
+        populateEfforts(provider, selectedEffort);
+      };
+
+      select.addEventListener("change", () => populateModels("default", "default"));
+      model.addEventListener("change", () => {
+        const provider = providerById(select.value);
+        populateEfforts(provider, "default");
+      });
+      populateModels(savedRole.model || "default", savedRole.effort || "default");
+      roleRow.append(
+        makeField(role.label || role.id, select),
+        makeField("모델", model),
+        makeField("추론", effort)
+      );
+      roleSection.append(roleRow);
+      roleControls.set(role.id, { agent: select, model, effort });
     }
+
+    const memorySection = document.createElement("section");
+    memorySection.className = "project-default-section";
+    const memoryTitle = document.createElement("strong");
+    memoryTitle.textContent = "프로젝트 Memory Bank";
+    const memoryHint = document.createElement("p");
+    memoryHint.className = "popover-hint";
+    memoryHint.textContent = "사람이 직접 추가한 기록과 기록관이 만든 초안이 이 프로젝트에 누적됩니다.";
+    const memoryPreview = document.createElement("textarea");
+    memoryPreview.className = "project-context-input memory-preview";
+    memoryPreview.rows = 5;
+    memoryPreview.readOnly = true;
+    memoryPreview.placeholder = "아직 기록이 없습니다.";
+    const memoryInput = document.createElement("textarea");
+    memoryInput.className = "project-context-input";
+    memoryInput.rows = 3;
+    memoryInput.maxLength = 24000;
+    memoryInput.placeholder = "사람이 직접 남길 중요한 맥락·결정·규칙";
+    const memoryActions = document.createElement("div");
+    memoryActions.className = "project-popover-actions";
+    const memoryAdd = document.createElement("button");
+    memoryAdd.type = "button";
+    memoryAdd.className = "button button-small";
+    memoryAdd.textContent = "기억 추가";
+    memoryAdd.addEventListener("click", async () => {
+      const content = memoryInput.value.trim();
+      if (!content) {
+        memoryInput.focus();
+        return;
+      }
+      const result = await call(window.chatApi.memoryAppend(project.id, content, "사람이 추가한 기록"));
+      if (result) {
+        memoryPreview.value = result.memory || "";
+        memoryInput.value = "";
+        flashNotice("Memory Bank에 기록했습니다.", false);
+      }
+    });
+    memoryActions.append(memoryAdd);
+    memorySection.append(
+      memoryTitle,
+      memoryHint,
+      makeField("현재 기록", memoryPreview),
+      makeField("새 사람 기록", memoryInput),
+      memoryActions
+    );
+    call(window.chatApi.memoryRead(project.id)).then((result) => {
+      if (result) memoryPreview.value = result.content || "";
+    });
 
     const actions = document.createElement("div");
     actions.className = "project-popover-actions";
@@ -608,8 +736,14 @@ function openProjectSettings(anchor, project) {
         };
       }
       const defaultRoles = {};
-      for (const [roleId, control] of roleControls) {
-        if (control.value) defaultRoles[roleId] = control.value;
+      for (const [roleId, controls] of roleControls) {
+        if (controls.agent.value) {
+          defaultRoles[roleId] = {
+            agentId: controls.agent.value,
+            model: controls.model.value,
+            effort: controls.effort.value,
+          };
+        }
       }
       const result = await call(window.chatApi.projectsUpdate(project.id, {
         name: name.value,
@@ -651,6 +785,7 @@ function openProjectSettings(anchor, project) {
       makeField("프로젝트 폴더", workspaceField),
       defaultAgentSection,
       roleSection,
+      memorySection,
       actions
     );
   });
@@ -950,6 +1085,13 @@ function renderHeader() {
   discussionButton.title = discussable
     ? "활성 에이전트들이 정해진 라운드만큼 토론합니다"
     : "토론에는 사용 가능한 에이전트가 두 명 이상 필요합니다";
+  const project = projects.find((entry) => entry.id === activeProjectId);
+  const implementation = roleConfigFromProject(project, "implementation");
+  const review = roleConfigFromProject(project, "review");
+  specialistButton.disabled = !activeSessionId || specialistRunning;
+  specialistButton.title = implementation.agentId && review.agentId
+    ? "프로젝트 설정의 구현·검토·기록 담당자로 진행합니다"
+    : "프로젝트 설정에서 구현·검토 담당자를 지정하면 사용할 수 있습니다";
 }
 
 // --- 에이전트 칩 + 팝오버 ---
@@ -1369,7 +1511,7 @@ function openWorkflowPopover(anchor) {
       taskAgent.append(option);
     }
     const syncTaskAgent = () => {
-      const defaultAgent = project.defaultRoles?.[taskRole.value] || "";
+      const defaultAgent = roleConfigFromProject(project, taskRole.value).agentId || "";
       taskAgent.value = defaultAgent || "";
     };
     syncTaskAgent();
@@ -1547,6 +1689,25 @@ function openWorkflowPopover(anchor) {
 
 // --- 토론 팝오버 ---
 workflowButton.addEventListener("click", () => openWorkflowPopover(workflowButton));
+specialistButton.addEventListener("click", async () => {
+  if (!activeSessionId) return;
+  const project = projects.find((entry) => entry.id === activeProjectId);
+  const implementation = roleConfigFromProject(project, "implementation");
+  const review = roleConfigFromProject(project, "review");
+  if (!implementation.agentId || !review.agentId) {
+    flashNotice("프로젝트 설정에서 구현·검토 담당자를 먼저 지정해 주세요.");
+    return;
+  }
+  specialistRunning = true;
+  specialistButton.disabled = true;
+  specialistButton.textContent = "전문 실행 중…";
+  const result = await call(window.chatApi.specialistStart(activeSessionId));
+  if (result) flashNotice("전문 모드를 시작했습니다.", false);
+  specialistRunning = false;
+  specialistButton.disabled = false;
+  specialistButton.textContent = "전문 실행";
+  renderHeader();
+});
 discussionButton.addEventListener("click", () => {
   openPopover(discussionButton, (root) => {
     const head = document.createElement("div");

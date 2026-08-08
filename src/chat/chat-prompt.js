@@ -29,7 +29,9 @@ function buildAgentPrompt({
   maxMessages = DEFAULT_MAX_MESSAGES,
   permissionMode = "chat",
   projectContext = "",
+  memoryContext = "",
   discussion = null,
+  specialist = null,
   broadcast = null,
   mentionsEnabled = !discussion,
   extraLines = [],
@@ -69,6 +71,14 @@ function buildAgentPrompt({
     lines.push(context);
     lines.push("=== 프로젝트 공통 맥락 끝 ===");
   }
+  const memory = String(memoryContext || "").trim();
+  if (memory) {
+    lines.push("");
+    lines.push("=== 프로젝트 Memory Bank ===");
+    lines.push(memory);
+    lines.push("=== 프로젝트 Memory Bank 끝 ===");
+    lines.push("- Memory Bank의 AI 초안은 사실로 단정하지 말고, 원문 대화와 구분해 사용하세요.");
+  }
   // 캐릭터 이모티콘 지시는 작업용 사용에 불필요해 프롬프트에서 제외합니다.
   // 예전 대화에 남은 [[CODEPET_EMOTE:...]] 태그는 chat-room.js에서 화면 노출 전에 제거합니다.
   if (broadcast && broadcast.position > 1) {
@@ -82,6 +92,33 @@ function buildAgentPrompt({
     );
     lines.push("- 응답 마지막 줄에 반드시 다음 중 하나만 붙이세요: [[CODEPET_DISCUSSION:CONTINUE]], [[CODEPET_DISCUSSION:AGREE]], [[CODEPET_DISCUSSION:PASS]], [[CODEPET_DISCUSSION:CONCLUDE]].");
     lines.push("- 새 기여는 CONTINUE, 새 내용 없이 동의하면 AGREE, 할 말이 없으면 PASS, 충분한 최종 결론을 제시하면 CONCLUDE를 선택하세요.");
+  }
+  if (specialist) {
+    const stageLabels = {
+      implementation: "구현",
+      review: "검토",
+      recorder: "기록",
+    };
+    lines.push("");
+    lines.push(`=== 전문 모드: ${stageLabels[specialist.stage] || specialist.stage} ===`);
+    lines.push(`현재 단계: ${stageLabels[specialist.stage] || specialist.stage} · 반복 ${specialist.round || 1}/${specialist.maxRounds || 3}`);
+    if (specialist.feedback) {
+      lines.push("검토자가 전달한 수정 요청:");
+      lines.push(specialist.feedback);
+    }
+    if (specialist.stage === "implementation") {
+      lines.push("- 현재 결정과 작업 범위 안에서 실제 구현을 진행하세요.");
+      lines.push("- 작업을 끝낸 뒤 변경 내용과 검증 결과를 짧게 정리하세요.");
+    } else if (specialist.stage === "review") {
+      lines.push("- 구현 결과를 요구사항·현재 작업공간·대화 맥락과 대조하세요.");
+      lines.push("- 수정이 필요하면 구체적인 파일·문제·수정 방향을 적으세요.");
+      lines.push("- 응답 마지막 줄에 반드시 [[CODEPET_REVIEW:PASS]] 또는 [[CODEPET_REVIEW:REVISE]] 하나를 붙이세요.");
+    } else if (specialist.stage === "recorder") {
+      lines.push("- 이번 작업에서 확인된 사실, 결정, 완료 내용, 남은 작업만 Markdown 요약으로 작성하세요.");
+      lines.push("- 추측이나 확인되지 않은 내용을 사실처럼 기록하지 마세요.");
+      lines.push("- 채팅 답변이 아니라 Memory Bank에 저장될 기록만 출력하세요.");
+    }
+    lines.push("=== 전문 모드 끝 ===");
   }
   lines.push("");
   lines.push("=== 대화 ===");
