@@ -48,6 +48,7 @@ test("Agora 화면 재배치는 기존 채팅 제어 연결을 유지한다", ()
     "session-list",
     "btn-workspace",
     "permission-select",
+    "btn-workflow",
     "btn-discussion",
     "agent-chips",
     "btn-attach",
@@ -116,12 +117,20 @@ test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있
   assert.match(preload, /projectsUpdate: \(projectId, patch\)/);
   assert.match(preload, /projectsDelete: \(projectId\)/);
   assert.match(preload, /sessionsMove: \(sessionId, projectId\)/);
+  assert.match(preload, /decisionsCreate: \(input\)/);
+  assert.match(preload, /tasksCreate: \(input\)/);
   assert.match(renderer, /function renderProjects\(\)/);
   assert.match(renderer, /function selectProject\(projectId\)/);
+  assert.match(renderer, /function openWorkflowPopover\(anchor\)/);
+  assert.match(renderer, /defaultAgents/);
+  assert.match(renderer, /defaultRoles/);
   assert.match(renderer, /function openSessionMovePopover\(anchor, session\)/);
   assert.match(ipc, /"chat:projects:create"/);
   assert.match(ipc, /"chat:projects:select"/);
   assert.match(ipc, /"chat:projects:delete"/);
   assert.match(ipc, /"chat:sessions:move"/);
+  assert.match(ipc, /"chat:decisions:create"/);
+  assert.match(ipc, /"chat:tasks:create"/);
   assert.ok(fs.existsSync(path.join(ROOT, "src/agora/project-store.js")));
+  assert.ok(fs.existsSync(path.join(ROOT, "src/agora/workflow-store.js")));
 });

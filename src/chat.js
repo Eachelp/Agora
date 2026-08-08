@@ -23,6 +23,7 @@ const workspaceLabel = document.getElementById("workspace-label");
 const permissionSelect = document.getElementById("permission-select");
 const enforcementHint = document.getElementById("enforcement-hint");
 const discussionButton = document.getElementById("btn-discussion");
+const workflowButton = document.getElementById("btn-workflow");
 const storeWarning = document.getElementById("store-warning");
 const popover = document.getElementById("popover");
 const popoverBackdrop = document.getElementById("popover-backdrop");
@@ -50,6 +51,8 @@ let sessions = [];
 let activeSessionId = null;
 let sessionMeta = null;
 let agents = [];
+let workflow = { decisions: [], tasks: [], roles: [], statuses: [] };
+let chatMessages = [];
 let pendingAttachments = [];
 const approvalQueue = [];
 let activeApproval = null;
@@ -255,6 +258,24 @@ function providerById(id) {
   return providers.find((provider) => provider.id === id) || null;
 }
 
+function modelOptionsForProvider(provider, includeDefault = false) {
+  const raw = provider.modelOptions || (provider.models || []).map((id) => ({ id, label: id }));
+  const options = raw
+    .filter((model) => model?.id)
+    .map((model) => ({ ...model, label: model.label || model.id }))
+    .filter((model, index, list) => list.findIndex((entry) => entry.id === model.id) === index);
+  if (includeDefault && !options.some((model) => model.id === "default")) {
+    options.unshift({ id: "default", label: "공급자 기본값", efforts: [] });
+  }
+  return includeDefault ? options : options.filter((model) => model.id !== "default");
+}
+
+function effortOptionsForModel(provider, modelId) {
+  const model = modelOptionsForProvider(provider, true).find((entry) => entry.id === modelId);
+  const efforts = Array.isArray(model?.efforts) ? model.efforts : provider.efforts || [];
+  return efforts.filter((effort) => effort !== "default");
+}
+
 function doctorStatus(diagnostic) {
   if (diagnostic.installed !== true) {
     return {
@@ -452,6 +473,7 @@ function renderProjects() {
 
 function openProjectSettings(anchor, project) {
   openPopover(anchor, (target) => {
+    target.classList.add("is-project-settings");
     const title = document.createElement("strong");
     title.className = "project-popover-title";
     title.textContent = "프로젝트 설정";
@@ -515,6 +537,106 @@ function openProjectSettings(anchor, project) {
       workspaceField.append(clear);
     }
 
+    const defaultAgentControls = new Map();
+    const defaultAgentSection = document.createElement("section");
+    defaultAgentSection.className = "project-default-section";
+    const defaultAgentTitle = document.createElement("strong");
+    defaultAgentTitle.textContent = "새 채팅 기본 에이전트";
+    const defaultAgentHint = document.createElement("p");
+    defaultAgentHint.className = "popover-hint";
+    defaultAgentHint.textContent = "기존 채팅에는 영향을 주지 않습니다.";
+    defaultAgentSection.append(defaultAgentTitle, defaultAgentHint);
+    for (const agent of agents) {
+      const provider = providerById(agent.id);
+      if (!provider) continue;
+      const saved = project.defaultAgents?.[agent.id] || {};
+      const row = document.createElement("div");
+      row.className = "project-agent-default";
+      const head = document.createElement("div");
+      head.className = "project-agent-default-head";
+      const label = document.createElement("strong");
+      label.textContent = `@${agent.id}`;
+      const enabled = document.createElement("input");
+      enabled.type = "checkbox";
+      enabled.checked = typeof saved.enabled === "boolean" ? saved.enabled : agent.enabled;
+      head.append(label, enabled);
+
+      const model = document.createElement("select");
+      const modelOptions = modelOptionsForProvider(provider, true);
+      const currentModel = saved.model || agent.model || "default";
+      if (!modelOptions.some((option) => option.id === currentModel)) {
+        modelOptions.push({ id: currentModel, label: `${currentModel} (현재 설정)`, efforts: [] });
+      }
+      for (const option of modelOptions) {
+        const item = document.createElement("option");
+        item.value = option.id;
+        item.textContent = option.label || option.id;
+        model.append(item);
+      }
+      model.value = currentModel;
+      model.disabled = !agent.available;
+
+      const effort = document.createElement("select");
+      const populateDefaultEfforts = (selected) => {
+        effort.textContent = "";
+        const options = effortOptionsForModel(provider, model.value);
+        if (options.length === 0) {
+          const item = document.createElement("option");
+          item.value = "default";
+          item.textContent = "모델 고정";
+          effort.append(item);
+          effort.disabled = true;
+          return;
+        }
+        for (const value of options) {
+          const item = document.createElement("option");
+          item.value = value;
+          item.textContent = effortLabel(value);
+          effort.append(item);
+        }
+        effort.value = options.includes(selected) ? selected : options[0];
+        effort.disabled = !agent.available || options.length <= 1;
+      };
+      populateDefaultEfforts(saved.effort || agent.effort || "default");
+      model.addEventListener("change", () => populateDefaultEfforts("default"));
+      row.append(head, makeField("모델", model), makeField("추론", effort));
+      defaultAgentSection.append(row);
+      defaultAgentControls.set(agent.id, { enabled, model, effort });
+    }
+
+    const roleControls = new Map();
+    const roleSection = document.createElement("section");
+    roleSection.className = "project-default-section";
+    const roleTitle = document.createElement("strong");
+    roleTitle.textContent = "역할 기본 담당자";
+    const roleHint = document.createElement("p");
+    roleHint.className = "popover-hint";
+    roleHint.textContent = "작업을 만들 때 자동으로 채워집니다.";
+    roleSection.append(roleTitle, roleHint);
+    const roleDefs = workflow.roles?.length
+      ? workflow.roles
+      : [
+          { id: "planning", label: "기획" },
+          { id: "implementation", label: "구현" },
+          { id: "review", label: "검토" },
+        ];
+    for (const role of roleDefs) {
+      const select = document.createElement("select");
+      const none = document.createElement("option");
+      none.value = "";
+      none.textContent = "지정 안 함";
+      select.append(none);
+      for (const agent of agents) {
+        const option = document.createElement("option");
+        option.value = agent.id;
+        option.textContent = `@${agent.id} · ${agent.name}`;
+        select.append(option);
+      }
+      select.value = project.defaultRoles?.[role.id] || "";
+      roleSection.append(makeField(role.label || role.id, select));
+      roleControls.set(role.id, select);
+    }
+
     const actions = document.createElement("div");
     actions.className = "project-popover-actions";
     const save = document.createElement("button");
@@ -522,10 +644,24 @@ function openProjectSettings(anchor, project) {
     save.className = "button button-primary";
     save.textContent = "저장";
     save.addEventListener("click", async () => {
+      const defaultAgents = {};
+      for (const [agentId, controls] of defaultAgentControls) {
+        defaultAgents[agentId] = {
+          enabled: controls.enabled.checked,
+          model: controls.model.value,
+          effort: controls.effort.value,
+        };
+      }
+      const defaultRoles = {};
+      for (const [roleId, control] of roleControls) {
+        if (control.value) defaultRoles[roleId] = control.value;
+      }
       const result = await call(window.chatApi.projectsUpdate(project.id, {
         name: name.value,
         context: context.value,
         defaultPermissionMode: permission.value,
+        defaultAgents,
+        defaultRoles,
       }));
       if (result) {
         closePopover();
@@ -558,6 +694,8 @@ function openProjectSettings(anchor, project) {
       makeField("공통 맥락", context),
       makeField("새 대화 기본 권한", permission),
       makeField("프로젝트 폴더", workspaceField),
+      defaultAgentSection,
+      roleSection,
       actions
     );
   });
@@ -829,11 +967,13 @@ function renderAgents() {
 function closePopover() {
   popover.hidden = true;
   popover.textContent = "";
+  popover.classList.remove("is-project-settings", "is-workflow");
   popoverBackdrop.hidden = true;
 }
 
 function openPopover(anchor, build) {
   popover.textContent = "";
+  popover.classList.remove("is-project-settings", "is-workflow");
   build(popover);
   popover.hidden = false;
   popoverBackdrop.hidden = false;
@@ -899,8 +1039,7 @@ function openAgentPopover(anchor, agentId) {
 
     // 모델 선택
     const modelSelect = document.createElement("select");
-    const modelOptions = (provider.modelOptions || (provider.models || []).map((id) => ({ id, label: id })))
-      .filter((model) => model.id !== "default");
+    const modelOptions = modelOptionsForProvider(provider);
     for (const model of modelOptions) {
       const option = document.createElement("option");
       option.value = model.id;
@@ -917,7 +1056,7 @@ function openAgentPopover(anchor, agentId) {
     modelSelect.value = currentModel;
     modelSelect.disabled = !provider.available;
     modelSelect.addEventListener("change", () => {
-      const availableEfforts = effortsForModel(modelSelect.value);
+      const availableEfforts = effortOptionsForModel(provider, modelSelect.value);
       const suffixEffort = modelSelect.value.match(/-(low|medium|high)$/i)?.[1]?.toLowerCase();
       const nextEffort = availableEfforts.includes(suffixEffort)
         ? suffixEffort
@@ -929,14 +1068,9 @@ function openAgentPopover(anchor, agentId) {
 
     // 속도/노력 선택
     const effortSelect = document.createElement("select");
-    function effortsForModel(modelId) {
-      const option = modelOptions.find((entry) => entry.id === modelId);
-      const efforts = Array.isArray(option?.efforts) ? option.efforts : provider.efforts || [];
-      return efforts.filter((effort) => effort !== "default");
-    }
     function populateEfforts(modelId, selected) {
       effortSelect.textContent = "";
-      const efforts = effortsForModel(modelId);
+      const efforts = effortOptionsForModel(provider, modelId);
       if (efforts.length === 0) {
         const option = document.createElement("option");
         option.value = "default";
@@ -958,9 +1092,9 @@ function openAgentPopover(anchor, agentId) {
     populateEfforts(currentModel, agent.effort);
     if (effortSelect.disabled && provider.status !== "cli") {
       effortSelect.title = "CLI 설치 후 사용할 수 있습니다";
-    } else if (effortsForModel(currentModel).length === 0) {
+    } else if (effortOptionsForModel(provider, currentModel).length === 0) {
       effortSelect.title = "이 모델은 추론 강도가 고정되어 있습니다";
-    } else if (effortsForModel(currentModel).length <= 1) {
+    } else if (effortOptionsForModel(provider, currentModel).length <= 1) {
       effortSelect.title = "이 모델에서 사용할 수 있는 추론 강도가 하나입니다";
     }
     effortSelect.addEventListener("change", () => {
@@ -1006,7 +1140,401 @@ async function configureAgent(agentId, patch) {
   }
 }
 
+const WORKFLOW_STATUS_LABELS = Object.freeze({
+  todo: "할 일",
+  in_progress: "진행 중",
+  review: "검토 중",
+  done: "완료",
+  blocked: "막힘",
+});
+
+function workflowRoleLabel(roleId) {
+  return workflow.roles?.find((role) => role.id === roleId)?.label || roleId || "구현";
+}
+
+function workflowAgentLabel(agentId) {
+  if (!agentId) return "담당자 미지정";
+  const agent = agentById(agentId);
+  return agent ? `@${agent.id}` : `@${agentId}`;
+}
+
+function workflowTextarea(placeholder, rows = 3) {
+  const input = document.createElement("textarea");
+  input.className = "workflow-textarea";
+  input.rows = rows;
+  input.maxLength = 20000;
+  input.placeholder = placeholder;
+  return input;
+}
+
+function openWorkflowPopover(anchor) {
+  const project = activeProjectEntry();
+  if (!project) return;
+
+  openPopover(anchor, (root) => {
+    root.classList.add("is-workflow");
+    const title = document.createElement("strong");
+    title.className = "project-popover-title";
+    title.textContent = `${project.name} · 결정과 작업`;
+    root.append(title);
+
+    const summary = document.createElement("p");
+    summary.className = "popover-status";
+    summary.textContent = `결정 ${workflow.decisions?.length || 0}개 · 작업 ${workflow.tasks?.length || 0}개`;
+    root.append(summary);
+
+    let editingDecisionId = null;
+    const decisionTitle = document.createElement("input");
+    decisionTitle.type = "text";
+    decisionTitle.maxLength = 120;
+    decisionTitle.placeholder = "결정 제목 (선택)";
+    const decisionContent = workflowTextarea("예: 이번 프로젝트는 Agora의 기존 채팅 코어를 유지한다.", 4);
+    const decisionActions = document.createElement("div");
+    decisionActions.className = "project-popover-actions";
+    const decisionSave = document.createElement("button");
+    decisionSave.type = "button";
+    decisionSave.className = "button button-primary";
+    decisionSave.textContent = "결정 기록";
+    const decisionCancel = document.createElement("button");
+    decisionCancel.type = "button";
+    decisionCancel.className = "button button-small";
+    decisionCancel.textContent = "취소";
+    decisionCancel.hidden = true;
+    decisionActions.append(decisionSave, decisionCancel);
+    const decisionForm = document.createElement("section");
+    decisionForm.className = "workflow-section";
+    const decisionFormTitle = document.createElement("strong");
+    decisionFormTitle.textContent = "새 결정";
+    const decisionLinkHint = document.createElement("p");
+    decisionLinkHint.className = "popover-hint";
+    const linkedMessageCount = Math.min(5, chatMessages.length);
+    decisionLinkHint.textContent = linkedMessageCount > 0
+      ? `현재 채팅과 최근 메시지 ${linkedMessageCount}개를 함께 기록합니다.`
+      : "현재 채팅을 결정의 출처로 기록합니다.";
+    decisionForm.append(
+      decisionFormTitle,
+      makeField("제목", decisionTitle),
+      makeField("내용", decisionContent),
+      decisionLinkHint,
+      decisionActions
+    );
+    decisionCancel.addEventListener("click", () => {
+      editingDecisionId = null;
+      decisionTitle.value = "";
+      decisionContent.value = "";
+      decisionSave.textContent = "결정 기록";
+      decisionCancel.hidden = true;
+      decisionFormTitle.textContent = "새 결정";
+    });
+    decisionSave.addEventListener("click", async () => {
+      const content = decisionContent.value.trim();
+      if (!content) {
+        flashNotice("결정 내용을 입력해 주세요.");
+        decisionContent.focus();
+        return;
+      }
+      const messageIds = chatMessages.slice(-5).map((message) => message.id).filter(Boolean);
+      const result = editingDecisionId
+        ? await call(window.chatApi.decisionsUpdate(project.id, editingDecisionId, {
+            title: decisionTitle.value,
+            content,
+            chatId: activeSessionId,
+            messageIds,
+          }))
+        : await call(window.chatApi.decisionsCreate({
+            projectId: project.id,
+            title: decisionTitle.value,
+            content,
+            chatId: activeSessionId,
+            messageIds,
+          }));
+      if (!result) return;
+      applyFullState(result);
+      openWorkflowPopover(anchor);
+    });
+
+    const decisionsSection = document.createElement("section");
+    decisionsSection.className = "workflow-section";
+    const decisionsTitle = document.createElement("strong");
+    decisionsTitle.textContent = "기록된 결정";
+    decisionsSection.append(decisionsTitle);
+    if (!workflow.decisions?.length) {
+      const empty = document.createElement("p");
+      empty.className = "workflow-empty";
+      empty.textContent = "아직 기록된 결정이 없습니다.";
+      decisionsSection.append(empty);
+    }
+    for (const decision of workflow.decisions || []) {
+      const card = document.createElement("article");
+      card.className = "workflow-card";
+      const cardTitle = document.createElement("div");
+      cardTitle.className = "workflow-card-title";
+      cardTitle.textContent = decision.title || "제목 없는 결정";
+      const cardText = document.createElement("div");
+      cardText.className = "workflow-card-text";
+      cardText.textContent = decision.content;
+      const meta = document.createElement("div");
+      meta.className = "workflow-card-meta";
+      const links = [decision.chatId ? "현재 채팅 연결" : "채팅 없음"];
+      if (decision.messageIds?.length) links.push(`메시지 ${decision.messageIds.length}개`);
+      meta.textContent = `${new Date(decision.updatedAt).toLocaleString()} · ${links.join(" · ")}`;
+      const cardActions = document.createElement("div");
+      cardActions.className = "workflow-card-actions";
+      const edit = document.createElement("button");
+      edit.type = "button";
+      edit.className = "button button-small";
+      edit.textContent = "수정";
+      edit.addEventListener("click", () => {
+        editingDecisionId = decision.id;
+        decisionTitle.value = decision.title || "";
+        decisionContent.value = decision.content;
+        decisionSave.textContent = "결정 수정";
+        decisionCancel.hidden = false;
+        decisionFormTitle.textContent = "결정 수정";
+        decisionContent.focus();
+      });
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "button button-danger button-small";
+      remove.textContent = "삭제";
+      remove.addEventListener("click", async () => {
+        if (!window.confirm("이 결정을 삭제할까요?")) return;
+        const result = await call(window.chatApi.decisionsDelete(project.id, decision.id));
+        if (!result) return;
+        applyFullState(result);
+        openWorkflowPopover(anchor);
+      });
+      cardActions.append(edit, remove);
+      card.append(cardTitle, cardText, meta, cardActions);
+      decisionsSection.append(card);
+    }
+
+    const taskTitle = document.createElement("input");
+    taskTitle.type = "text";
+    taskTitle.maxLength = 160;
+    taskTitle.placeholder = "작업 제목";
+    const taskDescription = workflowTextarea("작업 설명 (선택)", 3);
+    const taskDecision = document.createElement("select");
+    const noDecision = document.createElement("option");
+    noDecision.value = "";
+    noDecision.textContent = "연결할 결정 없음";
+    taskDecision.append(noDecision);
+    for (const decision of workflow.decisions || []) {
+      const option = document.createElement("option");
+      option.value = decision.id;
+      option.textContent = decision.title || decision.content.slice(0, 35);
+      taskDecision.append(option);
+    }
+    const taskRole = document.createElement("select");
+    for (const role of workflow.roles || []) {
+      const option = document.createElement("option");
+      option.value = role.id;
+      option.textContent = role.label || role.id;
+      taskRole.append(option);
+    }
+    if (!taskRole.options.length) {
+      for (const role of [
+        ["planning", "기획"],
+        ["implementation", "구현"],
+        ["review", "검토"],
+      ]) {
+        const option = document.createElement("option");
+        option.value = role[0];
+        option.textContent = role[1];
+        taskRole.append(option);
+      }
+    }
+    taskRole.value = "implementation";
+    const taskAgent = document.createElement("select");
+    const defaultAgentOption = document.createElement("option");
+    defaultAgentOption.value = "";
+    defaultAgentOption.textContent = "프로젝트 기본 담당자";
+    taskAgent.append(defaultAgentOption);
+    for (const agent of agents) {
+      const option = document.createElement("option");
+      option.value = agent.id;
+      option.textContent = `@${agent.id} · ${agent.name}`;
+      taskAgent.append(option);
+    }
+    const syncTaskAgent = () => {
+      const defaultAgent = project.defaultRoles?.[taskRole.value] || "";
+      taskAgent.value = defaultAgent || "";
+    };
+    syncTaskAgent();
+    taskRole.addEventListener("change", syncTaskAgent);
+    let editingTaskId = null;
+    const taskCreate = document.createElement("button");
+    taskCreate.type = "button";
+    taskCreate.className = "button button-primary";
+    taskCreate.textContent = "작업 만들기";
+    const taskCancel = document.createElement("button");
+    taskCancel.type = "button";
+    taskCancel.className = "button button-small";
+    taskCancel.textContent = "취소";
+    taskCancel.hidden = true;
+    const resetTaskForm = () => {
+      editingTaskId = null;
+      taskTitle.value = "";
+      taskDescription.value = "";
+      taskDecision.value = "";
+      taskRole.value = "implementation";
+      syncTaskAgent();
+      taskCreate.textContent = "작업 만들기";
+      taskCancel.hidden = true;
+      taskFormTitle.textContent = "새 작업";
+    };
+    taskCancel.addEventListener("click", resetTaskForm);
+    taskCreate.addEventListener("click", async () => {
+      if (!taskTitle.value.trim()) {
+        flashNotice("작업 제목을 입력해 주세요.");
+        taskTitle.focus();
+        return;
+      }
+      const result = editingTaskId
+        ? await call(window.chatApi.tasksUpdate(project.id, editingTaskId, {
+            title: taskTitle.value,
+            description: taskDescription.value,
+            role: taskRole.value,
+            agentId: taskAgent.value,
+            decisionId: taskDecision.value,
+            chatId: activeSessionId,
+          }))
+        : await call(window.chatApi.tasksCreate({
+            projectId: project.id,
+            title: taskTitle.value,
+            description: taskDescription.value,
+            role: taskRole.value,
+            agentId: taskAgent.value,
+            decisionId: taskDecision.value,
+            chatId: activeSessionId,
+          }));
+      if (!result) return;
+      applyFullState(result);
+      openWorkflowPopover(anchor);
+    });
+    const taskForm = document.createElement("section");
+    taskForm.className = "workflow-section";
+    const taskFormTitle = document.createElement("strong");
+    taskFormTitle.textContent = "새 작업";
+    taskForm.append(
+      taskFormTitle,
+      makeField("제목", taskTitle),
+      makeField("설명", taskDescription),
+      makeField("연결 결정", taskDecision),
+      makeField("역할", taskRole),
+      makeField("담당 에이전트", taskAgent),
+      taskCreate,
+      taskCancel
+    );
+
+    const tasksSection = document.createElement("section");
+    tasksSection.className = "workflow-section";
+    const tasksTitle = document.createElement("strong");
+    tasksTitle.textContent = "작업 목록";
+    tasksSection.append(tasksTitle);
+    if (!workflow.tasks?.length) {
+      const empty = document.createElement("p");
+      empty.className = "workflow-empty";
+      empty.textContent = "아직 등록된 작업이 없습니다.";
+      tasksSection.append(empty);
+    }
+    for (const task of workflow.tasks || []) {
+      const card = document.createElement("article");
+      card.className = "workflow-card";
+      const cardTitle = document.createElement("div");
+      cardTitle.className = "workflow-card-title";
+      cardTitle.textContent = task.title;
+      const cardText = document.createElement("div");
+      cardText.className = "workflow-card-text";
+      cardText.textContent = task.description || "설명 없음";
+      const meta = document.createElement("div");
+      meta.className = "workflow-card-meta";
+      const decisionLabel = task.decisionId
+        ? workflow.decisions?.find((decision) => decision.id === task.decisionId)?.title || "연결 결정"
+        : "결정 미연결";
+      meta.textContent = `${workflowRoleLabel(task.role)} · ${workflowAgentLabel(task.agentId)} · ${decisionLabel}`;
+      const controls = document.createElement("div");
+      controls.className = "workflow-card-actions";
+      const status = document.createElement("select");
+      for (const value of workflow.statuses || Object.keys(WORKFLOW_STATUS_LABELS)) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = WORKFLOW_STATUS_LABELS[value] || value;
+        status.append(option);
+      }
+      status.value = task.status;
+      const role = document.createElement("select");
+      for (const item of workflow.roles || []) {
+        const option = document.createElement("option");
+        option.value = item.id;
+        option.textContent = item.label || item.id;
+        role.append(option);
+      }
+      role.value = task.role;
+      const owner = document.createElement("select");
+      const projectDefault = document.createElement("option");
+      projectDefault.value = "";
+      projectDefault.textContent = "프로젝트 기본";
+      owner.append(projectDefault);
+      for (const agent of agents) {
+        const option = document.createElement("option");
+        option.value = agent.id;
+        option.textContent = `@${agent.id}`;
+        owner.append(option);
+      }
+      owner.value = task.agentId || "";
+      const edit = document.createElement("button");
+      edit.type = "button";
+      edit.className = "button button-small";
+      edit.textContent = "수정";
+      edit.addEventListener("click", () => {
+        editingTaskId = task.id;
+        taskTitle.value = task.title;
+        taskDescription.value = task.description || "";
+        taskDecision.value = task.decisionId || "";
+        taskRole.value = task.role;
+        taskAgent.value = task.agentId || "";
+        taskCreate.textContent = "작업 수정";
+        taskCancel.hidden = false;
+        taskFormTitle.textContent = "작업 수정";
+        taskTitle.focus();
+      });
+      const save = document.createElement("button");
+      save.type = "button";
+      save.className = "button button-small";
+      save.textContent = "저장";
+      save.addEventListener("click", async () => {
+        const result = await call(window.chatApi.tasksUpdate(project.id, task.id, {
+          status: status.value,
+          role: role.value,
+          agentId: owner.value,
+        }));
+        if (!result) return;
+        applyFullState(result);
+        openWorkflowPopover(anchor);
+      });
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "button button-danger button-small";
+      remove.textContent = "삭제";
+      remove.addEventListener("click", async () => {
+        if (!window.confirm("이 작업을 삭제할까요?")) return;
+        const result = await call(window.chatApi.tasksDelete(project.id, task.id));
+        if (!result) return;
+        applyFullState(result);
+        openWorkflowPopover(anchor);
+      });
+      controls.append(status, role, owner, edit, save, remove);
+      card.append(cardTitle, cardText, meta, controls);
+      tasksSection.append(card);
+    }
+
+    root.append(decisionForm, decisionsSection, taskForm, tasksSection);
+  });
+}
+
 // --- 토론 팝오버 ---
+workflowButton.addEventListener("click", () => openWorkflowPopover(workflowButton));
 discussionButton.addEventListener("click", () => {
   openPopover(discussionButton, (root) => {
     const head = document.createElement("div");
@@ -1332,6 +1860,7 @@ function appendMessage(message) {
     live.item.remove();
     liveRuns.delete(message.runId);
   }
+  chatMessages.push(message);
   messageList.append(renderMessage(message));
   scrollToBottom(stick || message.authorType === "user");
 }
@@ -1339,7 +1868,8 @@ function appendMessage(message) {
 function renderAllMessages(messages) {
   messageList.textContent = "";
   liveRuns.clear();
-  for (const message of messages || []) {
+  chatMessages = [...(messages || [])];
+  for (const message of chatMessages) {
     messageList.append(renderMessage(message));
   }
 }
@@ -1769,6 +2299,7 @@ function applyFullState(full) {
   if (full.providers) providers = full.providers;
   if (full.diagnostics) diagnostics = full.diagnostics;
   if (full.projects) projects = full.projects;
+  if (full.workflow) workflow = full.workflow;
   if (Object.hasOwn(full, "activeProjectId")) activeProjectId = full.activeProjectId;
   if (full.sessions) sessions = full.sessions;
   if (Object.hasOwn(full, "activeSessionId")) activeSessionId = full.activeSessionId;
@@ -1816,12 +2347,14 @@ window.chatApi.onTyping(({ sessionId, agentId, busy }) => {
 window.chatApi.onReset(({ sessionId }) => {
   if (sessionId !== activeSessionId) return;
   renderAllMessages([]);
+  chatMessages = [];
   typingAgents.clear();
   renderTyping();
 });
 window.chatApi.onRunEvent(handleRunEvent);
 window.chatApi.onSessionsChanged((payload) => {
   if (payload.projects) projects = payload.projects;
+  if (payload.workflow) workflow = payload.workflow;
   if (Object.hasOwn(payload, "activeProjectId")) activeProjectId = payload.activeProjectId;
   sessions = payload.sessions || sessions;
   if (Object.hasOwn(payload, "activeSessionId")) activeSessionId = payload.activeSessionId;
@@ -1832,6 +2365,10 @@ window.chatApi.onSessionsChanged((payload) => {
     sessionMeta = { ...sessionMeta, title: entry.title };
     renderHeader();
   }
+});
+window.chatApi.onWorkflowChanged(({ projectId, workflow: nextWorkflow }) => {
+  if (projectId !== activeProjectId || !nextWorkflow) return;
+  workflow = nextWorkflow;
 });
 window.chatApi.onAgents(({ sessionId, agents: nextAgents }) => {
   if (sessionId !== activeSessionId) return;

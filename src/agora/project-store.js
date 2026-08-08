@@ -7,6 +7,7 @@ const PROJECT_SCHEMA_VERSION = 1;
 const UNCATEGORIZED_PROJECT_ID = "uncategorized";
 const DEFAULT_PROJECT_NAME = "분류되지 않음";
 const PERMISSION_MODES = new Set(["chat", "workspace-read", "workspace-write"]);
+const ROLE_IDS = Object.freeze(["planning", "implementation", "review"]);
 
 let idSeq = 0;
 
@@ -51,6 +52,16 @@ function sanitizeAgents(value) {
   return agents;
 }
 
+function sanitizeRoles(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const roles = {};
+  for (const roleId of ROLE_IDS) {
+    const agentId = String(value[roleId] || "").trim();
+    if (/^[a-z0-9_-]{1,32}$/i.test(agentId)) roles[roleId] = agentId;
+  }
+  return roles;
+}
+
 function defaultPermissionMode(value, workspace) {
   return workspace && PERMISSION_MODES.has(value) ? value : "chat";
 }
@@ -63,6 +74,7 @@ function projectDefaults(input = {}) {
     context: sanitizeContext(input.context),
     defaultPermissionMode: defaultPermissionMode(input.defaultPermissionMode, workspace),
     defaultAgents: sanitizeAgents(input.defaultAgents),
+    defaultRoles: sanitizeRoles(input.defaultRoles),
   };
 }
 
@@ -113,6 +125,7 @@ class ProjectStore {
       context: "",
       defaultPermissionMode: "chat",
       defaultAgents: {},
+      defaultRoles: {},
     };
     writeJsonAtomic(this.projectPath(project.id), project);
     return project;
@@ -176,6 +189,7 @@ class ProjectStore {
         ? patch.defaultPermissionMode
         : current.defaultPermissionMode,
       defaultAgents: Object.hasOwn(patch, "defaultAgents") ? patch.defaultAgents : current.defaultAgents,
+      defaultRoles: Object.hasOwn(patch, "defaultRoles") ? patch.defaultRoles : current.defaultRoles,
     });
     const next = {
       ...current,
@@ -224,6 +238,7 @@ module.exports = {
   PROJECT_SCHEMA_VERSION,
   UNCATEGORIZED_PROJECT_ID,
   DEFAULT_PROJECT_NAME,
+  ROLE_IDS,
   defaultRoot,
   sessionDefaultsFromProject,
   migrateSessionsToProjects,

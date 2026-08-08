@@ -12,6 +12,12 @@ const INVOKE = Object.freeze({
   PROJECTS_DELETE: "chat:projects:delete",
   PROJECTS_WORKSPACE_CHOOSE: "chat:projects:workspace:choose",
   PROJECTS_WORKSPACE_CLEAR: "chat:projects:workspace:clear",
+  DECISIONS_CREATE: "chat:decisions:create",
+  DECISIONS_UPDATE: "chat:decisions:update",
+  DECISIONS_DELETE: "chat:decisions:delete",
+  TASKS_CREATE: "chat:tasks:create",
+  TASKS_UPDATE: "chat:tasks:update",
+  TASKS_DELETE: "chat:tasks:delete",
   SESSIONS_CREATE: "chat:sessions:create",
   SESSIONS_SELECT: "chat:sessions:select",
   SESSIONS_MOVE: "chat:sessions:move",
@@ -55,6 +61,16 @@ contextBridge.exposeInMainWorld("chatApi", {
     ipcRenderer.invoke(INVOKE.PROJECTS_WORKSPACE_CHOOSE, { projectId }),
   projectsWorkspaceClear: (projectId) =>
     ipcRenderer.invoke(INVOKE.PROJECTS_WORKSPACE_CLEAR, { projectId }),
+
+  decisionsCreate: (input) => ipcRenderer.invoke(INVOKE.DECISIONS_CREATE, input),
+  decisionsUpdate: (projectId, decisionId, patch) =>
+    ipcRenderer.invoke(INVOKE.DECISIONS_UPDATE, { projectId, decisionId, patch }),
+  decisionsDelete: (projectId, decisionId) =>
+    ipcRenderer.invoke(INVOKE.DECISIONS_DELETE, { projectId, decisionId }),
+  tasksCreate: (input) => ipcRenderer.invoke(INVOKE.TASKS_CREATE, input),
+  tasksUpdate: (projectId, taskId, patch) =>
+    ipcRenderer.invoke(INVOKE.TASKS_UPDATE, { projectId, taskId, patch }),
+  tasksDelete: (projectId, taskId) => ipcRenderer.invoke(INVOKE.TASKS_DELETE, { projectId, taskId }),
 
   sessionsCreate: () => ipcRenderer.invoke(INVOKE.SESSIONS_CREATE),
   sessionsSelect: (sessionId) => ipcRenderer.invoke(INVOKE.SESSIONS_SELECT, { sessionId }),
@@ -105,6 +121,7 @@ contextBridge.exposeInMainWorld("chatApi", {
   onReset: (handler) => subscribe("chat:reset", handler),
   onRunEvent: (handler) => subscribe("chat:run-event", handler),
   onSessionsChanged: (handler) => subscribe("chat:sessions-changed", handler),
+  onWorkflowChanged: (handler) => subscribe("chat:workflow-changed", handler),
   onAgents: (handler) => subscribe("chat:agents", handler),
   onApprovalRequest: (handler) => subscribe("chat:approval-request", handler),
   onAppearance: (handler) => subscribe("appearance:update", handler),
