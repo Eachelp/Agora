@@ -10,6 +10,7 @@ const {
   DEFAULT_PROJECT_NAME,
   sessionDefaultsFromProject,
   migrateSessionsToProjects,
+  roleConfigFor,
 } = require("../src/agora/project-store");
 
 function makeRoot() {
@@ -40,6 +41,36 @@ test("프로젝트 저장소는 기본 분류 프로젝트와 프로젝트 메�
   assert.equal(reloaded.defaultAgents.codex.model, "gpt-5");
 
   assert.equal(projects.updateProject(project.id, { name: "   " }).name, "Agora 개발");
+});
+
+test("역할별 담당자·모델·추론 설정을 저장하고 기존 문자열 역할도 읽는다", () => {
+  const root = makeRoot();
+  const projects = new ProjectStore({ root }).init();
+  const project = projects.createProject({
+    name: "전문 실행",
+    defaultRoles: {
+      implementation: { agentId: "codex", model: "gpt-5", effort: "high" },
+      review: "claude",
+      recorder: { agentId: "claude", model: "default", effort: "default" },
+    },
+  });
+
+  const reloaded = new ProjectStore({ root }).init().getProject(project.id);
+  assert.deepEqual(roleConfigFor(reloaded, "implementation"), {
+    agentId: "codex",
+    model: "gpt-5",
+    effort: "high",
+  });
+  assert.deepEqual(roleConfigFor(reloaded, "review"), {
+    agentId: "claude",
+    model: "",
+    effort: "",
+  });
+  assert.deepEqual(roleConfigFor(reloaded, "recorder"), {
+    agentId: "claude",
+    model: "default",
+    effort: "default",
+  });
 });
 
 test("기존 세션과 없어진 프로젝트의 세션은 기본 프로젝트로 안전하게 이전된다", () => {

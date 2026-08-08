@@ -7,7 +7,7 @@ const PROJECT_SCHEMA_VERSION = 1;
 const UNCATEGORIZED_PROJECT_ID = "uncategorized";
 const DEFAULT_PROJECT_NAME = "분류되지 않음";
 const PERMISSION_MODES = new Set(["chat", "workspace-read", "workspace-write"]);
-const ROLE_IDS = Object.freeze(["planning", "implementation", "review"]);
+const ROLE_IDS = Object.freeze(["planning", "implementation", "review", "recorder"]);
 
 let idSeq = 0;
 
@@ -52,14 +52,38 @@ function sanitizeAgents(value) {
   return agents;
 }
 
+function sanitizeRoleValue(value) {
+  if (typeof value === "string") {
+    const agentId = value.trim();
+    return /^[a-z0-9_-]{1,32}$/i.test(agentId) ? agentId : null;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const agentId = String(value.agentId || "").trim();
+  if (!/^[a-z0-9_-]{1,32}$/i.test(agentId)) return null;
+  const model = String(value.model || "").trim().slice(0, 160);
+  const effort = String(value.effort || "").trim().slice(0, 32);
+  return {
+    agentId,
+    ...(model ? { model } : {}),
+    ...(effort ? { effort } : {}),
+  };
+}
+
 function sanitizeRoles(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const roles = {};
   for (const roleId of ROLE_IDS) {
-    const agentId = String(value[roleId] || "").trim();
-    if (/^[a-z0-9_-]{1,32}$/i.test(agentId)) roles[roleId] = agentId;
+    const role = sanitizeRoleValue(value[roleId]);
+    if (role) roles[roleId] = role;
   }
   return roles;
+}
+
+function roleConfigFor(project, roleId) {
+  const role = sanitizeRoleValue(project?.defaultRoles?.[roleId]);
+  if (!role) return { agentId: null, model: "", effort: "" };
+  if (typeof role === "string") return { agentId: role, model: "", effort: "" };
+  return { agentId: role.agentId, model: role.model || "", effort: role.effort || "" };
 }
 
 function defaultPermissionMode(value, workspace) {
@@ -243,4 +267,5 @@ module.exports = {
   sessionDefaultsFromProject,
   migrateSessionsToProjects,
   defaultPermissionMode,
+  roleConfigFor,
 };

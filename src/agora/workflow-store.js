@@ -10,6 +10,7 @@ const ROLE_DEFS = Object.freeze([
   Object.freeze({ id: "planning", label: "기획" }),
   Object.freeze({ id: "implementation", label: "구현" }),
   Object.freeze({ id: "review", label: "검토" }),
+  Object.freeze({ id: "recorder", label: "기록" }),
 ]);
 
 let idSeq = 0;
