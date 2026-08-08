@@ -1,4 +1,4 @@
-const test = require("node:test");
+﻿const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -112,7 +112,7 @@ test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있
   for (const id of ["project-list", "btn-new-project", "chats-heading", "session-list"]) {
     assert.match(html, new RegExp(`id="${id}"`));
   }
-  assert.match(preload, /projectsCreate: \(name\)/);
+  assert.match(preload, /projectsCreate: \(name, workspace\)/);
   assert.match(preload, /projectsSelect: \(projectId\)/);
   assert.match(preload, /projectsUpdate: \(projectId, patch\)/);
   assert.match(preload, /projectsDelete: \(projectId\)/);

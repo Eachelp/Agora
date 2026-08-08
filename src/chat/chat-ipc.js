@@ -1,4 +1,4 @@
-const fs = require("node:fs");
+﻿﻿const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { ChatStore } = require("./chat-store");
@@ -30,16 +30,15 @@ const {
 } = require("./chat-attachments");
 const { createChatWindow } = require("./chat-window");
 
-// 채팅 기능 전체(저장소·세션·프로바이더 실행·IPC·창)를 묶는 조립 모듈.
-// main.js는 createChatFeature() 한 번과 openWindow()/shutdown()만 호출합니다.
+// 채팅 기능 ?�체(?�?�소·?�션·?�로바이???�행·IPC·�?�?묶는 조립 모듈.
+// main.js??createChatFeature() ??번과 openWindow()/shutdown()�??�출?�니??
 
-// 세션별로 남겨두는 실행 원본 로그 개수. 진단에는 최근 실행만 필요하므로
-// 무한히 쌓이지 않게 오래된 파일부터 지웁니다.
+// ?�션별로 ?�겨?�는 ?�행 ?�본 로그 개수. 진단?�는 최근 ?�행�??�요?��?�?// 무한???�이지 ?�게 ?�래???�일부??지?�니??
 const MAX_RUN_LOG_FILES = 20;
 
-// 실행 원본 stdout을 파일로 흘려보내는 writer.
-// 메모리에 전체를 들고 있지 않으므로 출력이 아무리 길어도 진단 정보를 남길 수 있습니다.
-// 파일을 만들 수 없는 환경에서는 조용히 비활성화되고 실행에는 영향을 주지 않습니다.
+// ?�행 ?�본 stdout???�일�??�려보내??writer.
+// 메모리에 ?�체�??�고 ?��? ?�으므�?출력???�무�?길어??진단 ?�보�??�길 ???�습?�다.
+// ?�일??만들 ???�는 ?�경?�서??조용??비활?�화?�고 ?�행?�는 ?�향??주�? ?�습?�다.
 function createRunLogWriter(store, sessionId, runId) {
   if (!store || !sessionId || !runId) return { write: null, close: () => null };
   let stream = null;
@@ -80,8 +79,7 @@ function createRunLogWriter(store, sessionId, runId) {
       const closedPath = filePath;
       if (stream) {
         try {
-          // 정리는 flush 이후에 합니다. 그렇지 않으면 방금 만든 로그의 mtime이
-          // 아직 갱신되지 않아 스스로 삭제 대상이 될 수 있습니다.
+          // ?�리??flush ?�후???�니?? 그렇지 ?�으�?방금 만든 로그??mtime??          // ?�직 갱신?��? ?�아 ?�스�???�� ?�?�이 ?????�습?�다.
           stream.end(() => pruneRunLogs(store, sessionId, closedPath));
         } catch {}
       } else if (closedPath) {
@@ -92,8 +90,8 @@ function createRunLogWriter(store, sessionId, runId) {
   };
 }
 
-// 오래된 실행 로그를 정리합니다. 실패해도 실행에는 영향을 주지 않습니다.
-// keepPath로 지정한 파일(방금 기록한 로그)은 항상 보존합니다.
+// ?�래???�행 로그�??�리?�니?? ?�패?�도 ?�행?�는 ?�향??주�? ?�습?�다.
+// keepPath�?지?�한 ?�일(방금 기록??로그)?� ??�� 보존?�니??
 function pruneRunLogs(store, sessionId, keepPath = null) {
   try {
     const dir = store.runLogsDir(sessionId);
@@ -110,7 +108,7 @@ function pruneRunLogs(store, sessionId, keepPath = null) {
       })
       .filter((entry) => entry.full !== keepPath)
       .sort((a, b) => b.mtimeMs - a.mtimeMs);
-    // keepPath가 이미 한 자리를 차지하므로 남길 개수에서 제외합니다.
+    // keepPath가 ?��? ???�리�?차�??��?�??�길 개수?�서 ?�외?�니??
     const keepCount = keepPath ? Math.max(0, MAX_RUN_LOG_FILES - 1) : MAX_RUN_LOG_FILES;
     for (const entry of entries.slice(keepCount)) {
       try {
@@ -134,8 +132,8 @@ function publicMeta(meta) {
   };
 }
 
-// renderer로 보내는 첨부 레코드: 원본 경로/저장 경로는 제외합니다.
-// fileName은 내용 해시라 경로 정보가 없지만, 뷰에서는 쓰지 않습니다.
+// renderer�?보내??첨�? ?�코?? ?�본 경로/?�??경로???�외?�니??
+// fileName?� ?�용 ?�시??경로 ?�보가 ?��?�? 뷰에?�는 ?��? ?�습?�다.
 function publicAttachment(record) {
   return {
     id: record.id,
@@ -159,20 +157,20 @@ function attachmentContextLines({ attachments, deliveries, attachmentsDir }) {
         limit: INLINE_TEXT_LIMIT,
       });
       if (text !== null) {
-        lines.push(`=== 첨부 파일: ${attachment.name} ===`);
+        lines.push(`=== 첨�? ?�일: ${attachment.name} ===`);
         lines.push(text);
-        lines.push("=== 첨부 끝 ===");
+        lines.push("=== 첨�? ??===");
       } else {
         delivery.method = "unsupported";
       }
     } else if (delivery.method === "path") {
       lines.push(
-        `첨부 파일 "${attachment.name}" 경로: ${path.join(attachmentsDir, attachment.fileName)} (읽기 도구로 열 수 있습니다)`
+        `첨�? ?�일 "${attachment.name}" 경로: ${path.join(attachmentsDir, attachment.fileName)} (?�기 ?�구�??????�습?�다)`
       );
     } else if (delivery.method === "native-image") {
-      lines.push(`(이미지 "${attachment.name}"가 함께 전달되었습니다.)`);
+      lines.push(`(?��?지 "${attachment.name}"가 ?�께 ?�달?�었?�니??)`);
     } else if (delivery.method === "unsupported") {
-      lines.push(`(첨부 "${attachment.name}"는 이 에이전트로 전달할 수 없었습니다.)`);
+      lines.push(`(첨�? "${attachment.name}"?????�이?�트�??�달?????�었?�니??)`);
     }
   }
   return lines;
@@ -182,8 +180,8 @@ function createChatFeature(options) {
   const { electron, onWindowReady } = options;
   const { ipcMain, dialog, BrowserWindow, shell } = electron;
 
-  // 출력 hard limit은 사용자 설정입니다. 설정이 없거나 0 이하이면 상한 없이 실행합니다.
-  // getHardOutputLimitBytes를 주입하지 않으면 상한은 항상 비활성입니다.
+  // 출력 hard limit?� ?�용???�정?�니?? ?�정???�거??0 ?�하?�면 ?�한 ?�이 ?�행?�니??
+  // getHardOutputLimitBytes�?주입?��? ?�으�??�한?� ??�� 비활?�입?�다.
   function resolveHardOutputLimit() {
     if (typeof options.getHardOutputLimitBytes !== "function") return null;
     try {
@@ -204,7 +202,7 @@ function createChatFeature(options) {
   let chatWindow = null;
   let shuttingDown = false;
   const rooms = new Map();
-  // 세션별 "아직 전송 전" 첨부: id → 내부 레코드(fileName 포함)
+  // ?�션�?"?�직 ?�송 ?? 첨�?: id ???��? ?�코??fileName ?�함)
   const pendingAttachments = new Map();
 
   function ensureStore() {
@@ -213,7 +211,7 @@ function createChatFeature(options) {
       store = new ChatStore({ root: options.storeRoot }).init();
     } catch (error) {
       storeError = error?.message || String(error);
-      console.warn("[agora] 채팅 저장소 초기화 실패:", storeError);
+      console.warn("[agora] 채팅 ?�?�소 초기???�패:", storeError);
     }
     return store;
   }
@@ -227,7 +225,7 @@ function createChatFeature(options) {
       migrateSessionsToProjects(chatStore, projectStore);
     } catch (error) {
       projectStoreError = error?.message || String(error);
-      console.warn("[agora] 프로젝트 저장소 초기화 실패:", projectStoreError);
+      console.warn("[agora] ?�로?�트 ?�?�소 초기???�패:", projectStoreError);
     }
     return projectStore;
   }
@@ -240,7 +238,7 @@ function createChatFeature(options) {
       workflowStore = new WorkflowStore({ root: chatStore.root }).init();
     } catch (error) {
       workflowStoreError = error?.message || String(error);
-      console.warn("[agora] 작업 기록 저장소 초기화 실패:", workflowStoreError);
+      console.warn("[agora] ?�업 기록 ?�?�소 초기???�패:", workflowStoreError);
     }
     return workflowStore;
   }
@@ -349,7 +347,7 @@ function createChatFeature(options) {
       if (!fs.statSync(workspace).isDirectory()) throw new Error("not a directory");
       return workspace;
     } catch {
-      throw new Error("선택한 폴더를 확인할 수 없습니다.");
+      throw new Error("?�택???�더�??�인?????�습?�다.");
     }
   }
 
@@ -371,7 +369,7 @@ function createChatFeature(options) {
     return pendingAttachments.get(sessionId);
   }
 
-  // 세션 대화에 이미 저장된 첨부에서 id로 내부 레코드를 찾습니다(미리보기용).
+  // ?�션 ?�?�에 ?��? ?�?�된 첨�??�서 id�??��? ?�코?��? 찾습?�다(미리보기??.
   function findAttachmentRecord(sessionId, attachmentId) {
     const pending = pendingFor(sessionId).get(attachmentId);
     if (pending) return pending;
@@ -391,7 +389,7 @@ function createChatFeature(options) {
       const meta = store?.readMeta(sessionId);
       if (!record || !meta) {
         return {
-          promise: Promise.resolve({ ok: false, error: "세션 정보를 읽지 못했습니다." }),
+          promise: Promise.resolve({ ok: false, error: "?�션 ?�보�??��? 못했?�니??" }),
           cancel: () => {},
         };
       }
@@ -437,8 +435,7 @@ function createChatFeature(options) {
       });
       if (extraLines.length > 0) fullPrompt = `${prompt}\n${extraLines.join("\n")}`;
 
-      // 원본 출력은 필요할 때만 파일로 흘려보냅니다. 메모리에 전체를 들고 있지 않으므로
-      // 아주 긴 실행에서도 진단 정보를 잃지 않습니다.
+      // ?�본 출력?� ?�요???�만 ?�일�??�려보냅?�다. 메모리에 ?�체�??�고 ?��? ?�으므�?      // ?�주 �??�행?�서??진단 ?�보�??��? ?�습?�다.
       const rawLog = createRunLogWriter(store, sessionId, runId);
 
       const hardOutputLimitBytes = resolveHardOutputLimit();
@@ -454,8 +451,8 @@ function createChatFeature(options) {
         parseLine: createLineParser(agent.id),
         onEvent: emitEvent,
         timeoutMs: options.timeoutMs,
-        // 출력이 길다는 이유로 실행을 죽이지 않습니다. hard limit은 사용자가
-        // 명시적으로 켜지 않으면 undefined(=상한 없음)로 남습니다.
+        // 출력??길다???�유�??�행??죽이지 ?�습?�다. hard limit?� ?�용?��?
+        // 명시?�으�?켜�? ?�으�?undefined(=?�한 ?�음)�??�습?�다.
         ...(Number.isFinite(options.captureOutputBytes) && options.captureOutputBytes > 0
           ? { captureOutputBytes: options.captureOutputBytes }
           : {}),
@@ -465,8 +462,8 @@ function createChatFeature(options) {
       return {
         promise: run.promise.then((result) => {
           const logPath = rawLog.close();
-          // renderer에는 파일 시스템 경로를 보내지 않습니다(기존 보안 경계 유지).
-          // 진단에는 파일 이름만 노출하고, 실제 경로는 main 프로세스에만 둡니다.
+          // renderer?�는 ?�일 ?�스??경로�?보내지 ?�습?�다(기존 보안 경계 ?��?).
+          // 진단?�는 ?�일 ?�름�??�출?�고, ?�제 경로??main ?�로?�스?�만 ?�니??
           const diagnostics =
             result.output || logPath
               ? {
@@ -524,7 +521,7 @@ function createChatFeature(options) {
 
     room.on("message", (message) => {
       store.appendEvent(sessionId, { kind: "message", message });
-      // renderer로는 첨부 내부 레코드(fileName/sha256)를 제거한 사본만 보냅니다.
+      // renderer로는 첨�? ?��? ?�코??fileName/sha256)�??�거???�본�?보냅?�다.
       const outbound = message.attachments
         ? { ...message, attachments: message.attachments.map(publicAttachment) }
         : message;
@@ -582,7 +579,7 @@ function createChatFeature(options) {
     }
     const activeSessionId = getActiveSessionId();
     return {
-      // 저장소 문제는 하드 실패가 아니라 경고 배너로 전달합니다.
+      // ?�?�소 문제???�드 ?�패가 ?�니??경고 배너�??�달?�니??
       error: storeError || null,
       providers: toPublicProviders(records),
       diagnostics: toDiagnostics(records),
@@ -595,16 +592,16 @@ function createChatFeature(options) {
   }
 
   function requireSession(sessionId) {
-    if (!ensureStore()) throw new Error(storeError || "저장소를 사용할 수 없습니다.");
-    if (!sessionId || !store.hasSession(sessionId)) throw new Error("세션을 찾을 수 없습니다.");
+    if (!ensureStore()) throw new Error(storeError || "?�?�소�??�용?????�습?�다.");
+    if (!sessionId || !store.hasSession(sessionId)) throw new Error("?�션??찾을 ???�습?�다.");
   }
 
   function requireProject(projectId) {
     const projects = ensureProjectStore();
-    if (!projects) throw new Error(projectStoreError || "프로젝트 저장소를 사용할 수 없습니다.");
+    if (!projects) throw new Error(projectStoreError || "?�로?�트 ?�?�소�??�용?????�습?�다.");
     const project = projects.getProject(projectId);
-    if (!project) throw new Error("프로젝트를 찾을 수 없습니다.");
-    if (project.readOnly) throw new Error("이 프로젝트는 더 새로운 버전에서 만들어져 읽기 전용입니다.");
+    if (!project) throw new Error("?�로?�트�?찾을 ???�습?�다.");
+    if (project.readOnly) throw new Error("???�로?�트?????�로??버전?�서 만들?�져 ?�기 ?�용?�니??");
     return project;
   }
 
@@ -612,7 +609,7 @@ function createChatFeature(options) {
     if (!sessionId) return null;
     requireSession(sessionId);
     if (projectIdForMeta(store.readMeta(sessionId)) !== projectId) {
-      throw new Error("선택한 채팅이 프로젝트에 속하지 않습니다.");
+      throw new Error("?�택??채팅???�로?�트???�하지 ?�습?�다.");
     }
     return sessionId;
   }
@@ -646,7 +643,7 @@ function createChatFeature(options) {
         const allowedUrls = new Set(
           ensureCapabilityService().defs.map((def) => def.installUrl).filter(Boolean)
         );
-        if (!allowedUrls.has(url)) throw new Error("허용되지 않은 외부 주소입니다.");
+        if (!allowedUrls.has(url)) throw new Error("?�용?��? ?��? ?��? 주소?�니??");
         await shell.openExternal(url);
         return {};
       })
@@ -654,9 +651,9 @@ function createChatFeature(options) {
 
     ipcMain.handle(
       "chat:projects:create",
-      wrap(async ({ name }) => {
-        if (!ensureStore()) throw new Error(storeError || "저장소를 사용할 수 없습니다.");
-        const project = ensureProjectStore().createProject({ name });
+      wrap(async ({ name, workspace }) => {
+        if (!ensureStore()) throw new Error(storeError || "?�?�소�??�용?????�습?�다.");
+        const project = ensureProjectStore().createProject({ name, workspace });
         const meta = createSessionForProject(project.id);
         setActiveSessionId(meta.id);
         await ensureCapabilityService().discover();
@@ -708,7 +705,7 @@ function createChatFeature(options) {
       "chat:projects:workspace:choose",
       wrap(async ({ projectId }) => {
         requireProject(projectId);
-        const workspace = await chooseWorkspace("프로젝트 워크스페이스 선택");
+        const workspace = await chooseWorkspace("?�로?�트 ?�크?�페?�스 ?�택");
         if (!workspace) return { canceled: true, ...sessionsPayload() };
         const project = ensureProjectStore().updateProject(projectId, { workspace });
         const payload = sessionsPayload();
@@ -733,7 +730,7 @@ function createChatFeature(options) {
       wrap(async ({ projectId }) => {
         const project = requireProject(projectId);
         if (project.id === UNCATEGORIZED_PROJECT_ID) {
-          throw new Error("기본 프로젝트는 삭제할 수 없습니다.");
+          throw new Error("기본 ?�로?�트????��?????�습?�다.");
         }
         const deletingActive = getActiveProjectId() === project.id;
         for (const entry of store.listSessions()) {
@@ -744,7 +741,7 @@ function createChatFeature(options) {
         }
         ensureWorkflowStore()?.moveProjectItems(project.id, UNCATEGORIZED_PROJECT_ID);
         if (!ensureProjectStore().deleteProject(project.id)) {
-          throw new Error("프로젝트를 삭제하지 못했습니다.");
+          throw new Error("?�로?�트�???��?��? 못했?�니??");
         }
         const nextProjectId = deletingActive ? UNCATEGORIZED_PROJECT_ID : getActiveProjectId();
         setActiveProjectId(nextProjectId);
@@ -782,7 +779,7 @@ function createChatFeature(options) {
         const project = requireProject(projectId || getActiveProjectId());
         const workflow = ensureWorkflowStore();
         const current = workflow.getDecision(decisionId);
-        if (!current || current.projectId !== project.id) throw new Error("결정을 찾을 수 없습니다.");
+        if (!current || current.projectId !== project.id) throw new Error("결정??찾을 ???�습?�다.");
         const next = {};
         if (typeof patch?.title === "string") next.title = patch.title;
         if (typeof patch?.content === "string") next.content = patch.content;
@@ -804,9 +801,9 @@ function createChatFeature(options) {
         const project = requireProject(projectId || getActiveProjectId());
         const workflow = ensureWorkflowStore();
         const current = workflow.getDecision(decisionId);
-        if (!current || current.projectId !== project.id) throw new Error("결정을 찾을 수 없습니다.");
+        if (!current || current.projectId !== project.id) throw new Error("결정??찾을 ???�습?�다.");
         if (workflow.listTasks(project.id).some((task) => task.decisionId === decisionId)) {
-          throw new Error("연결된 작업이 있어 결정을 삭제할 수 없습니다.");
+          throw new Error("연결된 작업이 있어 결정을 삭제할 수 없습니다.")
         }
         workflow.deleteDecision(decisionId);
         const payload = sessionsPayload();
@@ -824,7 +821,7 @@ function createChatFeature(options) {
         const sourceChatId = requireSessionForProject(chatId || getActiveSessionId(project.id), project.id);
         if (decisionId) {
           const decision = workflow.getDecision(decisionId);
-          if (!decision || decision.projectId !== project.id) throw new Error("연결할 결정을 찾을 수 없습니다.");
+          if (!decision || decision.projectId !== project.id) throw new Error("?�결??결정??찾을 ???�습?�다.");
         }
         const selectedRole = ROLE_DEFS.some((entry) => entry.id === role) ? role : "implementation";
         const task = workflow.createTask({
@@ -850,10 +847,10 @@ function createChatFeature(options) {
         const project = requireProject(projectId || getActiveProjectId());
         const workflow = ensureWorkflowStore();
         const current = workflow.getTask(taskId);
-        if (!current || current.projectId !== project.id) throw new Error("작업을 찾을 수 없습니다.");
+        if (!current || current.projectId !== project.id) throw new Error("?�업??찾을 ???�습?�다.");
         if (patch?.decisionId) {
           const decision = workflow.getDecision(patch.decisionId);
-          if (!decision || decision.projectId !== project.id) throw new Error("연결할 결정을 찾을 수 없습니다.");
+          if (!decision || decision.projectId !== project.id) throw new Error("?�결??결정??찾을 ???�습?�다.");
         }
         const next = {};
         for (const field of ["title", "description", "status", "role", "agentId", "decisionId", "chatId"]) {
@@ -874,7 +871,7 @@ function createChatFeature(options) {
         const project = requireProject(projectId || getActiveProjectId());
         const workflow = ensureWorkflowStore();
         const current = workflow.getTask(taskId);
-        if (!current || current.projectId !== project.id) throw new Error("작업을 찾을 수 없습니다.");
+        if (!current || current.projectId !== project.id) throw new Error("?�업??찾을 ???�습?�다.");
         workflow.deleteTask(taskId);
         const payload = sessionsPayload();
         broadcast("chat:sessions-changed", payload);
@@ -886,7 +883,7 @@ function createChatFeature(options) {
     ipcMain.handle(
       "chat:sessions:create",
       wrap(async () => {
-        if (!ensureStore()) throw new Error(storeError || "저장소를 사용할 수 없습니다.");
+        if (!ensureStore()) throw new Error(storeError || "?�?�소�??�용?????�습?�다.");
         const meta = createSessionForProject();
         setActiveSessionId(meta.id);
         await ensureCapabilityService().discover();
@@ -972,7 +969,7 @@ function createChatFeature(options) {
           }
         }
         const entry = room.sendUserMessage({ text, attachments });
-        if (!entry) throw new Error("보낼 내용이 없습니다.");
+        if (!entry) throw new Error("보낼 ?�용???�습?�다.");
         return {};
       })
     );
@@ -999,7 +996,7 @@ function createChatFeature(options) {
       wrap(async ({ sessionId, turnId }) => {
         requireSession(sessionId);
         if (!getRoom(sessionId).cancelTurn(String(turnId || ""))) {
-          throw new Error("이미 시작되었거나 존재하지 않는 턴입니다.");
+          throw new Error("?��? ?�작?�었거나 존재?��? ?�는 ?�입?�다.");
         }
         return {};
       })
@@ -1013,7 +1010,7 @@ function createChatFeature(options) {
         const cleanIds = Array.isArray(agentIds)
           ? agentIds.filter((id) => typeof id === "string")
           : undefined;
-        // 토론은 오래 걸리므로 시작 확인만 동기로 반환하고, 진행은 이벤트로 전달됩니다.
+        // ?�론?� ?�래 걸리므�??�작 ?�인�??�기�?반환?�고, 진행?� ?�벤?�로 ?�달?�니??
         const started = room.startDiscussion({ agentIds: cleanIds });
         const result = await Promise.race([
           started,
@@ -1030,7 +1027,7 @@ function createChatFeature(options) {
       wrap(async ({ sessionId, approvalId, decision }) => {
         requireSession(sessionId);
         if (!getRoom(sessionId)?.resolveApproval(approvalId, decision)) {
-          throw new Error("이미 처리되었거나 존재하지 않는 권한 요청입니다.");
+          throw new Error("?��? 처리?�었거나 존재?��? ?�는 권한 ?�청?�니??");
         }
         return {};
       })
@@ -1040,8 +1037,8 @@ function createChatFeature(options) {
       "chat:workspace:choose",
       wrap(async ({ sessionId }) => {
         requireSession(sessionId);
-        // 워크스페이스 경로의 유일한 출처: OS 폴더 선택 대화상자.
-        const workspace = await chooseWorkspace("세션 워크스페이스 선택");
+        // ?�크?�페?�스 경로???�일??출처: OS ?�더 ?�택 ?�?�상??
+        const workspace = await chooseWorkspace("?�션 ?�크?�페?�스 ?�택");
         if (!workspace) return { canceled: true };
         store.updateMeta(sessionId, { workspace });
         refreshRoomAgents(sessionId);
@@ -1050,10 +1047,19 @@ function createChatFeature(options) {
     );
 
     ipcMain.handle(
+      "chat:workspace:pick",
+      wrap(async () => {
+        const workspace = await chooseWorkspace("폴더 선택");
+        if (!workspace) return { canceled: true };
+        return { workspace };
+      })
+    );
+
+    ipcMain.handle(
       "chat:workspace:clear",
       wrap(async ({ sessionId }) => {
         requireSession(sessionId);
-        // 워크스페이스가 없으면 workspace 권한 모드도 의미가 없어 chat으로 되돌립니다.
+        // ?�크?�페?�스가 ?�으�?workspace 권한 모드???��?가 ?�어 chat?�로 ?�돌립니??
         store.updateMeta(sessionId, { workspace: null, permissionMode: "chat" });
         refreshRoomAgents(sessionId);
         return { meta: publicMeta(store.readMeta(sessionId)), ...sessionsPayload() };
@@ -1064,10 +1070,10 @@ function createChatFeature(options) {
       "chat:permission:set",
       wrap(async ({ sessionId, mode }) => {
         requireSession(sessionId);
-        if (!PERMISSION_MODES.includes(mode)) throw new Error("알 수 없는 권한 모드입니다.");
+        if (!PERMISSION_MODES.includes(mode)) throw new Error("?????�는 권한 모드?�니??");
         const meta = store.readMeta(sessionId);
         if (mode !== "chat" && !meta.workspace) {
-          throw new Error("먼저 워크스페이스 폴더를 선택해 주세요.");
+          throw new Error("먼�? ?�크?�페?�스 ?�더�??�택??주세??");
         }
         store.updateMeta(sessionId, { permissionMode: mode });
         refreshRoomAgents(sessionId);
@@ -1081,7 +1087,7 @@ function createChatFeature(options) {
         requireSession(sessionId);
         const service = ensureCapabilityService();
         const record = service.getRecord(agentId);
-        if (!record) throw new Error("알 수 없는 에이전트입니다.");
+        if (!record) throw new Error("?????�는 ?�이?�트?�니??");
         const meta = store.readMeta(sessionId);
         const current = meta.agents?.[agentId] || {};
         const next = { ...current };
@@ -1090,7 +1096,7 @@ function createChatFeature(options) {
         if (typeof patch?.effort === "string") next.effort = patch.effort.slice(0, 16);
         if (typeof patch?.autoApprove === "boolean") {
           if (patch.autoApprove && meta.permissionMode !== "workspace-write") {
-            throw new Error("자동 승인은 워크스페이스 쓰기 권한에서만 켤 수 있습니다.");
+            throw new Error("?�동 ?�인?� ?�크?�페?�스 ?�기 권한?�서�?�????�습?�다.");
           }
           next.autoApprove = patch.autoApprove;
         }
@@ -1106,7 +1112,7 @@ function createChatFeature(options) {
         requireSession(sessionId);
         const result = await dialog.showOpenDialog(chatWindow || undefined, {
           properties: ["openFile", "multiSelections"],
-          title: "첨부할 파일 선택",
+          title: "첨�????�일 ?�택",
         });
         if (result.canceled) return { attachments: [], errors: [] };
         return importPaths(sessionId, result.filePaths || []);
@@ -1138,7 +1144,7 @@ function createChatFeature(options) {
       wrap(async ({ sessionId, attachmentId }) => {
         requireSession(sessionId);
         const record = findAttachmentRecord(sessionId, String(attachmentId || ""));
-        if (!record || !record.fileName) throw new Error("첨부를 찾을 수 없습니다.");
+        if (!record || !record.fileName) throw new Error("첨�?�?찾을 ???�습?�다.");
         const preview = readImagePreview({
           attachmentsDir: store.attachmentsDir(sessionId),
           fileName: record.fileName,
@@ -1210,7 +1216,7 @@ function createChatFeature(options) {
     return chatWindow && !chatWindow.isDestroyed() ? chatWindow : null;
   }
 
-  // 앱 종료: 진행 중이던 세션은 interrupted로 남겨 다음 시작 때 안내합니다.
+  // ??종료: 진행 중이???�션?� interrupted�??�겨 ?�음 ?�작 ???�내?�니??
   function shutdown() {
     shuttingDown = true;
     for (const [sessionId, room] of rooms) {

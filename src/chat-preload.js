@@ -1,6 +1,6 @@
-const { contextBridge, ipcRenderer, webUtils } = require("electron");
+﻿const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
-// invoke 채널은 모두 { ok, ... } 형태로 응답합니다.
+// invoke 채널?� 모두 { ok, ... } ?�태�??�답?�니??
 const INVOKE = Object.freeze({
   STATE: "chat:state",
   PROVIDERS_REFRESH: "chat:providers:refresh",
@@ -11,6 +11,7 @@ const INVOKE = Object.freeze({
   PROJECTS_UPDATE: "chat:projects:update",
   PROJECTS_DELETE: "chat:projects:delete",
   PROJECTS_WORKSPACE_CHOOSE: "chat:projects:workspace:choose",
+  WORKSPACE_PICK: "chat:workspace:pick",
   PROJECTS_WORKSPACE_CLEAR: "chat:projects:workspace:clear",
   DECISIONS_CREATE: "chat:decisions:create",
   DECISIONS_UPDATE: "chat:decisions:update",
@@ -52,11 +53,12 @@ contextBridge.exposeInMainWorld("chatApi", {
   openExternal: (url) => ipcRenderer.invoke(INVOKE.OPEN_EXTERNAL, { url }),
   openSettings: () => ipcRenderer.send(INVOKE.OPEN_SETTINGS),
 
-  projectsCreate: (name) => ipcRenderer.invoke(INVOKE.PROJECTS_CREATE, { name }),
+  projectsCreate: (name, workspace) => ipcRenderer.invoke(INVOKE.PROJECTS_CREATE, { name, workspace }),
   projectsSelect: (projectId) => ipcRenderer.invoke(INVOKE.PROJECTS_SELECT, { projectId }),
   projectsUpdate: (projectId, patch) =>
     ipcRenderer.invoke(INVOKE.PROJECTS_UPDATE, { projectId, patch }),
   projectsDelete: (projectId) => ipcRenderer.invoke(INVOKE.PROJECTS_DELETE, { projectId }),
+  workspacePick: () => ipcRenderer.invoke(INVOKE.WORKSPACE_PICK),
   projectsWorkspaceChoose: (projectId) =>
     ipcRenderer.invoke(INVOKE.PROJECTS_WORKSPACE_CHOOSE, { projectId }),
   projectsWorkspaceClear: (projectId) =>
@@ -106,7 +108,7 @@ contextBridge.exposeInMainWorld("chatApi", {
   attachmentsPreview: (sessionId, attachmentId) =>
     ipcRenderer.invoke(INVOKE.ATTACH_PREVIEW, { sessionId, attachmentId }),
 
-  // 드래그된 File 객체 → 절대 경로 (main에서 다시 검증됩니다)
+  // ?�래그된 File 객체 ???��? 경로 (main?�서 ?�시 검증됩?�다)
   pathForFile: (file) => {
     try {
       return webUtils.getPathForFile(file);

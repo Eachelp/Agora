@@ -1,4 +1,4 @@
-/* global chatMarkdown */
+﻿/* global chatMarkdown */
 const chatScroll = document.getElementById("chat-scroll");
 const messageList = document.getElementById("message-list");
 const typingRow = document.getElementById("typing-row");
@@ -718,6 +718,39 @@ function openNewProjectPopover(anchor) {
     name.maxLength = 80;
     name.placeholder = "프로젝트 이름";
 
+    // 폴더 선택 영역
+    let selectedWorkspace = null;
+    const workspaceField = document.createElement("div");
+    workspaceField.className = "project-workspace-field";
+    const workspaceLabel = document.createElement("span");
+    workspaceLabel.className = "project-workspace-label";
+    workspaceLabel.textContent = "폴더 없음";
+    const chooseBtn = document.createElement("button");
+    chooseBtn.type = "button";
+    chooseBtn.className = "button button-small";
+    chooseBtn.textContent = "폴더 선택";
+    chooseBtn.addEventListener("click", async () => {
+      const result = await call(window.chatApi.workspacePick());
+      if (result?.workspace) {
+        selectedWorkspace = result.workspace;
+        workspaceLabel.textContent = baseName(selectedWorkspace);
+        workspaceLabel.title = selectedWorkspace;
+        clearBtn.hidden = false;
+      }
+    });
+    const clearBtn = document.createElement("button");
+    clearBtn.type = "button";
+    clearBtn.className = "button button-small";
+    clearBtn.textContent = "제거";
+    clearBtn.hidden = true;
+    clearBtn.addEventListener("click", () => {
+      selectedWorkspace = null;
+      workspaceLabel.textContent = "폴더 없음";
+      workspaceLabel.title = "";
+      clearBtn.hidden = true;
+    });
+    workspaceField.append(workspaceLabel, chooseBtn, clearBtn);
+
     const actions = document.createElement("div");
     actions.className = "project-popover-actions";
     const create = document.createElement("button");
@@ -729,14 +762,14 @@ function openNewProjectPopover(anchor) {
         name.focus();
         return;
       }
-      const result = await call(window.chatApi.projectsCreate(name.value));
+      const result = await call(window.chatApi.projectsCreate(name.value, selectedWorkspace));
       if (result) {
         closePopover();
         applyFullState(result);
       }
     });
     actions.append(create);
-    target.append(title, makeField("이름", name), actions);
+    target.append(title, makeField("이름", name), makeField("프로젝트 폴더", workspaceField), actions);
     name.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && !event.isComposing) create.click();
     });
