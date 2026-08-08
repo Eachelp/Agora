@@ -70,6 +70,12 @@ test("Agora 채팅 화면은 기능 라벨을 간결하게 유지한다", () => 
   assert.match(css, /\.titlebar-btn\.btn-settings svg[\s\S]*?width: 16px/);
 });
 
+test("저장된 UI 테마가 채팅 화면의 색상 변수에 적용된다", () => {
+  const renderer = read("src/chat.js");
+  assert.match(renderer, /appearance\?\.uiTheme/);
+  assert.match(renderer, /root\.style\.setProperty\(`--\$\{key\}`, value\)/);
+});
+
 test("에이전트 아바타는 애니메이션 캐릭터 대신 기본 기호를 사용한다", () => {
   const renderer = read("src/chat.js");
   assert.match(renderer, /claude: \{ glyph:/);

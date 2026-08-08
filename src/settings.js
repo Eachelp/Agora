@@ -12,6 +12,16 @@ let selectedFont = "";
 let selectedFontSize = 12;
 let toastTimer = null;
 
+const UI_THEME_FIELDS = Object.freeze([
+  { key: "page", defaultValue: "#f6f8fc" },
+  { key: "sidebar", defaultValue: "#eef2f8" },
+  { key: "surface", defaultValue: "#ffffff" },
+  { key: "ink", defaultValue: "#102342" },
+  { key: "muted", defaultValue: "#64748b" },
+  { key: "accent", defaultValue: "#173f78" },
+  { key: "line", defaultValue: "#dbe3ef" },
+]);
+
 function $(selector) {
   return document.querySelector(selector);
 }
@@ -37,6 +47,23 @@ function createFontOption(label, value, fontFamily = "") {
   return option;
 }
 
+function isHexColor(value) {
+  return /^#[0-9a-fA-F]{6}$/.test(String(value || "").trim());
+}
+
+function applyUiTheme(theme) {
+  for (const field of UI_THEME_FIELDS) {
+    const value = theme?.[field.key];
+    if (isHexColor(value)) {
+      rootElement.style.setProperty(`--${field.key}`, value);
+      if (field.key === "surface") rootElement.style.setProperty("--surface-strong", value);
+    } else {
+      rootElement.style.removeProperty(`--${field.key}`);
+      if (field.key === "surface") rootElement.style.removeProperty("--surface-strong");
+    }
+  }
+}
+
 function applyAppearance(appearance, fontFamily = appearance?.fontFamily || "") {
   const quotedFont = quoteFontFamily(fontFamily);
   if (quotedFont) {
@@ -47,6 +74,8 @@ function applyAppearance(appearance, fontFamily = appearance?.fontFamily || "") 
     rootElement.style.removeProperty("--font-display");
   }
 
+  applyUiTheme(appearance?.uiTheme);
+
   const fontSize = Number(appearance?.fontSize);
   if (Number.isFinite(fontSize)) {
     rootElement.style.setProperty("--preview-font-size", `${fontSize}px`);
@@ -54,8 +83,9 @@ function applyAppearance(appearance, fontFamily = appearance?.fontFamily || "") 
     rootElement.style.removeProperty("--preview-font-size");
   }
 
-  if (appearance?.bubbleBgColor) {
-    rootElement.style.setProperty("--bubble-bg", appearance.bubbleBgColor);
+  const bubbleBg = appearance?.bubbleBgColor || appearance?.uiTheme?.surface;
+  if (bubbleBg) {
+    rootElement.style.setProperty("--bubble-bg", bubbleBg);
   } else {
     rootElement.style.removeProperty("--bubble-bg");
   }
@@ -67,6 +97,11 @@ function applyAppearance(appearance, fontFamily = appearance?.fontFamily || "") 
     } else {
       rootElement.style.setProperty("--bubble-muted", textHex);
     }
+  } else if (appearance?.uiTheme?.ink) {
+    rootElement.style.setProperty("--bubble-ink", appearance.uiTheme.ink);
+    rootElement.style.setProperty("--bubble-muted", appearance.uiTheme.muted || appearance.uiTheme.ink);
+  } else if (appearance?.uiTheme?.muted) {
+    rootElement.style.setProperty("--bubble-muted", appearance.uiTheme.muted);
   } else {
     rootElement.style.removeProperty("--bubble-ink");
     rootElement.style.removeProperty("--bubble-muted");
@@ -170,6 +205,7 @@ function renderGeneral({ resetAppearance = false } = {}) {
     state.pets.map((pet) => new Option(pet.label, pet.key)),
     state.petKey
   );
+  renderUiTheme(state.appearance.uiTheme);
   $("#pet-enabled").checked = state.petEnabled === true;
   $("#bubble-mode").value = state.activityBubbleMode;
   $("#follow").checked = state.followMouse;
@@ -192,6 +228,20 @@ function renderGeneral({ resetAppearance = false } = {}) {
   }
 
   renderFonts();
+}
+
+function renderUiTheme(theme = {}) {
+  for (const field of UI_THEME_FIELDS) {
+    const value = isHexColor(theme[field.key]) ? theme[field.key].toLowerCase() : field.defaultValue;
+    $(`#ui-${field.key}-color`).value = value;
+    $(`#ui-${field.key}-picker`).value = value;
+  }
+}
+
+function readUiTheme() {
+  return Object.fromEntries(
+    UI_THEME_FIELDS.map((field) => [field.key, $(`#ui-${field.key}-color`).value.trim()])
+  );
 }
 
 function accountInitial(account, provider) {
@@ -440,6 +490,7 @@ function registerAppearanceControls() {
         activityBubbleMode: $("#bubble-mode").value,
         followMouse: $("#follow").checked,
         autoStart: $("#autostart").checked,
+        uiTheme: readUiTheme(),
         bubbleBgColor: $("#bubble-bg-color").value.trim() || null,
         bubbleTextColor: $("#bubble-text-color").value.trim() || null,
       });
@@ -497,6 +548,7 @@ function registerAppearanceUpdates() {
       fontSizeValue.value = `${selectedFontSize}px`;
     }
     applyAppearance(appearance, appearance?.fontFamily || selectedFont);
+    if (appearance?.uiTheme) renderUiTheme(appearance.uiTheme);
     if (state) state.appearance = { ...state.appearance, ...appearance };
   });
 }
@@ -534,6 +586,20 @@ function registerColorPickerControls() {
     return s.color !== '';
   }
 
+  for (const field of UI_THEME_FIELDS) {
+    const picker = $(`#ui-${field.key}-picker`);
+    const input = $(`#ui-${field.key}-color`);
+    picker.addEventListener("input", () => {
+      input.value = picker.value;
+      updateLiveUiTheme();
+    });
+    input.addEventListener("input", () => {
+      const value = input.value.trim();
+      if (isHexColor(value)) picker.value = value;
+      updateLiveUiTheme();
+    });
+  }
+
   bgPicker.addEventListener("input", () => {
     bgInput.value = bgPicker.value;
     updateLiveColors();
@@ -558,18 +624,35 @@ function registerColorPickerControls() {
     updateLiveColors();
   });
 
+  function updateLiveUiTheme() {
+    for (const field of UI_THEME_FIELDS) {
+      const value = $(`#ui-${field.key}-color`).value.trim();
+      if (isHexColor(value)) {
+        rootElement.style.setProperty(`--${field.key}`, value);
+        if (field.key === "surface") rootElement.style.setProperty("--surface-strong", value);
+      } else {
+        rootElement.style.removeProperty(`--${field.key}`);
+        if (field.key === "surface") rootElement.style.removeProperty("--surface-strong");
+      }
+    }
+  }
+
   function updateLiveColors() {
     const bgVal = bgInput.value.trim();
     const textVal = textInput.value.trim();
 
     if (bgVal && isValidColor(bgVal)) {
       rootElement.style.setProperty("--bubble-bg", bgVal);
+    } else if (state?.appearance?.uiTheme?.surface) {
+      rootElement.style.setProperty("--bubble-bg", state.appearance.uiTheme.surface);
     } else {
       rootElement.style.removeProperty("--bubble-bg");
     }
 
     if (textVal && isValidColor(textVal)) {
       rootElement.style.setProperty("--bubble-ink", textVal);
+    } else if (state?.appearance?.uiTheme?.ink) {
+      rootElement.style.setProperty("--bubble-ink", state.appearance.uiTheme.ink);
     } else {
       rootElement.style.removeProperty("--bubble-ink");
     }

@@ -229,6 +229,16 @@ function applyAppearance(appearance) {
   const fontFamily = appearance && appearance.fontFamily;
   if (fontFamily) root.style.setProperty("--user-font", `"${fontFamily}"`);
   else root.style.removeProperty("--user-font");
+
+  const theme = appearance?.uiTheme;
+  for (const key of ["page", "sidebar", "surface", "ink", "muted", "accent", "line"]) {
+    const value = theme?.[key];
+    if (/^#[0-9a-f]{6}$/i.test(String(value || ""))) {
+      root.style.setProperty(`--${key}`, value);
+    } else {
+      root.style.removeProperty(`--${key}`);
+    }
+  }
 }
 
 function agentById(id) {

@@ -1,18 +1,18 @@
 :root {
   color-scheme: light;
-  --page: #fafafa;
-  --sidebar: #f4f4f5;
+  --page: #f6f8fc;
+  --sidebar: #eef2f8;
   --surface: #ffffff;
   --surface-strong: #ffffff;
-  --surface-muted: #fafafa;
-  --ink: #09090b;
-  --ink-soft: #27272a;
-  --muted: #52525b; /* slate-600 for improved readability contrast */
-  --line: #e4e4e7;
-  --line-strong: #d4d4d8;
-  --accent: #0f172a; /* high contrast slate-900 accent */
-  --accent-strong: #18181b;
-  --accent-soft: #f4f4f5;
+  --surface-muted: color-mix(in srgb, var(--surface) 70%, var(--page));
+  --ink: #102342;
+  --ink-soft: color-mix(in srgb, var(--ink) 82%, var(--muted));
+  --muted: #64748b;
+  --line: #dbe3ef;
+  --line-strong: color-mix(in srgb, var(--ink) 18%, var(--surface));
+  --accent: #173f78;
+  --accent-strong: color-mix(in srgb, var(--accent) 82%, var(--ink));
+  --accent-soft: color-mix(in srgb, var(--accent) 12%, var(--surface));
   --accent-ink: #09090b;
   --danger: #ef4444;
   --danger-soft: #fef2f2;
@@ -1283,7 +1283,8 @@ input[type="search"]::placeholder {
 
   .font-workbench,
   .control-grid,
-  .usage-grid {
+  .usage-grid,
+  .theme-color-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1444,6 +1445,10 @@ input[type="search"]::placeholder {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
   margin-top: 14px;
+}
+
+.theme-color-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .color-field {

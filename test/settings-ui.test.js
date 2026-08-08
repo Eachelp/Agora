@@ -23,10 +23,17 @@ test("클릭 가능한 말풍선 hover는 사용자 지정 배경색을 덮어�
   assert.doesNotMatch(bubbleCss, /\.activity-section\.clickable:hover/);
 });
 
-test("설정 창은 테마 선택 없이 색상, 설치 글꼴, 세 provider, 사용량을 제공한다", () => {
-  assert.doesNotMatch(settingsHtml, /name="theme"|화면 테마|data-theme/);
+test("설정 창은 전체 UI 색상, 펫 말풍선, 글꼴, 세 provider, 사용량을 제공한다", () => {
+  assert.doesNotMatch(settingsHtml, /name="theme"|data-theme/);
   assert.doesNotMatch(settingsJs, /themeSource|resolvedTheme|prefers-color-scheme/);
   assert.doesNotMatch(settingsCss, /data-theme|theme-option|theme-preview/);
+  for (const key of ["page", "sidebar", "surface", "ink", "muted", "accent", "line"]) {
+    assert.match(settingsHtml, new RegExp(`id="ui-${key}-picker"`));
+    assert.match(settingsHtml, new RegExp(`id="ui-${key}-color"`));
+  }
+  assert.match(settingsJs, /const UI_THEME_FIELDS/);
+  assert.match(settingsJs, /uiTheme: readUiTheme\(\)/);
+  assert.match(mainJs, /normalizeUiTheme/);
   assert.match(settingsHtml, /id="font-search"/);
   assert.match(settingsHtml, /id="font-preview"/);
   assert.match(settingsHtml, /id="font-size"[^>]*min="10"[^>]*max="20"/);
@@ -59,6 +66,8 @@ test("말풍선 글자 색상은 작업 제목과 모델 상태까지 함께 바
   assert.doesNotMatch(bubbleCss, /data-theme/);
   assert.match(bubbleCss, /\.title\s*\{[^}]*color:\s*var\(--bubble-ink\)/s);
   assert.match(bubbleCss, /\.activity-row-label\s*\{[^}]*color:\s*var\(--bubble-ink\)/s);
+  assert.match(bubbleJs, /theme\?\.surface/);
+  assert.match(bubbleJs, /theme\?\.accent/);
 });
 
 test("마우스 따라가기와 수동 일시정지는 설정 파일에 저장하고 시작 시 복원한다", () => {

@@ -21,10 +21,33 @@ window.bubbleApi.onAppearance((appearance) => {
     root.style.removeProperty("--user-font-size");
   }
 
+  const theme = appearance?.uiTheme;
+  if (theme?.surface) {
+    root.style.setProperty("--bubble-bg", theme.surface);
+  }
+  if (theme?.ink) {
+    root.style.setProperty("--bubble-ink", theme.ink);
+  }
+  if (theme?.line) {
+    root.style.setProperty("--bubble-border", theme.line);
+    root.style.setProperty("--bubble-line", theme.line);
+    root.style.setProperty("--bubble-track", theme.line);
+  }
+  if (theme?.accent) {
+    root.style.setProperty("--bubble-accent", theme.accent);
+    root.style.setProperty(
+      "--bubble-accent-soft",
+      `color-mix(in srgb, ${theme.accent} 8%, ${theme.surface || "#ffffff"})`
+    );
+  }
+  if (theme?.muted) {
+    root.style.setProperty("--bubble-muted", theme.muted);
+  }
+
   if (appearance?.bubbleBgColor) {
     root.style.setProperty("--bubble-bg", appearance.bubbleBgColor);
   } else {
-    root.style.removeProperty("--bubble-bg");
+    root.style.setProperty("--bubble-bg", theme?.surface || "");
   }
   if (appearance?.bubbleTextColor) {
     root.style.setProperty("--bubble-ink", appearance.bubbleTextColor);
@@ -35,7 +58,7 @@ window.bubbleApi.onAppearance((appearance) => {
       root.style.setProperty("--bubble-muted", textHex);
     }
   } else {
-    root.style.removeProperty("--bubble-ink");
+    root.style.setProperty("--bubble-ink", theme?.ink || "");
     root.style.removeProperty("--bubble-muted");
   }
 });

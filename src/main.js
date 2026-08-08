@@ -30,7 +30,11 @@ const {
   normalizeWindowSize,
   restoreWindowGeometry,
 } = require("./window-geometry");
-const { normalizeFontFamily, normalizeFontSize } = require("./appearance-settings");
+const {
+  normalizeFontFamily,
+  normalizeFontSize,
+  normalizeUiTheme,
+} = require("./appearance-settings");
 const { buildAccountSubmenu } = require("./account-submenu");
 const { rateWindowLabel } = require("./codex-usage-label");
 const { commandNeedsShell, selectCommandPath } = require("./command-resolution");
@@ -3438,6 +3442,9 @@ function registerIpcHandlers() {
     if (Object.hasOwn(next, "bubbleTextColor")) {
       patch.bubbleTextColor = typeof next.bubbleTextColor === "string" ? next.bubbleTextColor.trim() : "";
     }
+    if (Object.hasOwn(next, "uiTheme")) {
+      patch.uiTheme = normalizeUiTheme(next.uiTheme);
+    }
     if (
       typeof next.petKey === "string" &&
       listAvailablePets().some((pet) => pet.key === next.petKey)
@@ -3593,6 +3600,7 @@ function getAppearancePayload() {
   return {
     fontFamily: settings.fontFamily || "",
     fontSize: normalizeFontSize(settings.fontSize),
+    uiTheme: normalizeUiTheme(settings.uiTheme),
     bubbleBgColor: settings.bubbleBgColor || "",
     bubbleTextColor: settings.bubbleTextColor || "",
   };
@@ -3725,6 +3733,7 @@ async function getSettingsData({ forceUsage = false } = {}) {
     appearance: {
       fontFamily: settings.fontFamily || "",
       fontSize: normalizeFontSize(settings.fontSize),
+      uiTheme: normalizeUiTheme(settings.uiTheme),
       bubbleBgColor: settings.bubbleBgColor || "",
       bubbleTextColor: settings.bubbleTextColor || "",
     },
