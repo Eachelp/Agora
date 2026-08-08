@@ -10,7 +10,7 @@
     <div class="titlebar">
       <div class="titlebar-drag">
         <img class="titlebar-logo" src="../build/icon.png" alt="Ἀγορά" />
-        <span class="titlebar-title">Ἀγορά · 멀티에이전트 워크스페이스</span>
+        <span class="titlebar-title">Ἀγορά · 채팅</span>
       </div>
       <div class="titlebar-controls">
         <button class="titlebar-btn btn-settings" id="btn-settings" type="button" aria-label="설정" title="설정">
@@ -38,19 +38,16 @@
           <img class="sidebar-brand-icon" src="../build/icon.png" alt="" aria-hidden="true" />
           <span>
             <strong>Ἀγορά</strong>
-            <small>HUMAN-LED WORKSPACE</small>
           </span>
         </div>
         <div class="sidebar-head">
           <span class="sidebar-heading">
-            <small>CONVERSATIONS</small>
             <span class="sidebar-title">대화</span>
           </span>
           <button class="button button-small" id="btn-new-session" type="button">새 대화</button>
         </div>
         <ul class="session-list" id="session-list" aria-label="대화 목록"></ul>
         <div class="sidebar-foot">
-          <span class="sidebar-foot-label">SYSTEM</span>
           <span class="sidebar-foot-actions">
             <button class="text-button" id="btn-doctor" type="button">환경 진단</button>
             <button class="text-button" id="btn-refresh-providers" type="button" title="설치된 CLI를 다시 탐지합니다">CLI 다시 탐지</button>
@@ -78,16 +75,14 @@
       <div class="chat-main">
         <header class="room-bar">
           <div class="room-info">
-            <p class="room-eyebrow">DISCUSSION ROOM</p>
             <strong id="session-title" title="더블클릭하면 이름을 바꿀 수 있어요">세션</strong>
           </div>
           <div class="room-actions">
-            <span class="agents-label">AGENTS</span>
             <div class="agent-chips" id="agent-chips" aria-label="참여 에이전트"></div>
           </div>
           <div class="room-controls">
             <button class="chip-button" id="btn-workspace" type="button" title="세션 워크스페이스 폴더">
-              <span class="chip-label">WORKSPACE</span><span id="workspace-label">워크스페이스 없음</span>
+              <span id="workspace-label">워크스페이스 없음</span>
             </button>
             <select id="permission-select" aria-label="권한 모드">
               <option value="chat">대화만 (도구 없음)</option>
@@ -109,10 +104,6 @@
         <footer class="composer">
           <div class="mention-popup" id="mention-popup" role="listbox" hidden></div>
           <div class="attachment-row" id="attachment-row" hidden></div>
-          <div class="composer-meta" aria-hidden="true">
-            <span>MESSAGE THE ROOM</span>
-            <span>@mention으로 응답 대상을 지정할 수 있습니다</span>
-          </div>
           <div class="composer-box" id="composer-box">
             <button class="icon-button" id="btn-attach" type="button" title="파일 첨부 (이미지·문서, 최대 20MiB)">＋</button>
             <textarea
@@ -134,7 +125,6 @@
       <section class="doctor-dialog" role="dialog" aria-modal="true" aria-labelledby="doctor-title">
         <div class="doctor-head">
           <div>
-            <p class="doctor-eyebrow">AGORA DOCTOR</p>
             <h2 id="doctor-title">에이전트 환경 진단</h2>
             <p id="doctor-summary">설치와 로그인 상태를 확인하고 있어요.</p>
           </div>

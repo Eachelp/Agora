@@ -57,8 +57,17 @@ test("Agora 화면 재배치는 기존 채팅 제어 연결을 유지한다", ()
   ]) {
     assert.match(html, new RegExp(`id="${id}"`));
   }
-  assert.match(html, /DISCUSSION ROOM/);
-  assert.match(html, /HUMAN-LED WORKSPACE/);
+  assert.match(html, /id="session-title"/);
+  assert.match(html, /Ἀγορά/);
+});
+
+test("Agora 채팅 화면은 기능 라벨을 간결하게 유지한다", () => {
+  const html = read("src/chat.html");
+  const css = read("src/chat.css");
+  assert.doesNotMatch(html, /HUMAN-LED WORKSPACE|DISCUSSION ROOM|MESSAGE THE ROOM|AGORA DOCTOR/);
+  assert.match(html, /id="btn-settings"/);
+  assert.match(css, /\.titlebar-btn\.btn-settings[\s\S]*?width: 52px/);
+  assert.match(css, /\.titlebar-btn\.btn-settings svg[\s\S]*?width: 16px/);
 });
 
 test("에이전트 아바타는 애니메이션 캐릭터 대신 기본 기호를 사용한다", () => {
