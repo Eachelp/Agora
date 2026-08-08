@@ -41,6 +41,17 @@ function canInline(attachment) {
   return attachmentKind(attachment) === "text" && Number(attachment.size) <= INLINE_TEXT_LIMIT;
 }
 
+function agyEffortForModel(provider, model, effort) {
+  if (!model || !effort) return effort;
+  const option = (provider?.modelOptions || []).find((entry) => entry?.id === model);
+  if (option && Array.isArray(option.efforts)) {
+    return option.efforts.includes(effort) ? effort : null;
+  }
+  // 오래된 저장값이나 외부 호출도 Claude/GPT-OSS에 잘못된 effort를 붙여
+  // 실행하지 않게 하는 마지막 안전장치입니다.
+  return /^(claude-|gpt-oss-)/i.test(model) ? null : effort;
+}
+
 function claudeArgv({ permissionMode, workspace, model, effort, attachmentsDir, hasPathDeliveries, autoApprove }) {
   const argv = [
     "-p",
@@ -195,6 +206,9 @@ function buildAgentInvocation(input = {}) {
   if (normalizedModel === undefined) return { ok: false, error: "모델 이름 형식이 올바르지 않습니다." };
   const normalizedEffort = normalizeChoice(effort);
   if (normalizedEffort === undefined) return { ok: false, error: "속도/노력 값 형식이 올바르지 않습니다." };
+  const invocationEffort = provider.id === "agy"
+    ? agyEffortForModel(provider, normalizedModel, normalizedEffort)
+    : normalizedEffort;
 
   const deliveries = buildDeliveries({
     providerId: provider.id,
@@ -213,7 +227,7 @@ function buildAgentInvocation(input = {}) {
       permissionMode,
       workspace,
       model: normalizedModel,
-      effort: normalizedEffort,
+      effort: invocationEffort,
       attachmentsDir,
       hasPathDeliveries,
       autoApprove,
@@ -223,7 +237,7 @@ function buildAgentInvocation(input = {}) {
       permissionMode,
       workspace,
       model: normalizedModel,
-      effort: normalizedEffort,
+      effort: invocationEffort,
       outputFile,
       imagePaths,
       autoApprove,
@@ -233,7 +247,7 @@ function buildAgentInvocation(input = {}) {
       permissionMode,
       workspace,
       model: normalizedModel,
-      effort: normalizedEffort,
+      effort: invocationEffort,
       attachmentsDir,
       hasPathDeliveries,
       autoApprove,
@@ -260,5 +274,6 @@ module.exports = {
   buildAgentInvocation,
   assertSafeArgv,
   normalizeChoice,
+  agyEffortForModel,
   attachmentKind,
 };

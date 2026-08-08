@@ -41,3 +41,21 @@ test("AGY 모델명에 포함된 추론 강도를 실제 effort로 맞춘다", (
   assert.equal(agent.model, "gemini-3.6-flash-high");
   assert.equal(agent.effort, "high");
 });
+
+test("AGY 고정 모델은 예전에 저장된 effort를 실행 전에 제거한다", () => {
+  const options = [
+    { id: "default", efforts: [] },
+    { id: "claude-sonnet-4-6", efforts: [] },
+    { id: "gpt-oss-120b-medium", efforts: [] },
+  ];
+  const claude = roomAgentFromCapability(record("agy", options), {
+    model: "claude-sonnet-4-6",
+    effort: "medium",
+  });
+  const gpt = roomAgentFromCapability(record("agy", options), {
+    model: "gpt-oss-120b-medium",
+    effort: "high",
+  });
+  assert.equal(claude.effort, "default");
+  assert.equal(gpt.effort, "default");
+});

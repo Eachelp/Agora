@@ -114,6 +114,32 @@ function probeAgyModelCatalog(commandPath, needsShell, timeoutMs = MODEL_PROBE_T
   });
 }
 
+// AGY는 모델마다 reasoning effort를 받는 방식이 다릅니다. Gemini 변형은
+// 명시된 low/medium/high만 허용하지만, Claude Thinking·GPT-OSS Medium은
+// 모델 자체가 고정 변형이라 --effort를 추가하면 CLI가 거부할 수 있습니다.
+const AGY_MODEL_OPTIONS = Object.freeze([
+  Object.freeze({ id: "default", label: "AGY 기본값", efforts: Object.freeze([]) }),
+  Object.freeze({ id: "gemini-3.6-flash-high", label: "Gemini 3.6 Flash (높음)", efforts: Object.freeze(["high"]) }),
+  Object.freeze({ id: "gemini-3.6-flash-medium", label: "Gemini 3.6 Flash (중간)", efforts: Object.freeze(["medium"]) }),
+  Object.freeze({ id: "gemini-3.6-flash-low", label: "Gemini 3.6 Flash (낮음)", efforts: Object.freeze(["low"]) }),
+  Object.freeze({ id: "gemini-3.1-pro-high", label: "Gemini 3.1 Pro (높음)", efforts: Object.freeze(["high"]) }),
+  Object.freeze({ id: "gemini-3.1-pro-low", label: "Gemini 3.1 Pro (낮음)", efforts: Object.freeze(["low"]) }),
+  Object.freeze({ id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 (Thinking)", efforts: Object.freeze([]) }),
+  Object.freeze({ id: "claude-opus-4-6-thinking", label: "Claude Opus 4.6 (Thinking)", efforts: Object.freeze([]) }),
+  Object.freeze({ id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (중간)", efforts: Object.freeze([]) }),
+]);
+const AGY_MODEL_OPTIONS_VERSION = 2;
+
+function modelOptionsFor(def, models) {
+  return (models || []).map((id) => {
+    const known = (def.modelOptions || []).find((option) => option.id === id);
+    if (known) return { ...known, efforts: [...(known.efforts || [])] };
+    // `agy models`가 새 모델을 먼저 알려도 지원 여부를 추측해 잘못된
+    // --effort를 붙이지 않습니다. 다음 앱 업데이트에서 규칙을 추가하면 됩니다.
+    return { id, label: id, efforts: def.id === "agy" ? [] : [...def.efforts] };
+  });
+}
+
 // 모델/노력 옵션은 설치된 CLI --help에서 검증된 플래그에만 연결됩니다.
 // (claude 2.1.x: --model fable|opus|sonnet, --effort low..max /
 //  codex 0.146: -m/--model, -c model_reasoning_effort=...)
@@ -176,17 +202,8 @@ const PROVIDER_DEFS = Object.freeze([
     // agy 1.1.10 --help에서 검증된 플래그: -p/--print, --model, --effort low|medium|high,
     // --mode accept-edits|plan, --sandbox, --disable-slash-commands, --add-dir.
     // 모델 목록은 발견 시 `agy models`로 갱신되며, 아래는 그 폴백입니다.
-    models: Object.freeze([
-      "default",
-      "gemini-3.6-flash-high",
-      "gemini-3.6-flash-medium",
-      "gemini-3.6-flash-low",
-      "gemini-3.1-pro-high",
-      "gemini-3.1-pro-low",
-      "claude-sonnet-4-6",
-      "claude-opus-4-6-thinking",
-      "gpt-oss-120b-medium",
-    ]),
+    models: Object.freeze(AGY_MODEL_OPTIONS.map((option) => option.id)),
+    modelOptions: AGY_MODEL_OPTIONS,
     efforts: Object.freeze(["default", "low", "medium", "high"]),
     allowCustomModel: false,
     modelsProbeArgs: Object.freeze(["models"]),
@@ -395,7 +412,7 @@ function createCapabilityService(options = {}) {
       needsShell: false,
       version: null,
       models: [...def.models],
-      modelOptions: def.models.map((model) => ({ id: model, label: model, efforts: [...def.efforts] })),
+      modelOptions: modelOptionsFor(def, def.models),
       efforts: [...def.efforts],
       allowCustomModel: def.allowCustomModel,
       supportsImages: def.supportsImages,
@@ -433,7 +450,8 @@ function createCapabilityService(options = {}) {
       cached.version &&
       (def.modelCatalogProbe !== "codex-app-server" || Array.isArray(cached.modelOptions)) &&
       (!def.modelsProbeArgs || Array.isArray(cached.modelOptions)) &&
-      (!def.modelsFromHelp || Array.isArray(cached.modelOptions))
+      (!def.modelsFromHelp || Array.isArray(cached.modelOptions)) &&
+      (def.id !== "agy" || cached.modelOptionsVersion === AGY_MODEL_OPTIONS_VERSION)
     ) {
       record.version = cached.version;
       record.status = "cli";
@@ -479,11 +497,7 @@ function createCapabilityService(options = {}) {
         record.models = record.modelOptions.map((option) => option.id);
       }
     } else if (probedModels) {
-      record.modelOptions = probedModels.map((model) => ({
-        id: model,
-        label: model,
-        efforts: [...def.efforts],
-      }));
+      record.modelOptions = modelOptionsFor(def, probedModels);
     }
     if (stat) {
       record.cachePatch = {
@@ -494,6 +508,7 @@ function createCapabilityService(options = {}) {
           ...(probedModels ? { models: probedModels } : {}),
           models: record.models,
           modelOptions: record.modelOptions,
+          ...(def.id === "agy" ? { modelOptionsVersion: AGY_MODEL_OPTIONS_VERSION } : {}),
         },
       };
     }

@@ -224,6 +224,14 @@ test("claude 검증된 모델/노력 옵션이 노출된다", async () => {
   assert.equal(agy.permissions["workspace-write"].supported, true);
   assert.equal(agy.permissions.chat.enforcement, "sandbox");
   assert.ok(agy.efforts.includes("high"));
+  assert.deepEqual(
+    agy.modelOptions.find((option) => option.id === "gemini-3.6-flash-high").efforts,
+    ["high"]
+  );
+  assert.deepEqual(
+    agy.modelOptions.find((option) => option.id === "claude-sonnet-4-6").efforts,
+    []
+  );
 });
 
 test("Codex app-server 카탈로그를 공개 모델과 모델별 노력 목록으로 변환한다", async () => {
@@ -300,4 +308,13 @@ test("agy 모델 목록은 `agy models` 프로브로 갱신된다", async () => 
   // 캐시에도 모델 목록이 함께 저장된다.
   const cached = cacheStore.value[`agy:${agyPath}`];
   assert.ok(Array.isArray(cached.models));
+  assert.equal(cached.modelOptionsVersion, 2);
+  assert.deepEqual(
+    agy.modelOptions.find((option) => option.id === "gemini-3.6-flash-high").efforts,
+    ["high"]
+  );
+  assert.deepEqual(
+    agy.modelOptions.find((option) => option.id === "claude-sonnet-4-6").efforts,
+    []
+  );
 });

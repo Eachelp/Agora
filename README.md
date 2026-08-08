@@ -90,7 +90,7 @@ Codex의 `~/.codex/sessions`, AGY의 로컬 transcript, Claude의 프로젝트 J
 |---|---|---|---|
 | Claude Code | `claude -p --output-format stream-json` | 설치된 CLI `--help`가 안내하는 alias/full-name 목록 | `--effort` (low~max) |
 | Codex CLI | `codex exec --json --ephemeral` | `app-server`의 `model/list` 라우팅 목록 | 선택 모델이 광고하는 reasoning effort |
-| Antigravity | `agy --sandbox --output-format stream-json … --print <prompt>` | `agy models`의 실제 목록 | `--effort` (low/medium/high) |
+| Antigravity | `agy --sandbox --output-format stream-json … --print <prompt>` | `agy models`의 실제 목록 | 모델별 지원 범위에서만 `--effort` 전달 |
 
 설치되지 않은 CLI는 참가자 칩이 흐리게 표시되고, 칩을 클릭하면 설치 안내가 나옵니다. 채팅을 처음 열면 "에이전트 환경 진단"이 한 번 표시되어 CLI 설치·버전·로그인 상태를 확인합니다. 이후에는 사이드바의 "환경 진단" 또는 "CLI 다시 탐지"로 앱 재시작 없이 다시 확인할 수 있습니다. Codex와 Claude는 CLI가 제공하는 비대화형 상태 명령으로 로그인을 확인하며, 상태 명령이 없는 CLI는 "자동 확인 불가"로 구분합니다.
 

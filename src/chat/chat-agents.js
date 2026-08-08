@@ -12,9 +12,11 @@ function resolvedModel(record, configured) {
   const options = concreteModelOptions(record);
   if (configured && configured !== "default") {
     if (record.id === "claude" && configured === "fable") {
-      return options.find((option) => /^claude-fable-/i.test(option.id))?.id || configured;
+      const fable = options.find((option) => /^claude-fable-/i.test(option.id))
+        || options.find((option) => option.id === "fable");
+      if (fable) return fable.id;
     }
-    return configured;
+    if (options.some((option) => option.id === configured)) return configured;
   }
   if (record.id === "claude") {
     return options.find((option) => /^claude-fable-/i.test(option.id))?.id
@@ -25,14 +27,14 @@ function resolvedModel(record, configured) {
 }
 
 function resolvedEffort(record, model, configured) {
-  if (configured && configured !== "default") return configured;
-  const suffix = String(model).match(/-(low|medium|high)$/i)?.[1]?.toLowerCase();
   const option = concreteModelOptions(record).find((entry) => entry.id === model);
-  const efforts = (option?.efforts?.length ? option.efforts : record.efforts || [])
+  const efforts = (Array.isArray(option?.efforts) ? option.efforts : record.efforts || [])
     .filter((effort) => effort !== "default");
+  if (configured && configured !== "default" && efforts.includes(configured)) return configured;
+  const suffix = String(model).match(/-(low|medium|high)$/i)?.[1]?.toLowerCase();
   if (suffix && efforts.includes(suffix)) return suffix;
   if (efforts.includes("medium")) return "medium";
-  return efforts[0] || "unknown";
+  return efforts[0] || "default";
 }
 
 // capability record + 세션 설정 → 채팅방 참가자.

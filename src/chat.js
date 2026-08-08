@@ -211,6 +211,7 @@ function renderAgentMessageContent(bubble, message) {
 }
 
 const EFFORT_LABELS = Object.freeze({
+  default: "모델 고정",
   minimal: "최소",
   low: "낮음",
   medium: "중간",
@@ -676,7 +677,7 @@ function openAgentPopover(anchor, agentId) {
       const suffixEffort = modelSelect.value.match(/-(low|medium|high)$/i)?.[1]?.toLowerCase();
       const nextEffort = availableEfforts.includes(suffixEffort)
         ? suffixEffort
-        : availableEfforts.includes("medium") ? "medium" : availableEfforts[0];
+        : availableEfforts.includes("medium") ? "medium" : availableEfforts[0] || "default";
       populateEfforts(modelSelect.value, nextEffort);
       configureAgent(agentId, { model: modelSelect.value, effort: nextEffort });
     });
@@ -686,12 +687,21 @@ function openAgentPopover(anchor, agentId) {
     const effortSelect = document.createElement("select");
     function effortsForModel(modelId) {
       const option = modelOptions.find((entry) => entry.id === modelId);
-      const efforts = option?.efforts?.length ? option.efforts : provider.efforts || [];
+      const efforts = Array.isArray(option?.efforts) ? option.efforts : provider.efforts || [];
       return efforts.filter((effort) => effort !== "default");
     }
     function populateEfforts(modelId, selected) {
       effortSelect.textContent = "";
       const efforts = effortsForModel(modelId);
+      if (efforts.length === 0) {
+        const option = document.createElement("option");
+        option.value = "default";
+        option.textContent = "모델 고정";
+        effortSelect.append(option);
+        effortSelect.value = "default";
+        effortSelect.disabled = true;
+        return;
+      }
       for (const effort of efforts) {
         const option = document.createElement("option");
         option.value = effort;
@@ -704,8 +714,10 @@ function openAgentPopover(anchor, agentId) {
     populateEfforts(currentModel, agent.effort);
     if (effortSelect.disabled && provider.status !== "cli") {
       effortSelect.title = "CLI 설치 후 사용할 수 있습니다";
+    } else if (effortsForModel(currentModel).length === 0) {
+      effortSelect.title = "이 모델은 추론 강도가 고정되어 있습니다";
     } else if (effortsForModel(currentModel).length <= 1) {
-      effortSelect.title = "이 CLI에서 검증된 속도 옵션이 없습니다";
+      effortSelect.title = "이 모델에서 사용할 수 있는 추론 강도가 하나입니다";
     }
     effortSelect.addEventListener("change", () => {
       configureAgent(agentId, { effort: effortSelect.value });

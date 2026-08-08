@@ -186,6 +186,33 @@ test("agy chat 모드: plan + sandbox + 슬래시 명령 차단", () => {
   assert.equal(result.enforcement, "sandbox");
 });
 
+test("agy Claude/GPT 고정 모델에는 --effort를 붙이지 않는다", () => {
+  const agy = provider("agy", {
+    modelOptions: [
+      { id: "claude-sonnet-4-6", efforts: [] },
+      { id: "gpt-oss-120b-medium", efforts: [] },
+      { id: "gemini-3.6-flash-high", efforts: ["high"] },
+    ],
+  });
+  for (const model of ["claude-sonnet-4-6", "gpt-oss-120b-medium"]) {
+    const result = buildAgentInvocation({
+      provider: agy,
+      chatCwd: CHAT_CWD,
+      model,
+      effort: "medium",
+    });
+    assert.equal(result.ok, true);
+    assert.ok(!result.argv.includes("--effort"), model);
+  }
+  const gemini = buildAgentInvocation({
+    provider: agy,
+    chatCwd: CHAT_CWD,
+    model: "gemini-3.6-flash-high",
+    effort: "high",
+  });
+  assert.equal(gemini.argv[gemini.argv.indexOf("--effort") + 1], "high");
+});
+
 test("agy workspace 모드 매핑: read는 plan, write는 accept-edits까지만", () => {
   const read = build("agy", { permissionMode: "workspace-read", workspace: WORKSPACE });
   assert.equal(read.ok, true);
