@@ -43,4 +43,6 @@ test("Agora 아이콘은 파란 배경과 흰색 Ἀ를 사용한다", () => {
   for (const file of ["build/icon.png", "build/icon-mac.png", "build/icon.ico"]) {
     assert.ok(fs.statSync(path.join(ROOT, file)).size > 0, `${file}이 비어 있지 않아야 합니다`);
   }
+  const ico = fs.readFileSync(path.join(ROOT, "build/icon.ico"));
+  assert.equal(ico.readUInt16LE(4), 7, "Windows 아이콘은 작은 크기별 이미지를 포함해야 합니다");
 });
