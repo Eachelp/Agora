@@ -1,6 +1,6 @@
-﻿const { contextBridge, ipcRenderer, webUtils } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
-// invoke 채널?� 모두 { ok, ... } ?�태�??�답?�니??
+// invoke 채널은 모두 { ok, ... } 형태로 응답합니다.
 const INVOKE = Object.freeze({
   STATE: "chat:state",
   PROVIDERS_REFRESH: "chat:providers:refresh",
@@ -108,7 +108,7 @@ contextBridge.exposeInMainWorld("chatApi", {
   attachmentsPreview: (sessionId, attachmentId) =>
     ipcRenderer.invoke(INVOKE.ATTACH_PREVIEW, { sessionId, attachmentId }),
 
-  // ?�래그된 File 객체 ???��? 경로 (main?�서 ?�시 검증됩?�다)
+  // 드래그된 File 객체 → 절대 경로 (main에서 다시 검증됩니다)
   pathForFile: (file) => {
     try {
       return webUtils.getPathForFile(file);
