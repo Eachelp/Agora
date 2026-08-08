@@ -373,6 +373,7 @@ class ChatRoom extends EventEmitter {
       messages: this.promptMessages(),
       maxMessages: this.maxPromptMessages,
       permissionMode: this.meta.permissionMode,
+      projectContext: this.meta.projectContext,
       discussion: context.discussion || null,
       broadcast: context.broadcast || null,
       mentionsEnabled: !context.discussion && mentionDepth < this.mentionChainLimit,

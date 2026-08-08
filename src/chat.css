@@ -1770,3 +1770,141 @@ textarea:focus-visible {
 .doctor-item {
   border-radius: 8px;
 }
+
+/* --- Project hierarchy --- */
+.project-head {
+  padding-bottom: 8px;
+}
+
+.chat-head {
+  margin-top: 4px;
+  padding-top: 13px;
+  border-top: 1px solid var(--line);
+}
+
+.project-list {
+  flex: none;
+  max-height: 190px;
+  overflow-y: auto;
+  list-style: none;
+  margin: 0;
+  padding: 0 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.project-item {
+  position: relative;
+  border: 1px solid transparent;
+  border-radius: 8px;
+}
+
+.project-item.is-active {
+  background: var(--surface);
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow);
+}
+
+.project-select {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  padding: 8px 32px 8px 10px;
+  text-align: left;
+}
+
+.project-item:not(.is-active) .project-select:hover {
+  background: var(--accent-soft);
+}
+
+.project-name {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-meta {
+  color: var(--muted);
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-actions {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  display: none;
+}
+
+.project-item:hover .project-actions,
+.project-item.is-active .project-actions {
+  display: inline-flex;
+}
+
+.project-action {
+  min-width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--muted);
+  font-weight: 700;
+  line-height: 1;
+  box-shadow: var(--shadow);
+}
+
+.project-action:hover {
+  color: var(--ink);
+  background: var(--accent-soft);
+}
+
+.project-popover-title {
+  display: block;
+  margin-bottom: 2px;
+}
+
+.project-context-input {
+  flex: 1;
+  width: 100%;
+  max-width: 150px;
+  min-height: 90px;
+  resize: vertical;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 5px 6px;
+  background: var(--surface);
+}
+
+.project-workspace-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.project-workspace-value {
+  min-width: 0;
+  flex: 1;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-popover-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}

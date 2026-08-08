@@ -187,3 +187,15 @@ test("세션 메타 patch가 워크스페이스/권한/에이전트 설정을 �
   assert.equal(loaded.agents.claude.model, "fable");
   assert.equal(reloaded.listSessions()[0].permissionMode, "workspace-read");
 });
+
+test("세션의 프로젝트 연결은 메타데이터와 목록에 함께 보존된다", () => {
+  const store = makeStore();
+  const meta = store.createSession({ projectId: "project-123" });
+
+  assert.equal(store.readMeta(meta.id).projectId, "project-123");
+  assert.equal(store.listSessions()[0].projectId, "project-123");
+
+  const reloaded = new ChatStore({ root: store.root }).init();
+  assert.equal(reloaded.getSession(meta.id).meta.projectId, "project-123");
+  assert.equal(reloaded.listSessions()[0].projectId, "project-123");
+});

@@ -3,6 +3,12 @@ const os = require("node:os");
 const path = require("node:path");
 const { ChatStore } = require("./chat-store");
 const {
+  ProjectStore,
+  UNCATEGORIZED_PROJECT_ID,
+  sessionDefaultsFromProject,
+  migrateSessionsToProjects,
+} = require("../agora/project-store");
+const {
   createCapabilityService,
   toPublicProviders,
 } = require("../providers/provider-capabilities");
@@ -114,6 +120,7 @@ function publicMeta(meta) {
   return {
     id: meta.id,
     title: meta.title,
+    projectId: meta.projectId || UNCATEGORIZED_PROJECT_ID,
     workspace: meta.workspace || null,
     permissionMode: meta.permissionMode || "chat",
     agents: meta.agents || {},
@@ -184,6 +191,8 @@ function createChatFeature(options) {
 
   let store = null;
   let storeError = null;
+  let projectStore = null;
+  let projectStoreError = null;
   let capabilityService = null;
   let chatWindow = null;
   let shuttingDown = false;
@@ -200,6 +209,20 @@ function createChatFeature(options) {
       console.warn("[agora] 채팅 저장소 초기화 실패:", storeError);
     }
     return store;
+  }
+
+  function ensureProjectStore() {
+    if (projectStore || projectStoreError) return projectStore;
+    const chatStore = ensureStore();
+    if (!chatStore) return null;
+    try {
+      projectStore = new ProjectStore({ root: chatStore.root }).init();
+      migrateSessionsToProjects(chatStore, projectStore);
+    } catch (error) {
+      projectStoreError = error?.message || String(error);
+      console.warn("[agora] 프로젝트 저장소 초기화 실패:", projectStoreError);
+    }
+    return projectStore;
   }
 
   function ensureCapabilityService() {
@@ -219,26 +242,93 @@ function createChatFeature(options) {
     }
   }
 
-  function sessionsPayload() {
-    const list = ensureStore() ? store.listSessions() : [];
-    return {
-      sessions: list,
-      activeSessionId: getActiveSessionId(),
-      readOnly: Boolean(store?.readOnly || storeError),
-    };
+  function projectIdForMeta(meta) {
+    const projects = ensureProjectStore();
+    if (meta?.projectId && projects?.hasProject(meta.projectId)) return meta.projectId;
+    return UNCATEGORIZED_PROJECT_ID;
   }
 
-  function getActiveSessionId() {
-    if (!ensureStore()) return null;
-    const configured = store.getConfig().activeSessionId;
-    if (configured && store.hasSession(configured)) return configured;
-    const first = store.listSessions()[0];
+  function getActiveProjectId() {
+    const projects = ensureProjectStore();
+    if (!ensureStore() || !projects) return null;
+    const configured = store.getConfig().activeProjectId;
+    if (configured && projects.hasProject(configured)) return configured;
+    const activeSessionId = store.getConfig().activeSessionId;
+    const activeMeta = activeSessionId && store.hasSession(activeSessionId)
+      ? store.readMeta(activeSessionId)
+      : null;
+    if (activeMeta) return projectIdForMeta(activeMeta);
+    return projects.getProject(UNCATEGORIZED_PROJECT_ID)?.id || projects.listProjects()[0]?.id || null;
+  }
+
+  function setActiveProjectId(projectId) {
+    if (!ensureStore() || store.readOnly || !projectId) return;
+    store.patchConfig({ activeProjectId: projectId });
+  }
+
+  function listSessionsForProject(projectId) {
+    if (!ensureStore() || !projectId) return [];
+    return store.listSessions().filter((entry) => projectIdForMeta(entry) === projectId);
+  }
+
+  function getActiveSessionId(projectId = getActiveProjectId()) {
+    if (!ensureStore() || !projectId) return null;
+    const config = store.getConfig();
+    const configured = config.activeSessionIdsByProject?.[projectId];
+    if (configured && store.hasSession(configured) && projectIdForMeta(store.readMeta(configured)) === projectId) {
+      return configured;
+    }
+    if (config.activeSessionId && store.hasSession(config.activeSessionId)) {
+      const meta = store.readMeta(config.activeSessionId);
+      if (projectIdForMeta(meta) === projectId) return config.activeSessionId;
+    }
+    const first = listSessionsForProject(projectId)[0];
     return first ? first.id : null;
   }
 
   function setActiveSessionId(sessionId) {
-    if (!ensureStore() || store.readOnly) return;
-    store.patchConfig({ activeSessionId: sessionId });
+    if (!ensureStore() || store.readOnly || !sessionId) return;
+    const meta = store.readMeta(sessionId);
+    if (!meta) return;
+    const projectId = projectIdForMeta(meta);
+    const activeSessionIdsByProject = {
+      ...(store.getConfig().activeSessionIdsByProject || {}),
+      [projectId]: sessionId,
+    };
+    store.patchConfig({ activeProjectId: projectId, activeSessionId: sessionId, activeSessionIdsByProject });
+  }
+
+  function createSessionForProject(projectId = getActiveProjectId()) {
+    const projects = ensureProjectStore();
+    const project = projects?.getProject(projectId) || projects?.getProject(UNCATEGORIZED_PROJECT_ID);
+    return store.createSession(sessionDefaultsFromProject(project));
+  }
+
+  async function chooseWorkspace(title) {
+    const result = await dialog.showOpenDialog(chatWindow || undefined, {
+      properties: ["openDirectory"],
+      title,
+    });
+    if (result.canceled || !result.filePaths?.[0]) return null;
+    try {
+      const workspace = fs.realpathSync(result.filePaths[0]);
+      if (!fs.statSync(workspace).isDirectory()) throw new Error("not a directory");
+      return workspace;
+    } catch {
+      throw new Error("선택한 폴더를 확인할 수 없습니다.");
+    }
+  }
+
+  function sessionsPayload() {
+    const activeProjectId = getActiveProjectId();
+    const list = listSessionsForProject(activeProjectId);
+    return {
+      projects: ensureProjectStore()?.listProjects() || [],
+      activeProjectId,
+      sessions: list,
+      activeSessionId: getActiveSessionId(activeProjectId),
+      readOnly: Boolean(store?.readOnly || storeError || projectStoreError),
+    };
   }
 
   function pendingFor(sessionId) {
@@ -369,6 +459,19 @@ function createChatFeature(options) {
     return roomAgentsFromCapabilities(discovered, meta?.agents || {});
   }
 
+  function projectForSession(meta) {
+    const projects = ensureProjectStore();
+    return projects?.getProject(projectIdForMeta(meta)) || null;
+  }
+
+  function roomMeta(meta) {
+    const project = projectForSession(meta);
+    return {
+      permissionMode: meta?.permissionMode || "chat",
+      projectContext: project?.context || "",
+    };
+  }
+
   function getRoom(sessionId) {
     if (rooms.has(sessionId)) return rooms.get(sessionId);
     if (!ensureStore()) return null;
@@ -381,7 +484,7 @@ function createChatFeature(options) {
       initialMessages: session.messages,
       runAgent: makeRunAgent(sessionId),
       prepareAgent: options.prepareAgent,
-      meta: { permissionMode: session.meta.permissionMode || "chat" },
+      meta: roomMeta(session.meta),
     });
 
     room.on("message", (message) => {
@@ -414,7 +517,7 @@ function createChatFeature(options) {
     if (!room || !store) return;
     const meta = store.readMeta(sessionId);
     room.setAgents(buildRoomAgents(meta));
-    if (meta) room.setMeta({ permissionMode: meta.permissionMode || "chat" });
+    if (meta) room.setMeta(roomMeta(meta));
   }
 
   function sessionState(sessionId) {
@@ -440,7 +543,7 @@ function createChatFeature(options) {
     const records = await service.discover({ force: refreshProviders });
 
     if (store && !store.readOnly && store.listSessions().length === 0) {
-      store.createSession({});
+      store.createSession(sessionDefaultsFromProject(ensureProjectStore()?.getProject(getActiveProjectId())));
     }
     const activeSessionId = getActiveSessionId();
     return {
@@ -459,6 +562,15 @@ function createChatFeature(options) {
   function requireSession(sessionId) {
     if (!ensureStore()) throw new Error(storeError || "저장소를 사용할 수 없습니다.");
     if (!sessionId || !store.hasSession(sessionId)) throw new Error("세션을 찾을 수 없습니다.");
+  }
+
+  function requireProject(projectId) {
+    const projects = ensureProjectStore();
+    if (!projects) throw new Error(projectStoreError || "프로젝트 저장소를 사용할 수 없습니다.");
+    const project = projects.getProject(projectId);
+    if (!project) throw new Error("프로젝트를 찾을 수 없습니다.");
+    if (project.readOnly) throw new Error("이 프로젝트는 더 새로운 버전에서 만들어져 읽기 전용입니다.");
+    return project;
   }
 
   function wrap(handler) {
@@ -497,10 +609,108 @@ function createChatFeature(options) {
     );
 
     ipcMain.handle(
+      "chat:projects:create",
+      wrap(async ({ name }) => {
+        if (!ensureStore()) throw new Error(storeError || "저장소를 사용할 수 없습니다.");
+        const project = ensureProjectStore().createProject({ name });
+        const meta = createSessionForProject(project.id);
+        setActiveSessionId(meta.id);
+        await ensureCapabilityService().discover();
+        return { ...sessionsPayload(), session: sessionState(meta.id) };
+      })
+    );
+
+    ipcMain.handle(
+      "chat:projects:select",
+      wrap(async ({ projectId }) => {
+        const project = requireProject(projectId);
+        setActiveProjectId(project.id);
+        let sessionId = getActiveSessionId(project.id);
+        if (!sessionId && !store.readOnly) sessionId = createSessionForProject(project.id).id;
+        if (sessionId) setActiveSessionId(sessionId);
+        await ensureCapabilityService().discover();
+        return { ...sessionsPayload(), session: sessionId ? sessionState(sessionId) : null };
+      })
+    );
+
+    ipcMain.handle(
+      "chat:projects:update",
+      wrap(async ({ projectId, patch }) => {
+        requireProject(projectId);
+        const next = {};
+        if (typeof patch?.name === "string") next.name = patch.name;
+        if (typeof patch?.context === "string") next.context = patch.context;
+        if (typeof patch?.defaultPermissionMode === "string") {
+          next.defaultPermissionMode = patch.defaultPermissionMode;
+        }
+        const project = ensureProjectStore().updateProject(projectId, next);
+        for (const [sessionId] of rooms) {
+          const meta = store.readMeta(sessionId);
+          if (projectIdForMeta(meta) === projectId) refreshRoomAgents(sessionId);
+        }
+        const payload = sessionsPayload();
+        broadcast("chat:sessions-changed", payload);
+        return { ...payload, project };
+      })
+    );
+
+    ipcMain.handle(
+      "chat:projects:workspace:choose",
+      wrap(async ({ projectId }) => {
+        requireProject(projectId);
+        const workspace = await chooseWorkspace("프로젝트 워크스페이스 선택");
+        if (!workspace) return { canceled: true, ...sessionsPayload() };
+        const project = ensureProjectStore().updateProject(projectId, { workspace });
+        const payload = sessionsPayload();
+        broadcast("chat:sessions-changed", payload);
+        return { ...payload, project };
+      })
+    );
+
+    ipcMain.handle(
+      "chat:projects:workspace:clear",
+      wrap(async ({ projectId }) => {
+        requireProject(projectId);
+        const project = ensureProjectStore().updateProject(projectId, { workspace: null });
+        const payload = sessionsPayload();
+        broadcast("chat:sessions-changed", payload);
+        return { ...payload, project };
+      })
+    );
+
+    ipcMain.handle(
+      "chat:projects:delete",
+      wrap(async ({ projectId }) => {
+        const project = requireProject(projectId);
+        if (project.id === UNCATEGORIZED_PROJECT_ID) {
+          throw new Error("기본 프로젝트는 삭제할 수 없습니다.");
+        }
+        const deletingActive = getActiveProjectId() === project.id;
+        for (const entry of store.listSessions()) {
+          const meta = store.readMeta(entry.id);
+          if (projectIdForMeta(meta) !== project.id) continue;
+          store.updateMeta(entry.id, { projectId: UNCATEGORIZED_PROJECT_ID });
+          refreshRoomAgents(entry.id);
+        }
+        if (!ensureProjectStore().deleteProject(project.id)) {
+          throw new Error("프로젝트를 삭제하지 못했습니다.");
+        }
+        const nextProjectId = deletingActive ? UNCATEGORIZED_PROJECT_ID : getActiveProjectId();
+        setActiveProjectId(nextProjectId);
+        let sessionId = getActiveSessionId(nextProjectId);
+        if (!sessionId && !store.readOnly) sessionId = createSessionForProject(nextProjectId).id;
+        if (sessionId) setActiveSessionId(sessionId);
+        const payload = sessionsPayload();
+        broadcast("chat:sessions-changed", payload);
+        return { ...payload, session: sessionId ? sessionState(sessionId) : null };
+      })
+    );
+
+    ipcMain.handle(
       "chat:sessions:create",
       wrap(async () => {
         if (!ensureStore()) throw new Error(storeError || "저장소를 사용할 수 없습니다.");
-        const meta = store.createSession({});
+        const meta = createSessionForProject();
         setActiveSessionId(meta.id);
         await ensureCapabilityService().discover();
         return { ...sessionsPayload(), session: sessionState(meta.id) };
@@ -539,7 +749,7 @@ function createChatFeature(options) {
         store.deleteSession(sessionId);
         let nextId = getActiveSessionId();
         if (!nextId && !store.readOnly) {
-          nextId = store.createSession({}).id;
+          nextId = createSessionForProject().id;
         }
         if (nextId) setActiveSessionId(nextId);
         return { ...sessionsPayload(), session: nextId ? sessionState(nextId) : null };
@@ -630,18 +840,8 @@ function createChatFeature(options) {
       wrap(async ({ sessionId }) => {
         requireSession(sessionId);
         // 워크스페이스 경로의 유일한 출처: OS 폴더 선택 대화상자.
-        const result = await dialog.showOpenDialog(chatWindow || undefined, {
-          properties: ["openDirectory"],
-          title: "세션 워크스페이스 선택",
-        });
-        if (result.canceled || !result.filePaths?.[0]) return { canceled: true };
-        let workspace = result.filePaths[0];
-        try {
-          workspace = fs.realpathSync(workspace);
-          if (!fs.statSync(workspace).isDirectory()) throw new Error("폴더가 아닙니다.");
-        } catch {
-          throw new Error("선택한 폴더를 확인할 수 없습니다.");
-        }
+        const workspace = await chooseWorkspace("세션 워크스페이스 선택");
+        if (!workspace) return { canceled: true };
         store.updateMeta(sessionId, { workspace });
         refreshRoomAgents(sessionId);
         return { meta: publicMeta(store.readMeta(sessionId)), ...sessionsPayload() };

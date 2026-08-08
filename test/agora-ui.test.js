@@ -101,3 +101,24 @@ test("Agora 아이콘은 파란 배경과 흰색 Ἀ를 사용한다", () => {
   const ico = fs.readFileSync(path.join(ROOT, "build/icon.ico"));
   assert.equal(ico.readUInt16LE(4), 7, "Windows 아이콘은 작은 크기별 이미지를 포함해야 합니다");
 });
+
+test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있다", () => {
+  const html = read("src/chat.html");
+  const preload = read("src/chat-preload.js");
+  const renderer = read("src/chat.js");
+  const ipc = read("src/chat/chat-ipc.js");
+
+  for (const id of ["project-list", "btn-new-project", "chats-heading", "session-list"]) {
+    assert.match(html, new RegExp(`id="${id}"`));
+  }
+  assert.match(preload, /projectsCreate: \(name\)/);
+  assert.match(preload, /projectsSelect: \(projectId\)/);
+  assert.match(preload, /projectsUpdate: \(projectId, patch\)/);
+  assert.match(preload, /projectsDelete: \(projectId\)/);
+  assert.match(renderer, /function renderProjects\(\)/);
+  assert.match(renderer, /function selectProject\(projectId\)/);
+  assert.match(ipc, /"chat:projects:create"/);
+  assert.match(ipc, /"chat:projects:select"/);
+  assert.match(ipc, /"chat:projects:delete"/);
+  assert.ok(fs.existsSync(path.join(ROOT, "src/agora/project-store.js")));
+});

@@ -12,6 +12,9 @@ const mentionPopup = document.getElementById("mention-popup");
 const attachmentRow = document.getElementById("attachment-row");
 const sessionListEl = document.getElementById("session-list");
 const newSessionButton = document.getElementById("btn-new-session");
+const projectListEl = document.getElementById("project-list");
+const newProjectButton = document.getElementById("btn-new-project");
+const chatsHeading = document.getElementById("chats-heading");
 const refreshProvidersButton = document.getElementById("btn-refresh-providers");
 const doctorButton = document.getElementById("btn-doctor");
 const sessionTitleEl = document.getElementById("session-title");
@@ -41,6 +44,8 @@ const doctorDone = document.getElementById("doctor-done");
 
 let providers = [];
 let diagnostics = [];
+let projects = [];
+let activeProjectId = null;
 let sessions = [];
 let activeSessionId = null;
 let sessionMeta = null;
@@ -396,6 +401,172 @@ function formatRelativeTime(ts) {
 function baseName(dirPath) {
   const parts = String(dirPath || "").split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] || dirPath || "";
+}
+
+function activeProjectEntry() {
+  return projects.find((project) => project.id === activeProjectId) || null;
+}
+
+function renderProjects() {
+  projectListEl.textContent = "";
+  const activeProject = activeProjectEntry();
+  chatsHeading.textContent = activeProject ? `${activeProject.name}의 대화` : "대화";
+
+  for (const project of projects) {
+    const item = document.createElement("li");
+    item.className = "project-item";
+    if (project.id === activeProjectId) item.classList.add("is-active");
+
+    const select = document.createElement("button");
+    select.type = "button";
+    select.className = "project-select";
+    const name = document.createElement("span");
+    name.className = "project-name";
+    name.textContent = project.name;
+    select.append(name);
+    if (project.workspace) {
+      const workspace = document.createElement("span");
+      workspace.className = "project-meta";
+      workspace.textContent = `폴더 · ${baseName(project.workspace)}`;
+      workspace.title = project.workspace;
+      select.append(workspace);
+    }
+    select.addEventListener("click", () => selectProject(project.id));
+
+    const actions = document.createElement("span");
+    actions.className = "project-actions";
+    const settings = document.createElement("button");
+    settings.type = "button";
+    settings.className = "project-action";
+    settings.title = "프로젝트 설정";
+    settings.textContent = "⋯";
+    settings.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openProjectSettings(settings, project);
+    });
+    actions.append(settings);
+    item.append(select, actions);
+    projectListEl.append(item);
+  }
+}
+
+function openProjectSettings(anchor, project) {
+  openPopover(anchor, (target) => {
+    const title = document.createElement("strong");
+    title.className = "project-popover-title";
+    title.textContent = "프로젝트 설정";
+
+    const name = document.createElement("input");
+    name.type = "text";
+    name.maxLength = 80;
+    name.value = project.name || "";
+
+    const context = document.createElement("textarea");
+    context.className = "project-context-input";
+    context.rows = 5;
+    context.maxLength = 12000;
+    context.placeholder = "이 프로젝트의 목적, 규칙, 배경을 적어 두세요.";
+    context.value = project.context || "";
+
+    const permission = document.createElement("select");
+    for (const [value, label] of [
+      ["chat", "대화만"],
+      ["workspace-read", "새 대화: 워크스페이스 읽기"],
+      ["workspace-write", "새 대화: 워크스페이스 쓰기"],
+    ]) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      option.disabled = value !== "chat" && !project.workspace;
+      permission.append(option);
+    }
+    permission.value = project.defaultPermissionMode || "chat";
+
+    const workspaceField = document.createElement("div");
+    workspaceField.className = "project-workspace-field";
+    const workspace = document.createElement("span");
+    workspace.className = "project-workspace-value";
+    workspace.textContent = project.workspace ? baseName(project.workspace) : "연결된 폴더 없음";
+    workspace.title = project.workspace || "";
+    const choose = document.createElement("button");
+    choose.type = "button";
+    choose.className = "button button-small";
+    choose.textContent = "폴더 선택";
+    choose.addEventListener("click", async () => {
+      const result = await call(window.chatApi.projectsWorkspaceChoose(project.id));
+      if (result && !result.canceled) {
+        closePopover();
+        applyFullState(result);
+      }
+    });
+    workspaceField.append(workspace, choose);
+    if (project.workspace) {
+      const clear = document.createElement("button");
+      clear.type = "button";
+      clear.className = "text-button";
+      clear.textContent = "해제";
+      clear.addEventListener("click", async () => {
+        const result = await call(window.chatApi.projectsWorkspaceClear(project.id));
+        if (result) {
+          closePopover();
+          applyFullState(result);
+        }
+      });
+      workspaceField.append(clear);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "project-popover-actions";
+    const save = document.createElement("button");
+    save.type = "button";
+    save.className = "button button-primary";
+    save.textContent = "저장";
+    save.addEventListener("click", async () => {
+      const result = await call(window.chatApi.projectsUpdate(project.id, {
+        name: name.value,
+        context: context.value,
+        defaultPermissionMode: permission.value,
+      }));
+      if (result) {
+        closePopover();
+        applyFullState(result);
+      }
+    });
+    actions.append(save);
+    if (project.id !== "uncategorized") {
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "button button-danger";
+      remove.textContent = "프로젝트 삭제";
+      remove.addEventListener("click", async () => {
+        const yes = window.confirm(
+          `"${project.name}" 프로젝트를 삭제할까요?\n포함된 대화는 분류되지 않음으로 이동합니다.`
+        );
+        if (!yes) return;
+        const result = await call(window.chatApi.projectsDelete(project.id));
+        if (result) {
+          closePopover();
+          applyFullState(result);
+        }
+      });
+      actions.append(remove);
+    }
+
+    target.append(
+      title,
+      makeField("프로젝트 이름", name),
+      makeField("공통 맥락", context),
+      makeField("새 대화 기본 권한", permission),
+      makeField("프로젝트 폴더", workspaceField),
+      actions
+    );
+  });
+}
+
+async function selectProject(projectId) {
+  if (projectId === activeProjectId) return;
+  const result = await call(window.chatApi.projectsSelect(projectId));
+  if (result) applyFullState(result);
 }
 
 function renderSessions() {
@@ -1462,6 +1633,13 @@ composerInput.addEventListener("blur", () => {
 sendButton.addEventListener("click", sendCurrentMessage);
 stopButton.addEventListener("click", () => call(window.chatApi.stop(activeSessionId)));
 
+newProjectButton.addEventListener("click", async () => {
+  const name = window.prompt("새 프로젝트 이름을 입력하세요.", "새 프로젝트");
+  if (name === null || !name.trim()) return;
+  const result = await call(window.chatApi.projectsCreate(name));
+  if (result) applyFullState(result);
+});
+
 newSessionButton.addEventListener("click", async () => {
   const result = await call(window.chatApi.sessionsCreate());
   if (result) applyFullState(result);
@@ -1520,6 +1698,8 @@ window.chatApi.onMaximizedState((isMaximized) => {
 function applyFullState(full) {
   if (full.providers) providers = full.providers;
   if (full.diagnostics) diagnostics = full.diagnostics;
+  if (full.projects) projects = full.projects;
+  if (Object.hasOwn(full, "activeProjectId")) activeProjectId = full.activeProjectId;
   if (full.sessions) sessions = full.sessions;
   if (Object.hasOwn(full, "activeSessionId")) activeSessionId = full.activeSessionId;
 
@@ -1544,6 +1724,7 @@ function applyFullState(full) {
     storeWarning.hidden = false;
   }
 
+  renderProjects();
   renderSessions();
   renderHeader();
   renderAgents();
@@ -1570,7 +1751,11 @@ window.chatApi.onReset(({ sessionId }) => {
 });
 window.chatApi.onRunEvent(handleRunEvent);
 window.chatApi.onSessionsChanged((payload) => {
+  if (payload.projects) projects = payload.projects;
+  if (Object.hasOwn(payload, "activeProjectId")) activeProjectId = payload.activeProjectId;
   sessions = payload.sessions || sessions;
+  if (Object.hasOwn(payload, "activeSessionId")) activeSessionId = payload.activeSessionId;
+  renderProjects();
   renderSessions();
   const entry = activeSessionEntry();
   if (entry && sessionMeta && entry.title !== sessionMeta.title) {

@@ -136,3 +136,21 @@ test("이모티콘 지시는 프롬프트에 주입하지 않는다", () => {
   assert.doesNotMatch(prompt, /CODEPET_EMOTE/);
   assert.doesNotMatch(prompt, /이모티콘/);
 });
+
+test("프로젝트 공통 맥락은 해당 대화의 프롬프트에만 추가된다", () => {
+  const withContext = buildAgentPrompt({
+    agent: AGENTS[0],
+    agents: AGENTS,
+    messages: [message("user", "검토해줘", "user")],
+    projectContext: "이 프로젝트에서는 공개 API를 바꾸지 않는다.",
+  });
+  const withoutContext = buildAgentPrompt({
+    agent: AGENTS[0],
+    agents: AGENTS,
+    messages: [message("user", "검토해줘", "user")],
+  });
+
+  assert.match(withContext, /프로젝트 공통 맥락/);
+  assert.match(withContext, /공개 API를 바꾸지 않는다/);
+  assert.doesNotMatch(withoutContext, /프로젝트 공통 맥락/);
+});

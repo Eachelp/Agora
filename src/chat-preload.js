@@ -6,6 +6,12 @@ const INVOKE = Object.freeze({
   PROVIDERS_REFRESH: "chat:providers:refresh",
   OPEN_EXTERNAL: "chat:open-external",
   OPEN_SETTINGS: "chat:open-settings",
+  PROJECTS_CREATE: "chat:projects:create",
+  PROJECTS_SELECT: "chat:projects:select",
+  PROJECTS_UPDATE: "chat:projects:update",
+  PROJECTS_DELETE: "chat:projects:delete",
+  PROJECTS_WORKSPACE_CHOOSE: "chat:projects:workspace:choose",
+  PROJECTS_WORKSPACE_CLEAR: "chat:projects:workspace:clear",
   SESSIONS_CREATE: "chat:sessions:create",
   SESSIONS_SELECT: "chat:sessions:select",
   SESSIONS_RENAME: "chat:sessions:rename",
@@ -38,6 +44,16 @@ contextBridge.exposeInMainWorld("chatApi", {
   providersRefresh: () => ipcRenderer.invoke(INVOKE.PROVIDERS_REFRESH),
   openExternal: (url) => ipcRenderer.invoke(INVOKE.OPEN_EXTERNAL, { url }),
   openSettings: () => ipcRenderer.send(INVOKE.OPEN_SETTINGS),
+
+  projectsCreate: (name) => ipcRenderer.invoke(INVOKE.PROJECTS_CREATE, { name }),
+  projectsSelect: (projectId) => ipcRenderer.invoke(INVOKE.PROJECTS_SELECT, { projectId }),
+  projectsUpdate: (projectId, patch) =>
+    ipcRenderer.invoke(INVOKE.PROJECTS_UPDATE, { projectId, patch }),
+  projectsDelete: (projectId) => ipcRenderer.invoke(INVOKE.PROJECTS_DELETE, { projectId }),
+  projectsWorkspaceChoose: (projectId) =>
+    ipcRenderer.invoke(INVOKE.PROJECTS_WORKSPACE_CHOOSE, { projectId }),
+  projectsWorkspaceClear: (projectId) =>
+    ipcRenderer.invoke(INVOKE.PROJECTS_WORKSPACE_CLEAR, { projectId }),
 
   sessionsCreate: () => ipcRenderer.invoke(INVOKE.SESSIONS_CREATE),
   sessionsSelect: (sessionId) => ipcRenderer.invoke(INVOKE.SESSIONS_SELECT, { sessionId }),

@@ -28,6 +28,7 @@ function buildAgentPrompt({
   messages,
   maxMessages = DEFAULT_MAX_MESSAGES,
   permissionMode = "chat",
+  projectContext = "",
   discussion = null,
   broadcast = null,
   mentionsEnabled = !discussion,
@@ -61,6 +62,13 @@ function buildAgentPrompt({
   lines.push(permissionRule(permissionMode));
   lines.push("- 채팅에 어울리게 간결히 답하세요.");
   lines.push("- 대화에서 쓰인 언어로 답하세요.");
+  const context = String(projectContext || "").trim();
+  if (context) {
+    lines.push("");
+    lines.push("=== 프로젝트 공통 맥락 ===");
+    lines.push(context);
+    lines.push("=== 프로젝트 공통 맥락 끝 ===");
+  }
   // 캐릭터 이모티콘 지시는 작업용 사용에 불필요해 프롬프트에서 제외합니다.
   // chat-emoticons.js의 렌더링/추출 경로는 기존 대화 호환을 위해 그대로 둡니다.
   if (broadcast && broadcast.position > 1) {
