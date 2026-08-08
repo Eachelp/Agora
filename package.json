@@ -1,0 +1,80 @@
+{
+  "name": "code-pet",
+  "version": "1.0.1",
+  "private": false,
+  "description": "Multi-provider desktop companion for Codex, Antigravity, and Claude.",
+  "desktopName": "CodePet.desktop",
+  "main": "src/main.js",
+  "license": "MIT",
+  "bin": {
+    "code-pet": "bin/code-pet.js"
+  },
+  "files": [
+    "src/**/*",
+    "bin/**/*",
+    "build/icon.ico",
+    "build/icon.png"
+  ],
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "test": "node --test",
+    "dist": "node scripts/build.js"
+  },
+  "build": {
+    "appId": "app.codepet.desktop",
+    "productName": "CodePet",
+    "directories": {
+      "output": "artifacts"
+    },
+    "files": [
+      "src/**/*",
+      "build/icon.ico",
+      "build/icon.png",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
+      },
+      {
+        "from": "build/icon.png",
+        "to": "icon.png"
+      }
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        "portable"
+      ]
+    },
+    "portable": {
+      "artifactName": "CodePet-${version}.exe"
+    },
+    "mac": {
+      "icon": "build/icon-mac.png",
+      "category": "public.app-category.utilities",
+      "target": [
+        "dmg"
+      ],
+      "artifactName": "CodePet-${version}-mac.${ext}"
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "category": "Utility",
+      "synopsis": "Desktop companion for Codex, Antigravity, and Claude",
+      "syncDesktopName": true,
+      "target": [
+        "AppImage"
+      ],
+      "artifactName": "CodePet-${version}-linux-${arch}.${ext}"
+    }
+  },
+  "optionalDependencies": {
+    "electron": "^41.10.4"
+  },
+  "devDependencies": {
+    "electron-builder": "^26.15.3"
+  }
+}

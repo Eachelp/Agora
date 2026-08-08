@@ -1,0 +1,674 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ἀγορά — Codex-like Workspace Mockup</title>
+<style>
+  :root{
+    --bg:#ffffff;
+    --panel:#f7f9fb;
+    --surface:#ffffff;
+    --surface-2:#f1f4f7;
+    --hover:#eaf2f8;
+    --line:#e2e6ea;
+    --line-strong:#d4dbe1;
+    --text:#1f2933;
+    --muted:#66788a;
+    --muted-2:#98a6b3;
+    --black:#0b67a3;
+    --green:#3b8d68;
+    --amber:#a97843;
+    --red:#b05c5c;
+    --shadow:0 16px 50px rgba(16,55,85,.10);
+    --slack-blue:#0b67a3;
+    --slack-blue-deep:#075184;
+    --slack-blue-soft:#e7f1f8;
+  }
+
+  [data-theme="dark"]{
+    --bg:#17191c;
+    --panel:#1d2024;
+    --surface:#23272b;
+    --surface-2:#2a2f34;
+    --hover:#32383e;
+    --line:#353b41;
+    --line-strong:#424a52;
+    --text:#edf1f4;
+    --muted:#aab6c0;
+    --muted-2:#7f8d98;
+    --black:#2f8bc3;
+    --green:#78bf91;
+    --amber:#d2a36b;
+    --red:#d58a8a;
+    --shadow:0 16px 50px rgba(0,0,0,.28);
+    --slack-blue:#2f8bc3;
+    --slack-blue-deep:#226f9e;
+    --slack-blue-soft:#183447;
+  }
+
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;
+    font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background:#d9dee3;
+    color:var(--text);
+    overflow:hidden;
+  }
+  button,input,textarea,select{font:inherit;color:inherit}
+
+  .app{
+    width:min(1540px, 97vw);
+    height:94vh;
+    margin:3vh auto;
+    background:var(--bg);
+    border:1px solid var(--line-strong);
+    border-radius:13px;
+    overflow:hidden;
+    box-shadow:var(--shadow);
+    display:grid;
+    grid-template-rows:38px 1fr;
+  }
+
+  .titlebar{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding:0 12px 0 14px;
+    border-bottom:1px solid rgba(255,255,255,.14);
+    background:var(--slack-blue);
+    color:white;
+    user-select:none;
+  }
+  .brand{
+    display:flex;align-items:center;gap:9px;font-size:12px;font-weight:650;
+  }
+  .brand-mark{
+    width:19px;height:19px;border-radius:5px;background:white;color:var(--slack-blue-deep);
+    display:grid;place-items:center;font-size:10px;font-family:Georgia,serif;
+  }
+  .window-meta{font-size:11px;color:rgba(255,255,255,.72)}
+  .window-buttons{font-size:11px;color:rgba(255,255,255,.78);letter-spacing:7px}
+
+  .shell{
+    min-height:0;
+    display:grid;
+    grid-template-columns:238px 1fr;
+  }
+
+  /* LEFT */
+  .sidebar{
+    min-height:0;
+    background:#f1f5f8;
+    border-right:1px solid var(--line);
+    display:flex;
+    flex-direction:column;
+  }
+  .side-head{
+    padding:12px 10px 8px;
+  }
+  .project-picker{
+    width:100%;
+    border:0;
+    background:transparent;
+    border-radius:8px;
+    padding:8px 9px;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    cursor:pointer;
+    font-size:13px;
+    font-weight:600;
+  }
+  .project-picker:hover{background:#e6eef4}
+  .project-name{display:flex;align-items:center;gap:8px}
+  .project-dot{width:8px;height:8px;border-radius:50%;background:#777}
+  .new-chat{
+    margin-top:5px;width:100%;height:33px;border:1px solid var(--line);background:var(--surface);
+    border-radius:8px;display:flex;align-items:center;justify-content:flex-start;gap:8px;padding:0 10px;
+    cursor:pointer;font-size:12px;color:var(--text);
+  }
+  .new-chat:hover{background:#edf3f7}
+  .side-section{padding:8px 8px 0;min-height:0;overflow:hidden}
+  .label{
+    padding:7px 8px 6px;
+    font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted-2);font-weight:700;
+  }
+  .chat-list{overflow:auto;max-height:calc(94vh - 220px);padding-bottom:8px}
+  .chat-item{
+    position:relative;
+    padding:8px 9px;
+    margin:1px 0;
+    border-radius:7px;
+    font-size:12px;
+    color:var(--muted);
+    cursor:pointer;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  .chat-item:hover{background:#e8f1f7;color:var(--text)}
+  .chat-item.active{background:#dfeef8;color:#0b5788;font-weight:620}
+  .chat-item .tiny{display:block;font-size:10px;margin-top:2px;color:var(--muted-2);font-weight:400}
+  .side-bottom{
+    margin-top:auto;border-top:1px solid var(--line);padding:8px;
+  }
+  .side-btn{
+    width:100%;border:0;background:transparent;padding:8px 9px;border-radius:7px;
+    text-align:left;cursor:pointer;font-size:12px;color:var(--muted);
+  }
+  .side-btn:hover{background:#e6eef4;color:var(--text)}
+
+  /* MAIN */
+  .main{min-width:0;min-height:0;display:grid;grid-template-rows:50px 1fr;background:#fff}
+  .main.settings-mode{grid-template-rows:1fr}
+  .chat-top{
+    border-bottom:1px solid var(--line);
+    padding:0 14px 0 18px;
+    display:flex;align-items:center;justify-content:space-between;gap:12px;
+    background:#fff;
+  }
+  .chat-title{min-width:0}
+  .chat-title h1{
+    margin:0;font-size:13px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  .chat-sub{margin-top:2px;font-size:10px;color:var(--muted)}
+  .top-actions{display:flex;align-items:center;gap:6px}
+  .ghost-btn{
+    border:0;background:transparent;border-radius:7px;padding:7px 8px;font-size:11px;
+    color:var(--muted);cursor:pointer;
+  }
+  .ghost-btn:hover{background:var(--hover);color:var(--text)}
+  .mode-pill{
+    display:flex;align-items:center;gap:5px;border:1px solid var(--line);border-radius:999px;
+    padding:5px 8px;font-size:10px;color:var(--muted);background:var(--surface);
+  }
+  .mode-dot{width:6px;height:6px;border-radius:50%;background:var(--slack-blue)}
+
+  .workarea{position:relative;min-height:0;display:grid;grid-template-columns:1fr}
+  .workarea.with-drawer{grid-template-columns:1fr 318px}
+
+  .conversation{
+    min-width:0;min-height:0;
+    display:grid;grid-template-rows:1fr auto;
+  }
+  .messages{
+    overflow:auto;
+    padding:32px max(24px, calc((100% - 820px)/2)) 28px;
+  }
+  .message{
+    margin-bottom:26px;
+  }
+  .message-head{
+    display:flex;align-items:center;gap:8px;margin-bottom:8px;
+    font-size:11px;color:var(--muted);
+  }
+  .avatar{
+    width:22px;height:22px;border-radius:6px;border:1px solid var(--line);
+    background:var(--surface);display:grid;place-items:center;font-weight:750;font-size:9px;
+  }
+  .avatar.user{background:var(--black);color:var(--bg);border-color:var(--black)}
+  .agent-name{color:var(--text);font-weight:620}
+  .meta-chip{font-size:9px;color:var(--muted-2)}
+  .message-body{
+    font-size:13px;line-height:1.72;color:var(--text);
+  }
+  .message-body p{margin:0 0 10px}
+  .message-body code{
+    font-family:"SFMono-Regular",Consolas,monospace;font-size:11px;
+    padding:2px 4px;border-radius:4px;background:var(--surface-2);
+  }
+  .message-actions{
+    margin-top:9px;display:flex;gap:4px;opacity:0;
+    transition:.12s ease;
+  }
+  .message:hover .message-actions{opacity:1}
+  .mini-btn{
+    border:0;background:transparent;border-radius:6px;padding:5px 6px;
+    color:var(--muted);font-size:10px;cursor:pointer;
+  }
+  .mini-btn:hover{background:var(--hover);color:var(--text)}
+
+  .round-sep{
+    display:flex;align-items:center;gap:10px;margin:30px 0 20px;color:var(--muted-2);font-size:10px;
+  }
+  .round-sep:before,.round-sep:after{content:"";height:1px;background:var(--line);flex:1}
+  .round-actions{display:flex;gap:6px;justify-content:center;margin-bottom:10px}
+  .subtle{
+    border:1px solid var(--line);background:var(--surface);border-radius:7px;padding:6px 9px;
+    font-size:10px;color:var(--muted);cursor:pointer;
+  }
+  .subtle:hover{background:var(--surface-2);color:var(--text)}
+
+  /* AGENT STRIP */
+  .agent-strip{
+    padding:0 max(24px, calc((100% - 820px)/2)) 9px;
+    display:flex;align-items:center;gap:5px;overflow-x:auto;
+  }
+  .agent-chip{
+    display:flex;align-items:center;gap:6px;
+    border:1px solid var(--line);background:var(--surface);border-radius:8px;padding:5px 7px;
+    cursor:pointer;white-space:nowrap;
+  }
+  .agent-chip:hover{background:var(--surface-2)}
+  .agent-chip.off{opacity:.45}
+  .provider-dot{
+    width:17px;height:17px;border-radius:5px;display:grid;place-items:center;font-size:8px;font-weight:800;
+    background:var(--surface-2);border:1px solid var(--line);
+  }
+  .agent-chip b{font-size:10px;font-weight:650}
+  .agent-chip span{font-size:9px;color:var(--muted)}
+  .quota{color:var(--green)!important}
+
+  /* COMPOSER */
+  .composer-wrap{
+    padding:0 max(24px, calc((100% - 840px)/2)) 18px;
+  }
+  .composer{
+    border:1px solid var(--line-strong);
+    background:var(--surface);
+    border-radius:11px;
+    box-shadow:0 4px 18px rgba(0,0,0,.04);
+    padding:8px 9px 7px;
+  }
+  .composer textarea{
+    width:100%;border:0;outline:0;resize:none;background:transparent;
+    min-height:52px;max-height:160px;font-size:12px;line-height:1.55;
+  }
+  .composer-bottom{
+    display:flex;align-items:center;justify-content:space-between;gap:8px;
+  }
+  .composer-left,.composer-right{display:flex;align-items:center;gap:5px}
+  .circle-btn{
+    width:27px;height:27px;border:0;border-radius:7px;background:transparent;color:var(--muted);
+    cursor:pointer;
+  }
+  .circle-btn:hover{background:var(--hover);color:var(--text)}
+  .send-btn{
+    width:29px;height:29px;border:0;border-radius:7px;background:var(--slack-blue);color:white;cursor:pointer;
+    display:grid;place-items:center;font-size:13px;
+  }
+  .composer-status{font-size:9px;color:var(--muted-2)}
+
+  /* EXEC DRAWER */
+  .drawer{
+    min-width:0;border-left:1px solid var(--line);background:var(--panel);
+    overflow:auto;padding:14px;
+  }
+  .drawer-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+  .drawer-head h3{margin:0;font-size:12px}
+  .drawer-section{padding:12px 0;border-top:1px solid var(--line)}
+  .drawer-section:first-of-type{border-top:0}
+  .field-label{font-size:9px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted-2);margin-bottom:6px}
+  .drawer input,.drawer select{
+    width:100%;height:32px;border:1px solid var(--line);background:var(--surface);
+    border-radius:7px;padding:0 8px;font-size:11px;outline:none;
+  }
+  .decision{
+    font-size:11px;line-height:1.55;color:var(--muted);padding:9px;
+    border:1px solid var(--line);border-radius:7px;background:var(--surface);
+  }
+  .run-btn{
+    width:100%;height:34px;border:0;border-radius:7px;background:var(--slack-blue);color:white;
+    font-size:11px;cursor:pointer;margin-top:8px;
+  }
+
+  /* SETTINGS */
+  .settings-view{
+    display:none;min-height:0;grid-template-columns:190px 1fr;background:var(--bg);
+  }
+  .settings-view.show{display:grid}
+  .settings-nav{border-right:1px solid var(--line);padding:14px 10px;background:#f1f5f8}
+  .settings-nav h4{
+    margin:4px 8px 10px;font-size:10px;color:var(--muted-2);text-transform:uppercase;letter-spacing:.08em;
+  }
+  .settings-link{
+    width:100%;border:0;background:transparent;text-align:left;padding:8px;border-radius:7px;
+    font-size:11px;color:var(--muted);cursor:pointer;margin-bottom:2px;
+  }
+  .settings-link.active,.settings-link:hover{background:#dfeef8;color:#0b5788}
+  .settings-content{overflow:auto;padding:34px 40px}
+  .settings-inner{max-width:720px}
+  .settings-content h2{font-size:17px;margin:0 0 5px}
+  .settings-content .lead{font-size:11px;color:var(--muted);margin-bottom:28px}
+  .setting-group{margin-bottom:28px}
+  .setting-group h3{font-size:11px;margin:0 0 10px}
+  .setting-row{
+    min-height:49px;border-top:1px solid var(--line);
+    display:grid;grid-template-columns:1fr auto;align-items:center;gap:20px;
+  }
+  .setting-row:last-child{border-bottom:1px solid var(--line)}
+  .setting-name{font-size:11px}
+  .setting-desc{font-size:9px;color:var(--muted);margin-top:3px}
+  .status-ready{font-size:10px;color:var(--green)}
+  .toggle{
+    width:31px;height:18px;border-radius:99px;background:var(--line-strong);position:relative;cursor:pointer;
+  }
+  .toggle:after{
+    content:"";position:absolute;width:14px;height:14px;border-radius:50%;background:white;left:2px;top:2px;
+    box-shadow:0 1px 3px rgba(0,0,0,.15);
+  }
+  .toggle.on{background:#427753}
+  .toggle.on:after{left:15px}
+  .select-small{
+    border:1px solid var(--line);background:var(--surface);height:29px;border-radius:7px;padding:0 7px;font-size:10px;
+  }
+
+  .hidden{display:none!important}
+
+  @media(max-width:980px){
+    .shell{grid-template-columns:205px 1fr}
+    .workarea.with-drawer{grid-template-columns:1fr}
+    .drawer{
+      position:absolute;right:0;top:0;bottom:0;width:310px;z-index:5;box-shadow:-16px 0 40px rgba(0,0,0,.12)
+    }
+  }
+</style>
+<script type="text/javascript" nonce="dfa6d61a07094746bdfdb6d3c43" src="//local.adguard.org?ts=1786166422180&amp;type=content-script&amp;dmn=chatgpt.com&amp;url=https%3A%2F%2Fchatgpt.com%2Fbackend-api%2Festuary%2Fcontent%3Fid%3Dfile_00000000b31c82099a92cd025d10d7e1%26fn%3DAGORA_CODEX_STYLE_SLACK_BLUE.html%26cd%3Dattachment%26ts%3D496158%26p%3Dfs%26cid%3D1%26sig%3D6df5ba3723506f3c10c4e2ff407f8090a569bc5dcb38984a74189dc4e1a9a952%26v%3D0&amp;app=chrome.exe&amp;css=2&amp;js=1&amp;rel=1&amp;rji=1&amp;sbe=1"></script></head>
+<body>
+<div class="app" id="app">
+  <div class="titlebar">
+    <div class="brand"><div class="brand-mark">Ἀ</div>Ἀγορά <span class="window-meta">/ 언어능력 AIG</span></div>
+    <div class="window-buttons">— □ ×</div>
+  </div>
+
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="side-head">
+        <button class="project-picker">
+          <span class="project-name"><span class="project-dot"></span>언어능력 AIG</span>
+          <span style="color:var(--muted)">⌄</span>
+        </button>
+        <button class="new-chat">＋ <span>새 채팅</span></button>
+      </div>
+
+      <div class="side-section">
+        <div class="label">Chats</div>
+        <div class="chat-list">
+          <div class="chat-item active">DB 계층 구조 검토<span class="tiny">방금 전 · Claude, Codex, AGY</span></div>
+          <div class="chat-item">문맥어휘 생성 규칙<span class="tiny">12분 전</span></div>
+          <div class="chat-item">추론적 이해 distractor<span class="tiny">어제</span></div>
+          <div class="chat-item">AI-Hub parser 수정<span class="tiny">어제</span></div>
+          <div class="chat-item">4×4 tag schema<span class="tiny">8월 6일</span></div>
+        </div>
+      </div>
+
+      <div class="side-bottom">
+        <button class="side-btn">⌕ &nbsp;검색</button>
+        <button class="side-btn" onclick="showSettings()">⚙ &nbsp;설정</button>
+      </div>
+    </aside>
+
+    <main class="main" id="main">
+      <header class="chat-top" id="chatTop">
+        <div class="chat-title">
+          <h1>DB 계층 구조 검토</h1>
+          <div class="chat-sub">D:\Projects\Language-AIG · Planning</div>
+        </div>
+        <div class="top-actions">
+          <div class="mode-pill"><span class="mode-dot"></span> Planning</div>
+          <button class="ghost-btn">Project context</button>
+          <button class="ghost-btn">⋯</button>
+        </div>
+      </header>
+
+      <div class="workarea" id="workarea">
+        <section class="conversation">
+          <div class="messages">
+
+            <div class="message">
+              <div class="message-head">
+                <div class="avatar user">U</div><span class="agent-name">사용자</span>
+              </div>
+              <div class="message-body">
+                <p>현재 언어능력 DB를 사실 테이블, 후보풀, 검증자원으로 나누는 구조가 적절한지 셋 다 의견 줘.</p>
+              </div>
+            </div>
+
+            <div class="message">
+              <div class="message-head">
+                <div class="avatar">CX</div><span class="agent-name">Codex</span>
+                <span class="meta-chip">GPT · high</span>
+              </div>
+              <div class="message-body">
+                <p>분리는 적절합니다. 결정론적으로 복원 가능한 사실과 생성 후보를 분리하면 검증 및 재현성이 좋아집니다.</p>
+                <p>다만 후보가 검증자원으로 승격되는 조건은 별도 상태로 두는 편이 좋습니다.</p>
+              </div>
+              <div class="message-actions">
+                <button class="mini-btn">결정으로 기록</button>
+                <button class="mini-btn">전달</button>
+                <button class="mini-btn">검토 요청</button>
+                <button class="mini-btn">복사</button>
+              </div>
+            </div>
+
+            <div class="message">
+              <div class="message-head">
+                <div class="avatar">CL</div><span class="agent-name">Claude</span>
+                <span class="meta-chip">Opus · high</span>
+              </div>
+              <div class="message-body">
+                <p>Codex의 방향에는 동의합니다. 추가로 <code>사실 계층에는 LLM이 개입하지 않는다</code>는 원칙을 Project Context에 넣는 것이 좋습니다.</p>
+              </div>
+              <div class="message-actions">
+                <button class="mini-btn">결정으로 기록</button>
+                <button class="mini-btn">전달</button>
+                <button class="mini-btn">검토 요청</button>
+                <button class="mini-btn">복사</button>
+              </div>
+            </div>
+
+            <div class="message">
+              <div class="message-head">
+                <div class="avatar">AG</div><span class="agent-name">Antigravity</span>
+                <span class="meta-chip">Claude Sonnet · effort n/a</span>
+              </div>
+              <div class="message-body">
+                <p>검증자원은 단순 저장소보다 “어떤 규칙으로 승인되었는지”를 함께 기록하는 계층으로 두는 것이 더 안전합니다.</p>
+              </div>
+              <div class="message-actions">
+                <button class="mini-btn">결정으로 기록</button>
+                <button class="mini-btn">전달</button>
+                <button class="mini-btn">검토 요청</button>
+                <button class="mini-btn">복사</button>
+              </div>
+            </div>
+
+            <div class="round-sep">round complete</div>
+            <div class="round-actions">
+              <button class="subtle">한 번 더</button>
+              <button class="subtle">Discussion</button>
+              <button class="subtle">결정 기록</button>
+              <button class="subtle" onclick="toggleDrawer()">실행</button>
+            </div>
+          </div>
+
+          <div>
+            <div class="agent-strip">
+              <div class="agent-chip">
+                <div class="provider-dot">CL</div>
+                <b>Claude</b><span>Opus · high</span><span class="quota">38%</span>
+              </div>
+              <div class="agent-chip">
+                <div class="provider-dot">CX</div>
+                <b>Codex</b><span>GPT · high</span><span class="quota">61%</span>
+              </div>
+              <div class="agent-chip">
+                <div class="provider-dot">AG</div>
+                <b>Antigravity</b><span>Claude Sonnet · n/a</span><span class="quota">22%</span>
+              </div>
+            </div>
+
+            <div class="composer-wrap">
+              <div class="composer">
+                <textarea placeholder="메시지를 입력하세요. @claude, @codex, @agy로 지정할 수 있습니다."></textarea>
+                <div class="composer-bottom">
+                  <div class="composer-left">
+                    <button class="circle-btn">＋</button>
+                    <button class="circle-btn">⌘</button>
+                    <span class="composer-status">Read · auto approve off</span>
+                  </div>
+                  <div class="composer-right">
+                    <button class="circle-btn" title="테마" onclick="toggleTheme()">◐</button>
+                    <button class="send-btn">↑</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <aside class="drawer hidden" id="drawer">
+          <div class="drawer-head">
+            <h3>Execution</h3>
+            <button class="ghost-btn" onclick="toggleDrawer()">×</button>
+          </div>
+
+          <div class="drawer-section">
+            <div class="field-label">Task</div>
+            <input value="DB 계층 구조 반영">
+          </div>
+
+          <div class="drawer-section">
+            <div class="field-label">Decision</div>
+            <div class="decision">
+              사실 / 후보풀 / 검증자원의 3계층을 유지하며 사실 계층에는 LLM이 개입하지 않는다.
+            </div>
+          </div>
+
+          <div class="drawer-section">
+            <div class="field-label">Implementation</div>
+            <select>
+              <option>Codex</option>
+              <option>Claude</option>
+              <option>Antigravity</option>
+            </select>
+            <div class="field-label" style="margin-top:11px">Review</div>
+            <select>
+              <option>Claude</option>
+              <option>Codex</option>
+              <option>Antigravity</option>
+            </select>
+            <div class="field-label" style="margin-top:11px">Permission</div>
+            <select>
+              <option>Workspace Write</option>
+              <option>Workspace Read</option>
+              <option>Chat only</option>
+            </select>
+          </div>
+
+          <div class="drawer-section">
+            <div class="field-label">Context package</div>
+            <div class="decision">
+              Project Context<br>
+              Decision 1<br>
+              Current request<br>
+              Selected messages
+            </div>
+          </div>
+
+          <button class="run-btn">Start implementation</button>
+        </aside>
+      </div>
+
+      <section class="settings-view" id="settingsView">
+        <nav class="settings-nav">
+          <h4>Settings</h4>
+          <button class="settings-link active">General</button>
+          <button class="settings-link">Providers</button>
+          <button class="settings-link">Usage</button>
+          <button class="settings-link">CLI diagnostics</button>
+          <div style="height:16px"></div>
+          <button class="settings-link" onclick="showWorkspace()">← Workspace</button>
+        </nav>
+
+        <div class="settings-content">
+          <div class="settings-inner">
+            <h2>Settings</h2>
+            <div class="lead">Provider와 앱 설정은 같은 창 안에서 관리합니다.</div>
+
+            <div class="setting-group">
+              <h3>Appearance</h3>
+              <div class="setting-row">
+                <div><div class="setting-name">Theme</div><div class="setting-desc">System, light, dark</div></div>
+                <select class="select-small" onchange="selectTheme(this.value)">
+                  <option value="system">System</option>
+                  <option value="light">Light</option>
+                  <option value="dark">Dark</option>
+                </select>
+              </div>
+              <div class="setting-row">
+                <div><div class="setting-name">Density</div><div class="setting-desc">대화와 사이드바 정보 밀도</div></div>
+                <select class="select-small"><option>Comfortable</option><option>Compact</option></select>
+              </div>
+            </div>
+
+            <div class="setting-group">
+              <h3>Providers</h3>
+              <div class="setting-row">
+                <div><div class="setting-name">Claude Code</div><div class="setting-desc">CLI detected · logged in</div></div>
+                <span class="status-ready">● Ready</span>
+              </div>
+              <div class="setting-row">
+                <div><div class="setting-name">Codex</div><div class="setting-desc">External routing detected: 127.0.0.1:10100</div></div>
+                <span class="status-ready">● Ready</span>
+              </div>
+              <div class="setting-row">
+                <div>
+                  <div class="setting-name">Ἀγορά Codex local proxy</div>
+                  <div class="setting-desc">기본 OFF. 명시적으로 켠 경우에만 사용</div>
+                </div>
+                <div class="toggle" onclick="this.classList.toggle('on')"></div>
+              </div>
+              <div class="setting-row">
+                <div><div class="setting-name">Antigravity</div><div class="setting-desc">Model-specific effort capability 사용</div></div>
+                <span class="status-ready">● Ready</span>
+              </div>
+            </div>
+
+            <div class="setting-group">
+              <h3>Workspace behavior</h3>
+              <div class="setting-row">
+                <div><div class="setting-name">Default planning permission</div><div class="setting-desc">새 Chat의 기본 권한</div></div>
+                <select class="select-small"><option>Workspace Read</option><option>Chat only</option></select>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<script>
+function toggleDrawer(){
+  const w=document.getElementById('workarea');
+  const d=document.getElementById('drawer');
+  d.classList.toggle('hidden');
+  w.classList.toggle('with-drawer');
+}
+function showSettings(){
+  document.getElementById('chatTop').classList.add('hidden');
+  document.getElementById('workarea').classList.add('hidden');
+  document.getElementById('settingsView').classList.add('show');
+  document.getElementById('main').classList.add('settings-mode');
+}
+function showWorkspace(){
+  document.getElementById('chatTop').classList.remove('hidden');
+  document.getElementById('workarea').classList.remove('hidden');
+  document.getElementById('settingsView').classList.remove('show');
+  document.getElementById('main').classList.remove('settings-mode');
+}
+function toggleTheme(){
+  const a=document.getElementById('app');
+  a.dataset.theme = a.dataset.theme === 'dark' ? 'light' : 'dark';
+}
+function selectTheme(v){
+  const a=document.getElementById('app');
+  if(v==='dark') a.dataset.theme='dark';
+  else if(v==='light') a.dataset.theme='light';
+  else a.removeAttribute('data-theme');
+}
+</script>
+</body>
+</html>
