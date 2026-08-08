@@ -197,7 +197,7 @@ function createChatFeature(options) {
       store = new ChatStore({ root: options.storeRoot }).init();
     } catch (error) {
       storeError = error?.message || String(error);
-      console.warn("[code-pet] 채팅 저장소 초기화 실패:", storeError);
+      console.warn("[agora] 채팅 저장소 초기화 실패:", storeError);
     }
     return store;
   }
@@ -281,7 +281,7 @@ function createChatFeature(options) {
       if (agent.id === "codex") {
         outputFile = path.join(
           os.tmpdir(),
-          `codepet-chat-${agent.id}-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`
+          `agora-chat-${agent.id}-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`
         );
       }
 

@@ -19,10 +19,10 @@ test("release packaging defines one native package for Windows, Linux, and macOS
   assert.deepEqual(packageJson.build.win.target, ["portable"]);
   assert.deepEqual(packageJson.build.linux.target, ["AppImage"]);
   assert.deepEqual(packageJson.build.mac.target, ["dmg"]);
-  assert.equal(packageJson.build.portable.artifactName, "CodePet-${version}.exe");
-  assert.equal(packageJson.build.linux.artifactName, "CodePet-${version}-linux-${arch}.${ext}");
-  assert.equal(packageJson.build.mac.artifactName, "CodePet-${version}-mac.${ext}");
-  assert.equal(packageJson.desktopName, "CodePet.desktop");
+  assert.equal(packageJson.build.portable.artifactName, "Agora-${version}.exe");
+  assert.equal(packageJson.build.linux.artifactName, "Agora-${version}-linux-${arch}.${ext}");
+  assert.equal(packageJson.build.mac.artifactName, "Agora-${version}-mac.${ext}");
+  assert.equal(packageJson.desktopName, "Agora.desktop");
   assert.equal(packageJson.build.linux.syncDesktopName, true);
 });
 
@@ -40,12 +40,12 @@ test("release workflow builds three native runners and uploads all three package
   assert.match(releaseWorkflow, /gh release create[^\n]+--draft/);
   assert.match(releaseWorkflow, /gh release edit[^\n]+--draft=false/);
   assert.doesNotMatch(releaseWorkflow, /actions\/(?:upload|download)-artifact/);
-  assert.match(releaseWorkflow, /xvfb-run -a artifacts\/linux-unpacked\/code-pet/);
+  assert.match(releaseWorkflow, /xvfb-run -a artifacts\/linux-unpacked\/agora/);
 });
 
-test("release workflow triggers on both v* and CodePet-* tags", () => {
+test("release workflow triggers on both v* and Agora-* tags", () => {
   assert.match(releaseWorkflow, /tags:\s*\n\s*- "v\*"/);
-  assert.match(releaseWorkflow, /tags:\s*\n\s*- "v\*"\s*\n\s*- "CodePet-\*"/);
+  assert.match(releaseWorkflow, /tags:\s*\n\s*- "v\*"\s*\n\s*- "Agora-\*"/);
 });
 
 test("Linux smoke test treats only timeout's exit code 124 as success", () => {

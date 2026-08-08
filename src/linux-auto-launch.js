@@ -7,7 +7,7 @@ function quoteDesktopExec(value) {
 }
 
 function getAutostartFile({ home = os.homedir(), configHome = process.env.XDG_CONFIG_HOME } = {}) {
-  return path.join(configHome || path.join(home, ".config"), "autostart", "codepet.desktop");
+  return path.join(configHome || path.join(home, ".config"), "autostart", "agora.desktop");
 }
 
 function isLinuxAutoLaunchEnabled(options = {}) {
@@ -32,7 +32,7 @@ function setLinuxAutoLaunchEnabled(enabled, {
   const contents = [
     "[Desktop Entry]",
     "Type=Application",
-    "Name=CodePet",
+    "Name=Agora",
     `Exec=${exec}`,
     "Terminal=false",
     "X-GNOME-Autostart-enabled=true",

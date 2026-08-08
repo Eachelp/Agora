@@ -13,7 +13,7 @@ const {
   injectBaseUrl,
   parseRetryDelayMs,
   refreshAuthFileIfStale,
-  stripCodePetProxyLines,
+  stripAgoraProxyLines,
 } = require("../src/codex-proxy");
 
 function fakeJwt(payload) {
@@ -66,8 +66,8 @@ test("config 주입은 멱등이고 사용자 소유 openai_base_url은 존중�
 
 test("config 제거는 marker와 그 다음 base_url 줄만 걷어낸다", () => {
   const injected = injectBaseUrl(['model = "gpt-5"', "[a]", 'b = "c"'].join("\n"), 10161).content;
-  const stripped = stripCodePetProxyLines(injected);
-  assert.doesNotMatch(stripped, /codepet-codex-proxy|openai_base_url/);
+  const stripped = stripAgoraProxyLines(injected);
+  assert.doesNotMatch(stripped, /agora-codex-proxy|openai_base_url/);
   assert.match(stripped, /model = "gpt-5"/);
   assert.match(stripped, /\[a\]/);
 });
@@ -397,9 +397,9 @@ test("disableProxyInConfig는 마커가 없으면 파일을 건드리지 않는�
     assert.equal(fs.readFileSync(cfg, "utf8"), 'model = "gpt-5"\n');
 
     enableProxyInConfig(19999, cfg);
-    assert.match(fs.readFileSync(cfg, "utf8"), /codepet-codex-proxy/);
+    assert.match(fs.readFileSync(cfg, "utf8"), /agora-codex-proxy/);
     disableProxyInConfig(cfg);
-    assert.doesNotMatch(fs.readFileSync(cfg, "utf8"), /codepet-codex-proxy/);
+    assert.doesNotMatch(fs.readFileSync(cfg, "utf8"), /agora-codex-proxy/);
     assert.match(fs.readFileSync(cfg, "utf8"), /model = "gpt-5"/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });

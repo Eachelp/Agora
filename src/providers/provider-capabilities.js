@@ -67,7 +67,7 @@ function probeCodexModelCatalog(commandPath, needsShell, timeoutMs = 8000) {
     child.stdin.write(`${JSON.stringify({
       id: 1,
       method: "initialize",
-      params: { clientInfo: { name: "code-pet", version: "1.0.1" }, capabilities: { experimentalApi: true } },
+      params: { clientInfo: { name: "agora", version: "1.0.1" }, capabilities: { experimentalApi: true } },
     })}\n`);
   });
 }

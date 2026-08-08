@@ -2,6 +2,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { defaultAgoraHome } = require("./app-paths");
 
 const PROFILE_KEY = /^[a-f0-9]{16}$/;
 
@@ -78,8 +79,9 @@ function safeProfile(record, active = false) {
 }
 
 class ProviderProfileStore {
-  constructor(provider, home = os.homedir()) {
-    this.root = path.join(home, ".codepet", `${provider}-switch`);
+  constructor(provider, home = null) {
+    const dataHome = home == null ? defaultAgoraHome() : path.join(path.resolve(home), ".agora");
+    this.root = path.join(dataHome, `${provider}-switch`);
     this.dir = path.join(this.root, "profiles");
     this.activePath = path.join(this.root, "active");
   }

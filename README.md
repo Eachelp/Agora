@@ -1,4 +1,4 @@
-# CodePet
+# Agora
 
 Codex, Google Antigravity(AGY), Claude Code의 작업 상태와 계정별 한도를 한곳에서 보여 주는 데스크톱 펫입니다. 세 프로그램의 대화를 동시에 감지해 말풍선으로 표시하고, 설정 창에서 계정·말풍선 색상·글꼴을 관리합니다.
 
@@ -22,7 +22,7 @@ npm run dist -- --linux # Linux용 명시
 npm run dist -- --mac # macOS용 명시
 ```
 
-Windows에서는 `artifacts/CodePet-<버전>.exe`, Linux에서는 `CodePet-<버전>-linux-<아키텍처>.AppImage`, macOS에서는 `CodePet-<버전>-mac.dmg`가 나옵니다. 태그(`v*`)를 푸시하면 GitHub Actions가 각 운영체제에서 네이티브 패키지 3개를 만들고 같은 GitHub Release에 첨부합니다. 빌드는 앱을 끈 상태에서 돌려야 합니다(실행 중이면 파일 잠금 때문에 실패).
+Windows에서는 `artifacts/Agora-<버전>.exe`, Linux에서는 `Agora-<버전>-linux-<아키텍처>.AppImage`, macOS에서는 `Agora-<버전>-mac.dmg`가 나옵니다. 태그(`v*`)를 푸시하면 GitHub Actions가 각 운영체제에서 네이티브 패키지 3개를 만들고 같은 GitHub Release에 첨부합니다. 빌드는 앱을 끈 상태에서 돌려야 합니다(실행 중이면 파일 잠금 때문에 실패).
 
 Linux에서 AGY 계정 자격 증명 저장을 사용하려면 Secret Service와 `secret-tool`이 필요합니다. Debian/Ubuntu 계열에서는 `libsecret-tools` 패키지가 이를 제공합니다. 자동 시작은 XDG autostart 항목으로 등록되고, 설치 글꼴은 fontconfig(`fc-list`)에서 읽습니다.
 
@@ -45,11 +45,11 @@ Codex 사용률이 90%를 넘으면 초기화 주기당 한 번 경고 말풍선
 
 우클릭 메뉴와 시스템 트레이에서 Codex, AGY, Claude 모두 같은 형태의 저장 계정 목록과 `로그인 / 계정 추가` 항목을 제공합니다. 계정 삭제는 `설정…` → `계정`에서 할 수 있습니다.
 
-- Codex: 별도 로그인 프로필에서 새 계정을 추가하고 저장된 인증 정보를 원자적으로 전환합니다. "Codex 재시작 없는 전환 (프록시)"는 기본으로 켜지며, 로컬 프록시(127.0.0.1)가 요청 단위로 계정 인증 헤더를 갈아끼워 계정 전환과 한도 소진 시 자동 로테이션을 재시작 없이 적용합니다. 우클릭 메뉴에서 프록시 모드를 명시적으로 끈 경우에만 기존의 Codex Desktop 재시작 방식으로 전환합니다. 프록시 모드를 켜고 끌 때 `~/.codex/config.toml` 루트에 `openai_base_url` 한 줄을 넣고 빼며(마커 주석으로 관리), 최초 활성화 직후 이미 실행 중이던 Codex에는 한 번의 재시작이 필요할 수 있습니다. 정상 종료 시 자동으로 원복되고, 강제 종료 뒤 Codex 연결이 막히면 CodePet을 다시 실행해 stale 마커를 정리하거나 `# codepet-codex-proxy` 블록을 제거하면 됩니다.
+- Codex: 별도 로그인 프로필에서 새 계정을 추가하고 저장된 인증 정보를 원자적으로 전환합니다. "Codex 재시작 없는 전환 (프록시)"는 기본으로 꺼져 있으며, 사용자가 켰을 때만 로컬 프록시(127.0.0.1)가 동작합니다. 프록시를 켜면 요청 단위로 계정 인증 헤더를 갈아끼워 계정 전환과 한도 소진 시 자동 로테이션을 재시작 없이 적용합니다. 프록시를 켜고 끌 때 `~/.codex/config.toml` 루트에 `openai_base_url` 한 줄을 넣고 빼며(Agora 마커 주석으로 관리), 최초 활성화 직후 이미 실행 중이던 Codex에는 한 번의 재시작이 필요할 수 있습니다. 정상 종료 시 자동으로 원복됩니다.
 - AGY: 현재 자격 증명(Windows 자격 증명 관리자 / Linux Secret Service / macOS Keychain)을 프로필로 저장하고, 확인 가능한 계정 이메일을 함께 기록한 뒤 선택한 계정으로 바꾸고 AGY를 다시 시작합니다.
 - Claude: 현재 Claude 자격 파일과 `claude auth status`의 이메일을 프로필로 저장하고 전환합니다. OAuth 토큰이 갱신돼도 같은 이메일은 한 계정으로 병합하며, 이미 열린 세션은 유지되고 새 세션부터 선택한 계정을 사용합니다.
 
-프로필 저장소는 `~/.codepet/codex-switch`, `~/.codepet/antigravity-switch`, `~/.codepet/claude-switch`입니다. 설정 화면에는 비밀 값이 노출되지 않습니다.
+프로필 저장소는 `~/.agora/codex-switch`, `~/.agora/antigravity-switch`, `~/.agora/claude-switch`입니다. 설정 화면에는 비밀 값이 노출되지 않습니다.
 
 현재 사용 중인 계정은 삭제할 수 없으며, 다른 계정으로 전환한 뒤 저장된 프로필만 삭제할 수 있습니다.
 
@@ -75,7 +75,7 @@ Codex의 `~/.codex/sessions`, AGY의 로컬 transcript, Claude의 프로젝트 J
 
 우클릭 메뉴 또는 시스템 트레이의 "에이전트 채팅방…"에서 이 PC에 설치된 코딩 에이전트 CLI들을 단체 채팅방처럼 불러 대화할 수 있습니다.
 
-- **세션**: 왼쪽 사이드바에서 세션을 무제한 만들고, 이름을 바꾸고(더블클릭 또는 ✎), 휴지통으로 보내고(🗑, 30일 보관 후 정리), 클릭 한 번으로 전환합니다. 모든 대화는 `~/.code-pet`에 저장되어 앱을 재시작해도 그대로 복원됩니다. 첫 사용자 메시지가 자동으로 세션 제목이 됩니다.
+- **세션**: 왼쪽 사이드바에서 세션을 무제한 만들고, 이름을 바꾸고(더블클릭 또는 ✎), 휴지통으로 보내고(🗑, 30일 보관 후 정리), 클릭 한 번으로 전환합니다. 모든 대화는 `~/.agora`에 저장되어 앱을 재시작해도 그대로 복원됩니다. 첫 사용자 메시지가 자동으로 세션 제목이 됩니다.
 - **참여와 멘션**: 멘션 없이 보내면 세션에 참여 중인 모든 에이전트가 동시에 응답합니다. `@codex, @claude`처럼 멘션하면 그 대상만 호출하고, `@모두`/`@all`과 한국어 조사도 인식합니다. 에이전트 답변 속 `@이름`도 해당 에이전트를 실제로 호출하며, 무한 호출을 막기 위해 사용자 발화 기준 기본 2단계까지만 이어집니다. 코드 블록·인라인 코드·이메일 안의 `@`는 호출하지 않습니다.
 - **토론**: 참가자들이 한 턴씩 차례로 말하며, 새 기여·동의·패스·최종 결론을 스스로 구분합니다. 전원이 동의/패스하거나 결론이 나오면 일찍 끝나고, 끝나지 않더라도 총 실행 예산(기본 9턴)에서 멈춥니다.
 - **에이전트 설정**: 참가자 칩에서 세션별 참여 여부, CLI가 제공하는 모델 목록, 속도/노력, 도구 자동 승인을 고릅니다. 각 답변 헤더에는 실제 선택 모델·CLI 버전·추론 강도가 함께 저장되어 표시됩니다.
@@ -122,12 +122,12 @@ Codex의 `~/.codex/sessions`, AGY의 로컬 transcript, Claude의 프로젝트 J
 
 실행이 실패하거나 중단되어도 그때까지 받은 중간 출력은 사라지지 않고 해당 답변에 함께 남습니다. 원본 출력은 세션 폴더의 `run-logs/`에 최근 실행분만 파일로 보관합니다.
 
-#### `.code-pet` 저장소와 개인정보
+#### `.agora` 저장소와 개인정보
 
-채팅 데이터는 홈 폴더의 `~/.code-pet`(환경 변수 `CODE_PET_HOME`으로 변경 가능)에 저장됩니다.
+채팅 데이터는 홈 폴더의 `~/.agora`(환경 변수 `AGORA_HOME`으로 변경 가능)에 저장됩니다.
 
 ```
-~/.code-pet/
+~/.agora/
   config.json              # 앱 설정·CLI 탐지 캐시 (자격 증명 없음)
   sessions/<id>/meta.json  # 세션 제목·워크스페이스·권한·에이전트 설정
   sessions/<id>/transcript.jsonl   # 대화 기록 (추가 전용)
@@ -139,14 +139,14 @@ Codex의 `~/.codex/sessions`, AGY의 로컬 transcript, Claude의 프로젝트 J
 - 프롬프트, 응답, 워크스페이스 경로, 첨부 사본이 **로컬에만** 저장됩니다. CodePet이 이 데이터를 외부로 전송하지 않습니다.
 - 각 CLI의 로그인 토큰/자격 증명은 저장하지 않습니다(각 CLI의 자체 폴더에 남아 있습니다).
 - Claude와 Codex 프롬프트는 stdin으로 전달합니다. `agy` 1.1.10은 비대화형 프롬프트를 argv로만 받기 때문에 AGY 응답이 실행되는 동안에는 운영체제의 프로세스 목록에 프롬프트가 일시적으로 보일 수 있습니다. CodePet은 Windows 명령줄 한도를 피하도록 긴 AGY 대화의 앞부분을 자동으로 축약합니다.
-- 세션 삭제는 휴지통 이동이며 30일 뒤 정리됩니다. 앱을 삭제해도 `~/.code-pet`은 남으므로, 완전히 지우려면 폴더를 직접 삭제하세요.
+- 세션 삭제는 휴지통 이동이며 30일 뒤 정리됩니다. 앱을 삭제해도 `~/.agora`는 남으므로, 완전히 지우려면 폴더를 직접 삭제하세요.
 - 쓰기는 임시 파일 + 교체(rename) 방식이라 도중에 꺼져도 기존 데이터가 깨지지 않고, 더 새로운 버전이 만든 저장소는 읽기 전용으로만 엽니다.
 
 #### Antigravity: IDE와 `agy` CLI는 별개입니다
 
 Antigravity **IDE**(GUI 앱)가 설치되어 있어도 채팅에는 **`agy` CLI**가 따로 필요합니다. CodePet은 PATH와 함께 공식 설치 경로(`%LOCALAPPDATA%\agy\bin\agy.exe`)도 탐색하므로, CLI를 설치했다면 PATH에 없어도 "CLI 다시 탐지"로 바로 인식됩니다. IDE만 있는 경우 칩에 "GUI만 설치됨" 안내가 나오며, GUI 실행 파일을 CLI처럼 실행하지는 않습니다.
 
-펫과 채팅은 하나의 `code-pet` npm 패키지와 데스크톱 배포판으로 공개합니다. 채팅 코어의 대부분은 Electron과 분리된 순수 Node 모듈로 유지합니다. 세션 저장 구조(추가 전용 JSONL)와 권한 어휘는 Apache-2.0으로 공개된 [openai/codex](https://github.com/openai/codex)의 설계에서 영감을 받았으며, 코드/자산은 복사하지 않았습니다.
+펫과 채팅은 하나의 `agora` npm 패키지와 데스크톱 배포판으로 공개합니다. 채팅 코어의 대부분은 Electron과 분리된 순수 Node 모듈로 유지합니다. 세션 저장 구조(추가 전용 JSONL)와 권한 어휘는 Apache-2.0으로 공개된 [openai/codex](https://github.com/openai/codex)의 설계에서 영감을 받았으며, 코드/자산은 복사하지 않았습니다.
 
 ### 화면 설정
 
@@ -217,9 +217,9 @@ v2의 row 9~10에는 시계 방향의 시선 방향 16개가 들어갑니다. �
 - `src/provider-usage.js` — AGY·Claude 한도 조회 및 정규화
 - `src/settings.html` / `settings.js` — 설정, 계정, 한도 화면
 - `src/providers/provider-capabilities.js` — 프로바이더 CLI 탐지·검증·능력(모델/노력/권한) 공개. 펫과 채팅이 공유
-- `src/providers/provider-diagnostics.js` — GUI와 `code-pet doctor`가 공유하는 설치·로그인 진단 결과 계약
+- `src/providers/provider-diagnostics.js` — GUI와 `agora doctor`가 공유하는 설치·로그인 진단 결과 계약
 - `src/chat/` — 에이전트 채팅방 코어(멘션 파싱, 그룹챗 프롬프트, 실행 인자 생성, CLI 실행, 이벤트 정규화, 세션 저장소, 첨부, 이모티콘(레거시 렌더링), 룸 오케스트레이션). `chat-window.js`/`chat-ipc.js` 외에는 Electron 비의존
 - `src/chat.html` / `chat.js` / `chat-markdown.js` — 에이전트 채팅방 창과 안전한 리치 렌더러
-- `bin/code-pet.js` — 실행 도우미. `code-pet doctor`로 CLI 상태를 점검(자격 증명 출력 없음)
+- `bin/agora.js` — 실행 도우미. `agora doctor`로 CLI 상태를 점검(자격 증명 출력 없음)
 - `src/renderer.js` — 스프라이트 애니메이션 재생. 상태 정의는 `PET_STATES`
 - `src/bubble.html` / `bubble.js` — 통합 작업 말풍선

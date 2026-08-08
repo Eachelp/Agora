@@ -12,10 +12,10 @@ const { createClaudeFileStore } = require("./claude-live-credentials");
 class ClaudeAccountSwitcher {
   // liveStore를 넘기지 않으면 파일 저장소를 사용합니다.
   // macOS 실사용 경로는 main.js가 createClaudeLiveStore()로 Keychain 저장소를 주입합니다.
-  constructor({ home = os.homedir(), store, liveStore, restart = async () => {} } = {}) {
-    this.home = home;
+  constructor({ home = null, store, liveStore, restart = async () => {} } = {}) {
+    this.home = home || os.homedir();
     // live 자격 증명 경로/위치는 liveStore가 소유합니다. (파일 또는 macOS Keychain)
-    this.liveStore = liveStore || createClaudeFileStore(home);
+    this.liveStore = liveStore || createClaudeFileStore(this.home);
     this.store = store || new ProviderProfileStore("claude", home);
     this.restart = restart;
   }

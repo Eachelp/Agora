@@ -1,13 +1,13 @@
 {
-  "name": "code-pet",
+  "name": "agora",
   "version": "1.0.1",
   "private": false,
   "description": "Multi-provider desktop companion for Codex, Antigravity, and Claude.",
-  "desktopName": "CodePet.desktop",
+  "desktopName": "Agora.desktop",
   "main": "src/main.js",
   "license": "MIT",
   "bin": {
-    "code-pet": "bin/code-pet.js"
+    "agora": "bin/agora.js"
   },
   "files": [
     "src/**/*",
@@ -22,8 +22,8 @@
     "dist": "node scripts/build.js"
   },
   "build": {
-    "appId": "app.codepet.desktop",
-    "productName": "CodePet",
+    "appId": "app.agora.desktop",
+    "productName": "Agora",
     "directories": {
       "output": "artifacts"
     },
@@ -50,7 +50,7 @@
       ]
     },
     "portable": {
-      "artifactName": "CodePet-${version}.exe"
+      "artifactName": "Agora-${version}.exe"
     },
     "mac": {
       "icon": "build/icon-mac.png",
@@ -58,7 +58,7 @@
       "target": [
         "dmg"
       ],
-      "artifactName": "CodePet-${version}-mac.${ext}"
+      "artifactName": "Agora-${version}-mac.${ext}"
     },
     "linux": {
       "icon": "build/icon.png",
@@ -68,7 +68,7 @@
       "target": [
         "AppImage"
       ],
-      "artifactName": "CodePet-${version}-linux-${arch}.${ext}"
+      "artifactName": "Agora-${version}-linux-${arch}.${ext}"
     }
   },
   "optionalDependencies": {

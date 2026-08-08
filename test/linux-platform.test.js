@@ -63,9 +63,9 @@ test("Linux login scripts are executable and terminals receive the script path",
 
 test("Linux credentials use fixed secret-tool attributes", () => {
   assert.deepEqual(secretToolArgs("lookup", "gemini:antigravity"), [
-    "lookup", "application", "codepet", "target", "gemini:antigravity",
+    "lookup", "application", "agora", "target", "gemini:antigravity",
   ]);
   assert.deepEqual(secretToolArgs("store", "gemini:antigravity"), [
-    "store", "--label=CodePet", "application", "codepet", "target", "gemini:antigravity",
+    "store", "--label=Agora", "application", "agora", "target", "gemini:antigravity",
   ]);
 });

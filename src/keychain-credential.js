@@ -3,7 +3,7 @@ const { spawn } = require("node:child_process");
 // macOS Keychain에 JSON 자격 증명을 저장합니다. Windows의 windows-credential.js와 같은 인터페이스입니다.
 // 값은 base64로 감싸서 저장합니다. security CLI는 비출력 문자가 섞이면 hex로 출력해 버려서
 // 원문 JSON을 그대로 저장하면 읽기 결과 형식이 달라질 수 있기 때문입니다.
-const KEYCHAIN_ACCOUNT = "codepet";
+const KEYCHAIN_ACCOUNT = "agora";
 
 // 비밀 값이 프로세스 인수(ps 출력)에 노출되지 않도록 `security -i`의 stdin으로 명령을 전달합니다.
 function runSecurity(stdinCommand, { timeoutMs = 10000 } = {}) {

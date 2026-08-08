@@ -9,19 +9,20 @@ const {
 
 class AntigravityAccountSwitcher {
   constructor({
-    home = os.homedir(),
+    home = null,
     store,
     read = async () => null,
     write = async () => {},
     clear = async () => {},
     restart = async () => {},
   } = {}) {
+    const liveHome = home || os.homedir();
     this.store = store || new ProviderProfileStore("antigravity", home);
     this.read = read;
     this.write = write;
     this.clear = clear;
     this.restart = restart;
-    this.accountFile = path.join(home, ".gemini", "google_accounts.json");
+    this.accountFile = path.join(liveHome, ".gemini", "google_accounts.json");
   }
 
   async snapshotCurrent(meta = {}) {

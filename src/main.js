@@ -59,6 +59,13 @@ const {
   directionIndexFromVector,
 } = require("./sprite-layout");
 
+const APP_NAME = "Agora";
+const APP_ID = "app.agora.desktop";
+app.setName(APP_NAME);
+if (process.platform === "win32" && typeof app.setAppUserModelId === "function") {
+  app.setAppUserModelId(APP_ID);
+}
+
 app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
 
 // IPC 채널명은 main/preload/renderer가 같은 문자열을 써야 하므로 상수로 모아 둡니다.
@@ -568,10 +575,10 @@ const codexProxy = new CodexProxy({
   },
 });
 
-// PR에서 약속한 동작대로 신규/기존 설정 모두 기본값은 켜짐입니다.
-// 사용자가 메뉴에서 명시적으로 끈 경우에만 false가 저장됩니다.
+// Agora는 원래 Codex 설정/프록시를 건드리지 않습니다.
+// 사용자가 메뉴에서 명시적으로 켠 경우에만 프록시를 사용합니다.
 function isCodexProxyModeEnabled() {
-  return readSettings().codexProxyMode !== false;
+  return readSettings().codexProxyMode === true;
 }
 
 // 프록시가 실제로 config.toml에 주입되어 Codex 트래픽이 프록시를 타는 상태인지입니다.
@@ -698,7 +705,7 @@ function teardownCodexProxyOnQuit() {
   codexProxy.stop();
   codexProxyActive = false;
 }
-codexAccountSwitcher.cleanupLegacyCodePetState();
+codexAccountSwitcher.cleanupStalePendingProfiles();
 codexAccountSwitcher.ensureCurrentAccountProfile();
 const codexWatcher = new CodexWatcher();
 const antigravityWatcher = new AntigravityWatcher();

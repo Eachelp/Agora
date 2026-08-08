@@ -1,8 +1,9 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { defaultAgoraHome } = require("../app-paths");
 
-// .code-pet 저장소 스키마 버전. 더 새로운 버전이 만든 데이터를 만나면
+// .agora 저장소 스키마 버전. 더 새로운 버전이 만든 데이터를 만나면
 // 데이터를 깨뜨리지 않도록 읽기 전용으로 동작합니다.
 const STORE_SCHEMA_VERSION = 1;
 const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -13,9 +14,7 @@ let tmpSeq = 0;
 let idSeq = 0;
 
 function defaultRoot(env = process.env) {
-  const override = env.CODE_PET_HOME;
-  if (override && String(override).trim()) return path.resolve(String(override).trim());
-  return path.join(os.homedir(), ".code-pet");
+  return defaultAgoraHome(env);
 }
 
 // 같은 디렉터리의 임시 파일에 쓴 뒤 rename 하므로, 도중에 죽어도

@@ -53,9 +53,9 @@ const liveRuns = new Map(); // runId → { item, textEl, statusEl, text }
 let mentionState = null;
 let noticeTimer = null;
 
-const SIDEBAR_WIDTH_KEY = "codepet.chat.sidebarWidth";
-const SIDEBAR_COLLAPSED_KEY = "codepet.chat.sidebarCollapsed";
-const DOCTOR_SEEN_KEY = "codepet.chat.doctorSeen.v1";
+const SIDEBAR_WIDTH_KEY = "agora.chat.sidebarWidth";
+const SIDEBAR_COLLAPSED_KEY = "agora.chat.sidebarCollapsed";
+const DOCTOR_SEEN_KEY = "agora.chat.doctorSeen.v1";
 const SIDEBAR_MIN_WIDTH = 180;
 const SIDEBAR_MAX_WIDTH = 420;
 
@@ -1514,7 +1514,7 @@ function applyFullState(full) {
     storeWarning.hidden = false;
   } else if (full.readOnly) {
     storeWarning.textContent =
-      "이 .code-pet 저장소는 더 새로운 버전이 만든 것이라 읽기 전용으로 열렸습니다.";
+      "이 .agora 저장소는 더 새로운 버전이 만든 것이라 읽기 전용으로 열렸습니다.";
     storeWarning.classList.add("is-error");
     storeWarning.hidden = false;
   }

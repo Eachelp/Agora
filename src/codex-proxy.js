@@ -24,7 +24,7 @@ const UPSTREAM_BASE = "https://chatgpt.com/backend-api/codex";
 const CHATGPT_TOKEN_URL = "https://auth.openai.com/oauth/token";
 // Codex CLI의 공개 OAuth client id입니다. (opencodex와 동일한 값)
 const CHATGPT_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
-const CONFIG_MARKER = "# codepet-codex-proxy";
+const CONFIG_MARKER = "# agora-codex-proxy";
 const DEFAULT_PORT = 10161;
 // hop-by-hop 헤더는 중계하면 안 됩니다.
 const DROPPED_REQUEST_HEADERS = new Set([
@@ -60,7 +60,7 @@ function buildBaseUrlLine(port) {
   return `openai_base_url = "http://127.0.0.1:${port}/v1"`;
 }
 
-function stripCodePetProxyLines(content) {
+function stripAgoraProxyLines(content) {
   const lines = String(content ?? "").split("\n");
   const kept = [];
   for (let index = 0; index < lines.length; index += 1) {
@@ -77,7 +77,7 @@ function stripCodePetProxyLines(content) {
 // 루트 키는 첫 [table] 헤더보다 앞에 있어야 합니다. 사용자가 직접 넣은
 // openai_base_url이 이미 있으면 존중하고 아무것도 쓰지 않습니다.
 function injectBaseUrl(content, port) {
-  const cleaned = stripCodePetProxyLines(content);
+  const cleaned = stripAgoraProxyLines(content);
   const lines = cleaned.split("\n");
   const firstTable = lines.findIndex((line) => /^\s*\[/.test(line));
   const rootEnd = firstTable === -1 ? lines.length : firstTable;
@@ -121,7 +121,7 @@ function disableProxyInConfig(configPath = defaultConfigPath()) {
   } catch {
     return;
   }
-  const stripped = stripCodePetProxyLines(content);
+  const stripped = stripAgoraProxyLines(content);
   if (stripped === content) return;
   atomicWriteText(configPath, stripped);
 }
@@ -669,5 +669,5 @@ module.exports = {
   enableProxyInConfig,
   injectBaseUrl,
   refreshAuthFileIfStale,
-  stripCodePetProxyLines,
+  stripAgoraProxyLines,
 };

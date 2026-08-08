@@ -2,6 +2,7 @@ const { EventEmitter } = require("node:events");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { defaultAgoraHome } = require("./app-paths");
 
 // Codex CLI는 모든 세션 이벤트를 CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl에 실시간으로 append합니다.
 // 이 모듈은 최근 rollout 파일들을 tail해서 작업 상태/메시지/사용량(rate_limits)을 이벤트로 발행합니다.
@@ -449,7 +450,7 @@ function extractLatestWorkerLabelFromFile(filePath) {
 }
 
 // 계정 전환/로그인 실험 중 CODEX_HOME이 여러 곳으로 갈라진 상태에서도 작업 말풍선을 놓치지 않게
-// 기본 ~/.codex 외에 ~/.codex2, ~/.codepet/codex-switch/profiles/* 같은 sessions 폴더도 감시합니다.
+// 기본 ~/.codex 외에 ~/.codex2, ~/.agora/codex-switch/profiles/* 같은 sessions 폴더도 감시합니다.
 function discoverDefaultCodexHomes() {
   const homes = [DEFAULT_CODEX_HOME];
   const userHome = os.homedir();
@@ -465,7 +466,7 @@ function discoverDefaultCodexHomes() {
   }
 
   const profileRoots = [
-    path.join(userHome, ".codepet", "codex-switch", "profiles"),
+    path.join(defaultAgoraHome(process.env, userHome), "codex-switch", "profiles"),
     path.join(userHome, ".cdx", "profiles"),
   ];
 

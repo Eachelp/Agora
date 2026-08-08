@@ -59,7 +59,7 @@ test("Codex는 활성 저장 프로필은 거부하고 비활성 auth 사본만 
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
   const switcher = new CodexAccountSwitcher({ homeDir: home });
   const liveAuth = path.join(home, ".codex", "auth.json");
-  const profilePath = path.join(home, ".codepet", "codex-switch", "profiles", "inactive");
+  const profilePath = path.join(home, ".agora", "codex-switch", "profiles", "inactive");
   fs.mkdirSync(path.dirname(liveAuth), { recursive: true });
   fs.mkdirSync(profilePath, { recursive: true });
   fs.writeFileSync(liveAuth, "live");

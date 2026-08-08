@@ -141,8 +141,8 @@ test("메뉴에서 사용량 보기와 활동 말풍선 항목을 제거하고 �
   assert.match(mainJs, /let remaining = 2/);
   assert.match(rendererJs, /window\.petApi\.showCodexStatus\(\)/);
   assert.match(mainJs, /SHOW_CODEX_STATUS[\s\S]*void showUsageBubble\(\)/);
-  assert.match(mainJs, /readSettings\(\)\.codexProxyMode !== false/);
-  assert.doesNotMatch(mainJs, /readSettings\(\)\.codexProxyMode === true/);
+  assert.match(mainJs, /readSettings\(\)\.codexProxyMode === true/);
+  assert.doesNotMatch(mainJs, /readSettings\(\)\.codexProxyMode !== false/);
   assert.match(
     mainJs,
     /function showWatcherActivityBubble[\s\S]*pendingBubbleData && !pendingBubbleData\.activityPrivacy/

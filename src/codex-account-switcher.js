@@ -3,15 +3,16 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const { defaultAgoraHome } = require("./app-paths");
 
-// CodePet 계정 전환 방식:
+// Agora 계정 전환 방식:
 //  1. 실제 Codex Desktop은 항상 기본 ~/.codex/auth.json을 사용합니다.
-//  2. 저장된 계정은 ~/.codepet/codex-switch/profiles/<profile>/auth.json에 보관합니다.
+//  2. 저장된 계정은 ~/.agora/codex-switch/profiles/<profile>/auth.json에 보관합니다.
 //  3. 전환할 때는 현재 auth.json을 백업하고, 선택한 profile auth를 ~/.codex/auth.json으로 원자 복사합니다.
 //  4. 로그인은 pending profile CODEX_HOME에서 실행하고, auth.json이 생긴 뒤에만 목록에 표시합니다.
 //
 // 이 구조는 JHKS24/codex-usage-switcher의 "profile auth 저장소 + live auth 교체" 흐름을
-// Electron CodePet에 맞춘 것입니다. 예전처럼 빈 ~/.codexN을 만들거나 auth 기록을 자동 이관하지 않습니다.
+// Electron Agora에 맞춘 것입니다. 예전처럼 빈 ~/.codexN을 만들거나 auth 기록을 자동 이관하지 않습니다.
 const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const USER_AGENT = "codex_cli_rs/0.76.0 (Windows; CodePet)";
 const AUTH_FILE = "auth.json";
@@ -24,52 +25,19 @@ class CodexAccountSwitcher {
     this.codexHome = options.codexHome || path.join(this.homeDir, ".codex");
     this.targetAuthPath = path.join(this.codexHome, AUTH_FILE);
 
-    this.codePetHome = options.codePetHome || path.join(this.homeDir, ".codepet");
-    this.switchHome = path.join(this.codePetHome, "codex-switch");
+    this.agoraHome = options.agoraHome || (
+      options.homeDir ? path.join(this.homeDir, ".agora") : defaultAgoraHome()
+    );
+    this.switchHome = path.join(this.agoraHome, "codex-switch");
     this.profilesRoot = path.join(this.switchHome, "profiles");
     this.backupsRoot = path.join(this.switchHome, "backups");
     this.activePath = path.join(this.switchHome, "active");
 
-    this.oldCodePetSwitcherDir = path.join(this.codexHome, "codepet-account-switcher");
-    this.oldCodePetProfileSettings = path.join(this.codePetHome, "codex-profiles.json");
-    this.oldCodePetProfilesDir = path.join(this.codePetHome, "codex-profiles");
   }
 
   // 계정 저장소 폴더입니다. 여기에 auth.json 사본이 들어가므로 절대 공유하거나 git에 넣으면 안 됩니다.
   getSwitcherDir() {
     return this.switchHome;
-  }
-
-  // 앱 시작 때 예전 CodePet의 잘못된 기록을 제거합니다.
-  // JHKS 도구의 ~/.codex-switch는 건드리지 않습니다. CodePet이 만든 폴더만 정리합니다.
-  cleanupLegacyCodePetState() {
-    this.removePathIfInsideHome(this.oldCodePetSwitcherDir);
-    this.removePathIfInsideHome(this.oldCodePetProfileSettings);
-    this.removePathIfInsideHome(this.oldCodePetProfilesDir);
-    this.cleanupBlankLegacyCodexHomes();
-    this.cleanupStalePendingProfiles();
-  }
-
-  // 이전 CODEX_HOME 실험 과정에서 생긴 빈 ~/.codexN 폴더만 제거합니다.
-  // auth.json이나 sessions가 있으면 사용자가 로그인/작업한 흔적이므로 자동 삭제하지 않습니다.
-  cleanupBlankLegacyCodexHomes() {
-    let entries = [];
-    try {
-      entries = fs.readdirSync(this.homeDir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-
-    for (const entry of entries) {
-      if (!entry.isDirectory() || !/^\.codex\d+$/.test(entry.name)) continue;
-
-      const dirPath = path.join(this.homeDir, entry.name);
-      const authPath = path.join(dirPath, AUTH_FILE);
-      const sessionsPath = path.join(dirPath, "sessions");
-      if (fs.existsSync(authPath) || fs.existsSync(sessionsPath)) continue;
-
-      this.removePathIfInsideHome(dirPath);
-    }
   }
 
   // pending 로그인 폴더는 auth.json이 생기기 전에는 UI에 표시하지 않습니다.

@@ -6,10 +6,11 @@ const path = require("node:path");
 const ROOT = path.join(__dirname, "..");
 const packageJson = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
 
-test("펫과 채팅은 하나의 code-pet 패키지로 배포된다", () => {
-  assert.equal(packageJson.name, "code-pet");
+test("Agora 앱과 채팅은 하나의 Agora 패키지로 배포된다", () => {
+  assert.equal(packageJson.name, "agora");
   assert.equal(packageJson.main, "src/main.js");
-  assert.equal(packageJson.build.productName, "CodePet");
+  assert.equal(packageJson.build.productName, "Agora");
+  assert.equal(packageJson.build.appId, "app.agora.desktop");
 });
 
 test("MIT 라이선스 파일과 license 필드가 있다", () => {
@@ -20,9 +21,9 @@ test("MIT 라이선스 파일과 license 필드가 있다", () => {
 
 test("전역 실행 도우미(bin)가 선언되어 있고 존재한다", () => {
   assert.equal(packageJson.private, false);
-  assert.equal(packageJson.bin["code-pet"], "bin/code-pet.js");
+  assert.equal(packageJson.bin.agora, "bin/agora.js");
   assert.ok(packageJson.optionalDependencies.electron, "npm 전역 설치본에도 Electron 런타임이 필요합니다");
-  const launcher = fs.readFileSync(path.join(ROOT, "bin", "code-pet.js"), "utf8");
+  const launcher = fs.readFileSync(path.join(ROOT, "bin", "agora.js"), "utf8");
   assert.match(launcher, /doctor/);
   // doctor는 자격 증명을 출력하지 않는다: 상태/버전/안내만 출력하는 구조인지 확인
   assert.doesNotMatch(launcher, /auth|token|credential/i);
@@ -40,10 +41,10 @@ test("electron-builder 설정이 유지된다 (portable/dmg/AppImage)", () => {
   assert.ok(packageJson.build.files.includes("src/**/*"));
 });
 
-test("README가 .code-pet 저장소·권한·첨부·AGY 구분을 문서화한다", () => {
+test("README가 .agora 저장소·권한·첨부·AGY 구분을 문서화한다", () => {
   const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
-  assert.match(readme, /\.code-pet/);
-  assert.match(readme, /CODE_PET_HOME/);
+  assert.match(readme, /\.agora/);
+  assert.match(readme, /AGORA_HOME/);
   assert.match(readme, /워크스페이스와 권한/);
   assert.match(readme, /첨부 파일/);
   assert.match(readme, /IDE와 `agy` CLI는 별개/);

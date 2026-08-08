@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// CodePet 실행 도우미.
-//   code-pet          → Electron 앱 실행 (로컬에 electron이 설치된 경우)
-//   code-pet --chat   → 채팅 창을 바로 열며 실행
-//   code-pet doctor   → 프로바이더 CLI 상태 점검 (자격 증명은 출력하지 않습니다)
+// Agora 실행 도우미.
+//   agora          → Electron 앱 실행 (로컬에 electron이 설치된 경우)
+//   agora --chat   → 채팅 창을 바로 열며 실행
+//   agora doctor   → 프로바이더 CLI 상태 점검 (자격 증명은 출력하지 않습니다)
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
@@ -17,7 +17,7 @@ async function doctor() {
   ));
   const records = await diagnoseProviders();
 
-  console.log("CodePet doctor — 프로바이더 CLI 상태\n");
+  console.log("Agora doctor — 프로바이더 CLI 상태\n");
   for (const record of records) {
     const statusLabel = record.installed === true ? "설치됨" : record.installed === false ? "설치되지 않음" : "확인 실패";
     console.log(`  ${record.name} (@${record.provider})`);
@@ -28,7 +28,7 @@ async function doctor() {
     }
     if (record.message) console.log(`    안내: ${record.message}`);
   }
-  console.log("\n세션/설정 저장 위치: ~/.code-pet (CODE_PET_HOME으로 변경 가능)");
+  console.log("\n세션/설정 저장 위치: ~/.agora (AGORA_HOME으로 변경 가능)");
   const failed = records.some(
     (record) => record.installed !== true || record.loggedIn === false
   );
@@ -46,7 +46,7 @@ function launchApp(extraArgs) {
         "Electron 런타임을 찾을 수 없습니다.",
         "데스크톱 배포판(포터블/설치본)으로 실행하거나, 저장소에서",
         "  npm install && npm start",
-        "로 실행해 주세요. `code-pet doctor`는 Electron 없이도 동작합니다.",
+        "로 실행해 주세요. `agora doctor`는 Electron 없이도 동작합니다.",
       ].join("\n")
     );
     process.exitCode = 1;

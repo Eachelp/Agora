@@ -7,7 +7,7 @@ on:
   push:
     tags:
       - "v*"
-      - "CodePet-*"
+      - "Agora-*"
 
 permissions:
   contents: write
@@ -32,7 +32,7 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "릴리스 $TAG 가 이미 있어 재사용합니다."
           else
-            gh release create "$TAG" --draft --title "CodePet $TAG" --generate-notes
+            gh release create "$TAG" --draft --title "Agora $TAG" --generate-notes
           fi
 
   # 2) OS별 네이티브 패키지 빌드 후 초안 릴리스에 직접 업로드.
@@ -86,7 +86,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           set +e
-          timeout 30s xvfb-run -a artifacts/linux-unpacked/code-pet --no-sandbox
+          timeout 30s xvfb-run -a artifacts/linux-unpacked/agora --no-sandbox
           status=$?
           set -e
           # 펫은 계속 떠 있는 앱이므로 정상 실행이면 timeout이 30초 뒤 124로 끊습니다.

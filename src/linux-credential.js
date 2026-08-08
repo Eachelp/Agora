@@ -1,11 +1,11 @@
 const { spawn } = require("node:child_process");
 
-const APP_ATTRIBUTE = "codepet";
+const APP_ATTRIBUTE = "agora";
 
 function secretToolArgs(operation, target) {
   const attributes = ["application", APP_ATTRIBUTE, "target", String(target)];
   if (operation === "lookup") return ["lookup", ...attributes];
-  if (operation === "store") return ["store", "--label=CodePet", ...attributes];
+  if (operation === "store") return ["store", "--label=Agora", ...attributes];
   if (operation === "clear") return ["clear", ...attributes];
   throw new Error(`Unknown secret-tool operation: ${operation}`);
 }

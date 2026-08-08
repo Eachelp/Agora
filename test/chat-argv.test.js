@@ -3,9 +3,9 @@ const assert = require("node:assert/strict");
 
 const { buildAgentInvocation, assertSafeArgv, INLINE_TEXT_LIMIT } = require("../src/chat/chat-argv");
 
-const CHAT_CWD = "C:\\Users\\u\\.code-pet\\runtime\\chat";
+const CHAT_CWD = "C:\\Users\\u\\.agora\\runtime\\chat";
 const WORKSPACE = "D:\\work\\my project";
-const ATTACH_DIR = "C:\\Users\\u\\.code-pet\\sessions\\s1\\attachments";
+const ATTACH_DIR = "C:\\Users\\u\\.agora\\sessions\\s1\\attachments";
 
 function provider(id, overrides = {}) {
   const permissions = {
