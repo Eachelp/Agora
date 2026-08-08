@@ -80,5 +80,8 @@
   "allowScripts": {
     "electron@41.10.4": true,
     "electron-winstaller@5.4.0": true
+  },
+  "dependencies": {
+    "katex": "^0.18.2"
   }
 }

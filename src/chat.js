@@ -1629,10 +1629,29 @@ function renderInlineTokens(container, tokens) {
   }
 }
 
+// LaTeX 수식을 렌더링합니다. KaTeX 스크립트를 불러오지 못한 예외적인 상황(오프라인 파일
+// 손상 등)에서도 채팅 자체는 계속 동작해야 하므로 조용히 건너뜁니다. 본문에 자연스럽게 쓰이는
+// "$100"류 표기와 충돌하지 않도록 $...$ 한 글자짜리 구분자는 지원하지 않습니다.
+function renderMathIfAvailable(container) {
+  if (typeof window.renderMathInElement !== "function") return;
+  try {
+    window.renderMathInElement(container, {
+      delimiters: [
+        { left: "$$", right: "$$", display: true },
+        { left: "\\[", right: "\\]", display: true },
+        { left: "\\(", right: "\\)", display: false },
+      ],
+      throwOnError: false,
+      ignoredTags: ["script", "noscript", "style", "textarea", "pre", "code", "option"],
+    });
+  } catch {}
+}
+
 function renderRichText(container, text) {
   const blocks = chatMarkdown.tokenizeBlocks(text);
   if (blocks.length === 0) {
     container.textContent = text;
+    renderMathIfAvailable(container);
     return;
   }
   for (const block of blocks) {
@@ -1682,6 +1701,7 @@ function renderRichText(container, text) {
       container.append(paragraph);
     }
   }
+  renderMathIfAvailable(container);
 }
 
 function renderTextWithMentions(container, text) {
@@ -1691,6 +1711,7 @@ function renderTextWithMentions(container, text) {
       token.type === "mention" ? token : { type: "text", text: token.text ?? token.href ?? "" }
     )
   );
+  renderMathIfAvailable(container);
 }
 
 function formatBytes(size) {

@@ -134,3 +134,20 @@ test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있
   assert.ok(fs.existsSync(path.join(ROOT, "src/agora/project-store.js")));
   assert.ok(fs.existsSync(path.join(ROOT, "src/agora/workflow-store.js")));
 });
+
+test("KaTeX 수식 렌더러가 오프라인 자산으로 채팅 화면에 포함된다", () => {
+  const html = read("src/chat.html");
+  assert.match(html, /vendor\/katex\/katex\.min\.css/);
+  assert.match(html, /vendor\/katex\/katex\.min\.js/);
+  assert.match(html, /vendor\/katex\/auto-render\.min\.js/);
+  for (const file of [
+    "src/vendor/katex/katex.min.js",
+    "src/vendor/katex/katex.min.css",
+    "src/vendor/katex/auto-render.min.js",
+  ]) {
+    assert.ok(fs.statSync(path.join(ROOT, file)).size > 0, file + " should not be empty");
+  }
+  const renderer = read("src/chat.js");
+  assert.match(renderer, /function renderMathIfAvailable\(container\)/);
+  assert.match(renderer, /renderMathInElement/);
+});
