@@ -8,12 +8,14 @@ const {
   sessionDefaultsFromProject,
   migrateSessionsToProjects,
   defaultPermissionMode,
+  roleConfigFor,
 } = require("../agora/project-store");
 const {
   WorkflowStore,
   TASK_STATUSES,
   ROLE_DEFS,
 } = require("../agora/workflow-store");
+const { MemoryStore } = require("../agora/memory-store");
 const {
   createCapabilityService,
   toPublicProviders,
@@ -201,6 +203,8 @@ function createChatFeature(options) {
   let projectStoreError = null;
   let workflowStore = null;
   let workflowStoreError = null;
+  let memoryStore = null;
+  let memoryStoreError = null;
   let capabilityService = null;
   let chatWindow = null;
   let shuttingDown = false;
@@ -244,6 +248,19 @@ function createChatFeature(options) {
       console.warn("[agora] 작업 기록 저장소 초기화 실패:", workflowStoreError);
     }
     return workflowStore;
+  }
+
+  function ensureMemoryStore() {
+    if (memoryStore || memoryStoreError) return memoryStore;
+    const chatStore = ensureStore();
+    if (!chatStore) return null;
+    try {
+      memoryStore = new MemoryStore({ root: chatStore.root }).init();
+    } catch (error) {
+      memoryStoreError = error?.message || String(error);
+      console.warn("[agora] Memory Bank 초기화 실패:", memoryStoreError);
+    }
+    return memoryStore;
   }
 
   function ensureCapabilityService() {
@@ -363,7 +380,7 @@ function createChatFeature(options) {
       activeProjectId,
       sessions: list,
       activeSessionId: getActiveSessionId(activeProjectId),
-      readOnly: Boolean(store?.readOnly || storeError || projectStoreError || workflowStoreError),
+      readOnly: Boolean(store?.readOnly || storeError || projectStoreError || workflowStoreError || memoryStoreError),
     };
   }
 
@@ -502,10 +519,61 @@ function createChatFeature(options) {
 
   function roomMeta(meta) {
     const project = projectForSession(meta);
+    const memory = ensureMemoryStore();
     return {
       permissionMode: meta?.permissionMode || "chat",
       projectContext: project?.context || "",
+      memoryContext: memory && project ? memory.readForPrompt(project.id) : "",
     };
+  }
+
+  function specialistStageFor(project, room, roleId) {
+    let config = roleConfigFor(project, roleId);
+    // 기록 역할을 비워 둔 경우에는 검토 담당자를 기록관으로 재사용합니다.
+    // 모델을 따로 지정하고 싶을 때만 프로젝트 설정에서 기록 역할을 채웁니다.
+    if (!config.agentId && roleId === "recorder") config = roleConfigFor(project, "review");
+    if (!config.agentId) {
+      return { ok: false, error: `전문 모드의 ${roleId} 담당자를 프로젝트 설정에서 지정해 주세요.` };
+    }
+    const agent = room.findAgent(config.agentId);
+    if (!agent || !agent.available || agent.enabled === false) {
+      return { ok: false, error: `전문 모드의 ${roleId} 담당 에이전트 @${config.agentId}를 사용할 수 없습니다.` };
+    }
+    const projectDefault = project.defaultAgents?.[config.agentId] || {};
+    const agentConfig = {
+      model: config.model && config.model !== "default"
+        ? config.model
+        : projectDefault.model || agent.model || "default",
+      effort: config.effort && config.effort !== "default"
+        ? config.effort
+        : projectDefault.effort || agent.effort || "default",
+    };
+    return { ok: true, agent, agentConfig };
+  }
+
+  function specialistStagesFor(project, room) {
+    const stages = {};
+    for (const roleId of ["implementation", "review", "recorder"]) {
+      const stage = specialistStageFor(project, room, roleId);
+      if (!stage.ok) return stage;
+      stages[roleId] = stage;
+    }
+    return { ok: true, stages };
+  }
+
+  async function recordDiscussion(sessionId) {
+    const room = getRoom(sessionId);
+    const meta = store.readMeta(sessionId);
+    const project = projectForSession(meta);
+    if (!room || !project) return { ok: false, error: "토론 프로젝트를 찾을 수 없습니다." };
+    const recorder = specialistStageFor(project, room, "recorder");
+    if (!recorder.ok) return recorder;
+    const result = await room.runRecorder(recorder);
+    if (result?.ok && result.text) {
+      const entry = saveRecorderOutput(project.id, result.text, "토론 요약 초안");
+      return { ok: Boolean(entry), entry };
+    }
+    return { ok: false, error: "기록관이 요약을 만들지 못했습니다." };
   }
 
   function getRoom(sessionId) {
@@ -571,6 +639,29 @@ function createChatFeature(options) {
       turnState: room.turnState(),
       pendingAttachments: [...pendingFor(sessionId).values()].map(publicAttachment),
     };
+  }
+
+  function refreshMemoryForProject(projectId) {
+    for (const [sessionId] of rooms) {
+      const meta = store.readMeta(sessionId);
+      if (projectIdForMeta(meta) === projectId) refreshRoomAgents(sessionId);
+    }
+  }
+
+  function saveRecorderOutput(projectId, content, title) {
+    const memory = ensureMemoryStore();
+    if (!memory || !content) return null;
+    const entry = memory.append(projectId, {
+      source: "agent",
+      status: "draft",
+      title,
+      content,
+    });
+    if (entry) {
+      refreshMemoryForProject(projectId);
+      broadcast("chat:sessions-changed", sessionsPayload());
+    }
+    return entry;
   }
 
   async function fullState({ refreshProviders = false } = {}) {
@@ -730,6 +821,31 @@ function createChatFeature(options) {
     );
 
     ipcMain.handle(
+      "chat:memory:read",
+      wrap(async ({ projectId }) => {
+        const project = requireProject(projectId || getActiveProjectId());
+        const memory = ensureMemoryStore();
+        if (!memory) throw new Error(memoryStoreError || "Memory Bank를 사용할 수 없습니다.");
+        return { projectId: project.id, content: memory.read(project.id) };
+      })
+    );
+
+    ipcMain.handle(
+      "chat:memory:append",
+      wrap(async ({ projectId, content, title }) => {
+        const project = requireProject(projectId || getActiveProjectId());
+        const memory = ensureMemoryStore();
+        if (!memory) throw new Error(memoryStoreError || "Memory Bank를 사용할 수 없습니다.");
+        const entry = memory.append(project.id, { source: "human", title, content });
+        if (!entry) throw new Error("추가할 기억을 입력해 주세요.");
+        refreshMemoryForProject(project.id);
+        const payload = sessionsPayload();
+        broadcast("chat:sessions-changed", payload);
+        return { ...payload, memory: memory.read(project.id), entry };
+      })
+    );
+
+    ipcMain.handle(
       "chat:projects:delete",
       wrap(async ({ projectId }) => {
         const project = requireProject(projectId);
@@ -828,13 +944,14 @@ function createChatFeature(options) {
           if (!decision || decision.projectId !== project.id) throw new Error("연결할 결정을 찾을 수 없습니다.");
         }
         const selectedRole = ROLE_DEFS.some((entry) => entry.id === role) ? role : "implementation";
+        const roleConfig = roleConfigFor(project, selectedRole);
         const task = workflow.createTask({
           projectId: project.id,
           title,
           description,
           status,
           role: selectedRole,
-          agentId: agentId || project.defaultRoles?.[selectedRole] || null,
+          agentId: agentId || roleConfig.agentId || null,
           decisionId,
           chatId: sourceChatId,
         });
@@ -1031,7 +1148,38 @@ function createChatFeature(options) {
           started,
           new Promise((resolve) => setImmediate(() => resolve({ ok: true, pending: true }))),
         ]);
-        started.catch(() => {});
+        started
+          .then((result) => {
+            if (result?.ok && result.concluded) {
+              recordDiscussion(sessionId).catch(() => {});
+            }
+          })
+          .catch(() => {});
+        if (result && result.ok === false) throw new Error(result.error);
+        return {};
+      })
+    );
+
+    ipcMain.handle(
+      "chat:specialist:start",
+      wrap(async ({ sessionId }) => {
+        requireSession(sessionId);
+        const room = getRoom(sessionId);
+        const project = projectForSession(store.readMeta(sessionId));
+        const planned = specialistStagesFor(project, room);
+        if (!planned.ok) throw new Error(planned.error);
+        const started = room.startSpecialist({ stages: planned.stages, maxIterations: 3 });
+        const result = await Promise.race([
+          started,
+          new Promise((resolve) => setImmediate(() => resolve({ ok: true, pending: true }))),
+        ]);
+        started
+          .then((completed) => {
+            if (completed?.ok && completed.recording) {
+              saveRecorderOutput(project.id, completed.recording, "전문 모드 실행 요약 초안");
+            }
+          })
+          .catch(() => {});
         if (result && result.ok === false) throw new Error(result.error);
         return {};
       })

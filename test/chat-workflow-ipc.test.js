@@ -44,13 +44,19 @@ test("프로젝트 기본 에이전트와 역할 담당자를 저장한다", asy
     projectId,
     patch: {
       defaultAgents: { codex: { enabled: true, model: "gpt-5", effort: "high" } },
-      defaultRoles: { implementation: "codex", review: "claude" },
+      defaultRoles: {
+        implementation: { agentId: "codex", model: "gpt-5", effort: "high" },
+        review: "claude",
+        recorder: { agentId: "claude", model: "claude-record", effort: "medium" },
+      },
     },
   });
 
   assert.equal(updated.ok, true);
   assert.equal(updated.project.defaultAgents.codex.model, "gpt-5");
   assert.equal(updated.project.defaultRoles.review, "claude");
+  assert.equal(updated.project.defaultRoles.implementation.model, "gpt-5");
+  assert.equal(updated.project.defaultRoles.recorder.agentId, "claude");
   assert.equal(updated.workflow.tasks.length, 0);
 
   const nextChat = await feature.invoke("chat:sessions:create");
@@ -58,6 +64,24 @@ test("프로젝트 기본 에이전트와 역할 담당자를 저장한다", asy
   assert.equal(nextChat.session.meta.projectId, projectId);
   assert.equal(nextChat.session.meta.agents.codex.model, "gpt-5");
   assert.equal(nextChat.session.meta.agents.codex.effort, "high");
+});
+
+test("프로젝트 Memory Bank에 사람 기록을 추가하고 다시 읽는다", async () => {
+  const feature = makeFeature(makeRoot());
+  const initial = await feature.invoke("chat:state");
+  const projectId = initial.activeProjectId;
+  const added = await feature.invoke("chat:memory:append", {
+    projectId,
+    title: "사용자 규칙",
+    content: "결과는 반드시 테스트로 확인한다.",
+  });
+  assert.equal(added.ok, true);
+  assert.match(added.memory, /사용자 규칙/);
+  assert.match(added.memory, /검증됨/);
+
+  const read = await feature.invoke("chat:memory:read", { projectId });
+  assert.equal(read.ok, true);
+  assert.match(read.content, /결과는 반드시 테스트로 확인한다/);
 });
 
 test("Decision과 Task를 프로젝트에 연결하고 상태를 변경한다", async () => {
