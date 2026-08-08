@@ -258,19 +258,17 @@ textarea:focus-visible {
   outline-offset: -1px;
 }
 
-.agent-glyph {
+.agent-avatar .agent-logo,
+.popover-avatar .agent-logo,
+.message .avatar .agent-logo {
   position: relative;
   z-index: 1;
-  color: var(--agent-fg, #27272a);
-  font-family: Georgia, "Times New Roman", serif;
-  font-size: 17px;
-  font-weight: 700;
-  line-height: 1;
+  width: 72%;
+  height: 72%;
+  object-fit: contain;
+  transform: none;
   user-select: none;
-}
-
-.message .avatar .agent-glyph {
-  font-size: 22px;
+  outline: none;
 }
 
 .popover-avatar {

@@ -76,13 +76,20 @@ test("저장된 UI 테마가 채팅 화면의 색상 변수에 적용된다", ()
   assert.match(renderer, /root\.style\.setProperty\(`--\$\{key\}`, value\)/);
 });
 
-test("에이전트 아바타는 애니메이션 캐릭터 대신 기본 기호를 사용한다", () => {
+test("에이전트 아바타는 애니메이션 캐릭터 대신 공급자 로고를 사용한다", () => {
   const renderer = read("src/chat.js");
-  assert.match(renderer, /claude: \{ glyph:/);
-  assert.match(renderer, /codex: \{ glyph:/);
-  assert.match(renderer, /agy: \{ glyph:/);
-  assert.doesNotMatch(renderer, /chat-assets\//);
-  assert.match(read("src/chat.css"), /\.agent-glyph/);
+  assert.match(renderer, /claude: \{ icon: "\.\/chat-assets\/agent-claude\.svg"/);
+  assert.match(renderer, /codex: \{ icon: "\.\/chat-assets\/agent-codex\.svg"/);
+  assert.match(renderer, /agy: \{ icon: "\.\/chat-assets\/agent-agy\.png"/);
+  for (const file of [
+    "src/chat-assets/agent-claude.svg",
+    "src/chat-assets/agent-codex.svg",
+    "src/chat-assets/agent-agy.png",
+  ]) {
+    assert.ok(fs.statSync(path.join(ROOT, file)).size > 0, `${file}이 비어 있지 않아야 합니다`);
+  }
+  assert.match(read("src/chat.css"), /\.agent-logo/);
+  assert.doesNotMatch(renderer, /agent-glyph/);
 });
 
 test("Agora 아이콘은 파란 배경과 흰색 Ἀ를 사용한다", () => {
