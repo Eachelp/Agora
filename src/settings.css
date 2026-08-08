@@ -135,13 +135,7 @@ input:disabled {
   justify-content: center;
   width: 28px;
   height: 28px;
-  border-radius: 8px;
-  background: #173f78;
-  color: #ffffff;
-  font-family: Georgia, "Times New Roman", serif;
-  font-size: 20px;
-  font-weight: 700;
-  line-height: 1;
+  object-fit: contain;
   flex: none;
 }
 

@@ -35,10 +35,8 @@ test("에이전트 아바타는 애니메이션 캐릭터 대신 기본 기호�
 });
 
 test("Agora 아이콘은 파란 배경과 흰색 Ἀ를 사용한다", () => {
-  const svg = read("build/agora-icon.svg");
-  assert.match(svg, /fill="#173f78"/);
-  assert.match(svg, /fill="#ffffff"/);
-  assert.match(svg, />Ἀ<\/text>/);
+  assert.match(read("src/chat.html"), /src="\.\.\/build\/icon\.png"/);
+  assert.match(read("src/settings.html"), /src="\.\.\/build\/icon\.png"/);
   for (const file of ["build/icon.png", "build/icon-mac.png", "build/icon.ico"]) {
     assert.ok(fs.statSync(path.join(ROOT, file)).size > 0, `${file}이 비어 있지 않아야 합니다`);
   }

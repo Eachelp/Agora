@@ -80,13 +80,7 @@ textarea:focus-visible {
   position: relative;
   width: 18px;
   height: 18px;
-  border-radius: 5px;
-  background: #173f78;
-  color: #ffffff;
-  font-family: Georgia, "Times New Roman", serif;
-  font-size: 13px;
-  font-weight: 700;
-  line-height: 1;
+  object-fit: contain;
 }
 .titlebar-logo i {
   position: absolute;
