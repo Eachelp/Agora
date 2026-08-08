@@ -569,6 +569,70 @@ async function selectProject(projectId) {
   if (result) applyFullState(result);
 }
 
+function openNewProjectPopover(anchor) {
+  openPopover(anchor, (target) => {
+    const title = document.createElement("strong");
+    title.className = "project-popover-title";
+    title.textContent = "새 프로젝트";
+
+    const name = document.createElement("input");
+    name.type = "text";
+    name.maxLength = 80;
+    name.placeholder = "프로젝트 이름";
+
+    const actions = document.createElement("div");
+    actions.className = "project-popover-actions";
+    const create = document.createElement("button");
+    create.type = "button";
+    create.className = "button button-primary";
+    create.textContent = "만들기";
+    create.addEventListener("click", async () => {
+      if (!name.value.trim()) {
+        name.focus();
+        return;
+      }
+      const result = await call(window.chatApi.projectsCreate(name.value));
+      if (result) {
+        closePopover();
+        applyFullState(result);
+      }
+    });
+    actions.append(create);
+    target.append(title, makeField("이름", name), actions);
+    name.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.isComposing) create.click();
+    });
+    requestAnimationFrame(() => name.focus());
+  });
+}
+
+function openSessionMovePopover(anchor, session) {
+  openPopover(anchor, (target) => {
+    const title = document.createElement("strong");
+    title.className = "project-popover-title";
+    title.textContent = "대화를 프로젝트로 이동";
+    target.append(title);
+
+    for (const project of projects) {
+      const option = document.createElement("button");
+      option.type = "button";
+      option.className = "project-move-option";
+      option.textContent = project.id === activeProjectId
+        ? `${project.name} (현재)`
+        : project.name;
+      option.disabled = project.id === activeProjectId;
+      option.addEventListener("click", async () => {
+        const result = await call(window.chatApi.sessionsMove(session.id, project.id));
+        if (result) {
+          closePopover();
+          applyFullState(result);
+        }
+      });
+      target.append(option);
+    }
+  });
+}
+
 function renderSessions() {
   sessionListEl.textContent = "";
   for (const entry of sessions) {
@@ -616,6 +680,15 @@ function renderSessions() {
 
     const actions = document.createElement("span");
     actions.className = "session-actions";
+    const moveBtn = document.createElement("button");
+    moveBtn.type = "button";
+    moveBtn.className = "session-action";
+    moveBtn.title = "다른 프로젝트로 이동";
+    moveBtn.textContent = "↗";
+    moveBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openSessionMovePopover(moveBtn, entry);
+    });
     const renameBtn = document.createElement("button");
     renameBtn.type = "button";
     renameBtn.className = "session-action";
@@ -639,7 +712,7 @@ function renderSessions() {
       const result = await call(window.chatApi.sessionsDelete(entry.id));
       if (result) applyFullState(result);
     });
-    actions.append(renameBtn, deleteBtn);
+    actions.append(moveBtn, renameBtn, deleteBtn);
 
     item.append(main, actions);
     sessionListEl.append(item);
@@ -1634,10 +1707,7 @@ sendButton.addEventListener("click", sendCurrentMessage);
 stopButton.addEventListener("click", () => call(window.chatApi.stop(activeSessionId)));
 
 newProjectButton.addEventListener("click", async () => {
-  const name = window.prompt("새 프로젝트 이름을 입력하세요.", "새 프로젝트");
-  if (name === null || !name.trim()) return;
-  const result = await call(window.chatApi.projectsCreate(name));
-  if (result) applyFullState(result);
+  openNewProjectPopover(newProjectButton);
 });
 
 newSessionButton.addEventListener("click", async () => {

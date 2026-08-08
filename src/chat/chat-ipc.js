@@ -728,6 +728,30 @@ function createChatFeature(options) {
     );
 
     ipcMain.handle(
+      "chat:sessions:move",
+      wrap(async ({ sessionId, projectId }) => {
+        requireSession(sessionId);
+        const targetProject = requireProject(projectId);
+        const currentMeta = store.readMeta(sessionId);
+        const wasActive = getActiveSessionId() === sessionId;
+        if (projectIdForMeta(currentMeta) !== targetProject.id) {
+          store.updateMeta(sessionId, { projectId: targetProject.id });
+          refreshRoomAgents(sessionId);
+        }
+        if (wasActive) {
+          setActiveProjectId(targetProject.id);
+          setActiveSessionId(sessionId);
+        }
+        const payload = sessionsPayload();
+        broadcast("chat:sessions-changed", payload);
+        return {
+          ...payload,
+          session: wasActive ? sessionState(sessionId) : null,
+        };
+      })
+    );
+
+    ipcMain.handle(
       "chat:sessions:rename",
       wrap(async ({ sessionId, title }) => {
         requireSession(sessionId);

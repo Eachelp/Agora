@@ -846,6 +846,10 @@ textarea:focus-visible {
   display: inline-flex;
 }
 
+.session-item.is-active .session-actions {
+  display: inline-flex;
+}
+
 .session-action {
   border: none;
   background: var(--surface);
@@ -1907,4 +1911,29 @@ textarea:focus-visible {
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 4px;
+}
+
+.project-move-option {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  padding: 6px 8px;
+  text-align: left;
+  font-size: 12px;
+}
+
+.project-move-option + .project-move-option {
+  margin-top: 5px;
+}
+
+.project-move-option:not(:disabled):hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.project-move-option:disabled {
+  color: var(--muted);
+  cursor: default;
 }

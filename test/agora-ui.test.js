@@ -115,10 +115,13 @@ test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있
   assert.match(preload, /projectsSelect: \(projectId\)/);
   assert.match(preload, /projectsUpdate: \(projectId, patch\)/);
   assert.match(preload, /projectsDelete: \(projectId\)/);
+  assert.match(preload, /sessionsMove: \(sessionId, projectId\)/);
   assert.match(renderer, /function renderProjects\(\)/);
   assert.match(renderer, /function selectProject\(projectId\)/);
+  assert.match(renderer, /function openSessionMovePopover\(anchor, session\)/);
   assert.match(ipc, /"chat:projects:create"/);
   assert.match(ipc, /"chat:projects:select"/);
   assert.match(ipc, /"chat:projects:delete"/);
+  assert.match(ipc, /"chat:sessions:move"/);
   assert.ok(fs.existsSync(path.join(ROOT, "src/agora/project-store.js")));
 });
