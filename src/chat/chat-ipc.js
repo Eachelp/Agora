@@ -9,6 +9,11 @@ const {
   migrateSessionsToProjects,
 } = require("../agora/project-store");
 const {
+  WorkflowStore,
+  TASK_STATUSES,
+  ROLE_DEFS,
+} = require("../agora/workflow-store");
+const {
   createCapabilityService,
   toPublicProviders,
 } = require("../providers/provider-capabilities");
@@ -193,6 +198,8 @@ function createChatFeature(options) {
   let storeError = null;
   let projectStore = null;
   let projectStoreError = null;
+  let workflowStore = null;
+  let workflowStoreError = null;
   let capabilityService = null;
   let chatWindow = null;
   let shuttingDown = false;
@@ -223,6 +230,19 @@ function createChatFeature(options) {
       console.warn("[agora] 프로젝트 저장소 초기화 실패:", projectStoreError);
     }
     return projectStore;
+  }
+
+  function ensureWorkflowStore() {
+    if (workflowStore || workflowStoreError) return workflowStore;
+    const chatStore = ensureStore();
+    if (!chatStore) return null;
+    try {
+      workflowStore = new WorkflowStore({ root: chatStore.root }).init();
+    } catch (error) {
+      workflowStoreError = error?.message || String(error);
+      console.warn("[agora] 작업 기록 저장소 초기화 실패:", workflowStoreError);
+    }
+    return workflowStore;
   }
 
   function ensureCapabilityService() {
@@ -269,6 +289,20 @@ function createChatFeature(options) {
   function listSessionsForProject(projectId) {
     if (!ensureStore() || !projectId) return [];
     return store.listSessions().filter((entry) => projectIdForMeta(entry) === projectId);
+  }
+
+  function workflowForProject(projectId = getActiveProjectId()) {
+    const workflow = ensureWorkflowStore();
+    if (!workflow || !projectId) {
+      return {
+        decisions: [],
+        tasks: [],
+        roles: ROLE_DEFS,
+        statuses: TASK_STATUSES,
+        readOnly: Boolean(workflowStoreError),
+      };
+    }
+    return workflow.forProject(projectId);
   }
 
   function getActiveSessionId(projectId = getActiveProjectId()) {
@@ -324,10 +358,11 @@ function createChatFeature(options) {
     const list = listSessionsForProject(activeProjectId);
     return {
       projects: ensureProjectStore()?.listProjects() || [],
+      workflow: workflowForProject(activeProjectId),
       activeProjectId,
       sessions: list,
       activeSessionId: getActiveSessionId(activeProjectId),
-      readOnly: Boolean(store?.readOnly || storeError || projectStoreError),
+      readOnly: Boolean(store?.readOnly || storeError || projectStoreError || workflowStoreError),
     };
   }
 
@@ -573,6 +608,15 @@ function createChatFeature(options) {
     return project;
   }
 
+  function requireSessionForProject(sessionId, projectId) {
+    if (!sessionId) return null;
+    requireSession(sessionId);
+    if (projectIdForMeta(store.readMeta(sessionId)) !== projectId) {
+      throw new Error("선택한 채팅이 프로젝트에 속하지 않습니다.");
+    }
+    return sessionId;
+  }
+
   function wrap(handler) {
     return async (_event, input) => {
       try {
@@ -643,6 +687,12 @@ function createChatFeature(options) {
         if (typeof patch?.defaultPermissionMode === "string") {
           next.defaultPermissionMode = patch.defaultPermissionMode;
         }
+        if (patch?.defaultAgents && typeof patch.defaultAgents === "object" && !Array.isArray(patch.defaultAgents)) {
+          next.defaultAgents = patch.defaultAgents;
+        }
+        if (patch?.defaultRoles && typeof patch.defaultRoles === "object" && !Array.isArray(patch.defaultRoles)) {
+          next.defaultRoles = patch.defaultRoles;
+        }
         const project = ensureProjectStore().updateProject(projectId, next);
         for (const [sessionId] of rooms) {
           const meta = store.readMeta(sessionId);
@@ -692,6 +742,7 @@ function createChatFeature(options) {
           store.updateMeta(entry.id, { projectId: UNCATEGORIZED_PROJECT_ID });
           refreshRoomAgents(entry.id);
         }
+        ensureWorkflowStore()?.moveProjectItems(project.id, UNCATEGORIZED_PROJECT_ID);
         if (!ensureProjectStore().deleteProject(project.id)) {
           throw new Error("프로젝트를 삭제하지 못했습니다.");
         }
@@ -703,6 +754,132 @@ function createChatFeature(options) {
         const payload = sessionsPayload();
         broadcast("chat:sessions-changed", payload);
         return { ...payload, session: sessionId ? sessionState(sessionId) : null };
+      })
+    );
+
+    ipcMain.handle(
+      "chat:decisions:create",
+      wrap(async ({ projectId, title, content, chatId, messageIds }) => {
+        const project = requireProject(projectId || getActiveProjectId());
+        const sourceChatId = requireSessionForProject(chatId || getActiveSessionId(project.id), project.id);
+        const decision = ensureWorkflowStore().createDecision({
+          projectId: project.id,
+          title,
+          content,
+          chatId: sourceChatId,
+          messageIds,
+        });
+        const payload = sessionsPayload();
+        broadcast("chat:sessions-changed", payload);
+        broadcast("chat:workflow-changed", { projectId: project.id, workflow: workflowForProject(project.id) });
+        return { ...payload, decision };
+      })
+    );
+
+    ipcMain.handle(
+      "chat:decisions:update",
+      wrap(async ({ projectId, decisionId, patch }) => {
+        const project = requireProject(projectId || getActiveProjectId());
+        const workflow = ensureWorkflowStore();
+        const current = workflow.getDecision(decisionId);
+        if (!current || current.projectId !== project.id) throw new Error("결정을 찾을 수 없습니다.");
+        const next = {};
+        if (typeof patch?.title === "string") next.title = patch.title;
+        if (typeof patch?.content === "string") next.content = patch.content;
+        if (Array.isArray(patch?.messageIds)) next.messageIds = patch.messageIds;
+        if (typeof patch?.chatId === "string" || patch?.chatId === null) {
+          next.chatId = requireSessionForProject(patch.chatId, project.id);
+        }
+        const decision = workflow.updateDecision(decisionId, next);
+        const payload = sessionsPayload();
+        broadcast("chat:sessions-changed", payload);
+        broadcast("chat:workflow-changed", { projectId: project.id, workflow: workflowForProject(project.id) });
+        return { ...payload, decision };
+      })
+    );
+
+    ipcMain.handle(
+      "chat:decisions:delete",
+      wrap(async ({ projectId, decisionId }) => {
+        const project = requireProject(projectId || getActiveProjectId());
+        const workflow = ensureWorkflowStore();
+        const current = workflow.getDecision(decisionId);
+        if (!current || current.projectId !== project.id) throw new Error("결정을 찾을 수 없습니다.");
+        if (workflow.listTasks(project.id).some((task) => task.decisionId === decisionId)) {
+          throw new Error("연결된 작업이 있어 결정을 삭제할 수 없습니다.");
+        }
+        workflow.deleteDecision(decisionId);
+        const payload = sessionsPayload();
+        broadcast("chat:sessions-changed", payload);
+        broadcast("chat:workflow-changed", { projectId: project.id, workflow: workflowForProject(project.id) });
+        return payload;
+      })
+    );
+
+    ipcMain.handle(
+      "chat:tasks:create",
+      wrap(async ({ projectId, title, description, status, role, agentId, decisionId, chatId }) => {
+        const project = requireProject(projectId || getActiveProjectId());
+        const workflow = ensureWorkflowStore();
+        const sourceChatId = requireSessionForProject(chatId || getActiveSessionId(project.id), project.id);
+        if (decisionId) {
+          const decision = workflow.getDecision(decisionId);
+          if (!decision || decision.projectId !== project.id) throw new Error("연결할 결정을 찾을 수 없습니다.");
+        }
+        const selectedRole = ROLE_DEFS.some((entry) => entry.id === role) ? role : "implementation";
+        const task = workflow.createTask({
+          projectId: project.id,
+          title,
+          description,
+          status,
+          role: selectedRole,
+          agentId: agentId || project.defaultRoles?.[selectedRole] || null,
+          decisionId,
+          chatId: sourceChatId,
+        });
+        const payload = sessionsPayload();
+        broadcast("chat:sessions-changed", payload);
+        broadcast("chat:workflow-changed", { projectId: project.id, workflow: workflowForProject(project.id) });
+        return { ...payload, task };
+      })
+    );
+
+    ipcMain.handle(
+      "chat:tasks:update",
+      wrap(async ({ projectId, taskId, patch }) => {
+        const project = requireProject(projectId || getActiveProjectId());
+        const workflow = ensureWorkflowStore();
+        const current = workflow.getTask(taskId);
+        if (!current || current.projectId !== project.id) throw new Error("작업을 찾을 수 없습니다.");
+        if (patch?.decisionId) {
+          const decision = workflow.getDecision(patch.decisionId);
+          if (!decision || decision.projectId !== project.id) throw new Error("연결할 결정을 찾을 수 없습니다.");
+        }
+        const next = {};
+        for (const field of ["title", "description", "status", "role", "agentId", "decisionId", "chatId"]) {
+          if (Object.hasOwn(patch || {}, field)) next[field] = patch[field];
+        }
+        if (Object.hasOwn(next, "chatId")) next.chatId = requireSessionForProject(next.chatId, project.id);
+        const task = workflow.updateTask(taskId, next);
+        const payload = sessionsPayload();
+        broadcast("chat:sessions-changed", payload);
+        broadcast("chat:workflow-changed", { projectId: project.id, workflow: workflowForProject(project.id) });
+        return { ...payload, task };
+      })
+    );
+
+    ipcMain.handle(
+      "chat:tasks:delete",
+      wrap(async ({ projectId, taskId }) => {
+        const project = requireProject(projectId || getActiveProjectId());
+        const workflow = ensureWorkflowStore();
+        const current = workflow.getTask(taskId);
+        if (!current || current.projectId !== project.id) throw new Error("작업을 찾을 수 없습니다.");
+        workflow.deleteTask(taskId);
+        const payload = sessionsPayload();
+        broadcast("chat:sessions-changed", payload);
+        broadcast("chat:workflow-changed", { projectId: project.id, workflow: workflowForProject(project.id) });
+        return payload;
       })
     );
 
