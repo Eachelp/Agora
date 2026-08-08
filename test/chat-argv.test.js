@@ -189,12 +189,14 @@ test("agy chat 모드: plan + sandbox + 슬래시 명령 차단", () => {
 test("agy Claude/GPT 고정 모델에는 --effort를 붙이지 않는다", () => {
   const agy = provider("agy", {
     modelOptions: [
-      { id: "claude-sonnet-4-6", efforts: [] },
-      { id: "gpt-oss-120b-medium", efforts: [] },
+      // 이전 capability cache처럼 잘못된 effort 목록이 들어와도 실행하지 않는다.
+      { id: "claude-sonnet-4-6", efforts: ["default", "low", "medium", "high"] },
+      { id: "claude-opus-4-6-thinking", efforts: ["default", "low", "medium", "high"] },
+      { id: "gpt-oss-120b-medium", efforts: ["default", "low", "medium", "high"] },
       { id: "gemini-3.6-flash-high", efforts: ["high"] },
     ],
   });
-  for (const model of ["claude-sonnet-4-6", "gpt-oss-120b-medium"]) {
+  for (const model of ["claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium"]) {
     const result = buildAgentInvocation({
       provider: agy,
       chatCwd: CHAT_CWD,

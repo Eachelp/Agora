@@ -27,6 +27,9 @@ function resolvedModel(record, configured) {
 }
 
 function resolvedEffort(record, model, configured) {
+  if (record.id === "agy" && /^(claude-|gpt-oss-)/i.test(String(model || ""))) {
+    return "default";
+  }
   const option = concreteModelOptions(record).find((entry) => entry.id === model);
   const efforts = (Array.isArray(option?.efforts) ? option.efforts : record.efforts || [])
     .filter((effort) => effort !== "default");

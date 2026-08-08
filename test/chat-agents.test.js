@@ -45,8 +45,10 @@ test("AGY 모델명에 포함된 추론 강도를 실제 effort로 맞춘다", (
 test("AGY 고정 모델은 예전에 저장된 effort를 실행 전에 제거한다", () => {
   const options = [
     { id: "default", efforts: [] },
-    { id: "claude-sonnet-4-6", efforts: [] },
-    { id: "gpt-oss-120b-medium", efforts: [] },
+    // 오래된 AGY capability cache가 잘못된 effort 목록을 가지고 있는 경우도 포함한다.
+    { id: "claude-sonnet-4-6", efforts: ["default", "low", "medium", "high"] },
+    { id: "claude-opus-4-6-thinking", efforts: ["default", "low", "medium", "high"] },
+    { id: "gpt-oss-120b-medium", efforts: ["default", "low", "medium", "high"] },
   ];
   const claude = roomAgentFromCapability(record("agy", options), {
     model: "claude-sonnet-4-6",
@@ -57,5 +59,10 @@ test("AGY 고정 모델은 예전에 저장된 effort를 실행 전에 제거한
     effort: "high",
   });
   assert.equal(claude.effort, "default");
+  const opus = roomAgentFromCapability(record("agy", options), {
+    model: "claude-opus-4-6-thinking",
+    effort: "medium",
+  });
   assert.equal(gpt.effort, "default");
+  assert.equal(opus.effort, "default");
 });

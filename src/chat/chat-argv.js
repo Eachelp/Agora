@@ -43,13 +43,14 @@ function canInline(attachment) {
 
 function agyEffortForModel(provider, model, effort) {
   if (!model || !effort) return effort;
+  // AGY의 Claude Thinking/GPT-OSS 고정 변형은 오래된 capability cache가
+  // 잘못된 effort 목록을 갖고 있어도 --effort를 받지 않습니다.
+  if (/^(claude-|gpt-oss-)/i.test(model)) return null;
   const option = (provider?.modelOptions || []).find((entry) => entry?.id === model);
   if (option && Array.isArray(option.efforts)) {
     return option.efforts.includes(effort) ? effort : null;
   }
-  // 오래된 저장값이나 외부 호출도 Claude/GPT-OSS에 잘못된 effort를 붙여
-  // 실행하지 않게 하는 마지막 안전장치입니다.
-  return /^(claude-|gpt-oss-)/i.test(model) ? null : effort;
+  return effort;
 }
 
 function claudeArgv({ permissionMode, workspace, model, effort, attachmentsDir, hasPathDeliveries, autoApprove }) {
