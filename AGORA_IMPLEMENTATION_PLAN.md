@@ -2,6 +2,8 @@
 
 이 문서는 `BASELINE_AUDIT.md`의 조사 결과를 실제 구현 순서로 정리한다. Phase 0에서는 이 문서만 작성하고 제품 코드는 수정하지 않는다.
 
+> 미래 방향과 v1의 경계는 [AGORA_V1_FUTURE_COMPATIBILITY.md](AGORA_V1_FUTURE_COMPATIBILITY.md)를 따른다. v2/v3의 기능을 선구현하지 않는다.
+
 ## 1. 구현 원칙
 
 1. 기존 CodePet을 실행하거나 수정하지 않고 Agora만 독립적으로 발전시킨다.
