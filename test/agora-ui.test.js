@@ -28,6 +28,26 @@ test("채팅 화면의 설정 버튼이 기존 설정 창을 연다", () => {
   assert.match(main, /title: "Ἀγορά 설정"[\s\S]*?icon: path\.join\(__dirname, "\.\.", "build", "icon\.ico"\)/);
 });
 
+test("Agora 화면 재배치는 기존 채팅 제어 연결을 유지한다", () => {
+  const html = read("src/chat.html");
+  for (const id of [
+    "btn-new-session",
+    "session-list",
+    "btn-workspace",
+    "permission-select",
+    "btn-discussion",
+    "agent-chips",
+    "btn-attach",
+    "composer-input",
+    "btn-stop",
+    "btn-send",
+  ]) {
+    assert.match(html, new RegExp(`id="${id}"`));
+  }
+  assert.match(html, /DISCUSSION ROOM/);
+  assert.match(html, /HUMAN-LED WORKSPACE/);
+});
+
 test("에이전트 아바타는 애니메이션 캐릭터 대신 기본 기호를 사용한다", () => {
   const renderer = read("src/chat.js");
   assert.match(renderer, /claude: \{ glyph:/);

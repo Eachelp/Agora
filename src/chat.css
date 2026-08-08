@@ -1,15 +1,15 @@
 :root {
   color-scheme: light;
-  --page: #fafafa;
-  --sidebar: #f4f4f5;
+  --page: #f6f8fc;
+  --sidebar: #eef2f8;
   --surface: #ffffff;
-  --ink: #09090b;
-  --ink-soft: #27272a;
-  --muted: #52525b;
-  --line: #e4e4e7;
-  --line-strong: #d4d4d8;
-  --accent: #0f172a;
-  --accent-soft: #f4f4f5;
+  --ink: #102342;
+  --ink-soft: #1f3558;
+  --muted: #64748b;
+  --line: #dbe3ef;
+  --line-strong: #c7d3e3;
+  --accent: #173f78;
+  --accent-soft: #e7eef9;
   --danger: #ef4444;
   --danger-soft: #fef2f2;
   --shadow: 0 1px 3px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.02);
@@ -1365,3 +1365,346 @@ textarea:focus-visible {
 .approval-dialog pre { max-height: 180px; overflow: auto; white-space: pre-wrap; font-size: 11px; background: var(--bg); padding: 10px; border-radius: 8px; }
 .approval-warning { color: #92400e; }
 .approval-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+
+/* --- Agora workspace shell --- */
+.titlebar {
+  background: #102d58;
+  border-bottom-color: #0b2347;
+}
+
+.titlebar-title,
+.titlebar-btn {
+  color: #f8fbff;
+}
+
+.titlebar-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.titlebar-logo {
+  width: 20px;
+  height: 20px;
+}
+
+.app {
+  --sidebar-width: 252px;
+  background: var(--page);
+}
+
+.sidebar {
+  background: linear-gradient(180deg, #f4f7fc 0%, #edf2f9 100%);
+  border-right-color: #d5dfec;
+}
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 16px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.sidebar-brand-icon {
+  width: 34px;
+  height: 34px;
+  object-fit: contain;
+  flex: none;
+}
+
+.sidebar-brand > span {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.sidebar-brand strong {
+  color: var(--ink);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 19px;
+  letter-spacing: -0.03em;
+}
+
+.sidebar-brand small,
+.sidebar-heading small,
+.sidebar-foot-label,
+.room-eyebrow,
+.agents-label,
+.composer-meta > span:first-child {
+  color: #7182a0;
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.13em;
+}
+
+.sidebar-head {
+  padding: 14px 14px 10px;
+  border-bottom: none;
+}
+
+.sidebar-heading {
+  display: grid;
+  gap: 2px;
+}
+
+.sidebar-title {
+  color: var(--ink);
+  font-size: 15px;
+}
+
+.button-small {
+  border-color: #b7c7dd;
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--accent);
+  padding: 5px 9px;
+}
+
+.button-small:hover {
+  border-color: var(--accent);
+  background: #f8fbff;
+}
+
+.session-list {
+  gap: 5px;
+  padding: 4px 10px 12px;
+}
+
+.session-item {
+  border: 1px solid transparent;
+}
+
+.session-item.is-active {
+  background: #ffffff;
+  border-color: #cbd8e9;
+  box-shadow: 0 5px 14px rgba(22, 52, 96, 0.08);
+}
+
+.session-select {
+  padding: 10px;
+}
+
+.session-item:not(.is-active) .session-select:hover {
+  background: rgba(23, 63, 120, 0.06);
+}
+
+.session-name {
+  color: var(--ink);
+}
+
+.session-meta {
+  color: #7182a0;
+}
+
+.sidebar-foot {
+  display: grid;
+  gap: 7px;
+  padding: 11px 14px 13px;
+  border-top-color: #d5dfec;
+}
+
+.sidebar-foot-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.sidebar-foot .text-button {
+  padding: 2px 0;
+  font-size: 11px;
+}
+
+.room-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "info actions"
+    "controls controls";
+  gap: 12px 20px;
+  padding: 20px 24px 14px;
+  background: linear-gradient(180deg, #ffffff 0%, #fbfcff 100%);
+  border-bottom-color: #dbe4ef;
+}
+
+.room-info {
+  grid-area: info;
+  display: grid;
+  gap: 3px;
+}
+
+.room-eyebrow {
+  margin: 0;
+}
+
+.room-info strong {
+  color: var(--ink);
+  font-size: 20px;
+  line-height: 1.25;
+}
+
+.room-actions {
+  grid-area: actions;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+}
+
+.agent-chips {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.agent-chip {
+  min-height: 36px;
+  padding: 3px 9px 3px 4px;
+  border-color: #d6e0ec;
+  background: #f9fbfe;
+}
+
+.agent-avatar {
+  width: 28px;
+  height: 28px;
+}
+
+.room-controls {
+  grid-area: controls;
+  margin-top: 0;
+  gap: 7px;
+}
+
+.chip-button,
+#permission-select {
+  min-height: 32px;
+  border-radius: 8px;
+  border-color: #d4deeb;
+  background: #ffffff;
+  color: var(--ink-soft);
+  padding: 5px 9px;
+}
+
+.chip-button {
+  max-width: 260px;
+}
+
+.chip-button:hover,
+#permission-select:hover {
+  border-color: #7f9dc5;
+}
+
+.chip-label {
+  color: #6b7f9f;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+}
+
+.discussion-button {
+  margin-left: auto;
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.discussion-button:hover {
+  border-color: #0f315f;
+  background: #0f315f;
+}
+
+.enforcement-hint {
+  margin-left: 2px;
+}
+
+.chat-scroll {
+  padding: 24px 28px 10px;
+}
+
+.message-list,
+.typing-row,
+.composer-box {
+  max-width: 820px;
+}
+
+.message-list {
+  gap: 18px;
+}
+
+.message .bubble {
+  border-color: #dbe4ef;
+  border-radius: 8px 16px 16px 16px;
+  box-shadow: 0 2px 8px rgba(22, 52, 96, 0.06);
+  padding: 10px 14px;
+}
+
+.message.is-user .bubble {
+  border-radius: 16px 8px 16px 16px;
+  background: #173f78;
+  border-color: #173f78;
+}
+
+.composer {
+  padding: 6px 28px 20px;
+  background: linear-gradient(180deg, rgba(246, 248, 252, 0) 0%, var(--page) 32%);
+}
+
+.composer-meta {
+  max-width: 820px;
+  margin: 0 auto 6px;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.composer-box {
+  border: 1px solid #d5dfec;
+  border-radius: 16px;
+  box-shadow: 0 8px 24px rgba(22, 52, 96, 0.1);
+}
+
+.composer-box:focus-within {
+  border-color: #8aa6ca;
+  box-shadow: 0 10px 28px rgba(22, 52, 96, 0.14);
+}
+
+.button-primary {
+  background: #173f78;
+  border-color: #173f78;
+}
+
+.button-primary:hover {
+  background: #0f315f;
+}
+
+@media (max-width: 760px) {
+  .room-bar {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "info"
+      "actions"
+      "controls";
+    padding: 16px;
+  }
+
+  .room-actions,
+  .agent-chips {
+    justify-content: flex-start;
+  }
+
+  .discussion-button {
+    margin-left: 0;
+  }
+
+  .chat-scroll {
+    padding: 18px 16px 8px;
+  }
+
+  .composer {
+    padding: 6px 16px 14px;
+  }
+
+  .composer-meta > span:last-child {
+    display: none;
+  }
+}
