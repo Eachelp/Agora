@@ -22,7 +22,7 @@ function makeStore(options = {}) {
   return store;
 }
 
-test("AGORA_HOME이 기본 루트를 대체하고 CodePet 환경 변수는 무시한다", () => {
+test("AGORA_HOME이 기본 루트를 대체하고 원본 CodePet 환경 변수는 무시한다", () => {
   const override = makeRoot();
   assert.equal(defaultRoot({ AGORA_HOME: override }), path.resolve(override));
   assert.equal(defaultRoot({ CODE_PET_HOME: override }), path.join(os.homedir(), ".agora"));

@@ -612,7 +612,7 @@ class CodexWatcher extends EventEmitter {
         this.tails.set(file.filePath, tail);
 
         // 앱 시작 시점에 "작업 중" 상태로 끝난 최근 파일은 각각 복원합니다.
-        // 그래야 CodePet보다 먼저 시작한 동시 작업 수도 첫 화면부터 맞습니다.
+        // 그래야 Agora보다 먼저 시작한 동시 작업 수도 첫 화면부터 맞습니다.
         if (
           this.firstPoll &&
           Date.now() - file.mtimeMs < WATCHER_CONFIG.staleWorkingMs &&

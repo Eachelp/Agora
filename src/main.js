@@ -165,7 +165,7 @@ const MOVEMENT_CONFIG = Object.freeze({
 
 // Codex 계정 전환 뒤 Codex Desktop App을 다시 띄우는 설정입니다.
 // codex-auth/codex-profile류 스위처들은 auth를 바꾼 뒤 실행 중인 클라이언트를 재시작해야
-// 새 auth가 확실히 적용되는 구조를 씁니다. CodePet도 같은 흐름을 따릅니다.
+// 새 auth가 확실히 적용되는 구조를 씁니다. 원본 CodePet도 같은 흐름을 따릅니다.
 // enabledAfterAccountSwitch를 false로 바꾸면 active 프로필만 저장하고 재시작은 하지 않습니다.
 const CODEX_DESKTOP_RESTART_CONFIG = Object.freeze({
   enabledAfterAccountSwitch: true,
@@ -1380,7 +1380,7 @@ async function openLoginScript(scriptPath) {
 }
 
 // Codex 공식 로그인 흐름을 실행할 스크립트를 만듭니다. (Windows: .cmd / macOS: .command)
-// CodePet은 토큰을 직접 받지 않고, pending profile CODEX_HOME 안에서 `codex login`만 실행하게 합니다.
+// Agora는 토큰을 직접 받지 않고, pending profile CODEX_HOME 안에서 `codex login`만 실행하게 합니다.
 function writeCodexLoginScript(profile) {
   if (["darwin", "linux"].includes(process.platform)) {
     const codexCommand = resolveCommand("codex", codexCommandCandidates());
@@ -1388,7 +1388,7 @@ function writeCodexLoginScript(profile) {
       ? "codepet-codex-login.command"
       : "codepet-codex-login.sh";
     const scriptPath = writeMacLoginScript(fileName, [
-      `echo "CodePet Codex Login - ${profile.id}"`,
+      `echo "Agora Codex Login - ${profile.id}"`,
       `export CODEX_HOME=${quoteShellArgument(profile.homePath)}`,
       `${codexCommand ? quoteShellArgument(codexCommand) : "codex"} login`,
     ]);
@@ -1408,8 +1408,8 @@ function writeCodexLoginScript(profile) {
     scriptPath,
     [
       "@echo off",
-      `title CodePet Codex Login - ${profile.id}`,
-      "echo CodePet Codex Login",
+      `title Agora Codex Login - ${profile.id}`,
+      "echo Agora Codex Login",
       "echo.",
       `echo Profile: ${profile.id}`,
       `echo CODEX_HOME: ${profile.homePath}`,
@@ -1417,7 +1417,7 @@ function writeCodexLoginScript(profile) {
       "echo.",
       codexCommand
         ? `echo Using Codex command: ${codexCommand}`
-        : "echo Codex command was not resolved by CodePet. Trying PATH lookup...",
+        : "echo Codex command was not resolved by Agora. Trying PATH lookup...",
       "echo.",
       codexCommand ? "" : "where codex >nul 2>nul",
       codexCommand ? "" : "if errorlevel 1 (",
@@ -1435,7 +1435,7 @@ function writeCodexLoginScript(profile) {
       ") else (",
       "  echo Codex login command finished.",
       ")",
-      "echo Return to CodePet and open the account switch menu.",
+      "echo Return to Agora and open the account switch menu.",
       "echo.",
       "pause",
       "",
@@ -1449,7 +1449,7 @@ function writeCodexLoginScript(profile) {
   return scriptPath;
 }
 
-// Codex 로그인은 브라우저/OAuth/터미널 상호작용이 필요하므로 CodePet 내부에서 직접 처리하지 않습니다.
+// Codex 로그인은 브라우저/OAuth/터미널 상호작용이 필요하므로 Agora 내부에서 직접 처리하지 않습니다.
 // 대신 pending profile CODEX_HOME을 만든 뒤 별도 터미널에서 `codex login`을 한 번만 실행합니다.
 async function openCodexLoginTerminal() {
   if (codexLoginLaunchInProgress) {
@@ -1462,7 +1462,7 @@ async function openCodexLoginTerminal() {
   try {
     codexAccountSwitcher.ensureCurrentAccountProfile();
     if (!["win32", "darwin", "linux"].includes(process.platform)) {
-      throw new Error(`CodePet 로그인 실행기는 ${process.platform}을 지원하지 않습니다.`);
+      throw new Error(`Agora 로그인 실행기는 ${process.platform}을 지원하지 않습니다.`);
     }
 
     const profile = codexAccountSwitcher.createLoginProfile();
@@ -1693,7 +1693,7 @@ function writeClaudeLoginScript() {
       ? "codepet-claude-login.command"
       : "codepet-claude-login.sh";
     return writeMacLoginScript(fileName, [
-      'echo "CodePet Claude Login"',
+      'echo "Agora Claude Login"',
       `${quoteShellArgument(claudeCommand)} auth login`,
     ]);
   }
@@ -1703,7 +1703,7 @@ function writeClaudeLoginScript() {
     scriptPath,
     [
       "@echo off",
-      "title CodePet Claude Login",
+      "title Agora Claude Login",
       `call ${quoteCmdArgument(claudeCommand)} auth login`,
       "echo.",
       "pause",
@@ -1885,7 +1885,7 @@ function showCodexAccountBubble(text) {
   }, BUBBLE_CONFIG.doneAutoHideMs);
 }
 
-// 현재 live ~/.codex/auth.json을 CodePet 저장소에 저장합니다.
+// 현재 live ~/.codex/auth.json을 Agora 저장소에 저장합니다.
 function saveCurrentCodexAccount() {
   try {
     const profile = codexAccountSwitcher.saveCurrentAccount();
@@ -2102,7 +2102,7 @@ function createTray() {
 }
 
 // 창을 숨기면 앱은 트레이에 남습니다.
-// 사용자가 창을 찾지 못하는 상황에서도 트레이의 "CodePet 보이기" 또는 "완전 종료"를 쓸 수 있습니다.
+// 사용자가 창을 찾지 못하는 상황에서도 트레이의 "Agora 보이기" 또는 "완전 종료"를 쓸 수 있습니다.
 function hidePetWindowToTray() {
   petHiddenToTray = true;
   stopMovementLoop();
