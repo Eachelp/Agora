@@ -138,9 +138,10 @@ const ENFORCEMENT_LABEL = {
 };
 
 const AGENT_VISUALS = Object.freeze({
-  claude: { src: "./chat-assets/claude.png", background: "#f7d9c8" },
-  codex: { src: "./chat-assets/gpt.png", background: "#d8f3ea" },
-  agy: { src: "./chat-assets/gemini.png", background: "#dceaff" },
+  // 작업용 채팅에서는 캐릭터 그림 대신 공급자를 구분하는 기본 기호를 사용합니다.
+  claude: { glyph: "✦", background: "#f1d8c9", foreground: "#6b3f2c" },
+  codex: { glyph: "◈", background: "#d8eee6", foreground: "#195a48" },
+  agy: { glyph: "A", background: "#dce8ff", foreground: "#214d9a" },
 });
 
 const AGENT_EMOTICON_FOLDERS = Object.freeze({
@@ -334,12 +335,13 @@ function makeAgentAvatar(agent, className = "avatar") {
   avatar.className = className;
   avatar.style.setProperty("--agent-color", agent?.color || "#52525b");
   avatar.style.setProperty("--agent-bg", visual?.background || agent?.color || "#e4e4e7");
+  avatar.style.setProperty("--agent-fg", visual?.foreground || "#27272a");
   if (visual) {
-    const image = document.createElement("img");
-    image.src = visual.src;
-    image.alt = `${agent.name} 프로필`;
-    image.draggable = false;
-    avatar.append(image);
+    const glyph = document.createElement("span");
+    glyph.className = "agent-glyph";
+    glyph.textContent = visual.glyph;
+    glyph.setAttribute("aria-label", `${agent.name} 기본 아이콘`);
+    avatar.append(glyph);
   } else {
     avatar.textContent = (agent?.name || agent?.id || "?").slice(0, 1).toUpperCase();
   }
@@ -1483,6 +1485,7 @@ sessionTitleEl.addEventListener("dblclick", () => {
 });
 
 // --- 타이틀바 ---
+document.getElementById("btn-settings").addEventListener("click", () => window.chatApi.openSettings());
 document.getElementById("btn-minimize").addEventListener("click", () => window.chatApi.minimize());
 document.getElementById("btn-maximize").addEventListener("click", () => window.chatApi.maximize());
 document.getElementById("btn-close").addEventListener("click", () => window.chatApi.close());

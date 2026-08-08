@@ -3,14 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>CodePet 설정</title>
+    <title>Ἀγορά 설정</title>
     <link rel="stylesheet" href="./settings.css" />
   </head>
   <body>
     <div class="titlebar">
       <div class="titlebar-drag">
-        <span class="titlebar-logo"><i></i><i></i></span>
-        <span class="titlebar-title">CodePet 설정</span>
+        <span class="titlebar-logo" aria-label="Ἀγορά">Ἀ</span>
+        <span class="titlebar-title">Ἀγορά 설정</span>
       </div>
       <div class="titlebar-controls">
         <button class="titlebar-btn btn-minimize" id="btn-minimize" type="button" aria-label="최소화">
@@ -27,10 +27,10 @@
     </div>
     <div class="app-shell">
       <aside class="sidebar">
-        <div class="brand-lockup" aria-label="CodePet 0.3">
-          <span class="brand-mark" aria-hidden="true"><i></i><i></i></span>
+        <div class="brand-lockup" aria-label="Ἀγορά 설정">
+          <span class="brand-mark" aria-hidden="true">Ἀ</span>
           <span>
-            <strong>CodePet</strong>
+            <strong>Ἀγορά</strong>
             <small>WORKSPACE COMPANION</small>
           </span>
         </div>
@@ -160,7 +160,7 @@
               <div class="font-preview" id="font-preview" aria-live="polite">
                 <span class="preview-label">LIVE PREVIEW</span>
                 <strong>오늘의 작업을<br />편안하게.</strong>
-                <p>CodePet이 작업 흐름을 알려드려요.</p>
+                <p>Ἀγορά가 작업 흐름을 알려드려요.</p>
                 <span class="preview-meta" id="font-preview-name">시스템 기본</span>
               </div>
             </div>
@@ -172,6 +172,11 @@
               <h2 id="pet-behavior-title">펫과 알림</h2>
             </div>
             <div class="control-grid">
+              <label class="switch-row" for="pet-enabled">
+                <span><strong>데스크톱 펫 표시</strong><small>기본값은 꺼짐</small></span>
+                <input id="pet-enabled" type="checkbox" />
+                <i aria-hidden="true"></i>
+              </label>
               <label class="control-field" for="pet">
                 <span>사용할 펫</span>
                 <select id="pet"></select>

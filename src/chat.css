@@ -76,9 +76,17 @@ textarea:focus-visible {
 .titlebar-logo {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   position: relative;
-  width: 14px;
-  height: 14px;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  background: #173f78;
+  color: #ffffff;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
 }
 .titlebar-logo i {
   position: absolute;
@@ -252,6 +260,21 @@ textarea:focus-visible {
   user-select: none;
   outline: 1px solid rgba(0, 0, 0, 0.1);
   outline-offset: -1px;
+}
+
+.agent-glyph {
+  position: relative;
+  z-index: 1;
+  color: var(--agent-fg, #27272a);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1;
+  user-select: none;
+}
+
+.message .avatar .agent-glyph {
+  font-size: 22px;
 }
 
 .popover-avatar {

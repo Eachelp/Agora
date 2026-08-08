@@ -238,6 +238,12 @@ function readSettings() {
   }
 }
 
+// Agora는 채팅 중심으로 시작합니다. 기존 펫 기능은 남겨두되, 사용자가 설정에서
+// 직접 켠 경우에만 데스크톱 펫 창을 만듭니다.
+function isPetEnabled() {
+  return readSettings().petEnabled === true;
+}
+
 function writeSettings(patch) {
   const current = readSettings();
   delete current.themeSource;
@@ -2001,6 +2007,7 @@ function buildCodexAccountSubmenu() {
 // 시스템 트레이 메뉴는 창이 투명해져서 펫 우클릭 메뉴를 못 여는 상황에서도 접근할 수 있는 안전장치입니다.
 function buildTrayMenu() {
   const isPetVisible = Boolean(petWindow && !petWindow.isDestroyed() && petWindow.isVisible());
+  const petEnabled = isPetEnabled();
 
   return Menu.buildFromTemplate([
     {
@@ -2013,12 +2020,12 @@ function buildTrayMenu() {
     },
     { type: "separator" },
     {
-      label: "CodePet 보이기",
-      enabled: !isPetVisible,
+      label: petEnabled ? "펫 보이기" : "펫 보이기 (설정에서 켜기)",
+      enabled: petEnabled && !isPetVisible,
       click: showPetWindowFromTray,
     },
     {
-      label: "CodePet 숨기기",
+      label: "펫 숨기기",
       enabled: isPetVisible,
       click: hidePetWindowToTray,
     },
@@ -2056,7 +2063,7 @@ function buildTrayMenu() {
 // 트레이 메뉴는 현재 표시 상태, 일시정지 상태, 펫 선택 상태를 반영해야 하므로 상태가 바뀔 때마다 다시 만듭니다.
 function refreshTrayMenu() {
   if (!tray) return;
-  tray.setToolTip("CodePet");
+  tray.setToolTip("Ἀγορά");
   tray.setContextMenu(buildTrayMenu());
 }
 
@@ -2066,8 +2073,9 @@ function createTray() {
   if (tray) return;
 
   tray = new Tray(createTrayIcon());
-  tray.on("click", showPetWindowFromTray);
-  tray.on("double-click", showPetWindowFromTray);
+  // 펫이 꺼져 있으면 트레이 아이콘도 채팅을 여는 작업용 진입점으로 동작합니다.
+  tray.on("click", openChatWindow);
+  tray.on("double-click", openChatWindow);
   refreshTrayMenu();
 }
 
@@ -2087,6 +2095,11 @@ function hidePetWindowToTray() {
 
 // 트레이에서 다시 보이기를 누르면 기존 창을 다시 보여주고, 창이 파괴된 상태라면 새로 만듭니다.
 function showPetWindowFromTray() {
+  if (!isPetEnabled()) {
+    openChatWindow();
+    return;
+  }
+
   if (!petWindow || petWindow.isDestroyed()) {
     petHiddenToTray = false;
     createWindow();
@@ -2100,6 +2113,25 @@ function showPetWindowFromTray() {
   startMovementLoop({ resetPosition: false });
   resendCurrentPetState();
   refreshPetSprite({ force: true });
+  refreshTrayMenu();
+}
+
+function setPetEnabled(enabled) {
+  const next = enabled === true;
+  writeSettings({ petEnabled: next });
+
+  if (next) {
+    petHiddenToTray = false;
+    if (!petWindow || petWindow.isDestroyed()) createWindow();
+    else showPetWindowFromTray();
+    if (!bubbleWindow || bubbleWindow.isDestroyed()) createBubbleWindow();
+  } else {
+    petHiddenToTray = true;
+    stopMovementLoop();
+    hideBubble();
+    if (petWindow && !petWindow.isDestroyed()) petWindow.hide();
+  }
+
   refreshTrayMenu();
 }
 
@@ -3219,7 +3251,7 @@ function createWindow() {
       oldWindow.destroy();
     }
 
-    createWindow();
+    if (isPetEnabled()) createWindow();
   });
 
   petWindow.webContents.on("unresponsive", () => {
@@ -3394,6 +3426,9 @@ function registerIpcHandlers() {
     ) {
       applyPet(next.petKey);
     }
+    if (typeof next.petEnabled === "boolean" && next.petEnabled !== isPetEnabled()) {
+      setPetEnabled(next.petEnabled);
+    }
     if (Object.values(ACTIVITY_BUBBLE_MODES).includes(next.activityBubbleMode)) {
       setActivityBubbleMode(next.activityBubbleMode);
     }
@@ -3468,6 +3503,10 @@ function registerIpcHandlers() {
     }
   });
 
+  ipcMain.on("chat:open-settings", () => {
+    openSettingsWindow();
+  });
+
   chatFeature.registerIpcHandlers();
 }
 
@@ -3483,12 +3522,15 @@ app.whenReady().then(() => {
   registerExternalWatcher(antigravityWatcher, "AGY");
   registerExternalWatcher(claudeWatcher, "Claude");
   createTray();
-  createWindow();
-  createBubbleWindow();
+  const petEnabled = isPetEnabled();
+  if (petEnabled) {
+    createWindow();
+    createBubbleWindow();
+  }
   if (process.argv.includes("--settings")) {
     openSettingsWindow();
   }
-  if (process.argv.includes("--chat")) {
+  if (process.argv.includes("--chat") || (!petEnabled && !process.argv.includes("--settings"))) {
     openChatWindow();
   }
   // 사용량 풍선은 수동 호출이라 문제가 없지만, 대화 말풍선은 watcher가 시작되지 않으면 절대 뜨지 않습니다.
@@ -3501,7 +3543,8 @@ app.whenReady().then(() => {
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+      if (isPetEnabled()) createWindow();
+      else openChatWindow();
     }
   });
 });
@@ -3670,6 +3713,7 @@ async function getSettingsData({ forceUsage = false } = {}) {
     },
     pets: pets.map((pet) => ({ key: pet.key, label: pet.label })),
     petKey: resolveSelectedPet()?.key || "",
+    petEnabled: isPetEnabled(),
     activityBubbleMode: settings.activityBubbleMode || "full",
     followMouse: runtime.followMouse,
     autoStart: isAutoLaunchEnabled(),
@@ -3700,7 +3744,7 @@ function openSettingsWindow(section = "general") {
     minHeight: 500,
     show: false,
     frame: false,
-    title: "CodePet 설정",
+    title: "Ἀγορά 설정",
     backgroundColor: "#fafafa",
     autoHideMenuBar: true,
     webPreferences: {

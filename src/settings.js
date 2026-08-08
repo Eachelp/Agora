@@ -170,6 +170,7 @@ function renderGeneral({ resetAppearance = false } = {}) {
     state.pets.map((pet) => new Option(pet.label, pet.key)),
     state.petKey
   );
+  $("#pet-enabled").checked = state.petEnabled === true;
   $("#bubble-mode").value = state.activityBubbleMode;
   $("#follow").checked = state.followMouse;
   $("#autostart").checked = state.autoStart;
@@ -435,6 +436,7 @@ function registerAppearanceControls() {
         fontFamily: selectedFont || null,
         fontSize: selectedFontSize,
         petKey: $("#pet").value,
+        petEnabled: $("#pet-enabled").checked,
         activityBubbleMode: $("#bubble-mode").value,
         followMouse: $("#follow").checked,
         autoStart: $("#autostart").checked,
