@@ -70,7 +70,7 @@ function buildAgentPrompt({
     lines.push("=== 프로젝트 공통 맥락 끝 ===");
   }
   // 캐릭터 이모티콘 지시는 작업용 사용에 불필요해 프롬프트에서 제외합니다.
-  // chat-emoticons.js의 렌더링/추출 경로는 기존 대화 호환을 위해 그대로 둡니다.
+  // 예전 대화에 남은 [[CODEPET_EMOTE:...]] 태그는 chat-room.js에서 화면 노출 전에 제거합니다.
   if (broadcast && broadcast.position > 1) {
     lines.push(
       `- 사용자 메시지에 참가자 ${broadcast.total}명이 차례로 답하는 중이고, 당신은 ${broadcast.position}번째입니다. 앞선 참가자의 답변을 읽고, 겹치는 내용은 반복하지 말고 보완하거나 다른 관점만 더하세요.`

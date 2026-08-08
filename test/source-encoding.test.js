@@ -19,7 +19,9 @@ test("추적 중인 모든 .js 소스는 U+FFFD 치환 문자가 없다", () => 
 
   const damaged = [];
   for (const file of files) {
-    const text = fs.readFileSync(path.join(ROOT, file), "utf8");
+    const fullPath = path.join(ROOT, file);
+    if (!fs.existsSync(fullPath)) continue; // 워킹트리에서 이미 삭제되었고 아직 스테이징만 안 된 파일
+    const text = fs.readFileSync(fullPath, "utf8");
     if (text.includes("\uFFFD")) damaged.push(file);
   }
   assert.deepEqual(damaged, [], `다음 파일에 깨진 문자(U+FFFD)가 있습니다: ${damaged.join(", ")}`);

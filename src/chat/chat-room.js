@@ -2,7 +2,6 @@ const { EventEmitter } = require("node:events");
 const { GROUP_ALIASES } = require("./chat-agents");
 const { parseMentions } = require("./chat-mention");
 const { buildAgentPrompt } = require("./chat-prompt");
-const { extractEmoticons } = require("./chat-emoticons");
 
 // 채팅방 오케스트레이션.
 // - 멘션이 없으면 세션 참가자 전체, 있으면 멘션된 참가자만 응답합니다.
@@ -14,6 +13,19 @@ const { extractEmoticons } = require("./chat-emoticons");
 // - 에이전트 간 토론은 startDiscussion()으로만, 라운드(1~3)와
 //   총 실행 예산 두 가지 상한 아래에서만 진행됩니다.
 const DEFAULT_DISCUSSION_RUN_BUDGET = 9;
+
+// 작업용 채팅에서는 캐릭터 이모티콘 이미지를 더 이상 렌더링하지 않습니다.
+// 다만 예전 습관이나 실수로 에이전트가 [[CODEPET_EMOTE:...]] 표기를 남기면
+// 화면에 제어 태그가 그대로 노출되지 않도록 텍스트에서만 조용히 제거합니다.
+const EMOTICON_TAG_PATTERN = /\[\[CODEPET_EMOTE:[^\]\r\n]+\]\]/g;
+
+function stripEmoticonTags(value) {
+  return String(value || "")
+    .replace(EMOTICON_TAG_PATTERN, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
 const DEFAULT_MENTION_CHAIN_LIMIT = 2;
 
 let messageSeq = 0;
@@ -461,13 +473,10 @@ class ChatRoom extends EventEmitter {
       if (match) rawText = rawText.slice(0, match.index).trim();
     }
 
-    const extracted = extractEmoticons(rawText);
-    let text = extracted.text;
-    const emoticons = extracted.emoticons;
+    let text = stripEmoticonTags(rawText);
     if (context.discussion) {
       if (discussionSignal === "AGREE" && !text) {
         text = "동의합니다.";
-        extracted.parts.unshift({ type: "text", text });
       }
       if (discussionSignal === "PASS" && !text) return { ok: true, discussionSignal };
     }
@@ -482,8 +491,6 @@ class ChatRoom extends EventEmitter {
         effort: agent.effort || "default",
         version: agent.version || "",
       },
-      ...(emoticons.length > 0 ? { emoticons } : {}),
-      ...(emoticons.length > 0 ? { contentParts: extracted.parts } : {}),
       ...(result.deliveries ? { deliveries: result.deliveries } : {}),
     });
     // 토론 모드는 자체 턴 오케스트레이션이 있으므로 멘션 호출을 만들지 않습니다.

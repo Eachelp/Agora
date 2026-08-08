@@ -962,32 +962,8 @@ textarea:focus-visible {
   margin-bottom: 0;
 }
 
-/* 본문과 줄을 나누되 같은 말풍선 안에 놓이는 에이전트 이모티콘 */
-.message-emoticons {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 5px;
-  width: 100%;
-  margin: 7px 0;
-}
-
-.message-emoticons:first-child { margin-top: 0; }
-.message-emoticons:last-child { margin-bottom: 0; }
-
-.message-text-segment + .message-text-segment,
-.message-emoticons + .message-text-segment {
+.message-text-segment + .message-text-segment {
   margin-top: 7px;
-}
-
-.message-emoticon {
-  display: block;
-  width: 78px;
-  height: 78px;
-  border-radius: 10px;
-  object-fit: cover;
-  background: #fff;
-  user-select: none;
 }
 
 .inline-code {

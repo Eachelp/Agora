@@ -48,7 +48,7 @@ test("멘션된 에이전트만 응답한다", async () => {
   assert.equal(agentMessages[0].text, "네!");
 });
 
-test("에이전트 이모티콘 표기는 첫 번째 한 개만 본문과 분리해 저장한다", async () => {
+test("[[CODEPET_EMOTE:...]] 표기는 화면에 노출되지 않도록 조용히 제거된다", async () => {
   const room = new ChatRoom({
     agents: makeAgents(),
     runAgent: fakeRunner({
@@ -63,13 +63,8 @@ test("에이전트 이모티콘 표기는 첫 번째 한 개만 본문과 분리
 
   const response = room.messages.find((message) => message.author === "codex");
   assert.equal(response.text, "검토 끝났습니다.");
-  assert.deepEqual(response.emoticons, [
-    { key: "검토완료", file: "검토완료.png" },
-  ]);
-  assert.deepEqual(response.contentParts.map((part) => part.type), [
-    "text",
-    "emoticon",
-  ]);
+  assert.equal(response.emoticons, undefined);
+  assert.equal(response.contentParts, undefined);
 });
 
 test("에이전트 실행 전 준비 단계를 기다리고 실제 오류를 대화에 남긴다", async () => {
@@ -473,10 +468,7 @@ test("토론 종료 표기는 이모티콘 위치 데이터나 화면 본문에 
 
   const response = room.messages.find((message) => message.author === "claude");
   assert.equal(response.text, "결론입니다.");
-  assert.deepEqual(response.contentParts, [
-    { type: "text", text: "결론입니다." },
-    { type: "emoticon", key: "검토완료", file: "검토완료.png" },
-  ]);
+  assert.equal(response.contentParts, undefined);
 });
 
 test("토론 중 예약된 일반 응답은 토론이 끝날 때까지 발언하지 않는다", async () => {

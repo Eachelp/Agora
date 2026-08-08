@@ -152,70 +152,25 @@ const AGENT_VISUALS = Object.freeze({
   agy: { icon: "./chat-assets/agent-agy.png", background: "#eef4ff" },
 });
 
-const AGENT_EMOTICON_FOLDERS = Object.freeze({
-  claude: "claude",
-  codex: "gpt",
-  agy: "gemini",
-});
-
-function safeEmoticonFile(value) {
-  const file = String(value || "");
-  return file.length > 0
-    && file.length <= 100
-    && file.endsWith(".png")
-    && !file.includes("..")
-    && !/[\\/:*?"<>|\x00-\x1f]/.test(file)
-    ? file
-    : null;
-}
-
-function makeMessageEmoticon(folder, emoticon) {
-  const file = safeEmoticonFile(emoticon?.file);
-  if (!file) return null;
-  const image = document.createElement("img");
-  image.className = "message-emoticon";
-  image.src = `./chat-icon/emoticons/${folder}/${encodeURIComponent(file)}`;
-  image.alt = emoticon.key || "이모티콘";
-  image.title = emoticon.key || "";
-  image.loading = "lazy";
-  image.draggable = false;
-  return image;
-}
-
+// 예전 대화에는 캐릭터 이모티콘 이미지가 섞인 contentParts가 저장되어 있을 수 있습니다.
+// 캐릭터 이미지 렌더링은 더 이상 하지 않지만, 텍스트 조각만 이어붙여
+// 예전 대화를 열었을 때 내용이 비지 않도록 호환성을 유지합니다.
 function renderAgentMessageContent(bubble, message) {
-  const folder = AGENT_EMOTICON_FOLDERS[message.author];
-  if (!folder || !Array.isArray(message.contentParts)) {
+  if (!Array.isArray(message.contentParts)) {
     renderRichText(bubble, message.text);
     return;
   }
-
-  let rendered = false;
-  let emoticonCount = 0;
-  let emoticonRow = null;
-  for (const part of message.contentParts.slice(0, 20)) {
-    if (part?.type === "text" && part.text) {
-      const segment = document.createElement("div");
-      segment.className = "message-text-segment";
-      renderRichText(segment, part.text);
-      bubble.append(segment);
-      rendered = true;
-      emoticonRow = null;
-      continue;
-    }
-    if (part?.type !== "emoticon" || emoticonCount >= 1) continue;
-    const image = makeMessageEmoticon(folder, part);
-    if (!image) continue;
-    if (!emoticonRow) {
-      emoticonRow = document.createElement("div");
-      emoticonRow.className = "message-emoticons";
-      emoticonRow.setAttribute("aria-label", "에이전트 이모티콘");
-      bubble.append(emoticonRow);
-    }
-    emoticonRow.append(image);
-    emoticonCount += 1;
-    rendered = true;
+  const textParts = message.contentParts.filter((part) => part?.type === "text" && part.text);
+  if (textParts.length === 0) {
+    renderRichText(bubble, message.text);
+    return;
   }
-  if (!rendered) renderRichText(bubble, message.text);
+  for (const part of textParts) {
+    const segment = document.createElement("div");
+    segment.className = "message-text-segment";
+    renderRichText(segment, part.text);
+    bubble.append(segment);
+  }
 }
 
 const EFFORT_LABELS = Object.freeze({

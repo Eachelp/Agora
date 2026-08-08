@@ -275,4 +275,3 @@ workspace 전체 파일이나 credential을 채팅 메시지에 복사하지 않
 - Slack/Discord client
 - 새 RAG 시스템
 - React/Tauri 전면 재작성
-- 이모티콘 이미지와 legacy renderer 삭제
