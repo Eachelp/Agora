@@ -10,7 +10,7 @@ function createChatWindow({ BrowserWindow, onReady, onClosed }) {
     show: false,
     frame: false,
     title: "Ἀγορά 채팅",
-    icon: path.join(__dirname, "..", "build", "icon.ico"),
+    icon: path.join(__dirname, "..", "..", "build", "icon.ico"),
     backgroundColor: "#fafafa",
     autoHideMenuBar: true,
     webPreferences: {

@@ -66,6 +66,24 @@ if (process.platform === "win32" && typeof app.setAppUserModelId === "function")
   app.setAppUserModelId(APP_ID);
 }
 
+// 중복 실행 방지: 두 번째 인스턴스가 뜨면 첫 번째 창을 포커스하고 종료합니다.
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    // 이미 열린 채팅 창이 있으면 앞으로 가져옵니다.
+    const chatWindow = chatFeature?.getWindow?.();
+    if (chatWindow && !chatWindow.isDestroyed()) {
+      if (chatWindow.isMinimized()) chatWindow.restore();
+      chatWindow.focus();
+    } else {
+      // 창이 없으면 새로 엽니다.
+      openChatWindow();
+    }
+  });
+}
+
 app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
 
 // IPC 채널명은 main/preload/renderer가 같은 문자열을 써야 하므로 상수로 모아 둡니다.
@@ -3553,6 +3571,9 @@ app.on("before-quit", () => {
   isQuitting = true;
   teardownCodexProxyOnQuit();
   chatFeature.shutdown();
+  codexWatcher.stop();
+  antigravityWatcher.stop();
+  claudeWatcher.stop();
 });
 
 app.on("window-all-closed", () => {
@@ -3561,11 +3582,7 @@ app.on("window-all-closed", () => {
   clearTimeout(reactionTimer);
   clearTimeout(bubbleHideTimer);
   clearTimeout(bubbleRenderFallbackTimer);
-  codexWatcher.stop();
-  antigravityWatcher.stop();
-  claudeWatcher.stop();
-
-  // 트레이에 남아 있어야 하는 일반 닫힘과, "완전 종료"를 명확히 분리합니다.
+  // 채팅 창만 닫혀도 트레이 프로세스는 남으므로 외부 에이전트 감시는 계속합니다.
   if (isQuitting) {
     app.quit();
   }

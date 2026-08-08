@@ -24,8 +24,21 @@ test("채팅 화면의 설정 버튼이 기존 설정 창을 연다", () => {
   assert.match(preload, /openSettings: \(\) => ipcRenderer\.send\(INVOKE\.OPEN_SETTINGS\)/);
   assert.match(renderer, /btn-settings[\s\S]*?chatApi\.openSettings/);
   assert.match(main, /ipcMain\.on\("chat:open-settings"[\s\S]*?openSettingsWindow/);
-  assert.match(chatWindow, /icon: path\.join\(__dirname, "\.\.", "build", "icon\.ico"\)/);
+  assert.match(chatWindow, /icon: path\.join\(__dirname, "\.\.", "\.\.", "build", "icon\.ico"\)/);
   assert.match(main, /title: "Ἀγορά 설정"[\s\S]*?icon: path\.join\(__dirname, "\.\.", "build", "icon\.ico"\)/);
+});
+
+test("채팅 아이콘 경로는 실제 Agora build 폴더를 가리킨다", () => {
+  const chatIconPath = path.resolve(ROOT, "src", "chat", "..", "..", "build", "icon.ico");
+  assert.equal(chatIconPath, path.resolve(ROOT, "build", "icon.ico"));
+});
+
+test("창을 닫아도 트레이 앱은 다음 실행에서 채팅창을 다시 연다", () => {
+  const main = read("src/main.js");
+  assert.match(main, /app\.requestSingleInstanceLock\(\)/);
+  assert.match(main, /second-instance[\s\S]*?openChatWindow\(\)/);
+  assert.match(main, /app\.on\("before-quit"[\s\S]*?codexWatcher\.stop\(\)/);
+  assert.doesNotMatch(main, /app\.on\("window-all-closed"[\s\S]*?codexWatcher\.stop\(\)/);
 });
 
 test("Agora 화면 재배치는 기존 채팅 제어 연결을 유지한다", () => {
