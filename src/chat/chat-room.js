@@ -432,11 +432,21 @@ class ChatRoom extends EventEmitter {
     if (generation !== this.generation || result?.cancelled) return;
 
     if (!result?.ok) {
+      // 실패한 실행에서도 화면에 보였던 중간 출력과 진단 정보를 잃지 않습니다.
+      // 출력 상한 때문에 끊긴 경우는 timeout/프로바이더 실패와 구분해 표시합니다.
+      const failureKind = result?.outputLimited
+        ? "output-limit"
+        : result?.timedOut
+          ? "timeout"
+          : "error";
       this.appendMessage({
         authorType: "agent",
         author: agent.id,
         text: result?.error || "알 수 없는 오류",
         error: true,
+        failureKind,
+        ...(result?.partialText ? { partialText: result.partialText } : {}),
+        ...(result?.output ? { runOutput: result.output } : {}),
         runId,
       });
       return { ok: false };

@@ -1017,7 +1017,7 @@ function renderMessage(message) {
   const bubble = document.createElement("div");
   bubble.className = "bubble";
   if (message.error) {
-    bubble.textContent = `⚠ ${message.text}`;
+    renderFailedMessage(bubble, message);
   } else if (isUser) {
     renderTextWithMentions(bubble, message.text);
   } else {
@@ -1077,6 +1077,77 @@ function renderAllMessages(messages) {
 }
 
 // --- 실시간 실행 이벤트 (스트리밍/상태) ---
+// 실패한 실행을 그리는 부분입니다. 오류 문구만 남기지 않고,
+// 실패 원인 구분과 마지막까지 받은 중간 출력, 진단 정보를 함께 보여줍니다.
+const FAILURE_LABELS = {
+  "output-limit": "출력 상한 초과로 중단",
+  timeout: "시간 초과로 중단",
+  error: "실행 오류",
+};
+
+const FAILED_PARTIAL_DISPLAY_CHARS = 20000;
+
+function renderFailedMessage(bubble, message) {
+  bubble.classList.add("is-failed");
+
+  const label = FAILURE_LABELS[message.failureKind] || FAILURE_LABELS.error;
+  const headline = document.createElement("div");
+  headline.className = "failure-headline";
+  headline.textContent = `⚠ ${label}`;
+  bubble.append(headline);
+
+  const detail = document.createElement("div");
+  detail.className = "failure-detail";
+  detail.textContent = message.text || "알 수 없는 오류";
+  bubble.append(detail);
+
+  if (message.partialText) {
+    const partialWrap = document.createElement("details");
+    partialWrap.className = "failure-partial";
+    partialWrap.open = true;
+    const summary = document.createElement("summary");
+    summary.textContent = "중단 전까지 받은 출력";
+    const partialText = document.createElement("div");
+    partialText.className = "failure-partial-text";
+    const shown = message.partialText.slice(-FAILED_PARTIAL_DISPLAY_CHARS);
+    partialText.textContent = shown;
+    partialWrap.append(summary, partialText);
+    if (shown.length < message.partialText.length) {
+      const trimmed = document.createElement("div");
+      trimmed.className = "live-notice";
+      trimmed.textContent = "출력이 길어 일부 내용을 접었습니다.";
+      partialWrap.append(trimmed);
+    }
+    bubble.append(partialWrap);
+  }
+
+  const output = message.runOutput;
+  if (output && (output.stdoutBytes || output.rawLogName || output.captureTruncated)) {
+    const diag = document.createElement("div");
+    diag.className = "failure-diagnostics";
+    const parts = [];
+    if (Number.isFinite(output.stdoutBytes)) {
+      parts.push(`총 출력 ${formatBytes(output.stdoutBytes)}`);
+    }
+    if (output.captureTruncated) parts.push("중간 일부는 보존되지 않음");
+    if (output.rawLogName) parts.push(`원본 로그 보관됨: ${output.rawLogName}`);
+    diag.textContent = parts.join(" · ");
+    bubble.append(diag);
+  }
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes) || 0;
+  if (value < 1024) return `${value}B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)}KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+// 화면 표시 한도입니다. provider 출력 한도나 프로세스 수집 한도와 별개이며,
+// 이 한도를 넘어도 실행은 그대로 계속되고 최종 답변을 계속 기다립니다.
+const LIVE_DISPLAY_LIMIT_CHARS = 200000;
+const LIVE_DISPLAY_TAIL_CHARS = 120000;
+
 function handleRunEvent(payload) {
   if (payload.sessionId !== activeSessionId) return;
   const { runId, agentId, kind } = payload;
@@ -1105,11 +1176,14 @@ function handleRunEvent(payload) {
     statusEl.textContent = "…";
     const textEl = document.createElement("div");
     textEl.className = "live-text";
-    bubble.append(statusEl, textEl);
+    const noticeEl = document.createElement("div");
+    noticeEl.className = "live-notice";
+    noticeEl.hidden = true;
+    bubble.append(statusEl, textEl, noticeEl);
     body.append(meta, bubble);
     item.append(avatar, body);
     messageList.append(item);
-    liveRuns.set(runId, { item, statusEl, textEl, text: "" });
+    liveRuns.set(runId, { item, statusEl, textEl, noticeEl, text: "", displayTrimmed: false });
     scrollToBottom();
     return;
   }
@@ -1120,15 +1194,22 @@ function handleRunEvent(payload) {
     live.statusEl.textContent = payload.label || "";
   } else if (kind === "delta") {
     live.text += payload.text || "";
+    // 표시량이 너무 커지면 앞부분을 접습니다. 실행은 중단하지 않습니다.
+    if (live.text.length > LIVE_DISPLAY_LIMIT_CHARS) {
+      live.text = live.text.slice(live.text.length - LIVE_DISPLAY_TAIL_CHARS);
+      live.displayTrimmed = true;
+    }
     live.textEl.textContent = live.text;
+    if (live.displayTrimmed && live.noticeEl) {
+      live.noticeEl.hidden = false;
+      live.noticeEl.textContent = "출력이 길어 일부 내용을 접었습니다. 실행은 계속 진행됩니다.";
+    }
     live.statusEl.textContent = "";
     scrollToBottom();
   } else if (kind === "run-end") {
-    // 정식 메시지가 곧 도착하므로 초안은 짧게 유지하되, 실패 시 즉시 제거합니다.
-    if (!payload.ok) {
-      live.item.remove();
-      liveRuns.delete(runId);
-    }
+    // 정식 메시지(성공 답변 또는 실패 기록)가 곧 도착해 이 초안을 대체합니다.
+    // 실패했다고 해서 여기서 지우면 중간 출력이 화면에서 사라지므로 그대로 둡니다.
+    live.statusEl.textContent = payload.ok ? "" : "실행이 끝났습니다. 결과를 정리합니다…";
   }
 }
 

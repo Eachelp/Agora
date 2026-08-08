@@ -22,6 +22,93 @@ const { createChatWindow } = require("./chat-window");
 // 채팅 기능 전체(저장소·세션·프로바이더 실행·IPC·창)를 묶는 조립 모듈.
 // main.js는 createChatFeature() 한 번과 openWindow()/shutdown()만 호출합니다.
 
+// 세션별로 남겨두는 실행 원본 로그 개수. 진단에는 최근 실행만 필요하므로
+// 무한히 쌓이지 않게 오래된 파일부터 지웁니다.
+const MAX_RUN_LOG_FILES = 20;
+
+// 실행 원본 stdout을 파일로 흘려보내는 writer.
+// 메모리에 전체를 들고 있지 않으므로 출력이 아무리 길어도 진단 정보를 남길 수 있습니다.
+// 파일을 만들 수 없는 환경에서는 조용히 비활성화되고 실행에는 영향을 주지 않습니다.
+function createRunLogWriter(store, sessionId, runId) {
+  if (!store || !sessionId || !runId) return { write: null, close: () => null };
+  let stream = null;
+  let filePath = null;
+  let failed = false;
+
+  const ensureStream = () => {
+    if (stream || failed) return stream;
+    try {
+      const dir = store.runLogsDir(sessionId);
+      fs.mkdirSync(dir, { recursive: true });
+      filePath = path.join(dir, `${String(runId).replace(/[^\w.-]/g, "_")}.log`);
+      stream = fs.createWriteStream(filePath, { flags: "a", encoding: "utf8" });
+      stream.on("error", () => {
+        failed = true;
+        stream = null;
+      });
+    } catch {
+      failed = true;
+      stream = null;
+      filePath = null;
+    }
+    return stream;
+  };
+
+  return {
+    write(chunk) {
+      if (!chunk) return;
+      const target = ensureStream();
+      if (!target) return;
+      try {
+        target.write(chunk);
+      } catch {
+        failed = true;
+      }
+    },
+    close() {
+      const closedPath = filePath;
+      if (stream) {
+        try {
+          // 정리는 flush 이후에 합니다. 그렇지 않으면 방금 만든 로그의 mtime이
+          // 아직 갱신되지 않아 스스로 삭제 대상이 될 수 있습니다.
+          stream.end(() => pruneRunLogs(store, sessionId, closedPath));
+        } catch {}
+      } else if (closedPath) {
+        pruneRunLogs(store, sessionId, closedPath);
+      }
+      return failed ? null : filePath;
+    },
+  };
+}
+
+// 오래된 실행 로그를 정리합니다. 실패해도 실행에는 영향을 주지 않습니다.
+// keepPath로 지정한 파일(방금 기록한 로그)은 항상 보존합니다.
+function pruneRunLogs(store, sessionId, keepPath = null) {
+  try {
+    const dir = store.runLogsDir(sessionId);
+    const entries = fs
+      .readdirSync(dir)
+      .filter((name) => name.endsWith(".log"))
+      .map((name) => {
+        const full = path.join(dir, name);
+        let mtimeMs = 0;
+        try {
+          mtimeMs = fs.statSync(full).mtimeMs;
+        } catch {}
+        return { full, mtimeMs };
+      })
+      .filter((entry) => entry.full !== keepPath)
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+    // keepPath가 이미 한 자리를 차지하므로 남길 개수에서 제외합니다.
+    const keepCount = keepPath ? Math.max(0, MAX_RUN_LOG_FILES - 1) : MAX_RUN_LOG_FILES;
+    for (const entry of entries.slice(keepCount)) {
+      try {
+        fs.rmSync(entry.full, { force: true });
+      } catch {}
+    }
+  } catch {}
+}
+
 function publicMeta(meta) {
   if (!meta) return null;
   return {
@@ -82,6 +169,18 @@ function attachmentContextLines({ attachments, deliveries, attachmentsDir }) {
 function createChatFeature(options) {
   const { electron, onWindowReady } = options;
   const { ipcMain, dialog, BrowserWindow, shell } = electron;
+
+  // 출력 hard limit은 사용자 설정입니다. 설정이 없거나 0 이하이면 상한 없이 실행합니다.
+  // getHardOutputLimitBytes를 주입하지 않으면 상한은 항상 비활성입니다.
+  function resolveHardOutputLimit() {
+    if (typeof options.getHardOutputLimitBytes !== "function") return null;
+    try {
+      const value = Number(options.getHardOutputLimitBytes());
+      return Number.isFinite(value) && value > 0 ? value : null;
+    } catch {
+      return null;
+    }
+  }
 
   let store = null;
   let storeError = null;
@@ -213,6 +312,12 @@ function createChatFeature(options) {
       });
       if (extraLines.length > 0) fullPrompt = `${prompt}\n${extraLines.join("\n")}`;
 
+      // 원본 출력은 필요할 때만 파일로 흘려보냅니다. 메모리에 전체를 들고 있지 않으므로
+      // 아주 긴 실행에서도 진단 정보를 잃지 않습니다.
+      const rawLog = createRunLogWriter(store, sessionId, runId);
+
+      const hardOutputLimitBytes = resolveHardOutputLimit();
+
       const run = runAgentProcess({
         commandPath: record.commandPath,
         needsShell: record.needsShell,
@@ -224,11 +329,31 @@ function createChatFeature(options) {
         parseLine: createLineParser(agent.id),
         onEvent: emitEvent,
         timeoutMs: options.timeoutMs,
+        // 출력이 길다는 이유로 실행을 죽이지 않습니다. hard limit은 사용자가
+        // 명시적으로 켜지 않으면 undefined(=상한 없음)로 남습니다.
+        ...(Number.isFinite(options.captureOutputBytes) && options.captureOutputBytes > 0
+          ? { captureOutputBytes: options.captureOutputBytes }
+          : {}),
+        ...(hardOutputLimitBytes ? { hardOutputLimitBytes } : {}),
+        onRawChunk: rawLog.write,
       });
       return {
-        promise: run.promise.then((result) =>
-          result.ok ? { ...result, deliveries: invocation.deliveries } : result
-        ),
+        promise: run.promise.then((result) => {
+          const logPath = rawLog.close();
+          // renderer에는 파일 시스템 경로를 보내지 않습니다(기존 보안 경계 유지).
+          // 진단에는 파일 이름만 노출하고, 실제 경로는 main 프로세스에만 둡니다.
+          const diagnostics =
+            result.output || logPath
+              ? {
+                  ...(result.output || {}),
+                  ...(logPath ? { rawLogName: path.basename(logPath) } : {}),
+                }
+              : null;
+          const enrichedResult = diagnostics ? { ...result, output: diagnostics } : result;
+          return enrichedResult.ok
+            ? { ...enrichedResult, deliveries: invocation.deliveries }
+            : enrichedResult;
+        }),
         cancel: run.cancel,
       };
     };
@@ -703,4 +828,11 @@ function createChatFeature(options) {
   return { registerIpcHandlers, openWindow, getWindow, shutdown };
 }
 
-module.exports = { createChatFeature, publicMeta, publicAttachment, attachmentContextLines };
+module.exports = {
+  createChatFeature,
+  publicMeta,
+  publicAttachment,
+  attachmentContextLines,
+  createRunLogWriter,
+  MAX_RUN_LOG_FILES,
+};

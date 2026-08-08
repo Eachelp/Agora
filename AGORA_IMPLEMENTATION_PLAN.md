@@ -162,9 +162,11 @@ workspace 전체 파일이나 credential을 채팅 메시지에 복사하지 않
 
 ## 8. Phase 7 — Runtime 오류와 provider 호환성
 
+> 출력 한도 분리와 부분 출력 보존은 이미 구현했습니다. 이 절은 구현된 계약을 기록합니다.
+
 ### 실패한 부분 답변
 
-현재 runner가 최종 답변 없이 오류로 끝나는 것을 성공으로 처리하지 않는 규칙은 유지한다. 여기에 다음 동작을 추가한다.
+현재 runner가 최종 답변 없이 오류로 끝나는 것을 성공으로 처리하지 않는 규칙은 유지한다. 여기에 다음 동작을 구현했다.
 
 - 실시간 delta와 최종 답변을 구분한다.
 - 정상 최종 답변이 있으면 그것을 저장한다.
@@ -174,6 +176,26 @@ workspace 전체 파일이나 credential을 채팅 메시지에 복사하지 않
 - 정상 종료인데 final 이벤트만 누락된 경우에는 기존 호환성대로 delta를 최종 답변으로 승격한다.
 
 실행 결과와 UI 사이의 전달에는 선택적 `partialText`/진단 정보만 추가하고, 기존 성공 결과 형태와 기존 consumer를 깨뜨리지 않는다.
+
+### 출력 한도 (구현 완료)
+
+세 가지 한도를 서로 다른 목적으로 분리한다. 절대 하나로 합치지 않는다.
+
+| 한도 | 위치 | 초과 시 동작 |
+|---|---|---|
+| provider/model 출력 | provider CLI 자체 | Agora가 관여하지 않음 |
+| subprocess 수집(capture) | `chat-agent-runner.js` | 앞/뒤만 남기는 tail buffer로 잘라내고 **실행은 계속** |
+| renderer 표시 | `chat.js` | 화면에서만 접고 안내 문구 표시, **실행은 계속** |
+
+규칙:
+
+- stdout이 길다는 사실만으로 provider 프로세스를 종료하지 않는다.
+- 수집 한도를 넘겨도 최종 답변(`final` 이벤트 또는 outputFile)은 정상 처리한다.
+- 표시 한도를 넘기면 "출력이 길어 일부 내용을 접었습니다."를 보여주고 완료 이벤트를 계속 기다린다.
+- 원본 출력은 세션 폴더의 `run-logs/`에 파일로 보존한다. renderer에는 파일 이름만 노출하고 경로는 보내지 않는다.
+- hard limit은 기본값이 없다(상한 없음). `settings.json`의 `agentOutputHardLimitMB`에 양수를 넣을 때만 동작한다.
+- hard limit으로 중단하면 `OUTPUT_LIMIT` 상태(`outputLimited`)로 기록해 timeout·provider 실패와 구분하고, 부분 출력과 진단 정보를 함께 남긴다.
+- hard limit에 걸렸더라도 최종 답변이 이미 도착했다면 성공으로 처리한다.
 
 ### AGY effort
 

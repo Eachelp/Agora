@@ -114,7 +114,8 @@ Electron main process
 | `@mention` | 기존 호출·연쇄 제한 동작 | 유지 |
 | 워크스페이스 권한 | 기존 permission mode·승인 흐름 동작 | 유지 |
 | 부분 답변 오류 판정 | 최종 답변이 없을 때 권한 오류·일반 오류를 성공으로 만들지 않음 | 화면의 부분 답변 보존은 추가 필요 |
-| 실패한 부분 답변 표시 | `chat.js`가 실패한 live draft를 제거함 | 향후 중단된 답변으로 보존 |
+| 실패한 부분 답변 표시 | 실패해도 live draft를 지우지 않고, 실패 메시지에 중단 전 출력을 함께 표시 | 완료 |
+| 출력 길이 처리 | 수집 한도·hard limit·표시 한도를 분리했고, 출력이 길다는 이유로 실행을 죽이지 않음 | 완료 |
 | Codex 프록시 기본값 | `codexProxyMode !== false`라 기본 ON | Agora는 기본 OFF로 분리 |
 | 외부 `openai_base_url` | 사용자 설정이 있으면 프록시 주입이 실패할 수 있음 | 기본 실행에서 접근하지 않음 |
 | AGY effort | AGY 전체에 `--effort`를 붙임 | 모델별 capability 판정 추가 |

@@ -459,6 +459,12 @@ const chatFeature = createChatFeature({
   electron: { ipcMain, dialog, BrowserWindow, shell },
   onWindowReady: () => sendAppearanceToWindows(),
   prepareAgent: ({ agent }) => prepareChatAgent(agent),
+  // 출력 hard limit은 기본값이 없습니다(상한 없음).
+  // 사용자가 settings.json의 agentOutputHardLimitMB에 양수를 넣은 경우에만 적용됩니다.
+  getHardOutputLimitBytes: () => {
+    const megabytes = Number(readSettings().agentOutputHardLimitMB);
+    return Number.isFinite(megabytes) && megabytes > 0 ? Math.floor(megabytes * 1024 * 1024) : null;
+  },
 });
 let movementTimer = null;
 let phaseTimer = null;

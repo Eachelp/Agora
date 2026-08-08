@@ -659,6 +659,69 @@ test("오류 메시지는 다음 프롬프트의 대화 기록에서 제외된�
   assert.doesNotMatch(prompts[1], /빈 응답/);
 });
 
+test("출력 상한으로 중단되면 timeout이나 일반 오류와 구분해 기록한다", async () => {
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({
+      codex: [
+        {
+          ok: false,
+          outputLimited: true,
+          error: "출력이 설정된 상한을 넘어 실행을 중단했습니다.",
+          partialText: "여기까지 진행했습니다",
+          output: { stdoutBytes: 4096, outputLimited: true, captureTruncated: true },
+        },
+      ],
+    }),
+  });
+  room.sendUserMessage("@codex 실행해");
+  await settle(room);
+
+  const failure = room.messages.find((message) => message.error);
+  assert.equal(failure.failureKind, "output-limit");
+  // 중단 전까지 받은 출력이 사라지지 않아야 합니다.
+  assert.equal(failure.partialText, "여기까지 진행했습니다");
+  assert.equal(failure.runOutput.outputLimited, true);
+  assert.equal(failure.runOutput.stdoutBytes, 4096);
+});
+
+test("시간 초과 실패는 timeout으로 표시하고 중간 출력을 보존한다", async () => {
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({
+      codex: [
+        {
+          ok: false,
+          timedOut: true,
+          error: "시간 초과 (30초)",
+          partialText: "부분 응답",
+        },
+      ],
+    }),
+  });
+  room.sendUserMessage("@codex 실행해");
+  await settle(room);
+
+  const failure = room.messages.find((message) => message.error);
+  assert.equal(failure.failureKind, "timeout");
+  assert.equal(failure.partialText, "부분 응답");
+});
+
+test("일반 실패는 error로 표시되고 출력 상한 표시가 붙지 않는다", async () => {
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({
+      codex: [{ ok: false, error: "네트워크 오류" }],
+    }),
+  });
+  room.sendUserMessage("@codex 실행해");
+  await settle(room);
+
+  const failure = room.messages.find((message) => message.error);
+  assert.equal(failure.failureKind, "error");
+  assert.equal(failure.partialText, undefined);
+});
+
 test("중지하면 진행 중인 실행을 취소하고 늦은 결과를 버린다", async () => {
   let cancelled = false;
   let resolveRun;

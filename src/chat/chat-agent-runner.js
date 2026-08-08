@@ -5,9 +5,79 @@ const { StringDecoder } = require("node:string_decoder");
 // 에이전트 작업은 며칠간 이어질 수도 있으므로 기본 실행 시간 제한을 두지 않습니다.
 // timeoutMs는 테스트나 명시적인 호출자가 양수를 전달한 경우에만 적용됩니다.
 const DEFAULT_TIMEOUT_MS = null;
-const DEFAULT_MAX_OUTPUT_BYTES = 2 * 1024 * 1024; // stdout 누적 상한
+
+// 출력 한도는 서로 다른 세 가지 목적을 가지며 절대 하나로 합치지 않습니다.
+//
+//   1) captureBytes  — 메모리 보호용 stdout 보존량. 초과해도 실행을 죽이지 않고
+//                      앞/뒤만 남기는 tail buffer로 잘라냅니다.
+//   2) hardLimitBytes — 명시적으로 요청했을 때만 동작하는 안전 상한. 초과 시
+//                      실행을 중단하되 outputLimited 상태로 구분해 보고합니다.
+//   3) 표시 한도      — renderer가 담당하며 이 파일에서 다루지 않습니다.
+//
+// hard limit 기본값이 null인 이유: stdout이 길다는 사실만으로는 실패가 아니고,
+// 정상 완료 직전의 run을 죽이면 최종 답변 자체를 잃기 때문입니다.
+const DEFAULT_CAPTURE_OUTPUT_BYTES = 8 * 1024 * 1024;
+const DEFAULT_HARD_OUTPUT_LIMIT_BYTES = null;
 const MAX_STDERR_BYTES = 256 * 1024;
 const MAX_ARGV_PROMPT_CHARS = 24 * 1024;
+
+// 줄 파서가 미완성 줄로 들고 있을 최대 길이입니다.
+// 프로바이더가 줄바꿈 없이 거대한 텍스트를 쏟아내면 이 버퍼가 무한정 커지고,
+// 뒤이어 붙는 이벤트 JSON까지 같은 미완성 줄에 묻혀 final을 놓칩니다.
+// 한도를 넘으면 앞부분을 버리고 최근 구간만 유지합니다. 이벤트 JSON은 한 줄
+// 기준으로 이 길이보다 훨씬 짧으므로 최근 구간만 있어도 복구할 수 있습니다.
+const MAX_LINE_BUFFER_CHARS = 256 * 1024;
+
+// tail buffer가 유지하는 머리 부분 비율. 초반 지시/헤더와 최신 출력이 모두
+// 진단에 필요하므로 양쪽을 남기고 중간만 버립니다.
+const CAPTURE_HEAD_RATIO = 0.25;
+const CAPTURE_ELLIPSIS = "\n[...중략: 출력이 길어 중간 일부를 보존하지 않았습니다...]\n";
+
+// 앞/뒤를 남기고 중간을 버리는 누적 버퍼입니다.
+// stdout 전체를 메모리에 들고 있지 않으면서도 최종 답변(보통 마지막에 옵니다)과
+// 초반 컨텍스트를 함께 보존합니다.
+function createTailBuffer(limitBytes) {
+  const limit = Number.isFinite(limitBytes) && limitBytes > 0 ? limitBytes : null;
+  const headLimit = limit ? Math.max(1, Math.floor(limit * CAPTURE_HEAD_RATIO)) : null;
+  const tailLimit = limit ? Math.max(1, limit - headLimit) : null;
+  let head = "";
+  let tail = "";
+  let totalChars = 0;
+  let dropped = false;
+
+  return {
+    push(text) {
+      if (!text) return;
+      totalChars += text.length;
+      if (!limit) {
+        head += text;
+        return;
+      }
+      if (head.length < headLimit) {
+        const room = headLimit - head.length;
+        head += text.slice(0, room);
+        text = text.slice(room);
+        if (!text) return;
+      }
+      tail += text;
+      if (tail.length > tailLimit) {
+        tail = tail.slice(tail.length - tailLimit);
+        dropped = true;
+      }
+    },
+    get truncated() {
+      return dropped;
+    },
+    get totalChars() {
+      return totalChars;
+    },
+    toString() {
+      if (!limit) return head;
+      if (!dropped) return head + tail;
+      return head + CAPTURE_ELLIPSIS + tail;
+    },
+  };
+}
 
 function quoteForShell(commandPath) {
   return /\s/.test(commandPath) ? `"${commandPath}"` : commandPath;
@@ -66,12 +136,15 @@ function runAgentProcess({
   outputFile = null,
   parseLine = null,
   onEvent = null,
-  maxOutputBytes = DEFAULT_MAX_OUTPUT_BYTES,
+  captureOutputBytes = DEFAULT_CAPTURE_OUTPUT_BYTES,
+  hardOutputLimitBytes = DEFAULT_HARD_OUTPUT_LIMIT_BYTES,
+  onRawChunk = null,
   promptTransport = "stdin",
 }) {
   let child = null;
   let settled = false;
   let cancelled = false;
+  let outputLimitHit = false;
   let timer = null;
 
   const cleanup = () => {
@@ -113,10 +186,13 @@ function runAgentProcess({
       return;
     }
 
-    let stdout = "";
+    const stdoutBuffer = createTailBuffer(captureOutputBytes);
     let stderr = "";
     let stdoutBytes = 0;
     let lineBuffer = "";
+    // 미완성 줄이 한도를 넘어 앞부분을 버린 적이 있는지 표시합니다.
+    // 이 경우 그 줄은 통째로 파싱할 수 없으므로, JSON 시작 위치를 찾아 복구합니다.
+    let lineBufferTrimmed = false;
     let parsedFinal = null;
     let parsedError = null;
     let parsedApproval = null;
@@ -143,23 +219,61 @@ function runAgentProcess({
       if (!parseLine) return;
       lineBuffer += chunk;
       const lines = lineBuffer.split(/\r?\n/);
-      lineBuffer = flush ? "" : lines.pop() || "";
+      const pending = flush ? "" : lines.pop() || "";
+      const trimmedForThisBatch = lineBufferTrimmed;
+      lineBufferTrimmed = false;
       for (const line of lines) {
         emit(parseLine(line));
+        // 대량 텍스트 뒤에 이벤트 JSON이 같은 줄로 이어붙는 경우가 있습니다.
+        // 줄 전체로는 파싱되지 않으므로 마지막 '{'부터 한 번 더 시도합니다.
+        if (trimmedForThisBatch || line.length > 8192) {
+          const jsonStart = line.lastIndexOf("{");
+          if (jsonStart > 0) emit(parseLine(line.slice(jsonStart)));
+        }
       }
       if (flush && lines.length === 0 && chunk) emit(parseLine(chunk));
+
+      // 줄바꿈 없이 계속 커지는 미완성 줄은 앞부분을 버리고 최근 구간만 유지합니다.
+      // 프로세스는 그대로 두고, 이후에 도착하는 이벤트 JSON을 계속 인식합니다.
+      if (pending.length > MAX_LINE_BUFFER_CHARS) {
+        lineBuffer = pending.slice(pending.length - MAX_LINE_BUFFER_CHARS);
+        lineBufferTrimmed = true;
+        return;
+      }
+      lineBuffer = pending;
     };
 
     child.stdout.on("data", (chunk) => {
       const text = stdoutDecoder.write(chunk);
       stdoutBytes += chunk.length;
-      if (stdoutBytes > maxOutputBytes) {
-        cancelled = true;
+
+      // 원본 출력은 호출자가 파일 등으로 따로 보존할 수 있게 항상 먼저 넘깁니다.
+      if (typeof onRawChunk === "function" && text) {
+        try {
+          onRawChunk(text);
+        } catch {}
+      }
+
+      // 출력이 길다는 사실만으로 실행을 끝내지 않습니다. 보존량이 넘치면
+      // tail buffer가 중간을 버리고, 프로세스는 최종 답변까지 계속 진행합니다.
+      stdoutBuffer.push(text);
+
+      // hard limit은 호출자가 명시적으로 요청한 경우에만 적용합니다.
+      if (
+        Number.isFinite(hardOutputLimitBytes) &&
+        hardOutputLimitBytes > 0 &&
+        stdoutBytes > hardOutputLimitBytes
+      ) {
+        outputLimitHit = true;
+        handleLines(text);
+        emit({
+          kind: "status",
+          label: "출력 상한에 도달해 실행을 중단합니다",
+        });
         killTree(child, platform);
-        finish({ ok: false, error: "출력이 너무 길어 실행을 중단했습니다." });
         return;
       }
-      stdout += text;
+
       handleLines(text);
     });
     child.stderr.on("data", (chunk) => {
@@ -169,18 +283,30 @@ function runAgentProcess({
       finish({ ok: false, error: `실행 실패: ${error.message}` });
     });
     child.on("close", (code) => {
-      if (cancelled) {
+      // 사용자 중지/타임아웃과 출력 상한을 구분합니다. 출력 상한은 아래 정상
+      // 판정 경로로 내려가서 partial output과 진단 정보를 함께 보고합니다.
+      if (cancelled && !outputLimitHit) {
         finish({ ok: false, error: "중지됨", cancelled: true });
         return;
       }
       const stdoutTail = stdoutDecoder.end();
       const stderrTail = stderrDecoder.end();
-     if (stdoutTail) {
-       stdout += stdoutTail;
-       handleLines(stdoutTail);
-     }
+      if (stdoutTail) {
+        stdoutBuffer.push(stdoutTail);
+        handleLines(stdoutTail);
+      }
       if (stderrTail && stderr.length < MAX_STDERR_BYTES) stderr += stderrTail;
       if (lineBuffer) handleLines("", true);
+
+      const stdout = stdoutBuffer.toString();
+      // 출력 관련 진단은 성공/실패와 무관하게 항상 같은 모양으로 보고합니다.
+      const outputInfo = {
+        stdoutBytes,
+        captureTruncated: stdoutBuffer.truncated,
+        ...(Number.isFinite(hardOutputLimitBytes) && hardOutputLimitBytes > 0
+          ? { hardOutputLimitBytes }
+          : {}),
+      };
 
       let text = "";
       if (outputFile) {
@@ -191,7 +317,10 @@ function runAgentProcess({
         }
       }
       if (!String(text || "").trim() && parsedFinal) text = parsedFinal;
-      if (!String(text || "").trim() && !parseLine) text = stdout;
+      // 파서가 없는 프로바이더는 stdout 전체가 답변입니다. 다만 출력 상한으로
+      // 강제 종료했다면 그 stdout은 중간에 잘린 상태이므로 최종 답변으로 승격하지
+      // 않고 아래에서 부분 출력으로 다룹니다.
+      if (!String(text || "").trim() && !parseLine && !outputLimitHit) text = stdout;
       // trustedText는 확정된 최종 답변(outputFile/parser의 final/파서 없이 받은 stdout
       // 전체)만 가리킵니다. deltaText(화면에 실시간으로 보이던 조각)는 여기 포함하지
       // 않습니다 — 아직 완성되지 않은 상태라 성공으로 단정할 수 없기 때문입니다.
@@ -214,12 +343,33 @@ function runAgentProcess({
       }
       // parser가 명시적으로 보낸 approval-required 이벤트는 항상 신뢰합니다.
       if (parsedApproval) {
-        finish({ ok: false, approvalRequired: true, approval: parsedApproval });
+        finish({ ok: false, approvalRequired: true, approval: parsedApproval, output: outputInfo });
         return;
       }
 
+      // hard limit으로 끊었더라도 최종 답변이 이미 도착했다면 성공으로 봅니다.
+      // 상한의 목적은 메모리 보호이지, 완성된 답변을 버리는 것이 아닙니다.
       if (trustedText) {
-        finish({ ok: true, text: trustedText });
+        finish({
+          ok: true,
+          text: trustedText,
+          output: outputLimitHit ? { ...outputInfo, outputLimited: true } : outputInfo,
+        });
+        return;
+      }
+
+      // hard limit 때문에 끊긴 경우는 timeout이나 provider 실패와 구분해서
+      // 보고하고, 화면에 보였던 중간 출력을 partialText로 보존합니다.
+      if (outputLimitHit) {
+        // 파서가 있으면 화면에 보였던 delta가, 없으면 보존된 stdout이 부분 출력입니다.
+        const partial = (deltaText.trim() || (parseLine ? "" : stdout.trim())).trim();
+        finish({
+          ok: false,
+          outputLimited: true,
+          error: "출력이 설정된 상한을 넘어 실행을 중단했습니다.",
+          ...(partial ? { partialText: partial } : {}),
+          output: { ...outputInfo, outputLimited: true },
+        });
         return;
       }
 
@@ -229,7 +379,12 @@ function runAgentProcess({
       if (code !== 0 || parsedError) {
         const detail =
           parsedError || String(stderr || "").trim().split(/\r?\n/).slice(-3).join(" ");
-        finish({ ok: false, error: detail || `종료 코드 ${code}` });
+        finish({
+          ok: false,
+          error: detail || `종료 코드 ${code}`,
+          ...(deltaText.trim() ? { partialText: deltaText.trim() } : {}),
+          output: outputInfo,
+        });
         return;
       }
 
@@ -237,10 +392,10 @@ function runAgentProcess({
       // 중간 답변을 최종 결과로 승격합니다 (기존 호환성 유지).
       const fallbackText = deltaText.trim();
       if (fallbackText) {
-        finish({ ok: true, text: fallbackText });
+        finish({ ok: true, text: fallbackText, output: outputInfo });
         return;
       }
-      finish({ ok: false, error: parsedError || "빈 응답" });
+      finish({ ok: false, error: parsedError || "빈 응답", output: outputInfo });
     });
 
     child.stdin.on("error", () => {});
@@ -250,7 +405,12 @@ function runAgentProcess({
       timer = setTimeout(() => {
         cancelled = true;
         killTree(child, platform);
-        finish({ ok: false, error: `시간 초과 (${Math.round(timeoutMs / 1000)}초)` });
+        finish({
+          ok: false,
+          timedOut: true,
+          error: `시간 초과 (${Math.round(timeoutMs / 1000)}초)`,
+          ...(deltaText.trim() ? { partialText: deltaText.trim() } : {}),
+        });
       }, timeoutMs);
       if (typeof timer.unref === "function") timer.unref();
     }
@@ -270,7 +430,9 @@ module.exports = {
   quoteForShell,
   quoteArgForShell,
   compactArgvPrompt,
+  createTailBuffer,
   DEFAULT_TIMEOUT_MS,
-  DEFAULT_MAX_OUTPUT_BYTES,
+  DEFAULT_CAPTURE_OUTPUT_BYTES,
+  DEFAULT_HARD_OUTPUT_LIMIT_BYTES,
   MAX_ARGV_PROMPT_CHARS,
 };

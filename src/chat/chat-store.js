@@ -110,6 +110,12 @@ class ChatStore {
     return path.join(this.sessionDir(id), "attachments");
   }
 
+  // 실행 원본 출력(raw stdout)을 남기는 진단 폴더입니다.
+  // transcript와 분리해 두어야 대화 기록 형식을 건드리지 않고 큰 로그를 보관할 수 있습니다.
+  runLogsDir(id) {
+    return path.join(this.sessionDir(id), "run-logs");
+  }
+
   transcriptPath(id) {
     return path.join(this.sessionDir(id), "transcript.jsonl");
   }
