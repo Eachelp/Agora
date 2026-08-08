@@ -7,6 +7,7 @@ const {
   UNCATEGORIZED_PROJECT_ID,
   sessionDefaultsFromProject,
   migrateSessionsToProjects,
+  defaultPermissionMode,
 } = require("../agora/project-store");
 const {
   WorkflowStore,
@@ -906,13 +907,24 @@ function createChatFeature(options) {
 
     ipcMain.handle(
       "chat:sessions:move",
-      wrap(async ({ sessionId, projectId }) => {
+      wrap(async ({ sessionId, projectId, applyProjectWorkspace = false }) => {
         requireSession(sessionId);
         const targetProject = requireProject(projectId);
         const currentMeta = store.readMeta(sessionId);
         const wasActive = getActiveSessionId() === sessionId;
-        if (projectIdForMeta(currentMeta) !== targetProject.id) {
-          store.updateMeta(sessionId, { projectId: targetProject.id });
+        const projectChanged = projectIdForMeta(currentMeta) !== targetProject.id;
+        if (projectChanged) {
+          const patch = { projectId: targetProject.id };
+          // 프로젝트 폴더를 이 대화에도 적용하도록 사용자가 명시적으로 선택한 경우에만
+          // 워크스페이스/권한을 함께 바꿉니다. 기본값은 기존 대화 설정을 그대로 둡니다.
+          if (applyProjectWorkspace && targetProject.workspace) {
+            patch.workspace = targetProject.workspace;
+            patch.permissionMode = defaultPermissionMode(
+              targetProject.defaultPermissionMode,
+              targetProject.workspace
+            );
+          }
+          store.updateMeta(sessionId, patch);
           refreshRoomAgents(sessionId);
         }
         if (wasActive) {

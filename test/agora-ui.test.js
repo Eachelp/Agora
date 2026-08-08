@@ -116,7 +116,7 @@ test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있
   assert.match(preload, /projectsSelect: \(projectId\)/);
   assert.match(preload, /projectsUpdate: \(projectId, patch\)/);
   assert.match(preload, /projectsDelete: \(projectId\)/);
-  assert.match(preload, /sessionsMove: \(sessionId, projectId\)/);
+  assert.match(preload, /sessionsMove: \(sessionId, projectId, applyProjectWorkspace = false\)/);
   assert.match(preload, /decisionsCreate: \(input\)/);
   assert.match(preload, /tasksCreate: \(input\)/);
   assert.match(renderer, /function renderProjects\(\)/);
@@ -125,6 +125,9 @@ test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있
   assert.match(renderer, /defaultAgents/);
   assert.match(renderer, /defaultRoles/);
   assert.match(renderer, /function openSessionMovePopover\(anchor, session\)/);
+  assert.match(renderer, /sessionsMove\(session\.id, project\.id, applyWorkspace\)/);
+  assert.match(renderer, /project-move-apply-workspace/);
+  assert.match(ipc, /applyProjectWorkspace = false/);
   assert.match(ipc, /"chat:projects:create"/);
   assert.match(ipc, /"chat:projects:select"/);
   assert.match(ipc, /"chat:projects:delete"/);

@@ -242,4 +242,5 @@ module.exports = {
   defaultRoot,
   sessionDefaultsFromProject,
   migrateSessionsToProjects,
+  defaultPermissionMode,
 };

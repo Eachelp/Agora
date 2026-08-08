@@ -740,6 +740,9 @@ function openSessionMovePopover(anchor, session) {
     target.append(title);
 
     for (const project of projects) {
+      const row = document.createElement("div");
+      row.className = "project-move-row";
+
       const option = document.createElement("button");
       option.type = "button";
       option.className = "project-move-option";
@@ -747,14 +750,35 @@ function openSessionMovePopover(anchor, session) {
         ? `${project.name} (현재)`
         : project.name;
       option.disabled = project.id === activeProjectId;
+      row.append(option);
+
+      // 프로젝트 폴더가 이 대화의 현재 폴더와 다를 때만 적용 여부를 물어봅니다.
+      // 기본값은 기존 대화의 워크스페이스/권한을 그대로 유지하는 것입니다.
+      let applyWorkspace = false;
+      if (project.id !== activeProjectId && project.workspace && project.workspace !== session.workspace) {
+        const applyRow = document.createElement("label");
+        applyRow.className = "project-move-apply-workspace";
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.addEventListener("change", () => {
+          applyWorkspace = checkbox.checked;
+        });
+        const text = document.createElement("span");
+        text.textContent = `이 대화에도 "${baseName(project.workspace)}" 폴더 적용`;
+        applyRow.append(checkbox, text);
+        row.append(applyRow);
+      }
+
       option.addEventListener("click", async () => {
-        const result = await call(window.chatApi.sessionsMove(session.id, project.id));
+        const result = await call(
+          window.chatApi.sessionsMove(session.id, project.id, applyWorkspace)
+        );
         if (result) {
           closePopover();
           applyFullState(result);
         }
       });
-      target.append(option);
+      target.append(row);
     }
   });
 }

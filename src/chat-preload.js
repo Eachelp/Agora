@@ -76,8 +76,8 @@ contextBridge.exposeInMainWorld("chatApi", {
 
   sessionsCreate: () => ipcRenderer.invoke(INVOKE.SESSIONS_CREATE),
   sessionsSelect: (sessionId) => ipcRenderer.invoke(INVOKE.SESSIONS_SELECT, { sessionId }),
-  sessionsMove: (sessionId, projectId) =>
-    ipcRenderer.invoke(INVOKE.SESSIONS_MOVE, { sessionId, projectId }),
+  sessionsMove: (sessionId, projectId, applyProjectWorkspace = false) =>
+    ipcRenderer.invoke(INVOKE.SESSIONS_MOVE, { sessionId, projectId, applyProjectWorkspace }),
   sessionsRename: (sessionId, title) =>
     ipcRenderer.invoke(INVOKE.SESSIONS_RENAME, { sessionId, title }),
   sessionsDelete: (sessionId) => ipcRenderer.invoke(INVOKE.SESSIONS_DELETE, { sessionId }),

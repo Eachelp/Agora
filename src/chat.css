@@ -1996,10 +1996,6 @@ textarea:focus-visible {
   font-size: 12px;
 }
 
-.project-move-option + .project-move-option {
-  margin-top: 5px;
-}
-
 .project-move-option:not(:disabled):hover {
   border-color: var(--accent);
   background: var(--accent-soft);
@@ -2008,4 +2004,22 @@ textarea:focus-visible {
 .project-move-option:disabled {
   color: var(--muted);
   cursor: default;
+}
+
+.project-move-row + .project-move-row {
+  margin-top: 5px;
+}
+
+.project-move-apply-workspace {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 0 4px;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.project-move-apply-workspace input {
+  margin: 0;
 }
