@@ -3745,6 +3745,7 @@ function openSettingsWindow(section = "general") {
     show: false,
     frame: false,
     title: "Ἀγορά 설정",
+    icon: path.join(__dirname, "..", "build", "icon.ico"),
     backgroundColor: "#fafafa",
     autoHideMenuBar: true,
     webPreferences: {

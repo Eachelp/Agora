@@ -18,11 +18,14 @@ test("채팅 화면의 설정 버튼이 기존 설정 창을 연다", () => {
   const preload = read("src/chat-preload.js");
   const renderer = read("src/chat.js");
   const main = read("src/main.js");
+  const chatWindow = read("src/chat/chat-window.js");
   assert.match(html, /id="btn-settings"/);
   assert.match(preload, /OPEN_SETTINGS: "chat:open-settings"/);
   assert.match(preload, /openSettings: \(\) => ipcRenderer\.send\(INVOKE\.OPEN_SETTINGS\)/);
   assert.match(renderer, /btn-settings[\s\S]*?chatApi\.openSettings/);
   assert.match(main, /ipcMain\.on\("chat:open-settings"[\s\S]*?openSettingsWindow/);
+  assert.match(chatWindow, /icon: path\.join\(__dirname, "\.\.", "build", "icon\.ico"\)/);
+  assert.match(main, /title: "Ἀγορά 설정"[\s\S]*?icon: path\.join\(__dirname, "\.\.", "build", "icon\.ico"\)/);
 });
 
 test("에이전트 아바타는 애니메이션 캐릭터 대신 기본 기호를 사용한다", () => {
