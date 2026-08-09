@@ -519,10 +519,10 @@ function createChatFeature(options) {
   }
 
 const TASK_STATUS_LABELS = Object.freeze({
-  todo: "\ud560 \uc77c",
-  in_progress: "\uc9c4\ud589 \uc911",
-  review: "\uac80\ud1a0 \uc911",
-  blocked: "\ub9c9\ud798",
+  todo: "할 일",
+  in_progress: "진행 중",
+  review: "검토 중",
+  blocked: "막힘",
 });
 
 function roomMeta(meta) {
@@ -730,7 +730,7 @@ function roomMeta(meta) {
           });
         }
       } catch {
-        // \uc694\uc57d \uc800\uc7a5\uc740 \uc774\ubbf8 \ub05d\ub09c \uc0c1\ud0dc\uc774\ubbc0\ub85c, \ud6c4\ubcf4 \ub4f1\ub85d \uc2e4\ud328\uac00 \ud1a0\ub860 \uacb0\uacfc\ub97c \uc9c0\uc6b0\uc9c0 \uc54a\uc2b5\ub2c8\ub2e4.
+        // 요약 저장은 이미 끝난 상태이므로, 후보 등록 실패가 토론 결과를 지우지 않습니다.
       }
     }
     if (entry) broadcast("chat:sessions-changed", sessionsPayload());

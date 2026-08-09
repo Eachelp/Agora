@@ -52,9 +52,9 @@ function extractJsonCandidate(text) {
   return null;
 }
 
-// \uae30\ub85d\uad00 \ucd9c\ub825\uc744 \ud30c\uc2f1\ud574 \uc694\uc57d\uacfc \uacb0\uc815\u00b7\uc791\uc5c5 \ud6c4\ubcf4\ub85c \ubd84\ub9ac\ud569\ub2c8\ub2e4.
-// \uc5b4\ub5a4 \uc785\ub825\uc774\ub77c\ub3c4 \uc608\uc678\ub97c \ub358\uc9c0\uc9c0 \uc54a\uace0, \ud30c\uc2f1\uc5d0 \uc2e4\ud328\ud558\uba74 \uc6d0\ubb38 \uc804\uccb4\ub97c \uc694\uc57d\uc73c\ub85c \ub3cc\ub824\ubcf4\ub0b4\uc11c
-// \uae30\ub85d\uad00\uc758 \uc791\uc5c5 \uacb0\uacfc\uac00 \uc0ac\ub77c\uc9c0\uc9c0 \uc54a\uac8c \ud569\ub2c8\ub2e4.
+// 기록관 출력을 파싱해 요약과 결정·작업 후보로 분리합니다.
+// 어떤 입력이라도 예외를 던지지 않고, 파싱에 실패하면 원문 전체를 요약으로 돌려보내서
+// 기록관의 작업 결과가 사라지지 않게 합니다.
 function parseRecorderOutput(text) {
   const raw = String(text || "");
   const fallback = { summary: raw.trim(), decisions: [], nextActions: [] };

@@ -673,55 +673,7 @@ function openProjectSettings(anchor, project) {
       roleControls.set(role.id, { agent: select, model, effort });
     }
 
-    const memorySection = document.createElement("section");
-    memorySection.className = "project-default-section";
-    const memoryTitle = document.createElement("strong");
-    memoryTitle.textContent = "프로젝트 Memory Bank";
-    const memoryHint = document.createElement("p");
-    memoryHint.className = "popover-hint";
-    memoryHint.textContent = "사람이 직접 추가한 기록과 기록관이 만든 초안이 이 프로젝트에 누적됩니다.";
-    const memoryPreview = document.createElement("textarea");
-    memoryPreview.className = "project-context-input memory-preview";
-    memoryPreview.rows = 5;
-    memoryPreview.readOnly = true;
-    memoryPreview.placeholder = "아직 기록이 없습니다.";
-    const memoryInput = document.createElement("textarea");
-    memoryInput.className = "project-context-input";
-    memoryInput.rows = 3;
-    memoryInput.maxLength = 24000;
-    memoryInput.placeholder = "사람이 직접 남길 중요한 맥락·결정·규칙";
-    const memoryActions = document.createElement("div");
-    memoryActions.className = "project-popover-actions";
-    const memoryAdd = document.createElement("button");
-    memoryAdd.type = "button";
-    memoryAdd.className = "button button-small";
-    memoryAdd.textContent = "기억 추가";
-    memoryAdd.addEventListener("click", async () => {
-      const content = memoryInput.value.trim();
-      if (!content) {
-        memoryInput.focus();
-        return;
-      }
-      const result = await call(window.chatApi.memoryAppend(project.id, content, "사람이 추가한 기록"));
-      if (result) {
-        memoryPreview.value = result.memory || "";
-        memoryInput.value = "";
-        flashNotice("Memory Bank에 기록했습니다.", false);
-      }
-    });
-    memoryActions.append(memoryAdd);
-    memorySection.append(
-      memoryTitle,
-      memoryHint,
-      makeField("현재 기록", memoryPreview),
-      makeField("새 사람 기록", memoryInput),
-      memoryActions
-    );
-    call(window.chatApi.memoryRead(project.id)).then((result) => {
-      if (result) memoryPreview.value = result.content || "";
-    });
-
-    const actions = document.createElement("div");
+        const actions = document.createElement("div");
     actions.className = "project-popover-actions";
     const save = document.createElement("button");
     save.type = "button";
@@ -786,7 +738,6 @@ function openProjectSettings(anchor, project) {
       makeField("프로젝트 폴더", workspaceField),
       defaultAgentSection,
       roleSection,
-      memorySection,
       actions
     );
   });
@@ -1339,6 +1290,22 @@ function workflowTextarea(placeholder, rows = 3) {
   return input;
 }
 
+function makeDeliveryBadge(kind) {
+  const badge = document.createElement("span");
+  badge.className = "workflow-delivery-badge";
+  if (kind === "always") {
+    badge.classList.add("is-always");
+    badge.textContent = "항상 전달";
+  } else if (kind === "partial") {
+    badge.classList.add("is-partial");
+    badge.textContent = "최근 것만 전달";
+  } else {
+    badge.classList.add("is-none");
+    badge.textContent = "전달 안 함";
+  }
+  return badge;
+}
+
 function openWorkflowPopover(anchor) {
   const project = activeProjectEntry();
   if (!project) return;
@@ -1347,14 +1314,156 @@ function openWorkflowPopover(anchor) {
     root.classList.add("is-workflow");
     const title = document.createElement("strong");
     title.className = "project-popover-title";
-    title.textContent = `${project.name} · 결정과 작업`;
+    title.textContent = `${project.name} · 프로젝트 맥락`;
     root.append(title);
 
-    const summary = document.createElement("p");
-    summary.className = "popover-status";
-    summary.textContent = `결정 ${workflow.decisions?.length || 0}개 · 작업 ${workflow.tasks?.length || 0}개`;
-    root.append(summary);
+    const tabBar = document.createElement("div");
+    tabBar.className = "workflow-tabs";
+    const tabButtons = {};
+    const tabPanels = {};
+    const tabDefs = [
+      ["memory", "메모리"],
+      ["decisions", "결정"],
+      ["tasks", "작업"],
+    ];
+    for (const [id, label] of tabDefs) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "workflow-tab-button";
+      button.textContent = label;
+      button.addEventListener("click", () => selectTab(id));
+      tabBar.append(button);
+      tabButtons[id] = button;
+      const panel = document.createElement("div");
+      panel.className = "workflow-tab-panel";
+      tabPanels[id] = panel;
+    }
+    function selectTab(id) {
+      for (const key of Object.keys(tabButtons)) {
+        tabButtons[key].classList.toggle("is-active", key === id);
+        tabPanels[key].classList.toggle("is-active", key === id);
+      }
+    }
+    root.append(tabBar, tabPanels.memory, tabPanels.decisions, tabPanels.tasks);
 
+    // === 메모리 탭: 개요 · 현재 규칙 · 누적 요약 ===
+    const overviewSection = document.createElement("section");
+    overviewSection.className = "workflow-section";
+    const overviewTitle = document.createElement("strong");
+    overviewTitle.append(
+      document.createTextNode("프로젝트 개요 "),
+      makeDeliveryBadge("always")
+    );
+    const overviewHint = document.createElement("p");
+    overviewHint.className = "popover-hint";
+    overviewHint.textContent = project.context
+      ? project.context
+      : "아직 개요가 없습니다. 프로젝트 설정에서 공통 맥락을 작성해 주세요.";
+    overviewSection.append(overviewTitle, overviewHint);
+
+    const rulesSection = document.createElement("section");
+    rulesSection.className = "workflow-section";
+    const rulesTitle = document.createElement("strong");
+    rulesTitle.append(
+      document.createTextNode("현재 규칙 "),
+      makeDeliveryBadge("always")
+    );
+    const rulesHint = document.createElement("p");
+    rulesHint.className = "popover-hint";
+    rulesHint.textContent = "여기에 적은 내용은 모든 에이전트의 대화에 항상 함께 전달됩니다.";
+    const rulesInput = workflowTextarea("예: 공개 API를 바꾸지 않는다.", 5);
+    rulesInput.maxLength = 4000;
+    const rulesCount = document.createElement("p");
+    rulesCount.className = "popover-hint";
+    const updateRulesCount = () => {
+      rulesCount.textContent = `${rulesInput.value.length} / 4000`;
+    };
+    rulesInput.addEventListener("input", updateRulesCount);
+    const rulesActions = document.createElement("div");
+    rulesActions.className = "project-popover-actions";
+    const rulesSave = document.createElement("button");
+    rulesSave.type = "button";
+    rulesSave.className = "button button-primary button-small";
+    rulesSave.textContent = "규칙 저장";
+    rulesSave.addEventListener("click", async () => {
+      const result = await call(window.chatApi.rulesSave(project.id, rulesInput.value));
+      if (result) {
+        rulesInput.value = result.rules || "";
+        updateRulesCount();
+        flashNotice("규칙을 저장했습니다.", false);
+      }
+    });
+    const historyToggle = document.createElement("button");
+    historyToggle.type = "button";
+    historyToggle.className = "button button-small";
+    historyToggle.textContent = "이전 규칙 기록 보기";
+    const historyBox = document.createElement("pre");
+    historyBox.className = "workflow-card-text";
+    historyBox.hidden = true;
+    historyToggle.addEventListener("click", async () => {
+      historyBox.hidden = !historyBox.hidden;
+      if (!historyBox.hidden) {
+        const result = await call(window.chatApi.rulesRead(project.id));
+        historyBox.textContent = result?.history?.trim() || "기록된 변경 이력이 없습니다.";
+      }
+    });
+    rulesActions.append(rulesSave, historyToggle);
+    rulesSection.append(rulesTitle, rulesHint, rulesInput, rulesCount, rulesActions, historyBox);
+    call(window.chatApi.rulesRead(project.id)).then((result) => {
+      if (result) {
+        rulesInput.value = result.rules || "";
+        updateRulesCount();
+      }
+    });
+
+    const memorySection = document.createElement("section");
+    memorySection.className = "workflow-section";
+    const memoryTitle = document.createElement("strong");
+    memoryTitle.append(
+      document.createTextNode("누적 요약 "),
+      makeDeliveryBadge("partial")
+    );
+    const memoryHint = document.createElement("p");
+    memoryHint.className = "popover-hint";
+    memoryHint.textContent = "사람이 직접 추가한 기록과 기록관이 만든 초안이 이 프로젝트에 누적됩니다. 길어지면 오래된 순으로 일부만 전달됩니다.";
+    const memoryPreview = document.createElement("textarea");
+    memoryPreview.className = "project-context-input memory-preview";
+    memoryPreview.rows = 6;
+    memoryPreview.readOnly = true;
+    memoryPreview.placeholder = "아직 기록이 없습니다.";
+    const memoryInput = document.createElement("textarea");
+    memoryInput.className = "project-context-input";
+    memoryInput.rows = 3;
+    memoryInput.maxLength = 24000;
+    memoryInput.placeholder = "사람이 직접 남길 중요한 맥락";
+    const memoryActions = document.createElement("div");
+    memoryActions.className = "project-popover-actions";
+    const memoryAdd = document.createElement("button");
+    memoryAdd.type = "button";
+    memoryAdd.className = "button button-small";
+    memoryAdd.textContent = "기억 추가";
+    memoryAdd.addEventListener("click", async () => {
+      const content = memoryInput.value.trim();
+      if (!content) {
+        memoryInput.focus();
+        return;
+      }
+      const result = await call(window.chatApi.memoryAppend(project.id, content, "사람이 추가한 기록"));
+      if (result) {
+        memoryPreview.value = result.memory || "";
+        memoryInput.value = "";
+        flashNotice("누적 요약에 기록했습니다.", false);
+      }
+    });
+    memoryActions.append(memoryAdd);
+    memorySection.append(memoryTitle, memoryHint, memoryPreview, memoryInput, memoryActions);
+    call(window.chatApi.memoryRead(project.id)).then((result) => {
+      if (result) memoryPreview.value = result.content || "";
+    });
+
+    tabPanels.memory.append(overviewSection, rulesSection, memorySection);
+
+    // === 결정 탭 ===
     let editingDecisionId = null;
     const decisionTitle = document.createElement("input");
     decisionTitle.type = "text";
@@ -1374,7 +1483,15 @@ function openWorkflowPopover(anchor) {
     decisionCancel.hidden = true;
     decisionActions.append(decisionSave, decisionCancel);
     const decisionForm = document.createElement("section");
-    decisionForm.className = "workflow-section";
+    decisionForm.className = "workflow-section is-collapsed";
+    decisionForm.hidden = true;
+    const decisionFormToggle = document.createElement("button");
+    decisionFormToggle.type = "button";
+    decisionFormToggle.className = "button button-small";
+    decisionFormToggle.textContent = "직접 결정 추가";
+    decisionFormToggle.addEventListener("click", () => {
+      decisionForm.hidden = !decisionForm.hidden;
+    });
     const decisionFormTitle = document.createElement("strong");
     decisionFormTitle.textContent = "새 결정";
     const decisionLinkHint = document.createElement("p");
@@ -1425,18 +1542,65 @@ function openWorkflowPopover(anchor) {
       openWorkflowPopover(anchor);
     });
 
+    const allDecisions = workflow.decisions || [];
+    const proposedDecisions = allDecisions.filter((d) => d.status === "proposed");
+    const confirmedDecisions = allDecisions.filter((d) => !d.status || d.status === "confirmed");
+
+    const decisionProposalsSection = document.createElement("section");
+    decisionProposalsSection.className = "workflow-section";
+    if (proposedDecisions.length > 0) {
+      const proposalsTitle = document.createElement("strong");
+      proposalsTitle.textContent = `확인 대기 중인 결정 후보 (${proposedDecisions.length})`;
+      decisionProposalsSection.append(proposalsTitle);
+      for (const decision of proposedDecisions) {
+        decisionProposalsSection.append(renderDecisionProposalCard(decision));
+      }
+    }
+
+    function renderDecisionProposalCard(decision) {
+      const card = document.createElement("article");
+      card.className = "workflow-card";
+      const cardTitle = document.createElement("div");
+      cardTitle.className = "workflow-card-title";
+      cardTitle.textContent = decision.title || "제목 없는 결정";
+      const cardText = document.createElement("div");
+      cardText.className = "workflow-card-text";
+      cardText.textContent = decision.content;
+      const actions = document.createElement("div");
+      actions.className = "workflow-proposal-actions";
+      const approve = document.createElement("button");
+      approve.type = "button";
+      approve.className = "button button-primary button-small";
+      approve.textContent = "승인";
+      approve.addEventListener("click", async () => {
+        const result = await call(window.chatApi.decisionsResolve(project.id, [decision.id], "approve"));
+        if (result) { applyFullState(result); openWorkflowPopover(anchor); }
+      });
+      const reject = document.createElement("button");
+      reject.type = "button";
+      reject.className = "button button-small";
+      reject.textContent = "제외";
+      reject.addEventListener("click", async () => {
+        const result = await call(window.chatApi.decisionsResolve(project.id, [decision.id], "reject"));
+        if (result) { applyFullState(result); openWorkflowPopover(anchor); }
+      });
+      actions.append(approve, reject);
+      card.append(cardTitle, cardText, actions);
+      return card;
+    }
+
     const decisionsSection = document.createElement("section");
     decisionsSection.className = "workflow-section";
     const decisionsTitle = document.createElement("strong");
-    decisionsTitle.textContent = "기록된 결정";
+    decisionsTitle.textContent = "확정된 결정";
     decisionsSection.append(decisionsTitle);
-    if (!workflow.decisions?.length) {
+    if (confirmedDecisions.length === 0) {
       const empty = document.createElement("p");
       empty.className = "workflow-empty";
-      empty.textContent = "아직 기록된 결정이 없습니다.";
+      empty.textContent = "아직 확정된 결정이 없습니다.";
       decisionsSection.append(empty);
     }
-    for (const decision of workflow.decisions || []) {
+    for (const decision of confirmedDecisions) {
       const card = document.createElement("article");
       card.className = "workflow-card";
       const cardTitle = document.createElement("div");
@@ -1457,6 +1621,7 @@ function openWorkflowPopover(anchor) {
       edit.className = "button button-small";
       edit.textContent = "수정";
       edit.addEventListener("click", () => {
+        decisionForm.hidden = false;
         editingDecisionId = decision.id;
         decisionTitle.value = decision.title || "";
         decisionContent.value = decision.content;
@@ -1481,6 +1646,9 @@ function openWorkflowPopover(anchor) {
       decisionsSection.append(card);
     }
 
+    tabPanels.decisions.append(decisionProposalsSection, decisionFormToggle, decisionForm, decisionsSection);
+
+    // === 작업 탭 ===
     const taskTitle = document.createElement("input");
     taskTitle.type = "text";
     taskTitle.maxLength = 160;
@@ -1491,7 +1659,7 @@ function openWorkflowPopover(anchor) {
     noDecision.value = "";
     noDecision.textContent = "연결할 결정 없음";
     taskDecision.append(noDecision);
-    for (const decision of workflow.decisions || []) {
+    for (const decision of confirmedDecisions) {
       const option = document.createElement("option");
       option.value = decision.id;
       option.textContent = decision.title || decision.content.slice(0, 35);
@@ -1585,7 +1753,15 @@ function openWorkflowPopover(anchor) {
       openWorkflowPopover(anchor);
     });
     const taskForm = document.createElement("section");
-    taskForm.className = "workflow-section";
+    taskForm.className = "workflow-section is-collapsed";
+    taskForm.hidden = true;
+    const taskFormToggle = document.createElement("button");
+    taskFormToggle.type = "button";
+    taskFormToggle.className = "button button-small";
+    taskFormToggle.textContent = "직접 작업 추가";
+    taskFormToggle.addEventListener("click", () => {
+      taskForm.hidden = !taskForm.hidden;
+    });
     const taskFormTitle = document.createElement("strong");
     taskFormTitle.textContent = "새 작업";
     taskForm.append(
@@ -1599,18 +1775,82 @@ function openWorkflowPopover(anchor) {
       taskCancel
     );
 
+    const allTasks = workflow.tasks || [];
+    const proposedTasks = allTasks.filter((t) => t.status === "proposed");
+    const activeTasks = allTasks.filter((t) => ["todo", "in_progress", "review", "blocked"].includes(t.status));
+    const doneTasks = allTasks.filter((t) => ["done", "rejected", "archived"].includes(t.status));
+
+    const taskProposalsSection = document.createElement("section");
+    taskProposalsSection.className = "workflow-section";
+    if (proposedTasks.length > 0) {
+      const proposalsTitle = document.createElement("strong");
+      proposalsTitle.textContent = `확인 대기 중인 작업 후보 (${proposedTasks.length})`;
+      taskProposalsSection.append(proposalsTitle);
+      for (const task of proposedTasks) {
+        const card = document.createElement("article");
+        card.className = "workflow-card";
+        const cardTitle = document.createElement("div");
+        cardTitle.className = "workflow-card-title";
+        cardTitle.textContent = task.title;
+        const cardText = document.createElement("div");
+        cardText.className = "workflow-card-text";
+        cardText.textContent = task.description || "설명 없음";
+        const actions = document.createElement("div");
+        actions.className = "workflow-proposal-actions";
+        const approve = document.createElement("button");
+        approve.type = "button";
+        approve.className = "button button-primary button-small";
+        approve.textContent = "승인";
+        approve.addEventListener("click", async () => {
+          const result = await call(window.chatApi.tasksResolve(project.id, [task.id], "approve"));
+          if (result) { applyFullState(result); openWorkflowPopover(anchor); }
+        });
+        const reject = document.createElement("button");
+        reject.type = "button";
+        reject.className = "button button-small";
+        reject.textContent = "제외";
+        reject.addEventListener("click", async () => {
+          const result = await call(window.chatApi.tasksResolve(project.id, [task.id], "reject"));
+          if (result) { applyFullState(result); openWorkflowPopover(anchor); }
+        });
+        actions.append(approve, reject);
+        card.append(cardTitle, cardText, actions);
+        taskProposalsSection.append(card);
+      }
+    }
+
     const tasksSection = document.createElement("section");
     tasksSection.className = "workflow-section";
     const tasksTitle = document.createElement("strong");
     tasksTitle.textContent = "작업 목록";
     tasksSection.append(tasksTitle);
-    if (!workflow.tasks?.length) {
+    if (activeTasks.length === 0) {
       const empty = document.createElement("p");
       empty.className = "workflow-empty";
-      empty.textContent = "아직 등록된 작업이 없습니다.";
+      empty.textContent = "아직 진행 중인 작업이 없습니다.";
       tasksSection.append(empty);
     }
-    for (const task of workflow.tasks || []) {
+    for (const task of activeTasks) {
+      tasksSection.append(renderTaskCard(task));
+    }
+
+    let showDone = false;
+    const doneToggle = document.createElement("button");
+    doneToggle.type = "button";
+    doneToggle.className = "button button-small";
+    doneToggle.textContent = `완료 · 제외된 작업 보기 (${doneTasks.length})`;
+    const doneSection = document.createElement("section");
+    doneSection.className = "workflow-section";
+    doneSection.hidden = true;
+    doneToggle.addEventListener("click", () => {
+      showDone = !showDone;
+      doneSection.hidden = !showDone;
+      if (showDone && doneSection.childElementCount === 0) {
+        for (const task of doneTasks) doneSection.append(renderTaskCard(task));
+      }
+    });
+
+    function renderTaskCard(task) {
       const card = document.createElement("article");
       card.className = "workflow-card";
       const cardTitle = document.createElement("div");
@@ -1660,6 +1900,7 @@ function openWorkflowPopover(anchor) {
       edit.className = "button button-small";
       edit.textContent = "수정";
       edit.addEventListener("click", () => {
+        taskForm.hidden = false;
         editingTaskId = task.id;
         taskTitle.value = task.title;
         taskDescription.value = task.description || "";
@@ -1698,10 +1939,12 @@ function openWorkflowPopover(anchor) {
       });
       controls.append(status, role, owner, edit, save, remove);
       card.append(cardTitle, cardText, meta, controls);
-      tasksSection.append(card);
+      return card;
     }
 
-    root.append(decisionForm, decisionsSection, taskForm, tasksSection);
+    tabPanels.tasks.append(taskProposalsSection, taskFormToggle, taskForm, tasksSection, doneToggle, doneSection);
+
+    selectTab("memory");
   });
 }
 

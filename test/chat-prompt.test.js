@@ -189,39 +189,39 @@ test("프로젝트 공통 맥락은 해당 대화의 프롬프트에만 추가�
   assert.doesNotMatch(withoutContext, /프로젝트 공통 맥락/);
 });
 
-test("\uB124 \uC601\uC5ED\uC774 \uADDC\uCE59 \uD68C\uC0C9 \uB9E5\uB77D \uACB0\uC815\uBCF4 \uC21C\uC11C\uB85C \uB098\uC628\uB2E4", () => {
+test("네 영역이 규칙 회색 맥락 결정보 순서로 나온다", () => {
   const prompt = buildAgentPrompt({
     agent: AGENTS[0],
     agents: AGENTS,
     messages: [{ author: "user", authorType: "user", text: "hi" }],
-    rulesContext: "\uADDC\uCE59 A",
-    projectContext: "\uAC1C\uC694 B",
-    workflowContext: "\uACB0\uC815 C",
-    memoryContext: "\uC694\uC57D D",
+    rulesContext: "규칙 A",
+    projectContext: "개요 B",
+    workflowContext: "결정 C",
+    memoryContext: "요약 D",
   });
-  const rulesIdx = prompt.indexOf("\uD604\uC7AC \uADDC\uCE59");
-  const contextIdx = prompt.indexOf("\uACF5\uD1B5 \uB9E5\uB77D");
-  const workflowIdx = prompt.indexOf("\uD655\uC815\uB41C \uACB0\uC815");
-  const memoryIdx = prompt.indexOf("\uB204\uC801 \uC694\uC57D");
+  const rulesIdx = prompt.indexOf("현재 규칙");
+  const contextIdx = prompt.indexOf("공통 맥락");
+  const workflowIdx = prompt.indexOf("확정된 결정");
+  const memoryIdx = prompt.indexOf("누적 요약");
   assert.ok(rulesIdx > -1 && contextIdx > -1 && workflowIdx > -1 && memoryIdx > -1);
   assert.ok(rulesIdx < contextIdx);
   assert.ok(contextIdx < workflowIdx);
   assert.ok(workflowIdx < memoryIdx);
 });
 
-test("\uADDC\uCE59\uC774 \uBE44\uC5B4 \uC788\uC73C\uBA74 \uADDC\uCE59 \uAD6C\uC5ED\uC774 \uC5C6\uB2E4", () => {
+test("규칙이 비어 있으면 규칙 구역이 없다", () => {
   const prompt = buildAgentPrompt({
     agent: AGENTS[0],
     agents: AGENTS,
     messages: [{ author: "user", authorType: "user", text: "hi" }],
   });
-  assert.doesNotMatch(prompt, /\uD604\uC7AC \uADDC\uCE59/);
+  assert.doesNotMatch(prompt, /현재 규칙/);
 });
 
-test("\uC804\uCCB4\uAC00 \uC0C1\uD55C\uC744 \uB118\uC73C\uBA74 \uC694\uC57D\uB9CC \uC904\uACE0 \uADDC\uCE59\uACFC \uB9E5\uB77D\uC740 \uC628\uC804\uD558\uB2E4", () => {
-  const rules = "\uADDC\uCE59".repeat(2000);
-  const context = "\uAC1C\uC694".repeat(2000);
-  const memory = "\uC694\uC57D\uBCF8\uBB38".repeat(5000);
+test("전체가 상한을 넘으면 요약만 줄고 규칙과 맥락은 온전하다", () => {
+  const rules = "규칙".repeat(2000);
+  const context = "개요".repeat(2000);
+  const memory = "요약본문".repeat(5000);
   const prompt = buildAgentPrompt({
     agent: AGENTS[0],
     agents: AGENTS,
@@ -232,10 +232,10 @@ test("\uC804\uCCB4\uAC00 \uC0C1\uD55C\uC744 \uB118\uC73C\uBA74 \uC694\uC57D\uB9C
   });
   assert.ok(prompt.includes(rules));
   assert.ok(prompt.includes(context));
-  assert.match(prompt, /\uB204\uC801 \uC694\uC57D \uC55E\uBD80\uBD84\uC740 \uC0DD\uB7B5\uB428/);
+  assert.match(prompt, /누적 요약 앞부분은 생략됨/);
 });
 
-test("\uD1A0\uB860 \uD0DC\uADF8 \uC9C0\uC2DC\uBB38\uC774 \uADF8\uB300\uB85C \uB0A8\uC544\uC788\uB2E4", () => {
+test("토론 태그 지시문이 그대로 남아있다", () => {
   const prompt = buildAgentPrompt({
     agent: AGENTS[0],
     agents: AGENTS,

@@ -42,39 +42,39 @@ test("Memory Bank가 없거나 너무 길어도 프롬프트용 읽기는 안전
   assert.match(store.readForPrompt("project-a", 20), /Memory Bank 앞부분은 생략됨/);
 });
 
-test("\uaddc\uce59\uc774 \uc5c6\ub294 \ud504\ub85c\uc81d\ud2b8\ub294 \ube48 \ubb38\uc790\uc5f4\uc744 \ubc18\ud658\ud55c\ub2e4", () => {
+test("규칙이 없는 프로젝트는 빈 문자열을 반환한다", () => {
   const store = new MemoryStore({ root: makeRoot() }).init();
   assert.equal(store.readRules("project-a"), "");
   assert.equal(store.readRulesHistory("project-a"), "");
 });
 
-test("\uc800\uc7a5\ud55c \uaddc\uce59\uc774 \uadf8\ub300\ub85c \ub2e4\uc2dc \uc77d\ud78c\ub2e4", () => {
+test("저장한 규칙이 그대로 다시 읽힌다", () => {
   const store = new MemoryStore({ root: makeRoot() }).init();
-  const result = store.saveRules("project-a", "\uc774 \ud504\ub85c\uc81d\ud2b8\ub294 Agora \ucc44\ud305 \ucf54\uc5b4\ub97c \uc720\uc9c0\ud55c\ub2e4.");
+  const result = store.saveRules("project-a", "이 프로젝트는 Agora 채팅 코어를 유지한다.");
   assert.equal(result.changed, true);
-  assert.equal(store.readRules("project-a"), "\uc774 \ud504\ub85c\uc81d\ud2b8\ub294 Agora \ucc44\ud305 \ucf54\uc5b4\ub97c \uc720\uc9c0\ud55c\ub2e4.");
+  assert.equal(store.readRules("project-a"), "이 프로젝트는 Agora 채팅 코어를 유지한다.");
 });
 
-test("\uac19\uc740 \ub0b4\uc6a9\uc73c\ub85c \ub450 \ubc88 \uc800\uc7a5\ud558\uba74 \uc774\ub825\uc774 \uc313\uc774\uc9c0 \uc54a\ub294\ub2e4", () => {
+test("같은 내용으로 두 번 저장하면 이력이 쌓이지 않는다", () => {
   const store = new MemoryStore({ root: makeRoot() }).init();
-  store.saveRules("project-a", "\uaddc\uce59 A");
-  const second = store.saveRules("project-a", "\uaddc\uce59 A");
+  store.saveRules("project-a", "규칙 A");
+  const second = store.saveRules("project-a", "규칙 A");
   assert.equal(second.changed, false);
   assert.equal(store.readRulesHistory("project-a"), "");
 });
 
-test("\uaddc\uce59\uc744 \ubc14\uafd4 \uc800\uc7a5\ud558\uba74 \uc774\uc804 \ub0b4\uc6a9\uc774 \uc774\ub825\uc5d0 \ub0a8\ub294\ub2e4", () => {
+test("규칙을 바꿔 저장하면 이전 내용이 이력에 남는다", () => {
   const store = new MemoryStore({ root: makeRoot() }).init();
-  store.saveRules("project-a", "\uaddc\uce59 A");
-  const second = store.saveRules("project-a", "\uaddc\uce59 B");
+  store.saveRules("project-a", "규칙 A");
+  const second = store.saveRules("project-a", "규칙 B");
   assert.equal(second.changed, true);
-  assert.equal(store.readRules("project-a"), "\uaddc\uce59 B");
-  assert.match(store.readRulesHistory("project-a"), /\uaddc\uce59 A/);
+  assert.equal(store.readRules("project-a"), "규칙 B");
+  assert.match(store.readRulesHistory("project-a"), /규칙 A/);
 });
 
-test("\uaddc\uce59\uc740 MAX_RULES_CHARS\ub97c \ub118\uc73c\uba74 \uc798\ub824\uc11c \uc800\uc7a5\ub41c\ub2e4", () => {
+test("규칙은 MAX_RULES_CHARS를 넘으면 잘려서 저장된다", () => {
   const store = new MemoryStore({ root: makeRoot() }).init();
-  const long = "\uac00".repeat(MAX_RULES_CHARS + 500);
+  const long = "가".repeat(MAX_RULES_CHARS + 500);
   store.saveRules("project-a", long);
   assert.equal(store.readRules("project-a").length, MAX_RULES_CHARS);
 });

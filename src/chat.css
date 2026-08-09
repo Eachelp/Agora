@@ -2012,6 +2012,69 @@ textarea:focus-visible {
   font-size: 11px;
 }
 
+.workflow-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 8px 0 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.workflow-tab-button {
+  border: none;
+  background: transparent;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+
+.workflow-tab-button.is-active {
+  color: var(--text);
+  border-bottom-color: var(--accent, #1f4fd8);
+}
+
+.workflow-tab-panel {
+  display: none;
+}
+
+.workflow-tab-panel.is-active {
+  display: block;
+}
+
+.workflow-delivery-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  background: var(--surface-2, #eef1f8);
+  color: var(--muted);
+}
+
+.workflow-delivery-badge.is-always {
+  background: #e3f1e6;
+  color: #1f7a3d;
+}
+
+.workflow-delivery-badge.is-partial {
+  background: #fdf2df;
+  color: #9a6a12;
+}
+
+.workflow-delivery-badge.is-none {
+  background: #f1f1f1;
+  color: #666;
+}
+
+.workflow-proposal-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
 .project-move-option {
   display: block;
   width: 100%;

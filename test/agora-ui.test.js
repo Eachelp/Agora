@@ -131,7 +131,7 @@ test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있
   assert.match(renderer, /sessionsMove\(session\.id, project\.id, applyWorkspace\)/);
   assert.match(renderer, /project-move-apply-workspace/);
   assert.match(renderer, /전문 모드 역할 설정/);
-  assert.match(renderer, /Memory Bank/);
+  assert.match(renderer, /누적 요약/);
   assert.match(ipc, /applyProjectWorkspace = false/);
   assert.match(ipc, /"chat:specialist:start"/);
   assert.match(ipc, /"chat:memory:append"/);
