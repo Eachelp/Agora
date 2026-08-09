@@ -265,7 +265,7 @@ function createChatFeature(options) {
 
   function ensureCapabilityService() {
     if (capabilityService) return capabilityService;
-    capabilityService = createCapabilityService({
+    capabilityService = options.capabilities || createCapabilityService({
       cache: {
         get: () => ensureStore()?.getConfig()?.capabilityCache || null,
         set: (value) => ensureStore()?.patchConfig({ capabilityCache: value }),
@@ -586,7 +586,7 @@ function createChatFeature(options) {
       sessionId,
       agents: buildRoomAgents(session.meta),
       initialMessages: session.messages,
-      runAgent: makeRunAgent(sessionId),
+      runAgent: options.runAgent || makeRunAgent(sessionId),
       prepareAgent: options.prepareAgent,
       meta: roomMeta(session.meta),
     });
@@ -1168,6 +1168,18 @@ function createChatFeature(options) {
         const project = projectForSession(store.readMeta(sessionId));
         const planned = specialistStagesFor(project, room);
         if (!planned.ok) throw new Error(planned.error);
+        // 전문 모드는 실제 구현을 수행하므로 채팅이 쓰기 권한이어야 합니다.
+        // 그렇지 않으면 구현 담당자가 도구를 받지 못해 "입만 터는 구현"이 됩니다.
+        const meta = store.readMeta(sessionId);
+        if ((meta.permissionMode || "chat") !== "workspace-write") {
+          if (!meta.workspace) {
+            throw new Error(
+              "전문 모드는 워크스페이스 쓰기 권한이 필요합니다. 채팅 상단의 워크스페이스 버튼으로 폴더를 먼저 선택해 주세요."
+            );
+          }
+          store.updateMeta(sessionId, { permissionMode: "workspace-write" });
+          refreshRoomAgents(sessionId);
+        }
         const started = room.startSpecialist({ stages: planned.stages, maxIterations: 3 });
         const result = await Promise.race([
           started,
@@ -1181,7 +1193,7 @@ function createChatFeature(options) {
           })
           .catch(() => {});
         if (result && result.ok === false) throw new Error(result.error);
-        return {};
+        return { meta: publicMeta(store.readMeta(sessionId)) };
       })
     );
 

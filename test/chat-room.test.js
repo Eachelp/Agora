@@ -129,6 +129,40 @@ test("전문 모드는 구현 결과를 검토하고 수정 필요면 구현으�
   assert.equal(room.messages.filter((message) => message.authorType === "agent").length, 5);
 });
 
+test("전문 모드 실행 중에는 @멘션 호출이 꺼진다", async () => {
+  const calls = [];
+  const replies = {
+    codex: [
+      { ok: true, text: "구현 완료. @claude 이어서 확인 부탁" },
+      { ok: true, text: "기록" },
+    ],
+    claude: [{ ok: true, text: "검토 통과\n[[CODEPET_REVIEW:PASS]]" }],
+  };
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: ({ agent, prompt }) => {
+      calls.push({ agentId: agent.id, prompt });
+      const reply = replies[agent.id].shift();
+      return { promise: Promise.resolve(reply), cancel: () => {} };
+    },
+  });
+
+  const result = await room.startSpecialist({
+    stages: {
+      implementation: { agent: room.findAgent("codex") },
+      review: { agent: room.findAgent("claude") },
+      recorder: { agent: room.findAgent("codex") },
+    },
+    maxIterations: 3,
+  });
+
+  assert.equal(result.ok, true);
+  // 구현 응답에 @claude가 들어 있어도 멘션 호출이 일어나지 않는다.
+  assert.deepEqual(calls.map((call) => call.agentId), ["codex", "claude", "codex"]);
+  const implementationPrompt = calls[0].prompt;
+  assert.match(implementationPrompt, /위임하지 마세요/);
+});
+
 test("멘션이 없으면 세션에 참여 중인 모든 에이전트가 응답한다", async () => {
   const calls = [];
   const room = new ChatRoom({ agents: makeAgents(), runAgent: fakeRunner({}, calls) });

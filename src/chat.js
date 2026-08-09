@@ -21,6 +21,7 @@ const sessionTitleEl = document.getElementById("session-title");
 const workspaceButton = document.getElementById("btn-workspace");
 const workspaceLabel = document.getElementById("workspace-label");
 const permissionSelect = document.getElementById("permission-select");
+const permissionWarning = document.getElementById("permission-warning");
 const enforcementHint = document.getElementById("enforcement-hint");
 const discussionButton = document.getElementById("btn-discussion");
 const workflowButton = document.getElementById("btn-workflow");
@@ -463,8 +464,8 @@ function openProjectSettings(anchor, project) {
     const permission = document.createElement("select");
     for (const [value, label] of [
       ["chat", "대화만"],
-      ["workspace-read", "새 대화: 워크스페이스 읽기"],
-      ["workspace-write", "새 대화: 워크스페이스 쓰기"],
+      ["workspace-read", "워크스페이스 읽기"],
+      ["workspace-write", "워크스페이스 쓰기"],
     ]) {
       const option = document.createElement("option");
       option.value = value;
@@ -1068,6 +1069,23 @@ function renderHeader() {
       option.disabled = !workspace;
       option.title = workspace ? "" : "먼저 워크스페이스를 선택하세요";
     }
+  }
+
+  // 전문 모드는 쓰기 권한이 필요하므로, 그렇지 않으면 눈에 띄게 안내합니다.
+  const projectForWarning = projects.find((entry) => entry.id === activeProjectId);
+  const specialistConfigured = Boolean(
+    roleConfigFromProject(projectForWarning, "implementation").agentId &&
+      roleConfigFromProject(projectForWarning, "review").agentId
+  );
+  if (specialistConfigured && mode !== "workspace-write") {
+    permissionWarning.hidden = false;
+    permissionWarning.textContent = workspace
+      ? "전문 모드엔 쓰기 권한 필요"
+      : "전문 모드엔 폴더+쓰기 권한 필요";
+    permissionWarning.title =
+      "전문 모드는 워크스페이스 쓰기 권한으로 실행됩니다. 클릭하면 이 채팅을 쓰기 권한으로 바꿉니다.";
+  } else {
+    permissionWarning.hidden = true;
   }
 
   const hints = [];
@@ -1703,6 +1721,7 @@ specialistButton.addEventListener("click", async () => {
   specialistButton.textContent = "전문 실행 중…";
   const result = await call(window.chatApi.specialistStart(activeSessionId));
   if (result) flashNotice("전문 모드를 시작했습니다.", false);
+  if (result?.meta) sessionMeta = result.meta;
   specialistRunning = false;
   specialistButton.disabled = false;
   specialistButton.textContent = "전문 실행";
@@ -1779,6 +1798,15 @@ permissionSelect.addEventListener("change", async () => {
   const result = await call(window.chatApi.permissionSet(activeSessionId, permissionSelect.value));
   if (result?.meta) {
     sessionMeta = result.meta;
+  }
+  renderHeader();
+});
+
+permissionWarning.addEventListener("click", async () => {
+  const result = await call(window.chatApi.permissionSet(activeSessionId, "workspace-write"));
+  if (result?.meta) {
+    sessionMeta = result.meta;
+    flashNotice("이 채팅을 워크스페이스 쓰기 권한으로 바꿨습니다.", false);
   }
   renderHeader();
 });

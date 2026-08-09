@@ -116,6 +116,25 @@ test("전문 모드 구현·검토·기록 지침과 Memory Bank가 프롬프트
   assert.match(prompt, /CODEPET_REVIEW:REVISE/);
 });
 
+test("전문 모드 구현자는 위임 금지, 검토자는 위임 시 되돌림 지침을 받는다", () => {
+  const implementation = buildAgentPrompt({
+    agent: AGENTS[1],
+    agents: AGENTS,
+    messages: [message("user", "진행해", "user")],
+    specialist: { stage: "implementation", round: 1, maxRounds: 3 },
+  });
+  assert.match(implementation, /위임하지 마세요/);
+  assert.match(implementation, /다른 참가자에게 맡기지 말고/);
+
+  const review = buildAgentPrompt({
+    agent: AGENTS[0],
+    agents: AGENTS,
+    messages: [message("user", "진행해", "user")],
+    specialist: { stage: "review", round: 1, maxRounds: 3 },
+  });
+  assert.match(review, /통과시키지 말고 구현 단계로 되돌리세요/);
+});
+
 test("첨부가 있는 메시지는 첨부 이름이 함께 표기된다", () => {
   const prompt = buildAgentPrompt({
     agent: AGENTS[0],

@@ -109,9 +109,12 @@ function buildAgentPrompt({
     if (specialist.stage === "implementation") {
       lines.push("- 현재 결정과 작업 범위 안에서 실제 구현을 진행하세요.");
       lines.push("- 작업을 끝낸 뒤 변경 내용과 검증 결과를 짧게 정리하세요.");
+      lines.push("- 구현은 당신의 몫입니다. 다른 에이전트에게 구현·스크립트 작성·실행을 넘기거나 위임하지 마세요.");
+      lines.push("- 권한이나 도구가 부족하다고 판단되면, 다른 참가자에게 맡기지 말고 현재 단계의 결과물에 그 사유와 필요한 조치를 적으세요.");
     } else if (specialist.stage === "review") {
       lines.push("- 구현 결과를 요구사항·현재 작업공간·대화 맥락과 대조하세요.");
       lines.push("- 수정이 필요하면 구체적인 파일·문제·수정 방향을 적으세요.");
+      lines.push("- 구현자가 작업을 다른 에이전트에게 넘기려 하거나 권한이 없어 실제 변경을 못 했다면, 통과시키지 말고 구현 단계로 되돌리세요.");
       lines.push("- 응답 마지막 줄에 반드시 [[CODEPET_REVIEW:PASS]] 또는 [[CODEPET_REVIEW:REVISE]] 하나를 붙이세요.");
     } else if (specialist.stage === "recorder") {
       lines.push("- 이번 작업에서 확인된 사실, 결정, 완료 내용, 남은 작업만 Markdown 요약으로 작성하세요.");

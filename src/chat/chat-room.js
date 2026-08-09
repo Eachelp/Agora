@@ -394,7 +394,9 @@ class ChatRoom extends EventEmitter {
       discussion: context.discussion || null,
       specialist: context.specialist || null,
       broadcast: context.broadcast || null,
-      mentionsEnabled: !context.discussion && mentionDepth < this.mentionChainLimit,
+      // 전문 모드 실행 중에는 @멘션 호출을 끕니다. 구현·검토·기록이
+      // 담당자 밖으로 새어 나가는 것을 막기 위해서입니다.
+      mentionsEnabled: !context.discussion && !context.specialist && mentionDepth < this.mentionChainLimit,
     });
 
     let result;
