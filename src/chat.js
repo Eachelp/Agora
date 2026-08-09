@@ -1,4 +1,4 @@
-﻿/* global chatMarkdown */
+/* global chatMarkdown */
 const chatScroll = document.getElementById("chat-scroll");
 const messageList = document.getElementById("message-list");
 const typingRow = document.getElementById("typing-row");
@@ -357,12 +357,20 @@ function makeAgentAvatar(agent, className = "avatar") {
 }
 
 function flashNotice(text, isError = true) {
+  const persistent = storeWarning.dataset.persistent;
+  const previousText = storeWarning.textContent;
   storeWarning.textContent = text;
   storeWarning.classList.toggle("is-error", isError);
   storeWarning.hidden = false;
   clearTimeout(noticeTimer);
   noticeTimer = setTimeout(() => {
-    storeWarning.hidden = true;
+    if (persistent) {
+      // 저장소 경고(읽기 전용·손상)는 원래 내용으로 복원하고 자동으로 숨기지 않는다.
+      storeWarning.textContent = previousText;
+      storeWarning.classList.add("is-error");
+    } else {
+      storeWarning.hidden = true;
+    }
   }, 5000);
 }
 
@@ -485,28 +493,38 @@ function openProjectSettings(anchor, project) {
     choose.type = "button";
     choose.className = "button button-small";
     choose.textContent = "폴더 선택";
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.className = "text-button";
+    clear.textContent = "해제";
+    clear.hidden = !project.workspace;
+    const syncWorkspaceField = (next) => {
+      const hasWorkspace = Boolean(next?.workspace);
+      workspace.textContent = hasWorkspace ? baseName(next.workspace) : "폴더 없음";
+      workspace.title = next?.workspace || "";
+      clear.hidden = !hasWorkspace;
+      for (const option of permission.options) {
+        option.disabled = option.value !== "chat" && !hasWorkspace;
+      }
+      if (!hasWorkspace && permission.value !== "chat") permission.value = "chat";
+    };
     choose.addEventListener("click", async () => {
       const result = await call(window.chatApi.projectsWorkspaceChoose(project.id));
       if (result && !result.canceled) {
-        closePopover();
-        applyFullState(result);
+        syncWorkspaceField(result.project);
+        if (result.projects) projects = result.projects;
+        renderProjects();
       }
     });
-    workspaceField.append(workspace, choose);
-    if (project.workspace) {
-      const clear = document.createElement("button");
-      clear.type = "button";
-      clear.className = "text-button";
-      clear.textContent = "해제";
-      clear.addEventListener("click", async () => {
-        const result = await call(window.chatApi.projectsWorkspaceClear(project.id));
-        if (result) {
-          closePopover();
-          applyFullState(result);
-        }
-      });
-      workspaceField.append(clear);
-    }
+    clear.addEventListener("click", async () => {
+      const result = await call(window.chatApi.projectsWorkspaceClear(project.id));
+      if (result) {
+        syncWorkspaceField(result.project);
+        if (result.projects) projects = result.projects;
+        renderProjects();
+      }
+    });
+    workspaceField.append(workspace, choose, clear);
 
     const defaultAgentControls = new Map();
     const defaultAgentSection = document.createElement("section");
@@ -1545,6 +1563,7 @@ function openWorkflowPopover(anchor) {
     const allDecisions = workflow.decisions || [];
     const proposedDecisions = allDecisions.filter((d) => d.status === "proposed");
     const confirmedDecisions = allDecisions.filter((d) => !d.status || d.status === "confirmed");
+    const excludedDecisions = allDecisions.filter((d) => d.status === "rejected");
 
     const decisionProposalsSection = document.createElement("section");
     decisionProposalsSection.className = "workflow-section";
@@ -1646,7 +1665,47 @@ function openWorkflowPopover(anchor) {
       decisionsSection.append(card);
     }
 
-    tabPanels.decisions.append(decisionProposalsSection, decisionFormToggle, decisionForm, decisionsSection);
+    const excludedSection = document.createElement("section");
+    excludedSection.className = "workflow-section";
+    const excludedTitle = document.createElement("strong");
+    excludedTitle.textContent = `제외된 결정 (${excludedDecisions.length})`;
+    excludedSection.append(excludedTitle);
+    if (excludedDecisions.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "workflow-empty";
+      empty.textContent = "제외된 결정이 없습니다.";
+      excludedSection.append(empty);
+    }
+    for (const decision of excludedDecisions) {
+      const card = document.createElement("article");
+      card.className = "workflow-card is-excluded";
+      const cardTitle = document.createElement("div");
+      cardTitle.className = "workflow-card-title";
+      cardTitle.textContent = decision.title || "제목 없는 결정";
+      const cardText = document.createElement("div");
+      cardText.className = "workflow-card-text";
+      cardText.textContent = decision.content;
+      const meta = document.createElement("div");
+      meta.className = "workflow-card-meta";
+      meta.textContent = new Date(decision.updatedAt).toLocaleString();
+      const cardActions = document.createElement("div");
+      cardActions.className = "workflow-card-actions";
+      const restore = document.createElement("button");
+      restore.type = "button";
+      restore.className = "button button-small";
+      restore.textContent = "복원";
+      restore.addEventListener("click", async () => {
+        const result = await call(window.chatApi.decisionsResolve(project.id, [decision.id], "restore"));
+        if (!result) return;
+        applyFullState(result);
+        openWorkflowPopover(anchor);
+      });
+      cardActions.append(restore);
+      card.append(cardTitle, cardText, meta, cardActions);
+      excludedSection.append(card);
+    }
+
+    tabPanels.decisions.append(decisionProposalsSection, decisionFormToggle, decisionForm, decisionsSection, excludedSection);
 
     // === 작업 탭 ===
     const taskTitle = document.createElement("input");
@@ -2176,6 +2235,12 @@ function formatBytes(size) {
   return `${(size / 1024 / 1024).toFixed(1)}MB`;
 }
 
+function makeAttachmentIcon(attachment) {
+  const icon = document.createElement("span");
+  icon.className = "attachment-icon";
+  icon.textContent = attachment.kind === "text" ? "📄" : "📦";
+  return icon;
+}
 function makeAttachmentPill(attachment, { removable = false } = {}) {
   const pill = document.createElement("span");
   pill.className = "attachment-pill";
@@ -2188,15 +2253,17 @@ function makeAttachmentPill(attachment, { removable = false } = {}) {
     window.chatApi
       .attachmentsPreview(activeSessionId, attachment.id)
       .then((result) => {
-        if (result?.ok && result.dataUrl) img.src = result.dataUrl;
+        if (result?.ok && result.dataUrl) {
+          img.src = result.dataUrl;
+        } else {
+          // 큰 이미지는 미리보기가 제한되므로 아이콘으로 대체한다.
+          img.replaceWith(makeAttachmentIcon(attachment));
+        }
       })
-      .catch(() => {});
+      .catch(() => img.replaceWith(makeAttachmentIcon(attachment)));
     pill.append(img);
   } else {
-    const icon = document.createElement("span");
-    icon.className = "attachment-icon";
-    icon.textContent = attachment.kind === "text" ? "📄" : "📦";
-    pill.append(icon);
+    pill.append(makeAttachmentIcon(attachment));
   }
 
   const name = document.createElement("span");
@@ -2211,8 +2278,9 @@ function makeAttachmentPill(attachment, { removable = false } = {}) {
     remove.textContent = "×";
     remove.title = "첨부 제거";
     remove.addEventListener("click", async () => {
-      const result = await call(window.chatApi.attachmentsRemove(activeSessionId, attachment.id));
-      if (result) {
+      const sessionId = activeSessionId;
+      const result = await call(window.chatApi.attachmentsRemove(sessionId, attachment.id));
+      if (result && sessionId === activeSessionId) {
         pendingAttachments = result.pendingAttachments || [];
         renderPendingAttachments();
       }
@@ -2506,8 +2574,10 @@ function renderPendingAttachments() {
 }
 
 attachButton.addEventListener("click", async () => {
-  const result = await call(window.chatApi.attachmentsAdd(activeSessionId));
+  const sessionId = activeSessionId;
+  const result = await call(window.chatApi.attachmentsAdd(sessionId));
   if (!result) return;
+  if (sessionId !== activeSessionId) return;
   pendingAttachments = result.pendingAttachments || pendingAttachments;
   for (const failure of result.errors || []) {
     flashNotice(`${failure.name}: ${failure.error}`);
@@ -2527,8 +2597,10 @@ composerBox.addEventListener("drop", async (event) => {
     .map((file) => window.chatApi.pathForFile(file))
     .filter(Boolean);
   if (paths.length === 0) return;
-  const result = await call(window.chatApi.attachmentsAddDropped(activeSessionId, paths));
+  const sessionId = activeSessionId;
+  const result = await call(window.chatApi.attachmentsAddDropped(sessionId, paths));
   if (!result) return;
+  if (sessionId !== activeSessionId) return;
   pendingAttachments = result.pendingAttachments || pendingAttachments;
   for (const failure of result.errors || []) {
     flashNotice(`${failure.name}: ${failure.error}`);
@@ -2647,6 +2719,9 @@ async function sendCurrentMessage() {
   const text = composerInput.value.trim();
   if (!text && pendingAttachments.length === 0) return;
   const attachmentIds = pendingAttachments.map((attachment) => attachment.id);
+  // 전송 실패 시 작성 중이던 내용을 복원하기 위해 보관해 둔다.
+  const draftText = composerInput.value;
+  const draftAttachments = pendingAttachments;
   composerInput.value = "";
   closeMentionPopup();
   autoresize();
@@ -2654,6 +2729,12 @@ async function sendCurrentMessage() {
   if (result) {
     pendingAttachments = [];
     renderPendingAttachments();
+  } else {
+    // 실패 시 작성 중이던 내용을 그대로 복원한다.
+    composerInput.value = draftText;
+    pendingAttachments = draftAttachments;
+    renderPendingAttachments();
+    autoresize();
   }
   composerInput.focus();
 }
@@ -2780,14 +2861,20 @@ function applyFullState(full) {
   }
 
   if (full.error) {
+    storeWarning.dataset.persistent = "1";
     storeWarning.textContent = `저장소 문제: ${full.error} — 대화가 저장되지 않을 수 있습니다.`;
     storeWarning.classList.add("is-error");
     storeWarning.hidden = false;
+    clearTimeout(noticeTimer);
   } else if (full.readOnly) {
+    storeWarning.dataset.persistent = "1";
     storeWarning.textContent =
       "이 .agora 저장소는 더 새로운 버전이 만든 것이라 읽기 전용으로 열렸습니다.";
     storeWarning.classList.add("is-error");
     storeWarning.hidden = false;
+    clearTimeout(noticeTimer);
+  } else {
+    delete storeWarning.dataset.persistent;
   }
 
   renderProjects();
@@ -2841,6 +2928,11 @@ window.chatApi.onAgents(({ sessionId, agents: nextAgents }) => {
   renderAgents();
   renderHeader();
 });
+function lockComposer(locked) {
+  composerInput.disabled = locked;
+  composerInput.placeholder = locked ? "승인 창을 먼저 처리해 주세요" : "메시지 입력...";
+  if (locked) composerInput.blur();
+}
 function showNextApproval() {
   if (activeApproval || approvalQueue.length === 0) return;
   activeApproval = approvalQueue.shift();
@@ -2848,6 +2940,7 @@ function showNextApproval() {
   approvalSummary.textContent = `${agent?.name || activeApproval.agentId}: ${activeApproval.summary}`;
   approvalDetail.textContent = activeApproval.detail || "세부 정보가 없습니다.";
   approvalBackdrop.hidden = false;
+  lockComposer(true);
 }
 async function answerApproval(decision) {
   if (!activeApproval) return;
@@ -2855,6 +2948,8 @@ async function answerApproval(decision) {
   activeApproval = null;
   approvalBackdrop.hidden = true;
   await call(window.chatApi.approvalRespond(current.sessionId, current.approvalId, decision));
+  lockComposer(false);
+  composerInput.focus();
   showNextApproval();
 }
 approvalApprove.addEventListener("click", () => answerApproval("approve"));

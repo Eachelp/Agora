@@ -1051,13 +1051,17 @@ function roomMeta(meta) {
       wrap(async ({ projectId, ids, action }) => {
         const project = requireProject(projectId || getActiveProjectId());
         const workflow = ensureWorkflowStore();
-        if (action !== "approve" && action !== "reject") throw new Error("올바르지 않은 승인 동작입니다.");
-        const nextStatus = action === "reject" ? "rejected" : "confirmed";
+        if (action !== "approve" && action !== "reject" && action !== "restore") {
+          throw new Error("올바르지 않은 승인 동작입니다.");
+        }
         const list = Array.isArray(ids) ? ids : [ids];
         for (const id of list) {
           const current = workflow.getDecision(id);
-          if (current && current.projectId === project.id && current.status === "proposed") {
-            workflow.updateDecision(id, { status: nextStatus });
+          if (!current || current.projectId !== project.id) continue;
+          if (action === "restore") {
+            if (current.status === "rejected") workflow.updateDecision(id, { status: "proposed" });
+          } else if (current.status === "proposed") {
+            workflow.updateDecision(id, { status: action === "reject" ? "rejected" : "confirmed" });
           }
         }
         refreshMemoryForProject(project.id);
@@ -1476,8 +1480,22 @@ function roomMeta(meta) {
       "chat:attachments:remove",
       wrap(async ({ sessionId, attachmentId }) => {
         requireSession(sessionId);
-        pendingFor(sessionId).delete(String(attachmentId || ""));
-        return { pendingAttachments: [...pendingFor(sessionId).values()].map(publicAttachment) };
+        const pending = pendingFor(sessionId);
+        const record = pending.get(String(attachmentId || ""));
+        pending.delete(String(attachmentId || ""));
+        // 미전송 첨부만 취소한 경우에만 복사본을 함께 삭제해 디스크 낭비를 막습니다.
+        // 전송이 완료돼 대화에 저장된 첨부는 여기서 지우지 않습니다.
+        if (record?.fileName) {
+          try {
+            const filePath = path.join(store.attachmentsDir(sessionId), record.fileName);
+            if (path.dirname(filePath) === path.normalize(store.attachmentsDir(sessionId))) {
+              fs.unlinkSync(filePath);
+            }
+          } catch {
+            // 파일이 이미 없거나 삭제할 수 없어도 첨부 목록에서는 제거합니다.
+          }
+        }
+        return { pendingAttachments: [...pending.values()].map(publicAttachment) };
       })
     );
 
@@ -1515,6 +1533,7 @@ function roomMeta(meta) {
     const attachments = [];
     const errors = [];
     let sessionBytes = store.sessionAttachmentsSize(sessionId);
+    const sourceCount = filePaths.length;
     for (const filePath of filePaths.slice(0, 10)) {
       const result = importAttachment({
         sourcePath: filePath,
@@ -1528,6 +1547,9 @@ function roomMeta(meta) {
       } else {
         errors.push({ name: path.basename(String(filePath)), error: result.error });
       }
+    }
+    if (sourceCount > 10) {
+      errors.push({ name: "첨부 제한", error: `한 번에 최대 10개까지 첨부할 수 있습니다. (${sourceCount - 10}개 제외)` });
     }
     return {
       attachments,
