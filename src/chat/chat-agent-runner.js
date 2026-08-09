@@ -28,6 +28,11 @@ const MAX_ARGV_PROMPT_CHARS = 24 * 1024;
 // 기준으로 이 길이보다 훨씬 짧으므로 최근 구간만 있어도 복구할 수 있습니다.
 const MAX_LINE_BUFFER_CHARS = 256 * 1024;
 
+// 화면에 실시간으로 보이던 중간 답변(deltaText)도 무한정 쌓이지 않도록 상한을 둡니다.
+// 초과 시 앞부분은 버리고 최근 구간만 유지해, 오류 진단과 부분 출력 보존에 씁니다.
+const MAX_DELTA_TEXT_CHARS = 2 * 1024 * 1024;
+
+
 // tail buffer가 유지하는 머리 부분 비율. 초반 지시/헤더와 최신 출력이 모두
 // 진단에 필요하므로 양쪽을 남기고 중간만 버립니다.
 const CAPTURE_HEAD_RATIO = 0.25;
@@ -92,14 +97,37 @@ function quoteArgForShell(arg) {
   if (/[\s&|<>^()"]/.test(text)) return `"${text.replace(/"/g, "")}"`;
   return text;
 }
-
 function compactArgvPrompt(prompt, limit = MAX_ARGV_PROMPT_CHARS) {
   const text = String(prompt || "");
   if (text.length <= limit) return text;
-  const marker = "\n\n[AGY CLI 명령줄 한도로 이전 대화 일부 생략]\n\n";
-  const headLength = Math.min(6000, Math.floor((limit - marker.length) / 3));
-  const tailLength = limit - marker.length - headLength;
-  return text.slice(0, headLength) + marker + text.slice(-tailLength);
+
+  // 규칙·프로젝트 맥락·결정·작업·최근 기록은 우선순위가 높아 보존한다.
+  // 자를 부분은 오직 대화 본문 구간뿐이다. 대화 마커 이전은 그대로 둔다.
+  const dialogueMarkers = ["=== 대화 ==="];
+  let splitIndex = -1;
+  for (const candidate of dialogueMarkers) {
+    const idx = text.indexOf(candidate);
+    if (idx >= 0) { splitIndex = idx; break; }
+  }
+
+  const notice = "\nAGY CLI 명령줄 한도로 이전 대화 일부 생략\n";
+  if (splitIndex < 0) {
+    // 대화 마커를 찾지 못한 경우: 앞부분을 우선 보존하고 생략 공지를 붙인다.
+    const headLen = Math.max(0, Math.min(4000, limit - notice.length - 100));
+    const tailLen = Math.max(0, limit - notice.length - headLen);
+    return text.slice(0, headLen) + notice + text.slice(-tailLen);
+  }
+  const header = text.slice(0, splitIndex);
+  const body = text.slice(splitIndex);
+  if (header.length > limit) {
+    // 헤더만으로도 한도를 넘는 드문 경우: 앞부분을 보존한다.
+    return text.slice(0, limit);
+  }
+  const bodyBudget = Math.max(0, limit - header.length - notice.length);
+  if (body.length <= bodyBudget) return text;
+  const headLength = Math.min(4000, Math.floor(bodyBudget / 2));
+  const tailLength = bodyBudget - headLength;
+  return header + notice + body.slice(0, headLength) + body.slice(-tailLength);
 }
 
 function killTree(child, platform = process.platform) {
@@ -207,7 +235,12 @@ function runAgentProcess({
       // turn.failed 원인이 사용자에게 더 유용하므로 최신 오류를 보존합니다.
       if (event.kind === "error") parsedError = event.message;
       if (event.kind === "approval-required" && !parsedApproval) parsedApproval = event;
-      if (event.kind === "delta") deltaText += event.text;
+      if (event.kind === "delta") {
+        deltaText += event.text;
+        if (deltaText.length > MAX_DELTA_TEXT_CHARS) {
+          deltaText = deltaText.slice(-MAX_DELTA_TEXT_CHARS);
+        }
+      }
       if (typeof onEvent === "function") {
         try {
           onEvent(event);

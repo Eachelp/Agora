@@ -146,6 +146,7 @@ class ChatRoom extends EventEmitter {
       text: trimmed,
       ...(attachments.length > 0 ? { attachments } : {}),
     });
+    entry.turnRootId = entry.id;
 
     this.mentionsMuted = false;
     const mentionedIds = parseMentions(trimmed, this.agents, GROUP_ALIASES);
@@ -238,9 +239,15 @@ class ChatRoom extends EventEmitter {
       dedupeKey,
       promise,
       resolve: resolveTurn,
+      promptLimit: this.messages.length,
     };
     if (dedupeKey) this.pendingTurns.set(dedupeKey, item);
-    const queue = this.discussionActive && !context.discussion
+    // While a discussion or specialist run is active, defer ordinary
+    // (non-discussion, non-specialist) turns so they cannot interject.
+    const deferGeneral = (this.discussionActive || this.specialistActive)
+      && !context.discussion
+      && !context.specialist;
+    const queue = deferGeneral
       ? this.deferredTurnQueue
       : this.turnQueue;
     queue.push(item);
@@ -316,7 +323,11 @@ class ChatRoom extends EventEmitter {
         this.emitTurnState();
         let outcome;
         try {
-          outcome = await this.respond(item.agent, item.context, item.generation);
+          outcome = await this.respond(
+            item.agent,
+            { ...item.context, promptLimit: item.promptLimit },
+            item.generation
+          );
         } catch {
           outcome = undefined;
         }
@@ -363,16 +374,21 @@ class ChatRoom extends EventEmitter {
     if (this.activeRuns === 0) this.emit("busy", false);
   }
 
-  promptMessages() {
-    return this.messages.filter(
-      (message) => message.authorType !== "system" && !message.error
+  promptMessages(promptLimit = null) {
+    const messages = this.messages;
+    if (!Number.isInteger(promptLimit) || promptLimit < 0) {
+      return messages.filter((message) => message.authorType !== "system" && !message.error);
+    }
+    const cap = Math.min(promptLimit, messages.length);
+    const base = messages.slice(0, cap);
+    const roots = new Set(base.map((message) => message.turnRootId).filter(Boolean));
+    const extra = messages.slice(cap).filter(
+      (message) => message.turnRootId && roots.has(message.turnRootId)
     );
+    return [...base, ...extra].filter((message) => message.authorType !== "system" && !message.error);
   }
 
   async respond(agent, context = {}, generation = this.generation) {
-    if (generation !== this.generation) return;
-    if (typeof this.runAgent !== "function") return;
-
     // 큐에서 기다리는 사이 참가자가 비활성화되거나 CLI가 사라졌다면 실행하지 않습니다.
     const currentAgent = this.findAgent(agent.id);
     if (!currentAgent || !currentAgent.available || currentAgent.enabled === false) return;
@@ -386,7 +402,7 @@ class ChatRoom extends EventEmitter {
     const prompt = buildAgentPrompt({
       agent,
       agents: this.enabledAgents(),
-      messages: this.promptMessages(),
+      messages: this.promptMessages(context.promptLimit),
       maxMessages: this.maxPromptMessages,
       permissionMode: this.meta.permissionMode,
       projectContext: this.meta.projectContext,
@@ -469,6 +485,7 @@ class ChatRoom extends EventEmitter {
         error: true,
         failureKind,
         ...(result?.partialText ? { partialText: result.partialText } : {}),
+        ...(context.turnRootId ? { turnRootId: context.turnRootId } : {}),
         ...(result?.output ? { runOutput: result.output } : {}),
         runId,
       });
@@ -508,6 +525,7 @@ class ChatRoom extends EventEmitter {
         version: agent.version || "",
         ...(context.specialist?.stage ? { specialistStage: context.specialist.stage } : {}),
       },
+      ...(context.turnRootId ? { turnRootId: context.turnRootId } : {}),
       ...(result.deliveries ? { deliveries: result.deliveries } : {}),
     });
     // 토론 모드는 자체 턴 오케스트레이션이 있으므로 멘션 호출을 만들지 않습니다.
@@ -578,14 +596,14 @@ class ChatRoom extends EventEmitter {
           agentConfig: implementation.agentConfig,
         });
         if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
-        if (!implementationResult?.ok) return { ok: false, stage: "implementation", completedIterations };
+        if (!implementationResult?.ok) return this.specialistFail(implementation, "implementation", completedIterations, implementationResult);
 
         const reviewResult = await this.scheduleResponse(review.agent, {
           specialist: { stage: "review", round, maxRounds: maxIterations },
           agentConfig: review.agentConfig,
         });
         if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
-        if (!reviewResult?.ok) return { ok: false, stage: "review", completedIterations };
+        if (!reviewResult?.ok) return this.specialistFail(review, "review", completedIterations, reviewResult);
         if (reviewResult.specialistSignal === "PASS") {
           passed = true;
           break;
@@ -607,6 +625,11 @@ class ChatRoom extends EventEmitter {
         agentConfig: recorder.agentConfig,
       });
       if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
+      if (!recorderResult?.ok) {
+        const recordError = recorderResult?.error || "기록관 실행이 실패했습니다.";
+        this.appendSystem(`전문 모드 구현·검토는 통과했지만 기록관이 결과를 정리하지 못했습니다. (${recordError})`);
+        return { ok: true, completedIterations, recorded: false, recording: recorderResult?.text || "", recordError };
+      }
       this.appendSystem("전문 모드 구현·검토가 통과했고 기록관이 결과를 정리했습니다.");
       return {
         ok: true,
@@ -616,7 +639,24 @@ class ChatRoom extends EventEmitter {
       };
     } finally {
       this.specialistActive = false;
+      this.turnQueue.push(...this.deferredTurnQueue.splice(0));
+      this.emitTurnState();
+      this.pumpTurnQueue();
     }
+  }
+
+  // 전문 모드 실패 시 어떤 역할/에이전트/모델에서 실패했는지 정보를 담아 반환합니다.
+  specialistFail(stageAgent, stage, completedIterations, result = {}) {
+    const model = stageAgent?.agentConfig?.model || stageAgent?.agent?.modelId || "기본";
+    return {
+      ok: false,
+      stage,
+      completedIterations,
+      role: stage,
+      agentId: stageAgent?.agent?.id || null,
+      model,
+      error: result?.error || `${stage} 단계에서 에이전트 실행에 실패했습니다.`
+    };
   }
 
   async runRecorder(options = {}) {
@@ -641,7 +681,7 @@ class ChatRoom extends EventEmitter {
     if (pool.length < 2) {
       return { ok: false, error: "토론에는 사용 가능한 에이전트가 두 명 이상 필요합니다." };
     }
-    if (this.discussionRequested || this.discussionActive) {
+    if (this.discussionRequested || this.discussionActive || this.specialistActive) {
       return { ok: false, error: "이미 토론이 진행 중입니다." };
     }
 

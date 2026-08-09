@@ -76,8 +76,9 @@ function createRunLogWriter(store, sessionId, runId) {
       if (!target) return;
       try {
         target.write(chunk);
-      } catch {
+      } catch (error) {
         failed = true;
+        if (entry) console.error("[Agora] 기록관 후보 등록 실패:", error && (error.message || error));
       }
     },
     close() {
@@ -687,6 +688,14 @@ function roomMeta(meta) {
     }
   }
 
+  // Refresh open rooms' workflow context after decision/task changes.
+  function refreshWorkflowForProject(projectId) {
+    for (const [sessionId] of rooms) {
+      const meta = store.readMeta(sessionId);
+      if (projectIdForMeta(meta) === projectId) refreshRoomAgents(sessionId);
+    }
+  }
+
   function saveRecorderOutput(projectId, content, title, options = {}) {
     const memory = ensureMemoryStore();
     if (!memory || !content) return null;
@@ -729,8 +738,9 @@ function roomMeta(meta) {
             runId,
           });
         }
-      } catch {
-        // 요약 저장은 이미 끝난 상태이므로, 후보 등록 실패가 토론 결과를 지우지 않습니다.
+      } catch (error) {
+        // 요약 저장 자체는 유지하되, 후보 등록 실패는 조용히 넘기지 않고 로그로 남깁니다.
+        if (entry) console.error("[Agora] 기록관 후보 등록 실패:", error && (error.message || error));
       }
     }
     if (entry) broadcast("chat:sessions-changed", sessionsPayload());
@@ -989,6 +999,7 @@ function roomMeta(meta) {
         const payload = sessionsPayload();
         broadcast("chat:sessions-changed", payload);
         broadcast("chat:workflow-changed", { projectId: project.id, workflow: workflowForProject(project.id) });
+        refreshWorkflowForProject(project.id);
         return { ...payload, decision };
       })
     );
@@ -1011,6 +1022,7 @@ function roomMeta(meta) {
         const payload = sessionsPayload();
         broadcast("chat:sessions-changed", payload);
         broadcast("chat:workflow-changed", { projectId: project.id, workflow: workflowForProject(project.id) });
+        refreshWorkflowForProject(project.id);
         return { ...payload, decision };
       })
     );
@@ -1029,6 +1041,7 @@ function roomMeta(meta) {
         const payload = sessionsPayload();
         broadcast("chat:sessions-changed", payload);
         broadcast("chat:workflow-changed", { projectId: project.id, workflow: workflowForProject(project.id) });
+        refreshWorkflowForProject(project.id);
         return payload;
       })
     );
@@ -1038,11 +1051,12 @@ function roomMeta(meta) {
       wrap(async ({ projectId, ids, action }) => {
         const project = requireProject(projectId || getActiveProjectId());
         const workflow = ensureWorkflowStore();
+        if (action !== "approve" && action !== "reject") throw new Error("올바르지 않은 승인 동작입니다.");
         const nextStatus = action === "reject" ? "rejected" : "confirmed";
         const list = Array.isArray(ids) ? ids : [ids];
         for (const id of list) {
           const current = workflow.getDecision(id);
-          if (current && current.projectId === project.id) {
+          if (current && current.projectId === project.id && current.status === "proposed") {
             workflow.updateDecision(id, { status: nextStatus });
           }
         }
@@ -1050,6 +1064,7 @@ function roomMeta(meta) {
         const payload = sessionsPayload();
         broadcast("chat:sessions-changed", payload);
         broadcast("chat:workflow-changed", { projectId: project.id, workflow: workflowForProject(project.id) });
+        refreshWorkflowForProject(project.id);
         return payload;
       })
     );
@@ -1079,6 +1094,7 @@ function roomMeta(meta) {
         const payload = sessionsPayload();
         broadcast("chat:sessions-changed", payload);
         broadcast("chat:workflow-changed", { projectId: project.id, workflow: workflowForProject(project.id) });
+        refreshWorkflowForProject(project.id);
         return { ...payload, task };
       })
     );
@@ -1103,6 +1119,7 @@ function roomMeta(meta) {
         const payload = sessionsPayload();
         broadcast("chat:sessions-changed", payload);
         broadcast("chat:workflow-changed", { projectId: project.id, workflow: workflowForProject(project.id) });
+        refreshWorkflowForProject(project.id);
         return { ...payload, task };
       })
     );
@@ -1118,6 +1135,7 @@ function roomMeta(meta) {
         const payload = sessionsPayload();
         broadcast("chat:sessions-changed", payload);
         broadcast("chat:workflow-changed", { projectId: project.id, workflow: workflowForProject(project.id) });
+        refreshWorkflowForProject(project.id);
         return payload;
       })
     );
@@ -1127,17 +1145,19 @@ function roomMeta(meta) {
       wrap(async ({ projectId, ids, action }) => {
         const project = requireProject(projectId || getActiveProjectId());
         const workflow = ensureWorkflowStore();
+        if (action !== "approve" && action !== "reject") throw new Error("올바르지 않은 승인 동작입니다.");
         const nextStatus = action === "reject" ? "rejected" : "todo";
         const list = Array.isArray(ids) ? ids : [ids];
         for (const id of list) {
           const current = workflow.getTask(id);
-          if (current && current.projectId === project.id) {
+          if (current && current.projectId === project.id && current.status === "proposed") {
             workflow.updateTask(id, { status: nextStatus });
           }
         }
         const payload = sessionsPayload();
         broadcast("chat:sessions-changed", payload);
         broadcast("chat:workflow-changed", { projectId: project.id, workflow: workflowForProject(project.id) });
+        refreshWorkflowForProject(project.id);
         return payload;
       })
     );
@@ -1183,6 +1203,9 @@ function roomMeta(meta) {
             );
           }
           store.updateMeta(sessionId, patch);
+          // 대화가 다른 프로젝트로 옮겨지면, 이 대화에 연결된 결정/작업의 프로젝트 연결을 정리합니다.
+          const workflowMove = ensureWorkflowStore();
+          if (workflowMove) workflowMove.detachChatItems(sessionId);
           refreshRoomAgents(sessionId);
         }
         if (wasActive) {

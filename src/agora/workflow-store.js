@@ -305,6 +305,22 @@ class WorkflowStore {
     });
   }
 
+
+  // 대화가 다른 프로젝트로 이동할 때, 해당 대화에 연결된 결정/작업의 chatId와 프로젝트 연결을 정리합니다.
+  detachChatItems(chatId) {
+    if (this.readOnly || !chatId) return;
+    const items = [...this.data.decisions, ...this.data.tasks].filter((entry) => entry.chatId === chatId);
+    if (items.length === 0) return;
+    this.mutateAndPersist(() => {
+      let changed = false;
+      for (const entry of items) {
+        entry.chatId = null;
+        entry.updatedAt = this.now();
+        changed = true;
+      }
+      return changed;
+    });
+  }
   forProject(projectId) {
     return {
       decisions: this.listDecisions(projectId),

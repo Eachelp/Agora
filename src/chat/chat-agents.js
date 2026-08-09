@@ -23,7 +23,9 @@ function resolvedModel(record, configured) {
       || options.find((option) => option.id === "fable")?.id
       || options[0]?.id;
   }
-  return options.find((option) => option.isDefault)?.id || options[0]?.id || "unknown";
+  // 모델 옵션을 조회하지 못하면 "unknown"을 넘겨 호출을 실패시키는 대신
+  // 기본 모델(모델 옵션 생략)로 실행하게 한다.
+  return options.find((option) => option.isDefault)?.id || options[0]?.id || "default";
 }
 
 function resolvedEffort(record, model, configured) {
