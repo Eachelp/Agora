@@ -16,6 +16,7 @@ const {
   ROLE_DEFS,
 } = require("../agora/workflow-store");
 const { MemoryStore } = require("../agora/memory-store");
+const { parseRecorderOutput } = require("../agora/recorder-output");
 const {
   createCapabilityService,
   toPublicProviders,
@@ -605,7 +606,10 @@ function roomMeta(meta) {
     if (!recorder.ok) return recorder;
     const result = await room.runRecorder(recorder);
     if (result?.ok && result.text) {
-      const entry = saveRecorderOutput(project.id, result.text, "토론 요약 초안");
+      const entry = saveRecorderOutput(project.id, result.text, "토론 요약 초안", {
+        chatId: sessionId,
+        recorderAgentId: recorder.agent?.id || null,
+      });
       return { ok: Boolean(entry), entry };
     }
     return { ok: false, error: "기록관이 요약을 만들지 못했습니다." };
@@ -683,19 +687,53 @@ function roomMeta(meta) {
     }
   }
 
-  function saveRecorderOutput(projectId, content, title) {
+  function saveRecorderOutput(projectId, content, title, options = {}) {
     const memory = ensureMemoryStore();
     if (!memory || !content) return null;
+    const { chatId = null, recorderAgentId = null, runId = null } = options;
+    const parsed = parseRecorderOutput(content);
     const entry = memory.append(projectId, {
       source: "agent",
       status: "draft",
       title,
-      content,
+      content: parsed.summary,
     });
     if (entry) {
       refreshMemoryForProject(projectId);
-      broadcast("chat:sessions-changed", sessionsPayload());
     }
+    const workflow = ensureWorkflowStore();
+    if (workflow) {
+      try {
+        for (const decision of parsed.decisions) {
+          workflow.createDecision({
+            projectId,
+            title: decision.title,
+            content: decision.content,
+            chatId,
+            messageIds: decision.messageIds,
+            status: "proposed",
+            origin: "recorder",
+            recorderAgentId,
+            runId,
+          });
+        }
+        for (const action of parsed.nextActions) {
+          workflow.createTask({
+            projectId,
+            title: action.title,
+            description: action.description,
+            chatId,
+            status: "proposed",
+            origin: "recorder",
+            recorderAgentId,
+            runId,
+          });
+        }
+      } catch {
+        // \uc694\uc57d \uc800\uc7a5\uc740 \uc774\ubbf8 \ub05d\ub09c \uc0c1\ud0dc\uc774\ubbc0\ub85c, \ud6c4\ubcf4 \ub4f1\ub85d \uc2e4\ud328\uac00 \ud1a0\ub860 \uacb0\uacfc\ub97c \uc9c0\uc6b0\uc9c0 \uc54a\uc2b5\ub2c8\ub2e4.
+      }
+    }
+    if (entry) broadcast("chat:sessions-changed", sessionsPayload());
     return entry;
   }
 
@@ -991,6 +1029,27 @@ function roomMeta(meta) {
     );
 
     ipcMain.handle(
+      "chat:decisions:resolve",
+      wrap(async ({ projectId, ids, action }) => {
+        const project = requireProject(projectId || getActiveProjectId());
+        const workflow = ensureWorkflowStore();
+        const nextStatus = action === "reject" ? "rejected" : "confirmed";
+        const list = Array.isArray(ids) ? ids : [ids];
+        for (const id of list) {
+          const current = workflow.getDecision(id);
+          if (current && current.projectId === project.id) {
+            workflow.updateDecision(id, { status: nextStatus });
+          }
+        }
+        refreshMemoryForProject(project.id);
+        const payload = sessionsPayload();
+        broadcast("chat:sessions-changed", payload);
+        broadcast("chat:workflow-changed", { projectId: project.id, workflow: workflowForProject(project.id) });
+        return payload;
+      })
+    );
+
+    ipcMain.handle(
       "chat:tasks:create",
       wrap(async ({ projectId, title, description, status, role, agentId, decisionId, chatId }) => {
         const project = requireProject(projectId || getActiveProjectId());
@@ -1051,6 +1110,26 @@ function roomMeta(meta) {
         const current = workflow.getTask(taskId);
         if (!current || current.projectId !== project.id) throw new Error("작업을 찾을 수 없습니다.");
         workflow.deleteTask(taskId);
+        const payload = sessionsPayload();
+        broadcast("chat:sessions-changed", payload);
+        broadcast("chat:workflow-changed", { projectId: project.id, workflow: workflowForProject(project.id) });
+        return payload;
+      })
+    );
+
+    ipcMain.handle(
+      "chat:tasks:resolve",
+      wrap(async ({ projectId, ids, action }) => {
+        const project = requireProject(projectId || getActiveProjectId());
+        const workflow = ensureWorkflowStore();
+        const nextStatus = action === "reject" ? "rejected" : "todo";
+        const list = Array.isArray(ids) ? ids : [ids];
+        for (const id of list) {
+          const current = workflow.getTask(id);
+          if (current && current.projectId === project.id) {
+            workflow.updateTask(id, { status: nextStatus });
+          }
+        }
         const payload = sessionsPayload();
         broadcast("chat:sessions-changed", payload);
         broadcast("chat:workflow-changed", { projectId: project.id, workflow: workflowForProject(project.id) });
@@ -1245,7 +1324,10 @@ function roomMeta(meta) {
         started
           .then((completed) => {
             if (completed?.ok && completed.recording) {
-              saveRecorderOutput(project.id, completed.recording, "전문 모드 실행 요약 초안");
+              saveRecorderOutput(project.id, completed.recording, "전문 모드 실행 요약 초안", {
+                chatId: sessionId,
+                recorderAgentId: planned.stages.recorder?.agent?.id || null,
+              });
             }
           })
           .catch(() => {});

@@ -20,9 +20,11 @@ const INVOKE = Object.freeze({
   DECISIONS_CREATE: "chat:decisions:create",
   DECISIONS_UPDATE: "chat:decisions:update",
   DECISIONS_DELETE: "chat:decisions:delete",
+  DECISIONS_RESOLVE: "chat:decisions:resolve",
   TASKS_CREATE: "chat:tasks:create",
   TASKS_UPDATE: "chat:tasks:update",
   TASKS_DELETE: "chat:tasks:delete",
+  TASKS_RESOLVE: "chat:tasks:resolve",
   SESSIONS_CREATE: "chat:sessions:create",
   SESSIONS_SELECT: "chat:sessions:select",
   SESSIONS_MOVE: "chat:sessions:move",
@@ -79,10 +81,14 @@ contextBridge.exposeInMainWorld("chatApi", {
     ipcRenderer.invoke(INVOKE.DECISIONS_UPDATE, { projectId, decisionId, patch }),
   decisionsDelete: (projectId, decisionId) =>
     ipcRenderer.invoke(INVOKE.DECISIONS_DELETE, { projectId, decisionId }),
+  decisionsResolve: (projectId, ids, action) =>
+    ipcRenderer.invoke(INVOKE.DECISIONS_RESOLVE, { projectId, ids, action }),
   tasksCreate: (input) => ipcRenderer.invoke(INVOKE.TASKS_CREATE, input),
   tasksUpdate: (projectId, taskId, patch) =>
     ipcRenderer.invoke(INVOKE.TASKS_UPDATE, { projectId, taskId, patch }),
   tasksDelete: (projectId, taskId) => ipcRenderer.invoke(INVOKE.TASKS_DELETE, { projectId, taskId }),
+  tasksResolve: (projectId, ids, action) =>
+    ipcRenderer.invoke(INVOKE.TASKS_RESOLVE, { projectId, ids, action }),
 
   sessionsCreate: () => ipcRenderer.invoke(INVOKE.SESSIONS_CREATE),
   sessionsSelect: (sessionId) => ipcRenderer.invoke(INVOKE.SESSIONS_SELECT, { sessionId }),

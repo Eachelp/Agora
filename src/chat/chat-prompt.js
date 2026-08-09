@@ -140,9 +140,13 @@ function buildAgentPrompt({
       lines.push("- 구현자가 작업을 다른 에이전트에게 넘기려 하거나 권한이 없어 실제 변경을 못 했다면, 통과시키지 말고 구현 단계로 되돌리세요.");
       lines.push("- 응답 마지막 줄에 반드시 [[CODEPET_REVIEW:PASS]] 또는 [[CODEPET_REVIEW:REVISE]] 하나를 붙이세요.");
     } else if (specialist.stage === "recorder") {
-      lines.push("- 이번 작업에서 확인된 사실, 결정, 완료 내용, 남은 작업만 Markdown 요약으로 작성하세요.");
-      lines.push("- 추측이나 확인되지 않은 내용을 사실처럼 기록하지 마세요.");
-      lines.push("- 채팅 답변이 아니라 Memory Bank에 저장될 기록만 출력하세요.");
+      lines.push("- 아래 JSON 형식으로만 답하세요. 코드 블록을 써도 되고 안 써도 됩니다.");
+      lines.push("- summary에는 이번 작업에서 확인된 사실, 결정, 완료 내용, 남은 작업을 Markdown으로 적으세요.");
+      lines.push("- decisions에는 대화에서 실제로 합의된 내용만 넣으세요.");
+      lines.push("- nextActions에는 대화에서 명시적으로 언급된 다음 할 일만 넣으세요.");
+      lines.push("- 대화에 없는 계획을 지어내지 마세요. 추측이나 확인되지 않은 내용을 사실처럼 기록하지 마세요.");
+      lines.push("- 프로젝트 규칙 변경이 필요하면 nextActions에 제안만 적고, 직접 규칙을 바꾸지 마세요.");
+      lines.push('{"summary": "...", "decisions": [{"title": "...", "content": "..."}], "nextActions": [{"title": "...", "description": "..."}]}');
     }
     lines.push("=== 전문 모드 끝 ===");
   }

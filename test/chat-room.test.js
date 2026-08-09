@@ -125,7 +125,7 @@ test("전문 모드는 구현 결과를 검토하고 수정 필요면 구현으�
   assert.deepEqual(calls.map((call) => call.agentId), ["codex", "claude", "codex", "claude", "claude"]);
   assert.deepEqual(calls.map((call) => call.model), ["gpt-5", "claude-review", "gpt-5", "claude-review", "claude-record"]);
   assert.match(calls[2].prompt, /테스트가 부족합니다/);
-  assert.match(calls[4].prompt, /Memory Bank에 저장될 기록/);
+  assert.match(calls[4].prompt, /summary에는/);
   assert.equal(room.messages.filter((message) => message.authorType === "agent").length, 5);
 });
 
