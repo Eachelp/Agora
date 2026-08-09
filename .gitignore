@@ -3,3 +3,5 @@
 /dist
 /release
 /artifacts
+/.agora
+*.tgz

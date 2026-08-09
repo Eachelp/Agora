@@ -157,6 +157,21 @@ class WorkflowStore {
     writeJsonAtomic(this.filePath, this.data);
   }
 
+  // persist()가 실패해도 메모리 상태를 되돌려, 다음 재시도가 "이미 있는
+  // 내용"으로 오판해 저장을 건너뛰지 않게 합니다. mutate가 데이터를 바꾸고,
+  // 실패하면 restore로 이전 스냅숏을 되돌린 뒤 오류를 다시 던집니다.
+  mutateAndPersist(mutate) {
+    const snapshot = { decisions: [...this.data.decisions], tasks: [...this.data.tasks] };
+    const result = mutate();
+    try {
+      this.persist();
+    } catch (error) {
+      this.data = snapshot;
+      throw error;
+    }
+    return result;
+  }
+
   listDecisions(projectId) {
     return this.data.decisions
       .filter((entry) => !projectId || entry.projectId === projectId)
@@ -181,31 +196,38 @@ class WorkflowStore {
       );
       if (dup) return dup;
     }
-    this.data.decisions.push(decision);
-    this.persist();
-    return decision;
+    return this.mutateAndPersist(() => {
+      this.data.decisions.push(decision);
+      return decision;
+    });
   }
 
   updateDecision(id, patch = {}) {
     if (this.readOnly) throw new Error("작업 기록 저장소가 읽기 전용 상태입니다.");
     const current = this.getDecision(id);
     if (!current) return null;
-    const next = normalizeDecision({ ...current, ...patch, id, projectId: current.projectId }, this.now());
+    const now = this.now();
+    const next = normalizeDecision(
+      { ...current, ...patch, id, projectId: current.projectId, updatedAt: now },
+      now
+    );
     if (!next) throw new Error("결정 내용을 확인해 주세요.");
     next.createdAt = current.createdAt;
-    this.data.decisions = this.data.decisions.map((entry) => (entry.id === id ? next : entry));
-    this.persist();
-    return next;
+    return this.mutateAndPersist(() => {
+      this.data.decisions = this.data.decisions.map((entry) => (entry.id === id ? next : entry));
+      return next;
+    });
   }
 
   deleteDecision(id) {
     if (this.readOnly) throw new Error("작업 기록 저장소가 읽기 전용 상태입니다.");
     if (this.data.tasks.some((task) => task.decisionId === id)) return false;
     const before = this.data.decisions.length;
-    this.data.decisions = this.data.decisions.filter((entry) => entry.id !== id);
-    if (before === this.data.decisions.length) return false;
-    this.persist();
-    return true;
+    if (!this.data.decisions.some((entry) => entry.id === id)) return false;
+    return this.mutateAndPersist(() => {
+      this.data.decisions = this.data.decisions.filter((entry) => entry.id !== id);
+      return before !== this.data.decisions.length;
+    });
   }
 
   listTasks(projectId) {
@@ -232,42 +254,55 @@ class WorkflowStore {
       );
       if (dup) return dup;
     }
-    this.data.tasks.push(task);
-    this.persist();
-    return task;
+    return this.mutateAndPersist(() => {
+      this.data.tasks.push(task);
+      return task;
+    });
   }
 
   updateTask(id, patch = {}) {
     if (this.readOnly) throw new Error("작업 기록 저장소가 읽기 전용 상태입니다.");
     const current = this.getTask(id);
     if (!current) return null;
-    const next = normalizeTask({ ...current, ...patch, id, projectId: current.projectId }, this.now());
+    const now = this.now();
+    const next = normalizeTask(
+      { ...current, ...patch, id, projectId: current.projectId, updatedAt: now },
+      now
+    );
     if (!next) throw new Error("작업 내용을 확인해 주세요.");
     next.createdAt = current.createdAt;
-    this.data.tasks = this.data.tasks.map((entry) => (entry.id === id ? next : entry));
-    this.persist();
-    return next;
+    return this.mutateAndPersist(() => {
+      this.data.tasks = this.data.tasks.map((entry) => (entry.id === id ? next : entry));
+      return next;
+    });
   }
 
   deleteTask(id) {
     if (this.readOnly) throw new Error("작업 기록 저장소가 읽기 전용 상태입니다.");
     const before = this.data.tasks.length;
-    this.data.tasks = this.data.tasks.filter((entry) => entry.id !== id);
-    if (before === this.data.tasks.length) return false;
-    this.persist();
-    return true;
+    if (!this.data.tasks.some((entry) => entry.id === id)) return false;
+    return this.mutateAndPersist(() => {
+      this.data.tasks = this.data.tasks.filter((entry) => entry.id !== id);
+      return before !== this.data.tasks.length;
+    });
   }
 
   moveProjectItems(projectId, targetProjectId) {
     if (this.readOnly || projectId === targetProjectId) return;
-    let changed = false;
-    for (const entry of [...this.data.decisions, ...this.data.tasks]) {
-      if (entry.projectId !== projectId) continue;
-      entry.projectId = targetProjectId;
-      entry.updatedAt = this.now();
-      changed = true;
+    if (!this.data.decisions.some((entry) => entry.projectId === projectId) &&
+        !this.data.tasks.some((entry) => entry.projectId === projectId)) {
+      return;
     }
-    if (changed) this.persist();
+    this.mutateAndPersist(() => {
+      let changed = false;
+      for (const entry of [...this.data.decisions, ...this.data.tasks]) {
+        if (entry.projectId !== projectId) continue;
+        entry.projectId = targetProjectId;
+        entry.updatedAt = this.now();
+        changed = true;
+      }
+      return changed;
+    });
   }
 
   forProject(projectId) {

@@ -7,6 +7,19 @@ const MAX_ENTRY_CHARS = 24000;
 const MAX_PROMPT_CHARS = 16000;
 const MAX_RULES_CHARS = 4000;
 
+let rulesWriteSeq = 0;
+
+// 규칙 파일은 통째로 교체되는 유일한 파일이라, 도중에 앱/PC가 꺼지면
+// writeFileSync가 비운 상태에서 끝나 내용을 통째로 잃을 수 있습니다.
+// 같은 디렉터리의 임시 파일에 먼저 쓴 뒤 rename해 이 문제를 막습니다.
+function writeTextAtomic(filePath, text) {
+  const dir = path.dirname(filePath);
+  rulesWriteSeq += 1;
+  const tmpPath = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${rulesWriteSeq}.tmp`);
+  fs.writeFileSync(tmpPath, text, "utf8");
+  fs.renameSync(tmpPath, filePath);
+}
+
 function validProjectId(value) {
   const id = String(value || "").trim();
   return /^[a-z0-9_-]{1,120}$/i.test(id) ? id : null;
@@ -130,7 +143,9 @@ class MemoryStore {
       const entry = `## 이전 규칙\n<!-- agora-rules-history: ${new Date(this.now()).toISOString()} -->\n\n${current}\n\n`;
       fs.appendFileSync(historyPath, entry, "utf8");
     }
-    fs.writeFileSync(filePath, next, "utf8");
+    // 임시 파일에 쓴 뒤 rename: 저장 도중 앱/PC가 꺼져도 규칙이
+    // 비워지거나 잘리지 않고 이전 상태 그대로 남습니다.
+    writeTextAtomic(filePath, next);
     return { changed: true, rules: next };
   }
 }

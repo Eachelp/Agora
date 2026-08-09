@@ -767,6 +767,10 @@ function roomMeta(meta) {
   function requireProject(projectId) {
     const projects = ensureProjectStore();
     if (!projects) throw new Error(projectStoreError || "프로젝트 저장소를 사용할 수 없습니다.");
+    // 채팅 저장소가 읽기 전용(더 새 버전이 만든 데이터)이면 프로젝트·메모리·
+    // 결정·작업 쓰기 IPC도 함께 막습니다. 화면에는 읽기 전용으로 표시되므로
+    // 실제 쓰기가 조용히 성공해 데이터가 어긋나는 일을 막습니다.
+    if (store && store.readOnly) throw new Error("이 .agora 저장소는 읽기 전용 상태라 변경할 수 없습니다.");
     const project = projects.getProject(projectId);
     if (!project) throw new Error("프로젝트를 찾을 수 없습니다.");
     if (project.readOnly) throw new Error("이 프로젝트는 더 새로운 버전에서 만들어져 읽기 전용입니다.");
@@ -821,6 +825,7 @@ function roomMeta(meta) {
       "chat:projects:create",
       wrap(async ({ name, workspace }) => {
         if (!ensureStore()) throw new Error(storeError || "저장소를 사용할 수 없습니다.");
+        if (store.readOnly) throw new Error("이 .agora 저장소는 읽기 전용 상태라 변경할 수 없습니다.");
         const project = ensureProjectStore().createProject({ name, workspace });
         const meta = createSessionForProject(project.id);
         setActiveSessionId(meta.id);
