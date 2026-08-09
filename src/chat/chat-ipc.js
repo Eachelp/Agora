@@ -517,14 +517,49 @@ function createChatFeature(options) {
     return projects?.getProject(projectIdForMeta(meta)) || null;
   }
 
-  function roomMeta(meta) {
+const TASK_STATUS_LABELS = Object.freeze({
+  todo: "\ud560 \uc77c",
+  in_progress: "\uc9c4\ud589 \uc911",
+  review: "\uac80\ud1a0 \uc911",
+  blocked: "\ub9c9\ud798",
+});
+
+function roomMeta(meta) {
     const project = projectForSession(meta);
     const memory = ensureMemoryStore();
     return {
       permissionMode: meta?.permissionMode || "chat",
       projectContext: project?.context || "",
       memoryContext: memory && project ? memory.readForPrompt(project.id) : "",
+      rulesContext: memory && project ? memory.readRules(project.id) : "",
+      workflowContext: project ? buildWorkflowContext(project.id) : "",
     };
+  }
+
+  function buildWorkflowContext(projectId) {
+    const workflow = ensureWorkflowStore();
+    if (!workflow || !projectId) return "";
+    const decisions = workflow.listDecisions(projectId).filter((d) => d.status === "confirmed");
+    const tasks = workflow
+      .listTasks(projectId)
+      .filter((t) => ["todo", "in_progress", "review", "blocked"].includes(t.status));
+    if (decisions.length === 0 && tasks.length === 0) return "";
+    const lines = [];
+    if (decisions.length > 0) {
+      lines.push("[확정된 결정]");
+      for (const d of decisions) {
+        const summary = d.content.length > 200 ? `${d.content.slice(0, 200)}...` : d.content;
+        lines.push(`- ${d.title || "(제목 없음)"}: ${summary}`);
+      }
+    }
+    if (tasks.length > 0) {
+      if (lines.length > 0) lines.push("");
+      lines.push("[진행 중 작업]");
+      for (const t of tasks) {
+        lines.push(`- ${t.title} (${TASK_STATUS_LABELS[t.status] || t.status})`);
+      }
+    }
+    return lines.join("\n");
   }
 
   function specialistStageFor(project, room, roleId) {
@@ -842,6 +877,28 @@ function createChatFeature(options) {
         const payload = sessionsPayload();
         broadcast("chat:sessions-changed", payload);
         return { ...payload, memory: memory.read(project.id), entry };
+      })
+    );
+
+    ipcMain.handle(
+      "chat:memory:rules:read",
+      wrap(async ({ projectId }) => {
+        const project = requireProject(projectId || getActiveProjectId());
+        const memory = ensureMemoryStore();
+        if (!memory) throw new Error(memoryStoreError || "Memory Bank를 사용할 수 없습니다.");
+        return { rules: memory.readRules(project.id), history: memory.readRulesHistory(project.id) };
+      })
+    );
+
+    ipcMain.handle(
+      "chat:memory:rules:save",
+      wrap(async ({ projectId, content }) => {
+        const project = requireProject(projectId || getActiveProjectId());
+        const memory = ensureMemoryStore();
+        if (!memory) throw new Error(memoryStoreError || "Memory Bank를 사용할 수 없습니다.");
+        const result = memory.saveRules(project.id, content);
+        if (result.changed) refreshMemoryForProject(project.id);
+        return { rules: result.rules, history: memory.readRulesHistory(project.id), changed: result.changed };
       })
     );
 

@@ -4,8 +4,18 @@ const { defaultAgoraHome } = require("../app-paths");
 const { writeJsonAtomic } = require("../chat/chat-store");
 const { ROLE_IDS } = require("./project-store");
 
-const WORKFLOW_SCHEMA_VERSION = 1;
-const TASK_STATUSES = Object.freeze(["todo", "in_progress", "review", "done", "blocked"]);
+const WORKFLOW_SCHEMA_VERSION = 2;
+const TASK_STATUSES = Object.freeze([
+  "todo",
+  "in_progress",
+  "review",
+  "done",
+  "blocked",
+  "proposed",
+  "rejected",
+  "archived",
+]);
+const DECISION_STATUSES = Object.freeze(["proposed", "confirmed", "superseded", "rejected", "archived"]);
 const ROLE_DEFS = Object.freeze([
   Object.freeze({ id: "planning", label: "기획" }),
   Object.freeze({ id: "implementation", label: "구현" }),
@@ -71,6 +81,10 @@ function normalizeDecision(input = {}, now = Date.now()) {
     content,
     chatId: cleanId(input.chatId, 160),
     messageIds: cleanIds(input.messageIds),
+    status: DECISION_STATUSES.includes(input.status) ? input.status : "confirmed",
+    origin: input.origin === "recorder" ? "recorder" : "manual",
+    recorderAgentId: validAgentId(input.recorderAgentId),
+    runId: cleanId(input.runId, 160),
     createdAt: Number(input.createdAt) || now,
     updatedAt: Number(input.updatedAt) || now,
   };
@@ -92,6 +106,9 @@ function normalizeTask(input = {}, now = Date.now()) {
     agentId: validAgentId(input.agentId),
     decisionId: cleanId(input.decisionId, 160),
     chatId: cleanId(input.chatId, 160),
+    origin: input.origin === "recorder" ? "recorder" : "manual",
+    recorderAgentId: validAgentId(input.recorderAgentId),
+    runId: cleanId(input.runId, 160),
     createdAt: Number(input.createdAt) || now,
     updatedAt: Number(input.updatedAt) || now,
   };
@@ -154,6 +171,16 @@ class WorkflowStore {
     if (this.readOnly) throw new Error("작업 기록 저장소가 읽기 전용 상태입니다.");
     const decision = normalizeDecision(input, this.now());
     if (!decision) throw new Error("결정 내용과 프로젝트가 필요합니다.");
+    if (decision.chatId) {
+      const dup = this.data.decisions.find(
+        (entry) =>
+          entry.projectId === decision.projectId &&
+          entry.chatId === decision.chatId &&
+          entry.title === decision.title &&
+          entry.content === decision.content
+      );
+      if (dup) return dup;
+    }
     this.data.decisions.push(decision);
     this.persist();
     return decision;
@@ -195,6 +222,16 @@ class WorkflowStore {
     if (this.readOnly) throw new Error("작업 기록 저장소가 읽기 전용 상태입니다.");
     const task = normalizeTask(input, this.now());
     if (!task) throw new Error("작업 제목과 프로젝트가 필요합니다.");
+    if (task.chatId) {
+      const dup = this.data.tasks.find(
+        (entry) =>
+          entry.projectId === task.projectId &&
+          entry.chatId === task.chatId &&
+          entry.title === task.title &&
+          entry.description === task.description
+      );
+      if (dup) return dup;
+    }
     this.data.tasks.push(task);
     this.persist();
     return task;
@@ -248,6 +285,7 @@ module.exports = {
   WorkflowStore,
   WORKFLOW_SCHEMA_VERSION,
   TASK_STATUSES,
+  DECISION_STATUSES,
   ROLE_DEFS,
   defaultRoot,
 };

@@ -5,6 +5,7 @@ const { defaultAgoraHome } = require("../app-paths");
 const MEMORY_SCHEMA_VERSION = 1;
 const MAX_ENTRY_CHARS = 24000;
 const MAX_PROMPT_CHARS = 16000;
+const MAX_RULES_CHARS = 4000;
 
 function validProjectId(value) {
   const id = String(value || "").trim();
@@ -41,6 +42,16 @@ class MemoryStore {
   projectPath(projectId) {
     const id = validProjectId(projectId);
     return id ? path.join(this.memoryRoot(), `${id}.md`) : null;
+  }
+
+  rulesPath(projectId) {
+    const id = validProjectId(projectId);
+    return id ? path.join(this.memoryRoot(), `${id}.rules.md`) : null;
+  }
+
+  rulesHistoryPath(projectId) {
+    const id = validProjectId(projectId);
+    return id ? path.join(this.memoryRoot(), `${id}.rules-history.md`) : null;
   }
 
   init() {
@@ -86,6 +97,42 @@ class MemoryStore {
     fs.appendFileSync(filePath, entry, "utf8");
     return { id, projectId, source, status, title, content, createdAt: now, path: filePath };
   }
+
+  readRules(projectId) {
+    const filePath = this.rulesPath(projectId);
+    if (!filePath) return "";
+    try {
+      return fs.readFileSync(filePath, "utf8");
+    } catch {
+      return "";
+    }
+  }
+
+  readRulesHistory(projectId) {
+    const filePath = this.rulesHistoryPath(projectId);
+    if (!filePath) return "";
+    try {
+      return fs.readFileSync(filePath, "utf8");
+    } catch {
+      return "";
+    }
+  }
+
+  saveRules(projectId, content) {
+    const filePath = this.rulesPath(projectId);
+    if (!filePath) return { changed: false, rules: "" };
+    const next = cleanText(content, MAX_RULES_CHARS);
+    const current = this.readRules(projectId).trim();
+    if (current === next) return { changed: false, rules: current };
+    this.init();
+    if (current) {
+      const historyPath = this.rulesHistoryPath(projectId);
+      const entry = `## 이전 규칙\n<!-- agora-rules-history: ${new Date(this.now()).toISOString()} -->\n\n${current}\n\n`;
+      fs.appendFileSync(historyPath, entry, "utf8");
+    }
+    fs.writeFileSync(filePath, next, "utf8");
+    return { changed: true, rules: next };
+  }
 }
 
 module.exports = {
@@ -93,5 +140,6 @@ module.exports = {
   MEMORY_SCHEMA_VERSION,
   MAX_ENTRY_CHARS,
   MAX_PROMPT_CHARS,
+  MAX_RULES_CHARS,
   validProjectId,
 };

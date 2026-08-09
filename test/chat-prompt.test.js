@@ -101,7 +101,7 @@ test("토론 컨텍스트가 자율 종료 신호와 함께 들어간다", () =>
   assert.match(prompt, /CODEPET_DISCUSSION:CONCLUDE/);
 });
 
-test("전문 모드 구현·검토·기록 지침과 Memory Bank가 프롬프트에 들어간다", () => {
+test("전문 모드 구현·검토·기록 지침과 누적 요약이 프롬프트에 들어간다", () => {
   const prompt = buildAgentPrompt({
     agent: AGENTS[1],
     agents: AGENTS,
@@ -109,7 +109,7 @@ test("전문 모드 구현·검토·기록 지침과 Memory Bank가 프롬프트
     memoryContext: "사람이 정한 규칙",
     specialist: { stage: "review", round: 2, maxRounds: 3, feedback: "테스트 결과를 확인하세요." },
   });
-  assert.match(prompt, /프로젝트 Memory Bank/);
+  assert.match(prompt, /프로젝트 누적 요약/);
   assert.match(prompt, /현재 단계: 검토 · 반복 2\/3/);
   assert.match(prompt, /테스트 결과를 확인하세요/);
   assert.match(prompt, /CODEPET_REVIEW:PASS/);
@@ -187,4 +187,61 @@ test("프로젝트 공통 맥락은 해당 대화의 프롬프트에만 추가�
   assert.match(withContext, /프로젝트 공통 맥락/);
   assert.match(withContext, /공개 API를 바꾸지 않는다/);
   assert.doesNotMatch(withoutContext, /프로젝트 공통 맥락/);
+});
+
+test("\uB124 \uC601\uC5ED\uC774 \uADDC\uCE59 \uD68C\uC0C9 \uB9E5\uB77D \uACB0\uC815\uBCF4 \uC21C\uC11C\uB85C \uB098\uC628\uB2E4", () => {
+  const prompt = buildAgentPrompt({
+    agent: AGENTS[0],
+    agents: AGENTS,
+    messages: [{ author: "user", authorType: "user", text: "hi" }],
+    rulesContext: "\uADDC\uCE59 A",
+    projectContext: "\uAC1C\uC694 B",
+    workflowContext: "\uACB0\uC815 C",
+    memoryContext: "\uC694\uC57D D",
+  });
+  const rulesIdx = prompt.indexOf("\uD604\uC7AC \uADDC\uCE59");
+  const contextIdx = prompt.indexOf("\uACF5\uD1B5 \uB9E5\uB77D");
+  const workflowIdx = prompt.indexOf("\uD655\uC815\uB41C \uACB0\uC815");
+  const memoryIdx = prompt.indexOf("\uB204\uC801 \uC694\uC57D");
+  assert.ok(rulesIdx > -1 && contextIdx > -1 && workflowIdx > -1 && memoryIdx > -1);
+  assert.ok(rulesIdx < contextIdx);
+  assert.ok(contextIdx < workflowIdx);
+  assert.ok(workflowIdx < memoryIdx);
+});
+
+test("\uADDC\uCE59\uC774 \uBE44\uC5B4 \uC788\uC73C\uBA74 \uADDC\uCE59 \uAD6C\uC5ED\uC774 \uC5C6\uB2E4", () => {
+  const prompt = buildAgentPrompt({
+    agent: AGENTS[0],
+    agents: AGENTS,
+    messages: [{ author: "user", authorType: "user", text: "hi" }],
+  });
+  assert.doesNotMatch(prompt, /\uD604\uC7AC \uADDC\uCE59/);
+});
+
+test("\uC804\uCCB4\uAC00 \uC0C1\uD55C\uC744 \uB118\uC73C\uBA74 \uC694\uC57D\uB9CC \uC904\uACE0 \uADDC\uCE59\uACFC \uB9E5\uB77D\uC740 \uC628\uC804\uD558\uB2E4", () => {
+  const rules = "\uADDC\uCE59".repeat(2000);
+  const context = "\uAC1C\uC694".repeat(2000);
+  const memory = "\uC694\uC57D\uBCF8\uBB38".repeat(5000);
+  const prompt = buildAgentPrompt({
+    agent: AGENTS[0],
+    agents: AGENTS,
+    messages: [{ author: "user", authorType: "user", text: "hi" }],
+    rulesContext: rules,
+    projectContext: context,
+    memoryContext: memory,
+  });
+  assert.ok(prompt.includes(rules));
+  assert.ok(prompt.includes(context));
+  assert.match(prompt, /\uB204\uC801 \uC694\uC57D \uC55E\uBD80\uBD84\uC740 \uC0DD\uB7B5\uB428/);
+});
+
+test("\uD1A0\uB860 \uD0DC\uADF8 \uC9C0\uC2DC\uBB38\uC774 \uADF8\uB300\uB85C \uB0A8\uC544\uC788\uB2E4", () => {
+  const prompt = buildAgentPrompt({
+    agent: AGENTS[0],
+    agents: AGENTS,
+    messages: [{ author: "user", authorType: "user", text: "hi" }],
+    discussion: { turn: 1, maxTurns: 5 },
+  });
+  assert.match(prompt, /\[\[CODEPET_DISCUSSION:CONTINUE\]\]/);
+  assert.match(prompt, /\[\[CODEPET_DISCUSSION:CONCLUDE\]\]/);
 });

@@ -30,6 +30,8 @@ function buildAgentPrompt({
   permissionMode = "chat",
   projectContext = "",
   memoryContext = "",
+  rulesContext = "",
+  workflowContext = "",
   discussion = null,
   specialist = null,
   broadcast = null,
@@ -64,6 +66,15 @@ function buildAgentPrompt({
   lines.push(permissionRule(permissionMode));
   lines.push("- 채팅에 어울리게 간결히 답하세요.");
   lines.push("- 대화에서 쓰인 언어로 답하세요.");
+  const MAX_CONTEXT_CHARS = 16000;
+  const rules = String(rulesContext || "").trim();
+  if (rules) {
+    lines.push("");
+    lines.push("=== 프로젝트 현재 규칙 ===");
+    lines.push(rules);
+    lines.push("=== 프로젝트 현재 규칙 끝 ===");
+    lines.push("- 이 규칙은 반드시 지키세요.");
+  }
   const context = String(projectContext || "").trim();
   if (context) {
     lines.push("");
@@ -71,13 +82,25 @@ function buildAgentPrompt({
     lines.push(context);
     lines.push("=== 프로젝트 공통 맥락 끝 ===");
   }
-  const memory = String(memoryContext || "").trim();
-  if (memory) {
+  const workflow = String(workflowContext || "").trim();
+  if (workflow) {
     lines.push("");
-    lines.push("=== 프로젝트 Memory Bank ===");
+    lines.push("=== 확정된 결정과 진행 중 작업 ===");
+    lines.push(workflow);
+    lines.push("=== 확정된 결정과 진행 중 작업 끝 ===");
+  }
+  const memoryFull = String(memoryContext || "").trim();
+  if (memoryFull) {
+    const usedSoFar = rules.length + context.length + workflow.length;
+    const budget = Math.max(0, MAX_CONTEXT_CHARS - usedSoFar);
+    const memory = memoryFull.length <= budget
+      ? memoryFull
+      : `(누적 요약 앞부분은 생략됨)\n${memoryFull.slice(-budget)}`;
+    lines.push("");
+    lines.push("=== 프로젝트 누적 요약 ===");
     lines.push(memory);
-    lines.push("=== 프로젝트 Memory Bank 끝 ===");
-    lines.push("- Memory Bank의 AI 초안은 사실로 단정하지 말고, 원문 대화와 구분해 사용하세요.");
+    lines.push("=== 프로젝트 누적 요약 끝 ===");
+    lines.push("- 누적 요약에는 검증되지 않은 기록관 초안이 섞여 있습니다. 확정된 사실·결정·규칙으로 취급하지 말고, 원문 대화와 구분해 사용하세요.");
   }
   // 캐릭터 이모티콘 지시는 작업용 사용에 불필요해 프롬프트에서 제외합니다.
   // 예전 대화에 남은 [[CODEPET_EMOTE:...]] 태그는 chat-room.js에서 화면 노출 전에 제거합니다.

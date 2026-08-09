@@ -15,6 +15,8 @@ const INVOKE = Object.freeze({
   PROJECTS_WORKSPACE_CLEAR: "chat:projects:workspace:clear",
   MEMORY_READ: "chat:memory:read",
   MEMORY_APPEND: "chat:memory:append",
+  RULES_READ: "chat:memory:rules:read",
+  RULES_SAVE: "chat:memory:rules:save",
   DECISIONS_CREATE: "chat:decisions:create",
   DECISIONS_UPDATE: "chat:decisions:update",
   DECISIONS_DELETE: "chat:decisions:delete",
@@ -69,6 +71,8 @@ contextBridge.exposeInMainWorld("chatApi", {
   memoryRead: (projectId) => ipcRenderer.invoke(INVOKE.MEMORY_READ, { projectId }),
   memoryAppend: (projectId, content, title) =>
     ipcRenderer.invoke(INVOKE.MEMORY_APPEND, { projectId, content, title }),
+  rulesRead: (projectId) => ipcRenderer.invoke(INVOKE.RULES_READ, { projectId }),
+  rulesSave: (projectId, content) => ipcRenderer.invoke(INVOKE.RULES_SAVE, { projectId, content }),
 
   decisionsCreate: (input) => ipcRenderer.invoke(INVOKE.DECISIONS_CREATE, input),
   decisionsUpdate: (projectId, decisionId, patch) =>

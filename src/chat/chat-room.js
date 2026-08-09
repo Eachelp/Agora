@@ -391,6 +391,8 @@ class ChatRoom extends EventEmitter {
       permissionMode: this.meta.permissionMode,
       projectContext: this.meta.projectContext,
       memoryContext: this.meta.memoryContext,
+      rulesContext: this.meta.rulesContext,
+      workflowContext: this.meta.workflowContext,
       discussion: context.discussion || null,
       specialist: context.specialist || null,
       broadcast: context.broadcast || null,
