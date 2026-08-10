@@ -1338,8 +1338,11 @@ function openAgentPopover(anchor, agentId) {
 
     const autoApproveToggle = document.createElement("input");
     autoApproveToggle.type = "checkbox";
-    autoApproveToggle.checked = Boolean(config.autoApprove);
-    autoApproveToggle.disabled = !provider.available || sessionMeta?.permissionMode !== "workspace-write";
+    const isWriteMode = sessionMeta?.permissionMode === "workspace-write";
+    // 저장된 autoApprove 값은 쓰기 모드에서만 실제로 적용됩니다.
+    // 읽기 모드에서는 체크표시를 시각적으로 해제해 "자동 승인이 켜져 있다"는 오해를 막습니다.
+    autoApproveToggle.checked = isWriteMode && Boolean(config.autoApprove);
+    autoApproveToggle.disabled = !provider.available || !isWriteMode;
     autoApproveToggle.title = autoApproveToggle.disabled
       ? "워크스페이스 쓰기 권한에서만 사용할 수 있습니다"
       : "이 에이전트가 요청하는 도구 권한을 개별 확인 없이 승인합니다";
