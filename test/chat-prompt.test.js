@@ -235,6 +235,22 @@ test("전체가 상한을 넘으면 요약만 줄고 규칙과 맥락은 온전�
   assert.match(prompt, /누적 요약 앞부분은 생략됨/);
 });
 
+test("\uADDC\uCE59\uACFC \uAC1C\uC694\uAC00 \uC608\uC0B0\uC744 \uB2E4 \uC368\uBC84\uB9AC\uBA74 \uB204\uC801 \uC694\uC57D\uC744 \uC544\uC608 \uB123\uC9C0 \uC54A\uB294\uB2E4", () => {
+  const rules = "\uADDC".repeat(9000);
+  const context = "\uAC1C".repeat(9000);
+  const memory = "\uC694\uC57D\uBCF8\uBB38".repeat(500);
+  const prompt = buildAgentPrompt({
+    agent: AGENTS[0],
+    agents: AGENTS,
+    messages: [{ author: "user", authorType: "user", text: "hi" }],
+    rulesContext: rules,
+    projectContext: context,
+    memoryContext: memory,
+  });
+  assert.ok(!prompt.includes(memory));
+  assert.ok(!prompt.includes("\uD504\uB85C\uC81D\uD2B8 \uB204\uC801 \uC694\uC57D"));
+});
+
 test("토론 태그 지시문이 그대로 남아있다", () => {
   const prompt = buildAgentPrompt({
     agent: AGENTS[0],
@@ -245,3 +261,4 @@ test("토론 태그 지시문이 그대로 남아있다", () => {
   assert.match(prompt, /\[\[CODEPET_DISCUSSION:CONTINUE\]\]/);
   assert.match(prompt, /\[\[CODEPET_DISCUSSION:CONCLUDE\]\]/);
 });
+

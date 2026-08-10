@@ -93,14 +93,20 @@ function buildAgentPrompt({
   if (memoryFull) {
     const usedSoFar = rules.length + context.length + workflow.length;
     const budget = Math.max(0, MAX_CONTEXT_CHARS - usedSoFar);
+    // budget이 0이면 slice(-0)이 문자열 전체를 돌려주므로, 잘라내야 할 상황에
+    // 오히려 전부 들어갑니다. 0일 때는 요약을 아예 넣지 않습니다.
     const memory = memoryFull.length <= budget
       ? memoryFull
-      : `(누적 요약 앞부분은 생략됨)\n${memoryFull.slice(-budget)}`;
-    lines.push("");
-    lines.push("=== 프로젝트 누적 요약 ===");
-    lines.push(memory);
-    lines.push("=== 프로젝트 누적 요약 끝 ===");
-    lines.push("- 누적 요약에는 검증되지 않은 기록관 초안이 섞여 있습니다. 확정된 사실·결정·규칙으로 취급하지 말고, 원문 대화와 구분해 사용하세요.");
+      : budget > 0
+        ? `(누적 요약 앞부분은 생략됨)\n${memoryFull.slice(-budget)}`
+        : "";
+    if (memory) {
+      lines.push("");
+      lines.push("=== 프로젝트 누적 요약 ===");
+      lines.push(memory);
+      lines.push("=== 프로젝트 누적 요약 끝 ===");
+      lines.push("- 누적 요약에는 검증되지 않은 기록관 초안이 섞여 있습니다. 확정된 사실·결정·규칙으로 취급하지 말고, 원문 대화와 구분해 사용하세요.");
+    }
   }
   // 캐릭터 이모티콘 지시는 작업용 사용에 불필요해 프롬프트에서 제외합니다.
   // 예전 대화에 남은 [[CODEPET_EMOTE:...]] 태그는 chat-room.js에서 화면 노출 전에 제거합니다.
