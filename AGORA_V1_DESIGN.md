@@ -424,6 +424,14 @@ Retry 또는 Restore 시:
 - workspace 전체를 HEAD로 되돌리는 destructive reset은 사용하지 않는다.
 - v1 구현 방식은 현재 Git/workspace 구조에 맞는 가장 단순하고 안전한 방법을 선택한다.
 
+**v1 구현 (`src/agora/turn-checkpoint.js`)**
+
+- workspace가 **git 저장소일 때만** 동작한다. git이 아니거나 경로가 없으면 안전하게 건너뛴다(`supported: false`).
+- checkpoint 생성: Builder 실행 직전에 `git diff --binary HEAD`(tracked 변경분)와 실행 전부터 있던 untracked 파일 목록·내용을 임시 폴더에 보존한다.
+- 복원: tracked 파일을 `git checkout -- .`로 HEAD에 되돌린 뒤 checkpoint 시점 diff를 재적용해 **사용자 사전 변경은 보존**한다. Builder가 새로 만든 untracked 파일만 제거하고, 실행 전부터 있던 untracked 파일은 checkpoint 내용으로 되살린다.
+- 전체 reset(작업 영역 전체를 HEAD로 되돌리기)은 사용하지 않는다.
+- git 저장소 판별은 `.git` 항목 존재 여부로 동기 확인하여, 일반(비-git) workspace에서는 git 프로세스를 실행하지 않는다.
+
 ---
 
 ## 9. Capability 분리 (장기, v1에서는 축소)
@@ -470,7 +478,7 @@ TASK-004  전문 실행 3모드 (단계별 / 제한 자동 / 빠른 실행) + PL
           - 자동 보완 N=0~3 (최초 1회 + 보완 N회, maxAutoRevisions 모델링)
           - Scope Gate (IN/OUT, UNKNOWN/누락 방지)
 TASK-005  Planner 실행 경로 연결 (PLAN_READY / NEEDS_DECISION 및 Output Contract 파싱)
-TASK-006  Turn Checkpoint (pre-turn workspace 복원 요구사항 준수)
+TASK-006  Turn Checkpoint (pre-turn workspace 복원 요구사항 준수) — 구현 완료
 TASK-007  TASK.md SoT + Run Freeze + BLOCKED 처리 및 후속 경로
 TASK-008  Reviewer Contract 상세화 (diff-first, 근거 강제, scope 구분)
 TASK-009  Handoff (검토 요청 / 이어서 작업) — 구현 완료

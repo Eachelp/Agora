@@ -17,6 +17,7 @@ const {
 } = require("../agora/workflow-store");
 const { MemoryStore } = require("../agora/memory-store");
 const { parseRecorderOutput } = require("../agora/recorder-output");
+const turnCheckpoint = require("../agora/turn-checkpoint");
 const {
   createCapabilityService,
   toPublicProviders,
@@ -532,11 +533,12 @@ const TASK_STATUS_LABELS = Object.freeze({
 });
 
 function roomMeta(meta) {
-    const project = projectForSession(meta);
-    const memory = ensureMemoryStore();
-    return {
-      permissionMode: meta?.permissionMode || "chat",
-      projectContext: project?.context || "",
+  const project = projectForSession(meta);
+  const memory = ensureMemoryStore();
+  return {
+    permissionMode: meta?.permissionMode || "chat",
+    workspace: meta?.workspace || null,
+    projectContext: project?.context || "",
       memoryContext: memory && project ? memory.readForPrompt(project.id) : "",
       rulesContext: memory && project ? memory.readRules(project.id) : "",
       workflowContext: project ? buildWorkflowContext(project.id) : "",
@@ -637,6 +639,7 @@ function roomMeta(meta) {
       runAgent: options.runAgent || makeRunAgent(sessionId),
       prepareAgent: options.prepareAgent,
       meta: roomMeta(session.meta),
+      checkpoint: options.checkpoint || turnCheckpoint,
     });
 
     room.on("message", (message) => {

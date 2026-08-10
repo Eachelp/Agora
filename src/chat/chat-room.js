@@ -43,6 +43,9 @@ class ChatRoom extends EventEmitter {
     // runAgent({agent, prompt, runId, attachments, emitEvent}) => { promise, cancel }
     this.runAgent = options.runAgent;
     this.prepareAgent = options.prepareAgent;
+    // TASK-006 Turn Checkpoint 엔진. 제공되지 않으면 사용하지 않습니다.
+    // { createCheckpoint, restoreCheckpoint, cleanupCheckpoint } 형태입니다.
+    this.checkpointEngine = options.checkpoint || null;
     this.meta = {
       permissionMode: "chat",
       ...(options.meta || {}),
@@ -737,13 +740,32 @@ class ChatRoom extends EventEmitter {
     let autoRevisionCount = 0;
     let recorderResult = null;
 
+    // TASK-006: Builder 실행 직전 workspace 상태를 보존합니다.
+    // 지원되지 않는 workspace(git 아님/없음)라면 checkpoint를 만들지 않고 진행합니다.
+    const checkpoint = this.checkpointEngine
+      ? await this.checkpointEngine.createCheckpoint(this.meta.workspace)
+      : null;
+    const checkpointSupported = Boolean(checkpoint && checkpoint.supported === true);
+    const restoreCheckpoint = async () => {
+      if (!checkpointSupported || !this.checkpointEngine) return;
+      await this.checkpointEngine.restoreCheckpoint(this.meta.workspace, checkpoint);
+      this.checkpointEngine.cleanupCheckpoint(checkpoint);
+    };
+
     let builderResult = await this.scheduleResponse(implementation.agent, {
       specialist: { stage: "implementation", round, maxRounds, feedback },
       agentConfig: implementation.agentConfig,
     });
-    if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
-    if (!builderResult?.ok) return this.specialistFail(implementation, "implementation", round, builderResult);
+    if (requestedGeneration !== this.generation) {
+      await restoreCheckpoint();
+      return { ok: false, cancelled: true };
+    }
+    if (!builderResult?.ok) {
+      await restoreCheckpoint();
+      return this.specialistFail(implementation, "implementation", round, builderResult);
+    }
     if (builderResult.builderStatus === "BLOCKED") {
+      await restoreCheckpoint();
       return {
         ok: false,
         stage: "implementation",
@@ -761,12 +783,19 @@ class ChatRoom extends EventEmitter {
         specialist: { stage: "review", round, maxRounds },
         agentConfig: review.agentConfig,
       });
-      if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
-      if (!reviewResult?.ok) return this.specialistFail(review, "review", round, reviewResult);
+      if (requestedGeneration !== this.generation) {
+        await restoreCheckpoint();
+        return { ok: false, cancelled: true };
+      }
+      if (!reviewResult?.ok) {
+        await restoreCheckpoint();
+        return this.specialistFail(review, "review", round, reviewResult);
+      }
 
       const contract = this.parseReviewContract(reviewResult.text || "", reviewResult.specialistSignal);
       if (contract.verdict === "PASS") break;
       if (contract.verdict === "UNKNOWN") {
+        await restoreCheckpoint();
         return {
           ok: false,
           stage: "review",
@@ -780,6 +809,7 @@ class ChatRoom extends EventEmitter {
 
       // FIX_REQUIRED: 자동 보완 가능하면 보완, 아니면 STOP → 사용자.
       if (!contract.canAutoRevise) {
+        await restoreCheckpoint();
         return {
           ok: false,
           stage: "review",
@@ -791,6 +821,7 @@ class ChatRoom extends EventEmitter {
         };
       }
       if (mode !== "auto" || autoRevisionCount >= maxAutoRevisions) {
+        await restoreCheckpoint();
         return {
           ok: false,
           stage: "review",
@@ -813,9 +844,16 @@ class ChatRoom extends EventEmitter {
         specialist: { stage: "implementation", round, maxRounds, feedback },
         agentConfig: implementation.agentConfig,
       });
-      if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
-      if (!builderResult?.ok) return this.specialistFail(implementation, "implementation", round, builderResult);
+      if (requestedGeneration !== this.generation) {
+        await restoreCheckpoint();
+        return { ok: false, cancelled: true };
+      }
+      if (!builderResult?.ok) {
+        await restoreCheckpoint();
+        return this.specialistFail(implementation, "implementation", round, builderResult);
+      }
       if (builderResult.builderStatus === "BLOCKED") {
+        await restoreCheckpoint();
         return {
           ok: false,
           stage: "implementation",
@@ -826,6 +864,11 @@ class ChatRoom extends EventEmitter {
           result: builderResult,
         };
       }
+    }
+
+    // 성공(PASS/기록 완료) 시 checkpoint 리소스를 정리합니다.
+    if (checkpointSupported && this.checkpointEngine) {
+      this.checkpointEngine.cleanupCheckpoint(checkpoint);
     }
 
     // PASS 후 기록관(선택) 실행 — 실행 블록의 마지막 단계로 블록을 마무리합니다.
