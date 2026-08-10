@@ -650,6 +650,7 @@ function roomMeta(meta) {
     });
     room.on("typing", (payload) => broadcast("chat:typing", { sessionId, ...payload }));
     room.on("turn-state", (payload) => broadcast("chat:turn-state", { sessionId, ...payload }));
+    room.on("specialist-resume-state", (payload) => broadcast("chat:specialist-resume-state", { sessionId, ...payload }));
     room.on("reset", () => broadcast("chat:reset", { sessionId }));
     room.on("run-event", (payload) => broadcast("chat:run-event", { sessionId, ...payload }));
     room.on("agents", (agents) => broadcast("chat:agents", { sessionId, agents }));
@@ -1363,7 +1364,7 @@ function roomMeta(meta) {
         }
         const started = room.startSpecialist({
           stages: planned.stages,
-          mode: mode === "auto" ? "auto" : "step",
+          mode: mode === "auto" ? "auto" : mode === "quick" ? "quick" : "step",
           maxAutoRevisions:
             Number.isInteger(maxAutoRevisions) && maxAutoRevisions >= 0
               ? maxAutoRevisions
@@ -1383,6 +1384,21 @@ function roomMeta(meta) {
             }
           })
           .catch(() => {});
+        if (result && result.ok === false) throw new Error(result.error);
+        return { meta: publicMeta(store.readMeta(sessionId)) };
+      })
+    );
+
+    ipcMain.handle(
+      "chat:specialist:resume",
+      wrap(async ({ sessionId }) => {
+        requireSession(sessionId);
+        const room = getRoom(sessionId);
+        const started = room.resumeSpecialist();
+        const result = await Promise.race([
+          started,
+          new Promise((resolve) => setImmediate(() => resolve({ ok: true, pending: true }))),
+        ]);
         if (result && result.ok === false) throw new Error(result.error);
         return { meta: publicMeta(store.readMeta(sessionId)) };
       })

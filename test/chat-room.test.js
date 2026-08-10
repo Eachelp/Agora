@@ -242,7 +242,63 @@ test("기획 단계가 NEEDS_DECISION을 반환하면 구현을 시작하지 않
   assert.deepEqual(calls.map((call) => call.agentId), ["claude"]);
 });
 
-test("기획 단계가 PLAN_READY면 구현을 진행한다", async () => {
+test("단계 실행에서 기획이 PLAN_READY면 승인을 기다리며 구현을 시작하지 않는다", async () => {
+  const calls = [];
+  const replies = {
+    claude: [{ ok: true, text: "기획 완료\nSTATUS: PLAN_READY" }],
+    codex: [{ ok: true, text: "구현 완료" }],
+  };
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner(replies, calls),
+  });
+
+  const result = await room.startSpecialist({
+    stages: {
+      implementation: { agent: room.findAgent("codex") },
+      review: { agent: room.findAgent("claude") },
+      planner: { agent: room.findAgent("claude") },
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.stage, "planner");
+  assert.equal(result.stopReason, "PLAN_READY");
+  assert.equal(result.needsUserDecision, true);
+  assert.deepEqual(calls.map((call) => call.agentId), ["claude"]);
+});
+
+test("승인(resume) 후 기획을 이어서 구현·검토를 진행한다", async () => {
+  const calls = [];
+  const replies = {
+    claude: [
+      { ok: true, text: "기획 완료\nSTATUS: PLAN_READY" },
+      { ok: true, text: "검토 통과\nVERDICT: PASS" },
+    ],
+    codex: [{ ok: true, text: "구현 완료" }],
+  };
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner(replies, calls),
+  });
+
+  const started = await room.startSpecialist({
+    stages: {
+      implementation: { agent: room.findAgent("codex") },
+      review: { agent: room.findAgent("claude") },
+      planner: { agent: room.findAgent("claude") },
+    },
+  });
+
+  assert.equal(started.ok, false);
+  assert.equal(started.stopReason, "PLAN_READY");
+
+  const result = await room.resumeSpecialist();
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls.map((call) => call.agentId), ["claude", "codex", "claude"]);
+});
+
+test("빠른 실행은 기획이 PLAN_READY면 승인 없이 구현·검토까지 한 번에 진행한다", async () => {
   const calls = [];
   const replies = {
     claude: [
@@ -262,6 +318,7 @@ test("기획 단계가 PLAN_READY면 구현을 진행한다", async () => {
       review: { agent: room.findAgent("claude") },
       planner: { agent: room.findAgent("claude") },
     },
+    mode: "quick",
   });
 
   assert.equal(result.ok, true);

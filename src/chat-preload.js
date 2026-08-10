@@ -36,6 +36,7 @@ const INVOKE = Object.freeze({
   TURN_CANCEL: "chat:turn:cancel",
   DISCUSSION_START: "chat:discussion:start",
   SPECIALIST_START: "chat:specialist:start",
+  SPECIALIST_RESUME: "chat:specialist:resume",
   APPROVAL_RESPOND: "chat:approval:respond",
   WORKSPACE_CHOOSE: "chat:workspace:choose",
   WORKSPACE_CLEAR: "chat:workspace:clear",
@@ -108,6 +109,8 @@ contextBridge.exposeInMainWorld("chatApi", {
     ipcRenderer.invoke(INVOKE.DISCUSSION_START, { sessionId, agentIds }),
   specialistStart: (sessionId, options = {}) =>
     ipcRenderer.invoke(INVOKE.SPECIALIST_START, { sessionId, ...options }),
+  specialistResume: (sessionId) =>
+    ipcRenderer.invoke(INVOKE.SPECIALIST_RESUME, { sessionId }),
   approvalRespond: (sessionId, approvalId, decision) =>
     ipcRenderer.invoke(INVOKE.APPROVAL_RESPOND, { sessionId, approvalId, decision }),
 
@@ -138,6 +141,7 @@ contextBridge.exposeInMainWorld("chatApi", {
   onMessage: (handler) => subscribe("chat:message", handler),
   onTyping: (handler) => subscribe("chat:typing", handler),
   onTurnState: (handler) => subscribe("chat:turn-state", handler),
+  onSpecialistResumeState: (handler) => subscribe("chat:specialist-resume-state", handler),
   onReset: (handler) => subscribe("chat:reset", handler),
   onRunEvent: (handler) => subscribe("chat:run-event", handler),
   onSessionsChanged: (handler) => subscribe("chat:sessions-changed", handler),

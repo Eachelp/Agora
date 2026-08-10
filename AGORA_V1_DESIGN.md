@@ -38,22 +38,52 @@ v1에서 확정된 사용자 흐름은 네 가지 실행 방식으로 나뉜다.
 
 ## 2. 실행 방식 (Professional Mode)
 
-전문 실행은 사용자가 선택한 **실행 방식**에 따라 동작한다.
+전문 실행은 사용자가 선택한 **실행 방식**에 따라 동작한다. 세 방식 모두 **기획 블록이 끝나면(PLAN_READY) step/auto에서는 사람 승인 Gate에서 멈추고**, quick(빠른 실행)만 예외적으로 승인 없이 한 번에 진행한다.
+
+### 2.0 세 방식 개요
+
+| 방식 | 기획(PLAN_READY) 후 | 구현~검토 | 컨트롤 | 손이 가는 정도 |
+|---|---|---|---|---|
+| 단계별 (step) | **승인에서 멈춤** | 내가 매번 눌러서 진행 | 최강 | 최대 |
+| 제한 자동 (auto) | **승인에서 멈춤** | 승인 후 자동으로 (N회) | 중간 | 중간 |
+| 빠른 실행 (quick) | **승인 없이 진행** | 한 번에 자동으로 | 낮음 | 최소 |
+
+누가 다음 단계를 시작할 권한을 갖느냐가 핵심 차이다. 단계별과 제한 자동은 둘 다 "기획은 사람이 꼭 봐야 한다"는 원칙을 지키고, 기획 통과 **이후**에 구현·검토·보완을 내가 한 번씩 눌러 진행하느냐(단계별) vs 한 번 위임하고 자동으로 맡기느냐(제한 자동)가 다르다. 빠른 실행은 기획 확인 단계 자체를 건너뛰는, 가벼운 과제용 원샷 실행이다.
 
 ### 2.1 단계별 실행 (Step-by-step)
 
+- Planner → **PLAN_READY → STOP → 사용자 승인 Gate**
+- 승인 후 Builder → **STOP** → 사용자
 - Builder → **STOP** → 사용자
 - Reviewer → **STOP** → 사용자
 - (필요 시) Builder 재실행은 사용자가 직접 결정
 
-사람이 매 단계마다 통제권을 가진다. 판단이 애매하거나 중요한 결정이 필요할 때 쓴다.
+사람이 매 단계마다 통제권을 가진다. 기획이 끝나도 승인 전에는 구현을 시작하지 않는다. 판단이 애매하거나 중요한 결정이 필요할 때 쓴다.
+
+> 구현: `startSpecialist({ mode: "step" })`. 기획이 PLAN_READY면 `needsUserDecision: true, stopReason: "PLAN_READY"`로 멈추고, `specialistResume`에 이어서 진행할 상태를 저장한다. 사용자가 승인하면 `resumeSpecialist()`로 구현을 재개한다.
 
 ### 2.2 제한 자동 실행 (Bounded auto-run)
 
 - 사용자가 실행 전에 **자동 보완 최대 횟수 N**(0~3회)을 승인한다.
-- Builder → Reviewer → **FIX_REQUIRED + 범위 내 + 횟수 남음**이면 Builder 보완 재실행.
+- Planner → **PLAN_READY → STOP → 사용자 승인 Gate**
+- 승인 후 Builder → Reviewer → **FIX_REQUIRED + 범위 내 + 횟수 남음**이면 Builder 보완 재실행.
 - **PASS** 즉시 종료.
 - 그 외 모든 경우 STOP → 사용자.
+
+기획은 단계별과 마찬가지로 승인에서 멈춘다. 승인을 받은 순간부터는 정해진 범위 안에서만 자동으로 이어진다.
+
+> 구현: `startSpecialist({ mode: "auto", maxAutoRevisions: N })`. 기획이 PLAN_READY면 step과 동일하게 승인에서 멈추고, `resumeSpecialist()`로 재개한다.
+
+### 2.3 빠른 실행 (Quick run)
+
+- Planner → **PLAN_READY면 승인 없이 바로 진행**
+- Builder → Reviewer → (FIX_REQUIRED + 범위 내면 자동 보완, 승인된 N회) → **PASS** 종료
+
+귀찮거나 가벼운 과제에 쓴다. 기획 확인 단계를 건너뛰고 기획 → 구현 → 검토를 한 번에 진행한다. 컨트롤은 낮아지지만 손이 가장 덜 간다.
+
+> 구현: `startSpecialist({ mode: "quick" })`. 기획이 PLAN_READY면 승인 대기 없이 바로 실행 블록으로 넘어간다.
+
+> **기록관(Recorder)**: 세 방식 모두 실행 블록(구현→검토→보완)이 PASS로 끝나면, 그 **블록의 마지막 단계로 기록관을 자동 호출**해 블록을 마무리한다. 자동 수정 루프에 끼어드는 것이 아니라 블록 종착역 역할이다. 사용자가 필요할 때만 별도로 호출할 수도 있다.
 
 > UI 용어: 반드시 **"자동 보완 최대 N회"** 라고 표기한다. "최대 N회 반복"은 최초 구현 포함 여부가 애매하므로 쓰지 않는다.
 > 의미 및 모델링: *최초 구현 1회 + 자동 보완 ≤ N회*. 백엔드 모델링 시 `maxAutoRevisions = N` (N=0~3)으로 관리한다. 최초 Builder 실행은 보완 횟수로 카운트하지 않으며, `FIX_REQUIRED` 후 자동 보완 시 `autoRevisionCount`를 1씩 증가시킨다. `N=3` 선택 시 결과적으로 Builder 실행은 최초 1회 + 자동 보완 최대 3회 = 최대 4회가 된다.
@@ -205,7 +235,7 @@ Recorder   : 새로운 결정을 만들지 않는다.
     ```
 - **Terminal**: `DRAFT_READY` → 사용자가 [반영] / [수정] / [폐기] 선택.
 
-> Recorder는 v1에서 **자동 실행 사이클에서 제외**한다. 사용자가 필요할 때만 별도 호출한다. (기존 `proposed → 사용자 승인` 저장 구조를 그대로 유지)
+> Recorder는 v1에서 **실행 블록이 PASS로 끝나면 그 블록의 마지막 단계로 자동 호출**되어 블록을 마무리한다. 자동 수정 루프에 끼어들지 않는 **블록 종착역** 역할이며, 사용자가 필요할 때만 별도로 호출(recordDiscussion)할 수도 있다. (기존 `proposed → 사용자 승인` 저장 구조를 그대로 유지)
 
 ---
 
@@ -418,10 +448,10 @@ selfExploreWorkspace : true/false
 
 ---
 
-## 10. Recorder 자동 사이클 제외
+## 10. Recorder — 블록 종료 시 자동 호출
 
-- 전문 실행 루프에서 recorder 자동 호출을 제거한다.
-- Recorder는 사용자가 별도 호출할 때만 실행된다.
+- **실행 블록(구현→검토→보완)이 PASS로 끝나면, 그 블록의 마지막 단계로 기록관을 자동 호출**해 블록을 마무리한다. 자동 수정 루프에 끼어들지 않고, 블록의 종착역 역할을 한다.
+- 사용자가 필요할 때만 별도로 호출(`recordDiscussion`)할 수도 있다.
 - 기존 `proposed → 사용자 승인` 저장 구조와 [recorder-output.js](/D:/Projects/Agora/src/agora/recorder-output.js)를 유지한다.
 
 ---
@@ -432,10 +462,10 @@ selfExploreWorkspace : true/false
 
 ```text
 TASK-000  P1 미해결 이슈 재확인 (범위 고정)
-TASK-001  독립 발언 — 구현 완료 (미커밋)
+TASK-001  독립 발언 — 구현 완료 (커밋 6853c45)
 TASK-002  전문 모드 자동 재시도 제거 (REVISE → FIX_REQUIRED 정규화, 기본 STOP)
 TASK-003  Reviewer 출력 계약 파싱 (VERDICT/ISSUES, scope, stopReason)
-TASK-004  Bounded Auto-run Gate
+TASK-004  전문 실행 3모드 (단계별 / 제한 자동 / 빠른 실행) + PLAN_READY 승인 Gate + resume — 구현 완료
           - Step-by-step / Bounded 선택
           - 자동 보완 N=0~3 (최초 1회 + 보완 N회, maxAutoRevisions 모델링)
           - Scope Gate (IN/OUT, UNKNOWN/누락 방지)

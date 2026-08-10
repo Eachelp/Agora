@@ -82,6 +82,7 @@ const liveRuns = new Map(); // runId → { item, textEl, statusEl, text }
 let mentionState = null;
 let noticeTimer = null;
 let specialistRunning = false;
+let specialistResumeAvailable = false;
 
 const SIDEBAR_WIDTH_KEY = "agora.chat.sidebarWidth";
 const SIDEBAR_COLLAPSED_KEY = "agora.chat.sidebarCollapsed";
@@ -1095,8 +1096,11 @@ function renderHeader() {
   const implementation = roleConfigFromProject(project, "implementation");
   const review = roleConfigFromProject(project, "review");
   specialistButton.disabled = !activeSessionId || specialistRunning;
+  specialistButton.textContent = specialistResumeAvailable ? "기획 승인" : "전문 실행";
   specialistButton.title = implementation.agentId && review.agentId
-    ? "프로젝트 설정의 구현·검토·기록 담당자로 진행합니다"
+    ? specialistResumeAvailable
+      ? "기획 승인 후 이어서 진행합니다"
+      : "프로젝트 설정의 구현·검토·기록 담당자로 진행합니다"
     : "프로젝트 설정에서 구현·검토 담당자를 지정하면 사용할 수 있습니다";
 }
 
@@ -2065,11 +2069,29 @@ specialistButton.addEventListener("click", async () => {
     desc.textContent = "구현·검토를 어떻게 실행할지 선택하세요. 검토자가 수정을 요구해도, 승인한 범위 안에서만 자동으로 이어집니다.";
     root.append(desc);
 
+    // 이어서 진행할 기획이 있으면 먼저 승인 버튼을 띄웁니다.
+    if (specialistResumeAvailable) {
+      const resumeHint = document.createElement("p");
+      resumeHint.className = "popover-status";
+      resumeHint.textContent = "기획(PLAN_READY)이 완료되어 있습니다. 승인하면 구현을 이어서 진행합니다.";
+      root.append(resumeHint);
+      const resumeBtn = document.createElement("button");
+      resumeBtn.type = "button";
+      resumeBtn.className = "button button-primary";
+      resumeBtn.textContent = "기획 승인 후 구현 진행";
+      resumeBtn.addEventListener("click", () => {
+        closePopover();
+        resumeSpecialist();
+      });
+      root.append(resumeBtn);
+      return;
+    }
+
     // 단계별 실행
     const stepBtn = document.createElement("button");
     stepBtn.type = "button";
     stepBtn.className = "button";
-    stepBtn.textContent = "단계별 실행 (구현 → 검토 → 사용자)";
+    stepBtn.textContent = "단계별 실행 (기획 → 승인 → 구현 → 검토)";
     stepBtn.addEventListener("click", () => {
       closePopover();
       runSpecialist({ mode: "step" });
@@ -2101,10 +2123,26 @@ specialistButton.addEventListener("click", async () => {
       runSpecialist({ mode: "auto", maxAutoRevisions: n });
     });
     root.append(makeField("자동 보완 횟수", autoSelect), autoBtn);
+
+    // 빠른 실행
+    const quickHint = document.createElement("p");
+    quickHint.className = "popover-hint";
+    quickHint.textContent = "빠른 실행: 가벼운 과제에 씁니다. 기획(PLAN_READY)이 끝나면 승인 없이 구현·검토까지 한 번에 진행합니다.";
+    root.append(quickHint);
+    const quickBtn = document.createElement("button");
+    quickBtn.type = "button";
+    quickBtn.className = "button";
+    quickBtn.textContent = "빠른 실행 (기획 → 구현 → 검토 한 번에)";
+    quickBtn.addEventListener("click", () => {
+      closePopover();
+      runSpecialist({ mode: "quick" });
+    });
+    root.append(quickBtn);
   });
 });
 
 async function runSpecialist({ mode, maxAutoRevisions }) {
+  specialistResumeAvailable = false;
   specialistRunning = true;
   specialistButton.disabled = true;
   specialistButton.textContent = "전문 실행 중…";
@@ -2116,6 +2154,19 @@ async function runSpecialist({ mode, maxAutoRevisions }) {
   specialistRunning = false;
   specialistButton.disabled = false;
   specialistButton.textContent = "전문 실행";
+  renderHeader();
+}
+
+async function resumeSpecialist() {
+  specialistRunning = true;
+  specialistButton.disabled = true;
+  specialistButton.textContent = "전문 실행 중…";
+  const result = await call(window.chatApi.specialistResume(activeSessionId));
+  if (result) flashNotice("전문 모드를 이어서 진행합니다.", false);
+  if (result?.meta) sessionMeta = result.meta;
+  specialistRunning = false;
+  specialistButton.disabled = false;
+  specialistButton.textContent = specialistResumeAvailable ? "기획 승인" : "전문 실행";
   renderHeader();
 }
 discussionButton.addEventListener("click", () => {
@@ -3020,6 +3071,11 @@ window.chatApi.onAgents(({ sessionId, agents: nextAgents }) => {
   if (sessionId !== activeSessionId) return;
   agents = nextAgents || [];
   renderAgents();
+  renderHeader();
+});
+window.chatApi.onSpecialistResumeState(({ sessionId, available }) => {
+  if (sessionId !== activeSessionId) return;
+  specialistResumeAvailable = Boolean(available);
   renderHeader();
 });
 function lockComposer(locked) {

@@ -73,6 +73,8 @@ class ChatRoom extends EventEmitter {
     this.discussionActive = false;
     this.discussionRequested = false;
     this.specialistActive = false;
+    // 전문 실행 중 "기획 승인 후 이어서 진행"할 상태(step/auto에서 PLAN_READY로 멈출 때 저장).
+    this.specialistResume = null;
     this.cancels = new Set();
     this.typingCounts = new Map();
     this.activeRuns = 0;
@@ -573,9 +575,11 @@ class ChatRoom extends EventEmitter {
   }
 
   // 전문 모드: 사용자가 확정한 방향을 구현하고, 검토 결과를 확인합니다.
-  // 기본은 단계별(step) 실행으로 각 역할이 끝나면 사용자에게 반환합니다.
-  // 사용자가 미리 승인한 제한 자동(auto) 모드에서만, 검토자가 FIX_REQUIRED를
-  // 반환하고 모든 Blocking 이슈가 작업 범위 안(IN)일 때 자동 보완을 시도합니다.
+  // 실행 방식(mode)에 따라 동작이 다릅니다.
+  //  - step   (단계별): 각 역할이 끝나면 사용자에게 반환. 기획(PLAN_READY) 후에도 승인에서 멈춤.
+  //  - auto   (제한 자동): 기획은 승인에서 멈추고, 승인 후엔 검토자가 FIX_REQUIRED를 반환하고
+  //                       모든 Blocking 이슈가 범위 안(IN)일 때 승인된 횟수(N) 안에서 자동 보완.
+  //  - quick  (빠른 실행): 기획(PLAN_READY)이면 승인 없이 구현까지 한 번에 진행.
   // 새 workflow framework를 만들지 않고 기존 단일 턴 큐를 재사용합니다.
   async startSpecialist(options = {}) {
     if (this.discussionRequested || this.discussionActive || this.specialistActive) {
@@ -585,34 +589,32 @@ class ChatRoom extends EventEmitter {
     const implementation = stages.implementation;
     const review = stages.review;
     const planner = stages.planner;
-    const recorder = stages.recorder;
     if (!implementation?.agent || !review?.agent) {
       return { ok: false, error: "전문 모드의 구현·검토 담당자를 프로젝트 설정에서 지정해 주세요." };
     }
 
+    // 실행 모드: 기본은 단계별(step). auto는 사용자 사전 승인 시, quick은 기획 승인 없이 진행.
+    const mode = options.mode === "auto" ? "auto" : options.mode === "quick" ? "quick" : "step";
+    const maxAutoRevisions = Number.isInteger(options.maxAutoRevisions) && options.maxAutoRevisions >= 0
+      ? Math.min(options.maxAutoRevisions, 3)
+      : mode === "auto" ? 1 : 0;
+
     const requestedGeneration = this.generation;
     this.specialistActive = true;
+    this.specialistResume = null;
+    this.emit("specialist-resume-state", { available: false });
     await this.waitForIdle();
     if (requestedGeneration !== this.generation) {
       this.specialistActive = false;
       return { ok: false, cancelled: true };
     }
 
-    // 실행 모드: 기본은 단계별(step). auto는 사용자 사전 승인 시에만.
-    const mode = options.mode === "auto" ? "auto" : "step";
-    const maxAutoRevisions = Number.isInteger(options.maxAutoRevisions) && options.maxAutoRevisions >= 0
-      ? Math.min(options.maxAutoRevisions, 3)
-      : mode === "auto" ? 1 : 0;
-    const maxRounds = mode === "auto" ? maxAutoRevisions + 1 : 1;
-
     this.appendSystem(`전문 모드 시작 · 구현 @${implementation.agent.id} · 검토 @${review.agent.id}`);
 
     let feedback = "";
-    let autoRevisionCount = 0;
-    let passed = false;
-    let recorderResult = null;
     try {
-      // Planner (선택): PLAN_READY면 그대로 진행, NEEDS_DECISION이면 STOP.
+      // Planner (선택): NEEDS_DECISION이면 STOP. PLAN_READY면 step/auto는 승인에서 멈추고,
+      // quick은 그대로 구현을 진행합니다.
       if (planner?.agent) {
         const plannerResult = await this.scheduleResponse(planner.agent, {
           specialist: { stage: "planner", round: 1, maxRounds: 1 },
@@ -632,11 +634,156 @@ class ChatRoom extends EventEmitter {
         }
         // PLAN_READY: 기획 결과를 구현 단계에 Task로 전달.
         feedback = plannerResult.text || "";
+        if (mode !== "quick") {
+          // step/auto → 사람 승인 Gate. 이어서 진행할 상태를 저장하고 멈춥니다.
+          this.specialistResume = { stages, mode, maxAutoRevisions, feedback };
+          this.emit("specialist-resume-state", { available: true, mode });
+          this.appendSystem("기획(PLAN_READY)이 완료되었습니다. 승인하시면 구현을 이어서 진행합니다.");
+          return {
+            ok: false,
+            stage: "planner",
+            completedIterations: 0,
+            needsUserDecision: true,
+            stopReason: "PLAN_READY",
+            result: plannerResult,
+          };
+        }
       }
 
-      // 최초 Builder 실행 (1회).
-      let round = 1;
-      let builderResult = await this.scheduleResponse(implementation.agent, {
+      return await this.runExecutionBlock({
+        stages,
+        mode,
+        maxAutoRevisions,
+        feedback,
+        round: 1,
+        requestedGeneration,
+      });
+    } finally {
+      this.specialistActive = false;
+      this.turnQueue.push(...this.deferredTurnQueue.splice(0));
+      this.emitTurnState();
+      this.pumpTurnQueue();
+    }
+  }
+
+  // 기획 승인 후 이어서 진행합니다. step/auto에서 PLAN_READY로 멈춘 상태만 재개합니다.
+  async resumeSpecialist() {
+    if (this.discussionRequested || this.discussionActive || this.specialistActive) {
+      return { ok: false, error: "이미 다른 전문 작업이나 토론이 진행 중입니다." };
+    }
+    if (!this.specialistResume) {
+      return { ok: false, error: "이어서 진행할 기획이 없습니다. 전문 모드를 다시 시작해 주세요." };
+    }
+    const resume = this.specialistResume;
+    const requestedGeneration = this.generation;
+    this.specialistActive = true;
+    await this.waitForIdle();
+    if (requestedGeneration !== this.generation) {
+      this.specialistActive = false;
+      return { ok: false, cancelled: true };
+    }
+    this.specialistResume = null;
+    this.emit("specialist-resume-state", { available: false });
+    this.appendSystem("기획이 승인되었습니다. 구현을 이어서 진행합니다.");
+    try {
+      return await this.runExecutionBlock({
+        stages: resume.stages,
+        mode: resume.mode,
+        maxAutoRevisions: resume.maxAutoRevisions,
+        feedback: resume.feedback,
+        round: 1,
+        requestedGeneration,
+      });
+    } finally {
+      this.specialistActive = false;
+      this.turnQueue.push(...this.deferredTurnQueue.splice(0));
+      this.emitTurnState();
+      this.pumpTurnQueue();
+    }
+  }
+
+  // Builder → Reviewer → (auto면 자동 보완) → 기록관(블록 끝) 실행 블록.
+  async runExecutionBlock({ stages, mode, maxAutoRevisions, feedback, round, requestedGeneration }) {
+    const implementation = stages.implementation;
+    const review = stages.review;
+    const recorder = stages.recorder;
+    const maxRounds = mode === "auto" ? maxAutoRevisions + 1 : 1;
+    let autoRevisionCount = 0;
+    let recorderResult = null;
+
+    let builderResult = await this.scheduleResponse(implementation.agent, {
+      specialist: { stage: "implementation", round, maxRounds, feedback },
+      agentConfig: implementation.agentConfig,
+    });
+    if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
+    if (!builderResult?.ok) return this.specialistFail(implementation, "implementation", round, builderResult);
+    if (builderResult.builderStatus === "BLOCKED") {
+      return {
+        ok: false,
+        stage: "implementation",
+        completedIterations: round,
+        needsUserDecision: true,
+        stopReason: "BLOCKED",
+        blocked: true,
+        result: builderResult,
+      };
+    }
+
+    // 검토 → (자동 보완) 루프.
+    while (true) {
+      const reviewResult = await this.scheduleResponse(review.agent, {
+        specialist: { stage: "review", round, maxRounds },
+        agentConfig: review.agentConfig,
+      });
+      if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
+      if (!reviewResult?.ok) return this.specialistFail(review, "review", round, reviewResult);
+
+      const contract = this.parseReviewContract(reviewResult.text || "", reviewResult.specialistSignal);
+      if (contract.verdict === "PASS") break;
+      if (contract.verdict === "UNKNOWN") {
+        return {
+          ok: false,
+          stage: "review",
+          completedIterations: round,
+          needsUserDecision: true,
+          stopReason: "INSUFFICIENT_EVIDENCE",
+          contract,
+          review: reviewResult,
+        };
+      }
+
+      // FIX_REQUIRED: 자동 보완 가능하면 보완, 아니면 STOP → 사용자.
+      if (!contract.canAutoRevise) {
+        return {
+          ok: false,
+          stage: "review",
+          completedIterations: round,
+          needsUserDecision: true,
+          stopReason: contract.stopReason || "FIX_REQUIRED",
+          contract,
+          review: reviewResult,
+        };
+      }
+      if (mode !== "auto" || autoRevisionCount >= maxAutoRevisions) {
+        return {
+          ok: false,
+          stage: "review",
+          completedIterations: round,
+          needsUserDecision: true,
+          stopReason: mode !== "auto"
+            ? "FIX_REQUIRED"
+            : "LIMIT_EXCEEDED",
+          contract,
+          review: reviewResult,
+        };
+      }
+
+      // 자동 보완.
+      autoRevisionCount += 1;
+      round += 1;
+      feedback = reviewResult.text || "검토자가 수정이 필요하다고 판단했습니다.";
+      this.appendSystem(`검토 결과 수정 필요 · 자동 보완 ${autoRevisionCount}/${maxAutoRevisions}회`);
+      builderResult = await this.scheduleResponse(implementation.agent, {
         specialist: { stage: "implementation", round, maxRounds, feedback },
         agentConfig: implementation.agentConfig,
       });
@@ -653,110 +800,29 @@ class ChatRoom extends EventEmitter {
           result: builderResult,
         };
       }
-
-      // 검토 → (자동 보완) 루프.
-      while (true) {
-        const reviewResult = await this.scheduleResponse(review.agent, {
-          specialist: { stage: "review", round, maxRounds },
-          agentConfig: review.agentConfig,
-        });
-        if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
-        if (!reviewResult?.ok) return this.specialistFail(review, "review", round, reviewResult);
-
-        const contract = this.parseReviewContract(reviewResult.text || "", reviewResult.specialistSignal);
-        if (contract.verdict === "PASS") {
-          passed = true;
-          break;
-        }
-        if (contract.verdict === "UNKNOWN") {
-          return {
-            ok: false,
-            stage: "review",
-            completedIterations: round,
-            needsUserDecision: true,
-            stopReason: "INSUFFICIENT_EVIDENCE",
-            contract,
-            review: reviewResult,
-          };
-        }
-
-        // FIX_REQUIRED: 자동 보완 가능하면 보완, 아니면 STOP → 사용자.
-        if (!contract.canAutoRevise) {
-          return {
-            ok: false,
-            stage: "review",
-            completedIterations: round,
-            needsUserDecision: true,
-            stopReason: contract.stopReason || "FIX_REQUIRED",
-            contract,
-            review: reviewResult,
-          };
-        }
-        if (mode !== "auto" || autoRevisionCount >= maxAutoRevisions) {
-          return {
-            ok: false,
-            stage: "review",
-            completedIterations: round,
-            needsUserDecision: true,
-            stopReason: mode !== "auto"
-              ? "FIX_REQUIRED"
-              : "LIMIT_EXCEEDED",
-            contract,
-            review: reviewResult,
-          };
-        }
-
-        // 자동 보완.
-        autoRevisionCount += 1;
-        round += 1;
-        feedback = reviewResult.text || "검토자가 수정이 필요하다고 판단했습니다.";
-        this.appendSystem(`검토 결과 수정 필요 · 자동 보완 ${autoRevisionCount}/${maxAutoRevisions}회`);
-        builderResult = await this.scheduleResponse(implementation.agent, {
-          specialist: { stage: "implementation", round, maxRounds, feedback },
-          agentConfig: implementation.agentConfig,
-        });
-        if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
-        if (!builderResult?.ok) return this.specialistFail(implementation, "implementation", round, builderResult);
-        if (builderResult.builderStatus === "BLOCKED") {
-          return {
-            ok: false,
-            stage: "implementation",
-            completedIterations: round,
-            needsUserDecision: true,
-            stopReason: "BLOCKED",
-            blocked: true,
-            result: builderResult,
-          };
-        }
-      }
-
-      // PASS 후 기록관(선택) 실행.
-      if (recorder?.agent) {
-        recorderResult = await this.scheduleResponse(recorder.agent, {
-          specialist: { stage: "recorder", round, maxRounds: 1 },
-          agentConfig: recorder.agentConfig,
-        });
-        if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
-        if (!recorderResult?.ok) {
-          const recordError = recorderResult?.error || "기록관 실행이 실패했습니다.";
-          this.appendSystem(`전문 모드 구현·검토는 통과했지만 기록관이 결과를 정리하지 못했습니다. (${recordError})`);
-          return { ok: true, completedIterations: round, recorded: false, recording: recorderResult?.text || "", recordError };
-        }
-      }
-
-      this.appendSystem("전문 모드 구현·검토가 통과했습니다.");
-      return {
-        ok: true,
-        completedIterations: round,
-        recorded: Boolean(recorderResult?.ok),
-        recording: recorderResult?.text || "",
-      };
-    } finally {
-      this.specialistActive = false;
-      this.turnQueue.push(...this.deferredTurnQueue.splice(0));
-      this.emitTurnState();
-      this.pumpTurnQueue();
     }
+
+    // PASS 후 기록관(선택) 실행 — 실행 블록의 마지막 단계로 블록을 마무리합니다.
+    if (recorder?.agent) {
+      recorderResult = await this.scheduleResponse(recorder.agent, {
+        specialist: { stage: "recorder", round, maxRounds: 1 },
+        agentConfig: recorder.agentConfig,
+      });
+      if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
+      if (!recorderResult?.ok) {
+        const recordError = recorderResult?.error || "기록관 실행이 실패했습니다.";
+        this.appendSystem(`전문 모드 구현·검토는 통과했지만 기록관이 결과를 정리하지 못했습니다. (${recordError})`);
+        return { ok: true, completedIterations: round, recorded: false, recording: recorderResult?.text || "", recordError };
+      }
+    }
+
+    this.appendSystem("전문 모드 구현·검토가 통과했습니다.");
+    return {
+      ok: true,
+      completedIterations: round,
+      recorded: Boolean(recorderResult?.ok),
+      recording: recorderResult?.text || "",
+    };
   }
 
   // 검토자 출력 계약을 파싱합니다. 마커만 엄격히 읽고, 구조화 섹션은
