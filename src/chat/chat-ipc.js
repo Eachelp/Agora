@@ -978,6 +978,11 @@ function roomMeta(meta) {
         if (!ensureProjectStore().deleteProject(project.id)) {
           throw new Error("프로젝트를 삭제하지 못했습니다.");
         }
+        // 프로젝트 파일을 지운 뒤에만 메모리·규칙 파일을 정리합니다.
+        // 순서를 바꾸면 삭제가 실패했을 때 기록만 사라질 수 있습니다.
+        try {
+          ensureMemoryStore()?.deleteProject(project.id);
+        } catch {}
         const nextProjectId = deletingActive ? UNCATEGORIZED_PROJECT_ID : getActiveProjectId();
         setActiveProjectId(nextProjectId);
         let sessionId = getActiveSessionId(nextProjectId);

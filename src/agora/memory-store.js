@@ -148,6 +148,29 @@ class MemoryStore {
     writeTextAtomic(filePath, next);
     return { changed: true, rules: next };
   }
+
+  // 프로젝트를 지울 때 남는 메모리·규칙·규칙 이력 파일을 함께 정리합니다.
+  // 정리하지 않으면 화면에서 접근할 수 없는 파일이 디스크에 계속 쌓입니다.
+  deleteProject(projectId) {
+    const targets = [
+      this.projectPath(projectId),
+      this.rulesPath(projectId),
+      this.rulesHistoryPath(projectId),
+    ].filter(Boolean);
+    if (targets.length === 0) return false;
+    let removed = false;
+    for (const filePath of targets) {
+      try {
+        if (fs.existsSync(filePath)) {
+          fs.rmSync(filePath, { force: true });
+          removed = true;
+        }
+      } catch {
+        // 파일 하나가 잠겨 있어도 나머지 정리는 계속 진행합니다.
+      }
+    }
+    return removed;
+  }
 }
 
 module.exports = {

@@ -78,3 +78,36 @@ test("규칙은 MAX_RULES_CHARS를 넘으면 잘려서 저장된다", () => {
   store.saveRules("project-a", long);
   assert.equal(store.readRules("project-a").length, MAX_RULES_CHARS);
 });
+
+test("\uD504\uB85C\uC81D\uD2B8\uB97C \uC9C0\uC6B0\uBA74 \uBA54\uBAA8\uB9AC\uC640 \uADDC\uCE59 \uD30C\uC77C\uB3C4 \uD568\uAED8 \uC815\uB9AC\uB41C\uB2E4", () => {
+  const root = makeRoot();
+  let clock = 1_700_000_000_000;
+  const store = new MemoryStore({ root, now: () => (clock += 1) }).init();
+
+  store.append("project-a", { source: "human", title: "t", content: "a\uAE30\uB85D" });
+  store.saveRules("project-a", "a\uADDC\uCE59");
+  store.saveRules("project-a", "a\uADDC\uCE59 \uC218\uC815");
+  store.append("project-b", { source: "human", title: "t", content: "b\uAE30\uB85D" });
+  store.saveRules("project-b", "b\uADDC\uCE59");
+
+  assert.ok(fs.existsSync(store.projectPath("project-a")));
+  assert.ok(fs.existsSync(store.rulesPath("project-a")));
+  assert.ok(fs.existsSync(store.rulesHistoryPath("project-a")));
+
+  assert.equal(store.deleteProject("project-a"), true);
+
+  assert.equal(fs.existsSync(store.projectPath("project-a")), false);
+  assert.equal(fs.existsSync(store.rulesPath("project-a")), false);
+  assert.equal(fs.existsSync(store.rulesHistoryPath("project-a")), false);
+
+  // \uB2E4\uB978 \uD504\uB85C\uC81D\uD2B8\uB294 \uADF8\uB300\uB85C \uB0A8\uC544\uC57C \uD569\uB2C8\uB2E4.
+  assert.ok(fs.existsSync(store.projectPath("project-b")));
+  assert.ok(fs.existsSync(store.rulesPath("project-b")));
+  assert.equal(store.readRules("project-b").trim(), "b\uADDC\uCE59");
+});
+
+test("\uC5C6\uB294 \uD504\uB85C\uC81D\uD2B8\uB97C \uC9C0\uC6B0\uBA74 false\uB97C \uB3CC\uB824\uC900\uB2E4", () => {
+  const store = new MemoryStore({ root: makeRoot() }).init();
+  assert.equal(store.deleteProject("project-none"), false);
+  assert.equal(store.deleteProject(""), false);
+});
