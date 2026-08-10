@@ -1266,7 +1266,7 @@ function roomMeta(meta) {
 
     ipcMain.handle(
       "chat:send",
-      wrap(async ({ sessionId, text, attachmentIds }) => {
+      wrap(async ({ sessionId, text, attachmentIds, independent }) => {
         requireSession(sessionId);
         const room = getRoom(sessionId);
         const pending = pendingFor(sessionId);
@@ -1278,7 +1278,7 @@ function roomMeta(meta) {
             pending.delete(id);
           }
         }
-        const entry = room.sendUserMessage({ text, attachments });
+        const entry = room.sendUserMessage({ text, attachments, independent });
         if (!entry) throw new Error("보낼 내용이 없습니다.");
         return {};
       })

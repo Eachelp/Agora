@@ -911,3 +911,50 @@ test("publicAgents에는 실행 경로 정보가 없다", () => {
   assert.ok(!json.includes("needsShell"));
   assert.ok(!json.includes("secret"));
 });
+
+test("독립 발언 모드(independent: true)에서는 같은 턴의 형제 응답을 포함하지 않고 broadcast 힌트를 억제한다", async () => {
+  const calls = [];
+  const room = new ChatRoom({
+    agents: [
+      { id: "claude", name: "Claude", aliases: ["claude"], available: true, enabled: true },
+      { id: "codex", name: "Codex", aliases: ["codex"], available: true, enabled: true },
+    ],
+    runAgent: ({ agent, prompt }) => {
+      calls.push({ agentId: agent.id, prompt });
+      return { promise: Promise.resolve({ ok: true, text: `${agent.id}의 독립 응답` }), cancel: () => {} };
+    },
+  });
+
+  room.sendUserMessage({ text: "@all 문제점 조사해", independent: true });
+  await settle(room);
+
+  assert.equal(calls.length, 2);
+  // 두 에이전트의 프롬프트 모두에 형제 메시지나 broadcast 문구가 없어야함
+  for (const call of calls) {
+    assert.ok(!call.prompt.includes("앞선 참가자의 답변을 읽고"));
+    assert.ok(!call.prompt.includes("독립 응답"));
+  }
+});
+
+test("이어 발언 모드(independent: false)에서는 같은 턴의 앞선 답변이 다음 에이전트에 포함된다", async () => {
+  const calls = [];
+  const room = new ChatRoom({
+    agents: [
+      { id: "claude", name: "Claude", aliases: ["claude"], available: true, enabled: true },
+      { id: "codex", name: "Codex", aliases: ["codex"], available: true, enabled: true },
+    ],
+    runAgent: ({ agent, prompt }) => {
+      calls.push({ agentId: agent.id, prompt });
+      return { promise: Promise.resolve({ ok: true, text: `${agent.id}의 순차 응답` }), cancel: () => {} };
+    },
+  });
+
+  room.sendUserMessage({ text: "@all 문제점 조사해", independent: false });
+  await settle(room);
+
+  assert.equal(calls.length, 2);
+  // 두번째 호출된 에이전트는 첫번째 에이전트의 응답을 참조함
+  const secondCall = calls[1];
+  assert.ok(secondCall.prompt.includes("앞선 참가자의 답변을 읽고"));
+  assert.ok(secondCall.prompt.includes("의 순차 응답"));
+});

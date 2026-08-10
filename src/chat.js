@@ -10,6 +10,25 @@ const stopButton = document.getElementById("btn-stop");
 const attachButton = document.getElementById("btn-attach");
 const mentionPopup = document.getElementById("mention-popup");
 const attachmentRow = document.getElementById("attachment-row");
+const btnModeSequential = document.getElementById("btn-mode-sequential");
+const btnModeIndependent = document.getElementById("btn-mode-independent");
+
+let isIndependentResponseMode = false;
+
+function setResponseMode(independent) {
+  isIndependentResponseMode = independent;
+  if (btnModeSequential && btnModeIndependent) {
+    btnModeSequential.classList.toggle("is-active", !independent);
+    btnModeIndependent.classList.toggle("is-active", independent);
+  }
+}
+
+if (btnModeSequential) {
+  btnModeSequential.addEventListener("click", () => setResponseMode(false));
+}
+if (btnModeIndependent) {
+  btnModeIndependent.addEventListener("click", () => setResponseMode(true));
+}
 const sessionListEl = document.getElementById("session-list");
 const newSessionButton = document.getElementById("btn-new-session");
 const projectListEl = document.getElementById("project-list");
@@ -2740,7 +2759,8 @@ async function sendCurrentMessage() {
   composerInput.value = "";
   closeMentionPopup();
   autoresize();
-  const result = await call(window.chatApi.send(activeSessionId, text, attachmentIds));
+  const independent = isIndependentResponseMode;
+  const result = await call(window.chatApi.send(activeSessionId, text, attachmentIds, independent));
   if (result) {
     pendingAttachments = [];
     renderPendingAttachments();

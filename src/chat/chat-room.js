@@ -138,6 +138,7 @@ class ChatRoom extends EventEmitter {
     const payload = typeof input === "string" ? { text: input } : input || {};
     const trimmed = String(payload.text || "").trim();
     const attachments = Array.isArray(payload.attachments) ? payload.attachments : [];
+    const independent = Boolean(payload.independent);
     if (!trimmed && attachments.length === 0) return null;
 
     const entry = this.appendMessage({
@@ -174,7 +175,8 @@ class ChatRoom extends EventEmitter {
         this.scheduleResponse(agent, {
           attachments,
           turnRootId: entry.id,
-          ...(order.length > 1
+          independent,
+          ...(order.length > 1 && !independent
             ? { broadcast: { position: index + 1, total: order.length } }
             : {}),
         });
@@ -374,13 +376,16 @@ class ChatRoom extends EventEmitter {
     if (this.activeRuns === 0) this.emit("busy", false);
   }
 
-  promptMessages(promptLimit = null) {
+  promptMessages(promptLimit = null, independent = false) {
     const messages = this.messages;
     if (!Number.isInteger(promptLimit) || promptLimit < 0) {
       return messages.filter((message) => message.authorType !== "system" && !message.error);
     }
     const cap = Math.min(promptLimit, messages.length);
     const base = messages.slice(0, cap);
+    if (independent) {
+      return base.filter((message) => message.authorType !== "system" && !message.error);
+    }
     const roots = new Set(base.map((message) => message.turnRootId).filter(Boolean));
     const extra = messages.slice(cap).filter(
       (message) => message.turnRootId && roots.has(message.turnRootId)
@@ -402,7 +407,7 @@ class ChatRoom extends EventEmitter {
     const prompt = buildAgentPrompt({
       agent,
       agents: this.enabledAgents(),
-      messages: this.promptMessages(context.promptLimit),
+      messages: this.promptMessages(context.promptLimit, context.independent),
       maxMessages: this.maxPromptMessages,
       permissionMode: this.meta.permissionMode,
       projectContext: this.meta.projectContext,

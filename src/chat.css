@@ -1151,6 +1151,44 @@ textarea:focus-visible {
   gap: 6px;
 }
 
+.response-mode-bar {
+  max-width: 760px;
+  margin: 0 auto 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.response-mode-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.mode-chip {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--muted);
+  border-radius: 8px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 120ms ease;
+}
+
+.mode-chip:hover {
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
+.mode-chip.is-active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .attachment-pill {
   display: inline-flex;
   align-items: center;
