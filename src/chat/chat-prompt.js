@@ -124,6 +124,7 @@ function buildAgentPrompt({
   }
   if (specialist) {
     const stageLabels = {
+      planner: "기획",
       implementation: "구현",
       review: "검토",
       recorder: "기록",
@@ -132,19 +133,27 @@ function buildAgentPrompt({
     lines.push(`=== 전문 모드: ${stageLabels[specialist.stage] || specialist.stage} ===`);
     lines.push(`현재 단계: ${stageLabels[specialist.stage] || specialist.stage} · 반복 ${specialist.round || 1}/${specialist.maxRounds || 3}`);
     if (specialist.feedback) {
-      lines.push("검토자가 전달한 수정 요청:");
+      lines.push("이전 단계에서 전달된 내용:");
       lines.push(specialist.feedback);
     }
-    if (specialist.stage === "implementation") {
+    if (specialist.stage === "planner") {
+      lines.push("- 사용자의 목표와 앞선 논의를 실행 가능한 작업 계약(Task)으로 정리하세요.");
+      lines.push("- 확정된 결정은 요구사항·제약으로, 미확정 제안은 참고·Open Question으로 구분하세요.");
+      lines.push("- 하나의 작업이 하나의 명확한 목표와 완료 조건을 갖도록 큰 작업을 분해하세요.");
+      lines.push("- 코드를 수정하거나 구현을 시작하지 마세요. 구현 담당자를 자동으로 부르지 마세요.");
+      lines.push("- 응답 안에 `STATUS: PLAN_READY` 또는 `STATUS: NEEDS_DECISION` 하나를 넣으세요.");
+    } else if (specialist.stage === "implementation") {
       lines.push("- 현재 결정과 작업 범위 안에서 실제 구현을 진행하세요.");
       lines.push("- 작업을 끝낸 뒤 변경 내용과 검증 결과를 짧게 정리하세요.");
       lines.push("- 구현은 당신의 몫입니다. 다른 에이전트에게 구현·스크립트 작성·실행을 넘기거나 위임하지 마세요.");
       lines.push("- 권한이나 도구가 부족하다고 판단되면, 다른 참가자에게 맡기지 말고 현재 단계의 결과물에 그 사유와 필요한 조치를 적으세요.");
+      lines.push("- 완료하면 `STATUS: DONE`, 막혀서 진행할 수 없으면 `STATUS: BLOCKED`를 응답 안에 넣으세요.");
     } else if (specialist.stage === "review") {
       lines.push("- 구현 결과를 요구사항·현재 작업공간·대화 맥락과 대조하세요.");
       lines.push("- 수정이 필요하면 구체적인 파일·문제·수정 방향을 적으세요.");
       lines.push("- 구현자가 작업을 다른 에이전트에게 넘기려 하거나 권한이 없어 실제 변경을 못 했다면, 통과시키지 말고 구현 단계로 되돌리세요.");
-      lines.push("- 응답 마지막 줄에 반드시 [[CODEPET_REVIEW:PASS]] 또는 [[CODEPET_REVIEW:REVISE]] 하나를 붙이세요.");
+      lines.push("- 응답 안에 `VERDICT: PASS` 또는 `VERDICT: FIX_REQUIRED` 또는 `VERDICT: UNKNOWN` 하나를 넣으세요.");
+      lines.push("- FIX_REQUIRED라면 `ISSUES:` 아래에 이슈별로 `scope: IN/OUT`, `severity: BLOCKING/NON_BLOCKING`, `location`, `problem`, `evidence`, `impact`를 적으세요.");
     } else if (specialist.stage === "recorder") {
       lines.push("- 아래 JSON 형식으로만 답하세요. 코드 블록을 써도 되고 안 써도 됩니다.");
       lines.push("- summary에는 이번 작업에서 확인된 사실, 결정, 완료 내용, 남은 작업을 Markdown으로 적으세요.");

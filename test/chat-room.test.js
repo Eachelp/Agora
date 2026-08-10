@@ -88,7 +88,7 @@ test("에이전트 실행 전 준비 단계를 기다리고 실제 오류를 대
   assert.match(error.text, /프록시 복구 실패: 포트 연결 거부/);
 });
 
-test("전문 모드는 구현 결과를 검토하고 수정 필요면 구현으로 되돌린다", async () => {
+test("제한 자동 실행은 검토 수정 요구를 범위 안에서 자동 보완하고 통과하면 기록한다", async () => {
   const calls = [];
   const replies = {
     codex: [
@@ -96,8 +96,11 @@ test("전문 모드는 구현 결과를 검토하고 수정 필요면 구현으�
       { ok: true, text: "수정 구현" },
     ],
     claude: [
-      { ok: true, text: "테스트가 부족합니다.\n[[CODEPET_REVIEW:REVISE]]" },
-      { ok: true, text: "검토 통과\n[[CODEPET_REVIEW:PASS]]" },
+      {
+        ok: true,
+        text: "테스트가 부족합니다.\nVERDICT: FIX_REQUIRED\nISSUES:\n1.\nscope: IN\nseverity: BLOCKING\nlocation: src/chat.js:1\nproblem: 테스트 누락\nevidence: ...\nimpact: ...",
+      },
+      { ok: true, text: "검토 통과\nVERDICT: PASS" },
       { ok: true, text: "## 완료\n- 구현과 검토가 끝났습니다." },
     ],
   };
@@ -116,7 +119,8 @@ test("전문 모드는 구현 결과를 검토하고 수정 필요면 구현으�
       review: { agent: room.findAgent("claude"), agentConfig: { model: "claude-review" } },
       recorder: { agent: room.findAgent("claude"), agentConfig: { model: "claude-record" } },
     },
-    maxIterations: 3,
+    mode: "auto",
+    maxAutoRevisions: 3,
   });
 
   assert.equal(result.ok, true);
@@ -127,6 +131,201 @@ test("전문 모드는 구현 결과를 검토하고 수정 필요면 구현으�
   assert.match(calls[2].prompt, /테스트가 부족합니다/);
   assert.match(calls[4].prompt, /summary에는/);
   assert.equal(room.messages.filter((message) => message.authorType === "agent").length, 5);
+});
+
+test("단계별 실행은 구현 후 검토 결과를 사용자에게 반환하고 자동 보완하지 않는다", async () => {
+  const calls = [];
+  const replies = {
+    codex: [{ ok: true, text: "구현 완료" }],
+    claude: [
+      {
+        ok: true,
+        text: "수정 필요\nVERDICT: FIX_REQUIRED\nISSUES:\n1.\nscope: IN\nseverity: BLOCKING\nlocation: a.js\nproblem: 버그",
+      },
+    ],
+  };
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner(replies, calls),
+  });
+
+  const result = await room.startSpecialist({
+    stages: {
+      implementation: { agent: room.findAgent("codex") },
+      review: { agent: room.findAgent("claude") },
+    },
+  });
+
+  // 기본은 step 모드 → 검토 FIX_REQUIRED 후 자동 보완 없이 사용자에게 반환.
+  assert.equal(result.ok, false);
+  assert.equal(result.needsUserDecision, true);
+  assert.equal(result.stopReason, "FIX_REQUIRED");
+  assert.deepEqual(calls.map((call) => call.agentId), ["codex", "claude"]);
+});
+
+test("검토자 판정이 범위 밖이면 자동 보완하지 않고 SCOPE_OUT으로 반환한다", async () => {
+  const calls = [];
+  const replies = {
+    codex: [{ ok: true, text: "구현 완료" }],
+    claude: [
+      {
+        ok: true,
+        text: "범위 밖 제안\nVERDICT: FIX_REQUIRED\nISSUES:\n1.\nscope: OUT\nseverity: BLOCKING\nlocation: b.js\nproblem: 리팩터링",
+      },
+    ],
+  };
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner(replies, calls),
+  });
+
+  const result = await room.startSpecialist({
+    stages: {
+      implementation: { agent: room.findAgent("codex") },
+      review: { agent: room.findAgent("claude") },
+    },
+    mode: "auto",
+    maxAutoRevisions: 3,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.stopReason, "SCOPE_OUT");
+  assert.deepEqual(calls.map((call) => call.agentId), ["codex", "claude"]);
+});
+
+test("검토자 판정이 UNKNOWN이면 자동 보완하지 않고 반환한다", async () => {
+  const calls = [];
+  const replies = {
+    codex: [{ ok: true, text: "구현 완료" }],
+    claude: [{ ok: true, text: "판단 불가\nVERDICT: UNKNOWN" }],
+  };
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner(replies, calls),
+  });
+
+  const result = await room.startSpecialist({
+    stages: {
+      implementation: { agent: room.findAgent("codex") },
+      review: { agent: room.findAgent("claude") },
+    },
+    mode: "auto",
+    maxAutoRevisions: 3,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.stopReason, "INSUFFICIENT_EVIDENCE");
+  assert.deepEqual(calls.map((call) => call.agentId), ["codex", "claude"]);
+});
+
+test("기획 단계가 NEEDS_DECISION을 반환하면 구현을 시작하지 않고 멈춘다", async () => {
+  const calls = [];
+  const replies = {
+    claude: [{ ok: true, text: "결정 필요\nSTATUS: NEEDS_DECISION" }],
+  };
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner(replies, calls),
+  });
+
+  const result = await room.startSpecialist({
+    stages: {
+      implementation: { agent: room.findAgent("codex") },
+      review: { agent: room.findAgent("claude") },
+      planner: { agent: room.findAgent("claude") },
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.stage, "planner");
+  assert.equal(result.stopReason, "NEEDS_DECISION");
+  assert.deepEqual(calls.map((call) => call.agentId), ["claude"]);
+});
+
+test("기획 단계가 PLAN_READY면 구현을 진행한다", async () => {
+  const calls = [];
+  const replies = {
+    claude: [
+      { ok: true, text: "기획 완료\nSTATUS: PLAN_READY" },
+      { ok: true, text: "검토 통과\nVERDICT: PASS" },
+    ],
+    codex: [{ ok: true, text: "구현 완료" }],
+  };
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner(replies, calls),
+  });
+
+  const result = await room.startSpecialist({
+    stages: {
+      implementation: { agent: room.findAgent("codex") },
+      review: { agent: room.findAgent("claude") },
+      planner: { agent: room.findAgent("claude") },
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls.map((call) => call.agentId), ["claude", "codex", "claude"]);
+});
+
+test("검토 계약 파서는 VERDICT와 ISSUES를 정확히 해석한다", () => {
+  const room = new ChatRoom({ agents: makeAgents(), runAgent: fakeRunner({}) });
+  const pass = room.parseReviewContract("잘 했습니다\nVERDICT: PASS", "PASS");
+  assert.equal(pass.verdict, "PASS");
+
+  const fixIn = room.parseReviewContract(
+    "수정 필요\nVERDICT: FIX_REQUIRED\nISSUES:\n1.\nscope: IN\nseverity: BLOCKING\nlocation: a.js\nproblem: 버그",
+    "FIX_REQUIRED"
+  );
+  assert.equal(fixIn.verdict, "FIX_REQUIRED");
+  assert.equal(fixIn.canAutoRevise, true);
+  assert.deepEqual(fixIn.blockingScopes, ["IN"]);
+
+  const fixOut = room.parseReviewContract(
+    "범위 밖\nVERDICT: FIX_REQUIRED\nISSUES:\n1.\nscope: OUT\nseverity: BLOCKING\nlocation: b.js\nproblem: 리팩터링",
+    "FIX_REQUIRED"
+  );
+  assert.equal(fixOut.verdict, "FIX_REQUIRED");
+  assert.equal(fixOut.canAutoRevise, false);
+  assert.equal(fixOut.stopReason, "SCOPE_OUT");
+
+  const fixUnspecified = room.parseReviewContract(
+    "수정 필요\nVERDICT: FIX_REQUIRED\nISSUES:\n1.\nseverity: BLOCKING\nlocation: c.js\nproblem: 버그",
+    "FIX_REQUIRED"
+  );
+  assert.equal(fixUnspecified.canAutoRevise, false);
+  assert.equal(fixUnspecified.stopReason, "SCOPE_UNSPECIFIED");
+
+  const unknown = room.parseReviewContract("판단 불가\nVERDICT: UNKNOWN", "UNKNOWN");
+  assert.equal(unknown.verdict, "UNKNOWN");
+  assert.equal(unknown.stopReason, "INSUFFICIENT_EVIDENCE");
+
+  const noNotBlocking = room.parseReviewContract(
+    "사소한 제안\nVERDICT: FIX_REQUIRED\nISSUES:\n1.\nscope: IN\nseverity: NON_BLOCKING\nproblem: 개선",
+    "FIX_REQUIRED"
+  );
+  assert.equal(noNotBlocking.canAutoRevise, false);
+  assert.equal(noNotBlocking.stopReason, "SCOPE_UNSPECIFIED");
+});
+
+test("기존 REVISE 마커는 FIX_REQUIRED로 정규화된다", async () => {
+  const calls = [];
+  const replies = {
+    codex: [{ ok: true, text: "구현 완료" }],
+    claude: [{ ok: true, text: "수정 필요\n[[CODEPET_REVIEW:REVISE]]" }],
+  };
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner(replies, calls),
+  });
+  const result = await room.startSpecialist({
+    stages: {
+      implementation: { agent: room.findAgent("codex") },
+      review: { agent: room.findAgent("claude") },
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.stopReason, "SCOPE_UNSPECIFIED");
 });
 
 test("전문 모드 실행 중에는 @멘션 호출이 꺼진다", async () => {
@@ -153,7 +352,8 @@ test("전문 모드 실행 중에는 @멘션 호출이 꺼진다", async () => {
       review: { agent: room.findAgent("claude") },
       recorder: { agent: room.findAgent("codex") },
     },
-    maxIterations: 3,
+    mode: "auto",
+    maxAutoRevisions: 3,
   });
 
   assert.equal(result.ok, true);

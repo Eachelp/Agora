@@ -112,8 +112,9 @@ test("전문 모드 구현·검토·기록 지침과 누적 요약이 프롬프�
   assert.match(prompt, /프로젝트 누적 요약/);
   assert.match(prompt, /현재 단계: 검토 · 반복 2\/3/);
   assert.match(prompt, /테스트 결과를 확인하세요/);
-  assert.match(prompt, /CODEPET_REVIEW:PASS/);
-  assert.match(prompt, /CODEPET_REVIEW:REVISE/);
+  assert.match(prompt, /VERDICT: PASS/);
+  assert.match(prompt, /VERDICT: FIX_REQUIRED/);
+  assert.match(prompt, /VERDICT: UNKNOWN/);
 });
 
 test("전문 모드 구현자는 위임 금지, 검토자는 위임 시 되돌림 지침을 받는다", () => {

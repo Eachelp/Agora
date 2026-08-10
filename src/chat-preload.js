@@ -106,7 +106,8 @@ contextBridge.exposeInMainWorld("chatApi", {
     ipcRenderer.invoke(INVOKE.TURN_CANCEL, { sessionId, turnId }),
   discussionStart: (sessionId, agentIds) =>
     ipcRenderer.invoke(INVOKE.DISCUSSION_START, { sessionId, agentIds }),
-  specialistStart: (sessionId) => ipcRenderer.invoke(INVOKE.SPECIALIST_START, { sessionId }),
+  specialistStart: (sessionId, options = {}) =>
+    ipcRenderer.invoke(INVOKE.SPECIALIST_START, { sessionId, ...options }),
   approvalRespond: (sessionId, approvalId, decision) =>
     ipcRenderer.invoke(INVOKE.APPROVAL_RESPOND, { sessionId, approvalId, decision }),
 

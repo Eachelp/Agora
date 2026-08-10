@@ -600,6 +600,9 @@ function roomMeta(meta) {
       if (!stage.ok) return stage;
       stages[roleId] = stage;
     }
+    // Planner(기획)는 선택입니다. 지정되지 않으면 실행하지 않습니다.
+    const planner = specialistStageFor(project, room, "planning");
+    if (planner.ok) stages.planner = planner;
     return { ok: true, stages };
   }
 
@@ -1340,7 +1343,7 @@ function roomMeta(meta) {
 
     ipcMain.handle(
       "chat:specialist:start",
-      wrap(async ({ sessionId }) => {
+      wrap(async ({ sessionId, mode, maxAutoRevisions }) => {
         requireSession(sessionId);
         const room = getRoom(sessionId);
         const project = projectForSession(store.readMeta(sessionId));
@@ -1358,7 +1361,14 @@ function roomMeta(meta) {
           store.updateMeta(sessionId, { permissionMode: "workspace-write" });
           refreshRoomAgents(sessionId);
         }
-        const started = room.startSpecialist({ stages: planned.stages, maxIterations: 3 });
+        const started = room.startSpecialist({
+          stages: planned.stages,
+          mode: mode === "auto" ? "auto" : "step",
+          maxAutoRevisions:
+            Number.isInteger(maxAutoRevisions) && maxAutoRevisions >= 0
+              ? maxAutoRevisions
+              : 1,
+        });
         const result = await Promise.race([
           started,
           new Promise((resolve) => setImmediate(() => resolve({ ok: true, pending: true }))),

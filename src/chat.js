@@ -2051,17 +2051,73 @@ specialistButton.addEventListener("click", async () => {
     flashNotice("프로젝트 설정에서 구현·검토 담당자를 먼저 지정해 주세요.");
     return;
   }
+  // 실행 방식을 사용자가 미리 결정하도록 합니다.
+  openPopover(specialistButton, (root) => {
+    const head = document.createElement("div");
+    head.className = "popover-head";
+    const title = document.createElement("strong");
+    title.textContent = "전문 모드 실행";
+    head.append(title);
+    root.append(head);
+
+    const desc = document.createElement("p");
+    desc.className = "popover-status";
+    desc.textContent = "구현·검토를 어떻게 실행할지 선택하세요. 검토자가 수정을 요구해도, 승인한 범위 안에서만 자동으로 이어집니다.";
+    root.append(desc);
+
+    // 단계별 실행
+    const stepBtn = document.createElement("button");
+    stepBtn.type = "button";
+    stepBtn.className = "button";
+    stepBtn.textContent = "단계별 실행 (구현 → 검토 → 사용자)";
+    stepBtn.addEventListener("click", () => {
+      closePopover();
+      runSpecialist({ mode: "step" });
+    });
+    root.append(stepBtn);
+
+    // 제한 자동 실행 + 보완 횟수
+    const autoHint = document.createElement("p");
+    autoHint.className = "popover-hint";
+    autoHint.textContent = "제한 자동 실행: 검토에서 수정이 필요하면 작업 범위 안의 문제에 한해 자동 보완을 최대 N회 시도합니다. 범위 밖·판단 불가면 즉시 멈춥니다.";
+    root.append(autoHint);
+
+    const autoSelect = document.createElement("select");
+    for (const n of [0, 1, 2, 3]) {
+      const option = document.createElement("option");
+      option.value = String(n);
+      option.textContent = `자동 보완 최대 ${n}회`;
+      autoSelect.append(option);
+    }
+    autoSelect.value = "1";
+
+    const autoBtn = document.createElement("button");
+    autoBtn.type = "button";
+    autoBtn.className = "button button-primary";
+    autoBtn.textContent = "제한 자동 실행";
+    autoBtn.addEventListener("click", () => {
+      const n = Number(autoSelect.value);
+      closePopover();
+      runSpecialist({ mode: "auto", maxAutoRevisions: n });
+    });
+    root.append(makeField("자동 보완 횟수", autoSelect), autoBtn);
+  });
+});
+
+async function runSpecialist({ mode, maxAutoRevisions }) {
   specialistRunning = true;
   specialistButton.disabled = true;
   specialistButton.textContent = "전문 실행 중…";
-  const result = await call(window.chatApi.specialistStart(activeSessionId));
+  const result = await call(
+    window.chatApi.specialistStart(activeSessionId, { mode, maxAutoRevisions })
+  );
   if (result) flashNotice("전문 모드를 시작했습니다.", false);
   if (result?.meta) sessionMeta = result.meta;
   specialistRunning = false;
   specialistButton.disabled = false;
   specialistButton.textContent = "전문 실행";
   renderHeader();
-});
+}
 discussionButton.addEventListener("click", () => {
   openPopover(discussionButton, (root) => {
     const head = document.createElement("div");

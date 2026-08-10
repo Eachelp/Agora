@@ -118,7 +118,7 @@ test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있
   assert.match(preload, /projectsUpdate: \(projectId, patch\)/);
   assert.match(preload, /projectsDelete: \(projectId\)/);
   assert.match(preload, /sessionsMove: \(sessionId, projectId, applyProjectWorkspace = false\)/);
-  assert.match(preload, /specialistStart: \(sessionId\)/);
+  assert.match(preload, /specialistStart: \(sessionId, options = \{\}\)/);
   assert.match(preload, /memoryAppend: \(projectId, content, title\)/);
   assert.match(preload, /decisionsCreate: \(input\)/);
   assert.match(preload, /tasksCreate: \(input\)/);
