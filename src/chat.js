@@ -1392,7 +1392,7 @@ function openWorkflowPopover(anchor) {
     const rulesInput = workflowTextarea("예: 공개 API를 바꾸지 않는다.", 5);
     rulesInput.maxLength = 4000;
     const rulesCount = document.createElement("p");
-    rulesCount.className = "popover-hint";
+    rulesCount.className = "workflow-count";
     const updateRulesCount = () => {
       rulesCount.textContent = `${rulesInput.value.length} / 4000`;
     };
@@ -1444,11 +1444,17 @@ function openWorkflowPopover(anchor) {
     const memoryHint = document.createElement("p");
     memoryHint.className = "popover-hint";
     memoryHint.textContent = "사람이 직접 추가한 기록과 기록관이 만든 초안이 이 프로젝트에 누적됩니다. 길어지면 오래된 순으로 일부만 전달됩니다.";
+    const memoryPreviewLabel = document.createElement("p");
+    memoryPreviewLabel.className = "workflow-field-label";
+    memoryPreviewLabel.textContent = "\uD604\uC7AC \uAE30\uB85D (\uC77D\uAE30 \uC804\uC6A9)";
     const memoryPreview = document.createElement("textarea");
     memoryPreview.className = "project-context-input memory-preview";
     memoryPreview.rows = 6;
     memoryPreview.readOnly = true;
     memoryPreview.placeholder = "아직 기록이 없습니다.";
+    const memoryInputLabel = document.createElement("p");
+    memoryInputLabel.className = "workflow-field-label";
+    memoryInputLabel.textContent = "\uC0C8 \uAE30\uB85D \uCD94\uAC00";
     const memoryInput = document.createElement("textarea");
     memoryInput.className = "project-context-input";
     memoryInput.rows = 3;
@@ -1474,7 +1480,15 @@ function openWorkflowPopover(anchor) {
       }
     });
     memoryActions.append(memoryAdd);
-    memorySection.append(memoryTitle, memoryHint, memoryPreview, memoryInput, memoryActions);
+    memorySection.append(
+      memoryTitle,
+      memoryHint,
+      memoryPreviewLabel,
+      memoryPreview,
+      memoryInputLabel,
+      memoryInput,
+      memoryActions
+    );
     call(window.chatApi.memoryRead(project.id)).then((result) => {
       if (result) memoryPreview.value = result.content || "";
     });
