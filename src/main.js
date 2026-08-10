@@ -3639,9 +3639,9 @@ function codexAccountRows() {
   }));
 }
 
-async function loadCodexUsage() {
+async function loadCodexUsage(forceUsage) {
   try {
-    const data = buildUsageBubbleData(await codexAccountSwitcher.fetchCurrentUsage());
+    const data = buildUsageBubbleData(await codexAccountSwitcher.fetchCurrentUsage({ force: forceUsage }));
     return { id: "codex", label: "Codex", gauges: data.gauges };
   } catch {
     return { id: "codex", label: "Codex", error: "조회 불가", gauges: [] };
@@ -3728,7 +3728,7 @@ async function getSettingsData({ forceUsage = false } = {}) {
   const settings = readSettings();
   const pets = listAvailablePets();
   const [codexUsage, agy, claude] = await Promise.all([
-    loadCodexUsage(),
+    loadCodexUsage(forceUsage),
     loadAntigravityProvider(forceUsage),
     loadClaudeProvider(forceUsage),
   ]);

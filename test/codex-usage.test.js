@@ -72,3 +72,97 @@ test("Codex는 활성 저장 프로필은 거부하고 비활성 auth 사본만 
   assert.equal(fs.existsSync(profilePath), false);
   assert.equal(fs.readFileSync(liveAuth, "utf8"), "live");
 });
+
+
+function jsonResponse(value, status = 200) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => value,
+  };
+}
+
+function writeCodexAuth(home, token) {
+  const authPath = path.join(home, ".codex", "auth.json");
+  fs.mkdirSync(path.dirname(authPath), { recursive: true });
+  fs.writeFileSync(authPath, JSON.stringify({ tokens: { access_token: token } }));
+  return authPath;
+}
+
+test("Codex 사용량 조회는 60초 동안 캐시되어 네트워크 요청을 재사용한다", async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "codepet-codex-usage-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  writeCodexAuth(home, "token-cached");
+
+  const originalFetch = global.fetch;
+  let calls = 0;
+  t.after(() => {
+    global.fetch = originalFetch;
+  });
+  global.fetch = async () => {
+    calls += 1;
+    return jsonResponse({ rate_limit: { primary_window: { used_percent: 7 } } });
+  };
+
+  const switcher = new CodexAccountSwitcher({ homeDir: home });
+  const first = await switcher.fetchCurrentUsage();
+  const second = await switcher.fetchCurrentUsage();
+  assert.equal(calls, 1, "캐시가 있으면 두 번째 호출은 네트워크를 재사용해야 한다");
+  assert.equal(first.rateLimits.primary.used_percent, 7);
+  assert.equal(second.rateLimits.primary.used_percent, 7);
+});
+
+test("Codex 사용량 조회는 force 옵션으로 캐시를 우회한다", async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "codepet-codex-usage-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  writeCodexAuth(home, "token-force");
+
+  const originalFetch = global.fetch;
+  let calls = 0;
+  t.after(() => {
+    global.fetch = originalFetch;
+  });
+  global.fetch = async () => {
+    calls += 1;
+    return jsonResponse({ rate_limit: { primary_window: { used_percent: calls * 10 } } });
+  };
+
+  const switcher = new CodexAccountSwitcher({ homeDir: home });
+  await switcher.fetchCurrentUsage();
+  const forced = await switcher.fetchCurrentUsage({ force: true });
+  assert.equal(calls, 2, "force면 캐시를 우회해 다시 조회해야 한다");
+  assert.equal(forced.rateLimits.primary.used_percent, 20);
+});
+
+test("Codex 사용량 캐시는 계정 토큰별로 분리된다", async (t) => {
+  const originalFetch = global.fetch;
+  const totals = {};
+  t.after(() => {
+    global.fetch = originalFetch;
+  });
+  global.fetch = async (url, opts) => {
+    const token = opts.headers.Authorization.replace("Bearer ", "");
+    totals[token] = (totals[token] || 0) + 1;
+    return jsonResponse({ rate_limit: { primary_window: { used_percent: 5 } } });
+  };
+
+  const homeA = fs.mkdtempSync(path.join(os.tmpdir(), "codepet-codex-usage-"));
+  const homeB = fs.mkdtempSync(path.join(os.tmpdir(), "codepet-codex-usage-"));
+  t.after(() => {
+    fs.rmSync(homeA, { recursive: true, force: true });
+    fs.rmSync(homeB, { recursive: true, force: true });
+  });
+  writeCodexAuth(homeA, "token-a");
+  writeCodexAuth(homeB, "token-b");
+
+  const switcherA = new CodexAccountSwitcher({ homeDir: homeA });
+  const switcherB = new CodexAccountSwitcher({ homeDir: homeB });
+
+  await switcherA.fetchCurrentUsage();
+  await switcherB.fetchCurrentUsage();
+  await switcherA.fetchCurrentUsage();
+  await switcherB.fetchCurrentUsage();
+
+  assert.equal(totals["token-a"], 1, "토큰 A는 한 번만 조회되어야 한다");
+  assert.equal(totals["token-b"], 1, "토큰 B는 한 번만 조회되어야 한다");
+});

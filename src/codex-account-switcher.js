@@ -17,6 +17,7 @@ const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const USER_AGENT = "codex_cli_rs/0.76.0 (Windows; CodePet)";
 const AUTH_FILE = "auth.json";
 const BACKUP_KEEP = 20;
+const USAGE_CACHE_TTL_MS = 60000;
 const PENDING_PREFIX = "__login_";
 
 class CodexAccountSwitcher {
@@ -32,6 +33,9 @@ class CodexAccountSwitcher {
     this.profilesRoot = path.join(this.switchHome, "profiles");
     this.backupsRoot = path.join(this.switchHome, "backups");
     this.activePath = path.join(this.switchHome, "active");
+
+    // Codex 사용량 조회 60초 캐시 (계정 토큰별 분리).
+    this.usageCache = new Map();
 
   }
 
@@ -715,7 +719,7 @@ class CodexAccountSwitcher {
   }
 
   // 더블클릭 사용량 조회는 live ~/.codex/auth.json 기준으로 매번 직접 조회합니다.
-  async fetchCurrentUsage() {
+  async fetchCurrentUsage({ force = false } = {}) {
     if (typeof fetch !== "function") {
       throw new Error("이 Electron 런타임에서 fetch를 사용할 수 없습니다.");
     }
@@ -723,6 +727,12 @@ class CodexAccountSwitcher {
     const current = this.readCurrentAuthSummary();
     if (!current.hasAuth || !current.accessToken) {
       throw new Error("현재 Codex 로그인 정보가 없습니다.");
+    }
+
+    const key = current.accessToken;
+    const cached = this.usageCache.get(key);
+    if (!force && cached && Date.now() - cached.at < USAGE_CACHE_TTL_MS) {
+      return cached.value;
     }
 
     const headers = {
@@ -754,12 +764,12 @@ class CodexAccountSwitcher {
 
     const payload = await response.json();
     const windows = this.normalizeUsageWindows(payload);
-    const primary = windows.find((window) => window.source === "main" && window.window_key === "primary") || null;
-    const secondary = windows.find((window) => window.source === "main" && window.window_key === "secondary") || null;
+    const primary = windows.find((w) => w.source === "main" && w.window_key === "primary") || null;
+    const secondary = windows.find((w) => w.source === "main" && w.window_key === "secondary") || null;
     const planType = payload.plan_type || payload.planType || current.planType || null;
     const email = payload.email || current.email || current.displayId || null;
 
-    return {
+    const value = {
       profile: {
         ...current,
         displayId: email,
@@ -775,9 +785,13 @@ class CodexAccountSwitcher {
         windows,
       },
     };
+    this.usageCache.set(key, { at: Date.now(), value });
+    return value;
   }
 }
 
 module.exports = {
   CodexAccountSwitcher,
 };
+
+
