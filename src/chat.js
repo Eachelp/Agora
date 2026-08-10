@@ -1166,6 +1166,76 @@ function makeField(labelText, control) {
   return field;
 }
 
+// 다른 에이전트의 메시지를 선택한 에이전트에게 전달(Handoff)해 이어서 답하게 합니다.
+function openHandoffPopover(anchor, messageId, sourceAuthor) {
+  const source = agentById(sourceAuthor);
+  const options = agents.filter((agent) => agent.available && agent.enabled !== false && agent.id !== sourceAuthor);
+  if (options.length === 0) {
+    openPopover(anchor, (root) => {
+      const head = document.createElement("div");
+      head.className = "popover-head";
+      const title = document.createElement("strong");
+      title.textContent = "전달할 에이전트가 없습니다";
+      head.append(title);
+      root.append(head);
+      const p = document.createElement("p");
+      p.className = "popover-status";
+      p.textContent = "현재 사용 가능한 다른 에이전트가 없습니다.";
+      root.append(p);
+    });
+    return;
+  }
+
+  openPopover(anchor, (root) => {
+    const head = document.createElement("div");
+    head.className = "popover-head";
+    const title = document.createElement("strong");
+    title.textContent = `메시지 전달 · 출처 @${sourceAuthor}`;
+    head.append(title);
+    root.append(head);
+
+    const targetSelect = document.createElement("select");
+    for (const agent of options) {
+      const option = document.createElement("option");
+      option.value = agent.id;
+      option.textContent = `${agent.name} (@${agent.id})`;
+      targetSelect.append(option);
+    }
+    root.append(makeField("전달할 에이전트", targetSelect));
+
+    const intentSelect = document.createElement("select");
+    const intentReview = document.createElement("option");
+    intentReview.value = "REVIEW_OPINION";
+    intentReview.textContent = "검토 요청";
+    const intentContinue = document.createElement("option");
+    intentContinue.value = "CONTINUE";
+    intentContinue.textContent = "이어서 작업";
+    intentSelect.append(intentContinue, intentReview);
+    root.append(makeField("전달 의도", intentSelect));
+
+    const actions = document.createElement("div");
+    actions.className = "popover-actions";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "취소";
+    cancel.addEventListener("click", closePopover);
+    const confirm = document.createElement("button");
+    confirm.type = "button";
+    confirm.className = "button-primary";
+    confirm.textContent = "전달";
+      confirm.addEventListener("click", async () => {
+        const target = targetSelect.value;
+        const intent = intentSelect.value;
+        closePopover();
+        await call(
+          window.chatApi.handoffMessage(sessionMeta?.id, target, messageId, intent)
+        );
+      });
+    actions.append(cancel, confirm);
+    root.append(actions);
+  });
+}
+
 function openAgentPopover(anchor, agentId) {
   const agent = agentById(agentId);
   const provider = providerById(agentId);
@@ -2516,6 +2586,19 @@ function renderMessage(message) {
   }
 
   body.append(meta, bubble);
+
+  // 전달(Handoff) 버튼: 다른 AI가 보낸 에이전트 메시지를 다른 에이전트에게 이어서 전달합니다.
+  if (!isUser && message.id) {
+    const handoffBtn = document.createElement("button");
+    handoffBtn.type = "button";
+    handoffBtn.className = "message-handoff-button";
+    handoffBtn.textContent = "다른 AI에게 전달";
+    handoffBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openHandoffPopover(handoffBtn, message.id, message.author);
+    });
+    body.append(handoffBtn);
+  }
 
   if (!isUser) {
     const avatar = makeAgentAvatar(agent || { id: message.author, name, color });

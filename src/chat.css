@@ -359,6 +359,22 @@ textarea:focus-visible {
   gap: 3px;
 }
 
+.message-handoff-button {
+  justify-self: start;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.message-handoff-button:hover {
+  color: var(--ink-soft);
+  border-color: var(--accent);
+}
+
 .message .meta {
   display: flex;
   align-items: baseline;
@@ -1363,6 +1379,27 @@ textarea:focus-visible {
 .popover-submit {
   width: 100%;
   padding: 6px 0;
+}
+
+.popover-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.popover-actions button {
+  padding: 6px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.popover-actions button:hover {
+  border-color: var(--accent);
 }
 
 .approval-backdrop[hidden] { display: none; }

@@ -34,6 +34,7 @@ function buildAgentPrompt({
   workflowContext = "",
   discussion = null,
   specialist = null,
+  handoff = null,
   broadcast = null,
   mentionsEnabled = !discussion,
   extraLines = [],
@@ -164,6 +165,20 @@ function buildAgentPrompt({
       lines.push('{"summary": "...", "decisions": [{"title": "...", "content": "..."}], "nextActions": [{"title": "...", "description": "..."}]}');
     }
     lines.push("=== 전문 모드 끝 ===");
+  }
+  if (handoff) {
+    lines.push("");
+    lines.push("=== 이전 메시지 전달 (Handoff) ===");
+    lines.push(`전달 의도: ${handoff.intent === "REVIEW_OPINION" ? "검토 요청" : "이어서 작업"}`);
+    lines.push("선택한 에이전트가 보낸 메시지:");
+    lines.push(handoff.text);
+    lines.push("=== 이전 메시지 전달 끝 ===");
+    if (handoff.intent === "REVIEW_OPINION") {
+      lines.push("- 전달받은 메시지를 검토하고 타당한 점·문제점·놓친 점을 짚으세요.");
+      lines.push("- 새로운 구현을 시작하지 마세요. 검토 의견만 제시하세요.");
+    } else {
+      lines.push("- 전달받은 메시지를 출발점으로 후속 작업을 이어가세요.");
+    }
   }
   lines.push("");
   lines.push("=== 대화 ===");

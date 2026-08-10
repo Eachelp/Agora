@@ -263,3 +263,29 @@ test("토론 태그 지시문이 그대로 남아있다", () => {
   assert.match(prompt, /\[\[CODEPET_DISCUSSION:CONCLUDE\]\]/);
 });
 
+test("Handoff(검토 요청)은 전달 메시지를 검토 의도로 주입한다", () => {
+  const prompt = buildAgentPrompt({
+    agent: AGENTS[1],
+    agents: AGENTS,
+    messages: [{ author: "user", authorType: "user", text: "hi" }],
+    handoff: { intent: "REVIEW_OPINION", text: "이 구현 결과를 검토해 주세요." },
+  });
+  assert.match(prompt, /이전 메시지 전달 \(Handoff\)/);
+  assert.match(prompt, /검토 요청/);
+  assert.match(prompt, /이 구현 결과를 검토해 주세요\./);
+  assert.match(prompt, /검토 의견만 제시/);
+});
+
+test("Handoff(이어서 작업)은 전달 메시지를 후속 작업으로 주입한다", () => {
+  const prompt = buildAgentPrompt({
+    agent: AGENTS[1],
+    agents: AGENTS,
+    messages: [{ author: "user", authorType: "user", text: "hi" }],
+    handoff: { intent: "CONTINUE", text: "여기서 이어서 작업하세요." },
+  });
+  assert.match(prompt, /이전 메시지 전달 \(Handoff\)/);
+  assert.match(prompt, /이어서 작업/);
+  assert.match(prompt, /여기서 이어서 작업하세요\./);
+  assert.match(prompt, /후속 작업을 이어가/);
+});
+

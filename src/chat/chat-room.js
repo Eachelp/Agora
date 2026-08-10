@@ -419,6 +419,7 @@ class ChatRoom extends EventEmitter {
       discussion: context.discussion || null,
       specialist: context.specialist || null,
       broadcast: context.broadcast || null,
+      handoff: context.handoff || null,
       // 전문 모드 실행 중에는 @멘션 호출을 끕니다. 구현·검토·기록이
       // 담당자 밖으로 새어 나가는 것을 막기 위해서입니다.
       mentionsEnabled: !context.discussion && !context.specialist && mentionDepth < this.mentionChainLimit,
@@ -572,6 +573,31 @@ class ChatRoom extends EventEmitter {
       if (!target || !target.available || target.enabled === false) continue;
       this.scheduleResponse(target, { mentionDepth: depth + 1, attachments, turnRootId });
     }
+  }
+
+  // 다른 AI가 보낸 특정 메시지를 선택한 에이전트에게 전달해 이어서 답하게 합니다.
+  // intent: "REVIEW_OPINION"(검토 요청) 또는 "CONTINUE"(이어서 작업).
+  handoffMessage(targetAgentId, messageId, intent = "CONTINUE") {
+    if (this.discussionRequested || this.discussionActive || this.specialistActive) {
+      return { ok: false, error: "토론이나 전문 실행이 진행 중에는 전달할 수 없습니다." };
+    }
+    const target = this.findAgent(targetAgentId);
+    if (!target || !target.available || target.enabled === false) {
+      return { ok: false, error: "전달 대상 에이전트를 사용할 수 없습니다." };
+    }
+    const source = this.messages.find((message) => message.id === messageId);
+    if (!source || source.authorType === "system" || source.authorType === "user") {
+      return { ok: false, error: "전달할 메시지를 찾을 수 없습니다." };
+    }
+    const handoff = {
+      intent: intent === "REVIEW_OPINION" ? "REVIEW_OPINION" : "CONTINUE",
+      text: source.text || "",
+      fromAgentId: source.author,
+      messageId,
+    };
+    this.appendSystem(`@${target.id}에게 ${source.author}의 메시지를 전달합니다.`);
+    this.scheduleResponse(target, { handoff });
+    return { ok: true };
   }
 
   // 전문 모드: 사용자가 확정한 방향을 구현하고, 검토 결과를 확인합니다.

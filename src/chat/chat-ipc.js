@@ -1405,6 +1405,17 @@ function roomMeta(meta) {
     );
 
     ipcMain.handle(
+      "chat:message:handoff",
+      wrap(async ({ sessionId, targetAgentId, messageId, intent }) => {
+        requireSession(sessionId);
+        const room = getRoom(sessionId);
+        const result = room.handoffMessage(targetAgentId, messageId, intent);
+        if (result.ok === false) throw new Error(result.error);
+        return { meta: publicMeta(store.readMeta(sessionId)) };
+      })
+    );
+
+    ipcMain.handle(
       "chat:approval:respond",
       wrap(async ({ sessionId, approvalId, decision }) => {
         requireSession(sessionId);

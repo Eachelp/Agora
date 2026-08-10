@@ -473,7 +473,7 @@ TASK-005  Planner 실행 경로 연결 (PLAN_READY / NEEDS_DECISION 및 Output C
 TASK-006  Turn Checkpoint (pre-turn workspace 복원 요구사항 준수)
 TASK-007  TASK.md SoT + Run Freeze + BLOCKED 처리 및 후속 경로
 TASK-008  Reviewer Contract 상세화 (diff-first, 근거 강제, scope 구분)
-TASK-009  Handoff (검토 요청 / 이어서 작업)
+TASK-009  Handoff (검토 요청 / 이어서 작업) — 구현 완료
 TASK-010  Usage / Role UI (역할·모델·능력 표시)
 TASK-011  v1 패키징·릴리스 검증
 ```

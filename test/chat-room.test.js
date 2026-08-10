@@ -1215,3 +1215,34 @@ test("이어 발언 모드(independent: false)에서는 같은 턴의 앞선 답
   assert.ok(secondCall.prompt.includes("앞선 참가자의 답변을 읽고"));
   assert.ok(secondCall.prompt.includes("의 순차 응답"));
 });
+
+test("handoffMessage는 다른 AI의 메시지를 대상 에이전트에게 전달해 이어서 답하게 한다", async () => {
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({ codex: [{ ok: true, text: "전달받아 이어서 답합니다." }] }, calls),
+  });
+  // 다른 AI(claude)가 보낸 메시지를 소스로 준비한다.
+  room.messages.push({ id: "msg-h1", authorType: "agent", author: "claude", text: "구현 이슈 요약" });
+
+  const result = room.handoffMessage("codex", "msg-h1", "REVIEW_OPINION");
+  assert.equal(result.ok, true);
+  await settle(room);
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].agentId, "codex");
+  assert.ok(calls[0].prompt.includes("이전 메시지 전달 (Handoff)"));
+  assert.ok(calls[0].prompt.includes("검토 요청"));
+  assert.ok(calls[0].prompt.includes("구현 이슈 요약"));
+});
+
+test("handoffMessage는 없는 메시지나 사용자 메시지를 전달할 수 없다", async () => {
+  const room = new ChatRoom({ agents: makeAgents(), runAgent: fakeRunner({}) });
+  room.messages.push({ id: "msg-user", authorType: "user", author: "user", text: "안녕" });
+
+  const noTarget = room.handoffMessage("codex", "없는-id", "CONTINUE");
+  assert.equal(noTarget.ok, false);
+
+  const noUser = room.handoffMessage("codex", "msg-user", "CONTINUE");
+  assert.equal(noUser.ok, false);
+});
