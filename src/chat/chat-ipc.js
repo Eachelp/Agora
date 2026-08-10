@@ -282,6 +282,11 @@ function createChatFeature(options) {
     }
   }
 
+  // Show account/proxy errors in the chat window when the pet is off.
+  function showSystemNotice(text) {
+    broadcast("chat:system-notice", { text });
+  }
+
   function projectIdForMeta(meta) {
     const projects = ensureProjectStore();
     if (meta?.projectId && projects?.hasProject(meta.projectId)) return meta.projectId;
@@ -1596,7 +1601,7 @@ function roomMeta(meta) {
     }
   }
 
-  return { registerIpcHandlers, openWindow, getWindow, shutdown };
+  return { registerIpcHandlers, openWindow, getWindow, shutdown, showSystemNotice };
 }
 
 module.exports = {

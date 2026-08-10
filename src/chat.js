@@ -2309,6 +2309,7 @@ function renderMessage(message) {
 
   if (message.authorType === "system") {
     item.classList.add("is-system");
+    if (message.error) item.classList.add("is-error");
     const bubble = document.createElement("div");
     bubble.className = "bubble";
     bubble.textContent = message.text;
@@ -2902,6 +2903,9 @@ window.chatApi.onReset(({ sessionId }) => {
   chatMessages = [];
   typingAgents.clear();
   renderTyping();
+});
+window.chatApi.onSystemNotice(({ text }) => {
+  appendMessage({ authorType: "system", error: true, text, ts: Date.now() });
 });
 window.chatApi.onRunEvent(handleRunEvent);
 window.chatApi.onSessionsChanged((payload) => {

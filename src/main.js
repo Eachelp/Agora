@@ -1874,6 +1874,15 @@ function buildCodexAccountActions() {
 
 // 계정 프로필 실행/전환 결과를 펫 말풍선으로 알려줍니다.
 function showCodexAccountBubble(text) {
+  // When the pet is off, surface account errors in the chat window instead of a pet bubble.
+  if (!isPetEnabled()) {
+    openChatWindow();
+    if (typeof chatFeature.showSystemNotice === "function") {
+      chatFeature.showSystemNotice(text);
+    }
+    return;
+  }
+
   clearTimeout(bubbleHideTimer);
   bubbleHideTimer = null;
 
