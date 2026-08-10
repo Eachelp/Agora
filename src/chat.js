@@ -2546,16 +2546,65 @@ function renderMessage(message) {
   const nameEl = document.createElement("span");
   nameEl.className = "name";
   const agentMeta = message.agentMeta || {};
-  const metaParts = isUser ? [name] : [name, `@${message.author}`];
+  nameEl.textContent = isUser ? name : `${name} (@${message.author})`;
+  meta.append(nameEl);
+
   if (!isUser) {
+    // 1. 역할 배지 (Planner / Builder / Reviewer / Recorder)
+    const stage = agentMeta.specialistStage || message.role;
+    if (stage) {
+      const roleBadge = document.createElement("span");
+      const stageLower = String(stage).toLowerCase();
+      roleBadge.className = `role-badge role-${stageLower}`;
+      const stageMap = {
+        planning: "기획 Planner",
+        planner: "기획 Planner",
+        design: "기획 Planner",
+        implementation: "구현 Builder",
+        builder: "구현 Builder",
+        review: "검수 Reviewer",
+        reviewer: "검수 Reviewer",
+        recorder: "기록 Recorder",
+      };
+      roleBadge.textContent = stageMap[stageLower] || stage;
+      meta.append(roleBadge);
+    }
+
+    // 2. 모델 배지
     const shownModel = agentMeta.model && agentMeta.model !== "default" ? agentMeta.model : agent?.model;
+    if (shownModel) {
+      const modelBadge = document.createElement("span");
+      modelBadge.className = "meta-pill model-pill";
+      modelBadge.textContent = shownModel;
+      meta.append(modelBadge);
+    }
+
+    // 3. 노력/속도 배지
     const shownEffort = agentMeta.effort && agentMeta.effort !== "default" ? agentMeta.effort : agent?.effort;
-    metaParts.push(shownModel || "모델 확인 불가", effortLabel(shownEffort || "추론 강도 확인 불가"));
+    if (shownEffort) {
+      const effortBadge = document.createElement("span");
+      effortBadge.className = "meta-pill effort-pill";
+      effortBadge.textContent = effortLabel(shownEffort);
+      meta.append(effortBadge);
+    }
+
+    // 4. 불변 실행 계약 (Frozen Task) 인디케이터 칩
+    const taskId = agentMeta.taskId || message.taskMeta?.taskId;
+    const taskHash = agentMeta.taskHash || agentMeta.frozenHash || message.taskMeta?.hash;
+    if (taskId || taskHash) {
+      const taskChip = document.createElement("span");
+      taskChip.className = "meta-chip frozen-task-chip";
+      const hashShort = taskHash ? `@${String(taskHash).slice(0, 7)}` : "";
+      taskChip.textContent = `📋 ${taskId || "TASK"}${hashShort}`;
+      taskChip.title = `불변 스냅샷 실행 계약: ${taskId || "TASK"}${hashShort}`;
+      meta.append(taskChip);
+    }
   }
-  nameEl.textContent = metaParts.join(" · ");
+
   const timeEl = document.createElement("span");
+  timeEl.className = "meta-time";
   timeEl.textContent = formatTime(message.ts);
-  meta.append(nameEl, timeEl);
+  meta.append(timeEl);
 
   const bubble = document.createElement("div");
   bubble.className = "bubble";
@@ -2577,6 +2626,19 @@ function renderMessage(message) {
     bubble.append(attachWrap);
   }
 
+  // 사용량(Usage) 표기: 토큰 사용량 정보가 제공된 경우 노출합니다.
+  const usage = message.usage || agentMeta.usage || message.runOutput?.usage;
+  if (usage && (usage.promptTokens || usage.completionTokens || usage.totalTokens)) {
+    const usageEl = document.createElement("div");
+    usageEl.className = "message-usage";
+    const prompt = usage.promptTokens ? `입력: ${usage.promptTokens.toLocaleString()}` : "";
+    const completion = usage.completionTokens ? `출력: ${usage.completionTokens.toLocaleString()}` : "";
+    const total = usage.totalTokens ? `총계: ${usage.totalTokens.toLocaleString()}` : "";
+    const details = [prompt, completion, total].filter(Boolean).join(" · ");
+    usageEl.textContent = `⚡ 토큰 사용량 ${details}`;
+    bubble.append(usageEl);
+  }
+
   // 전달 배지: 일부 첨부가 이 에이전트로 전달되지 못한 경우 표시
   if (Array.isArray(message.deliveries)) {
     const failed = message.deliveries.filter((delivery) => delivery.method === "unsupported");
@@ -2595,9 +2657,17 @@ function renderMessage(message) {
     const handoffBtn = document.createElement("button");
     handoffBtn.type = "button";
     handoffBtn.className = "message-handoff-button";
+    if (specialistRunning) {
+      handoffBtn.disabled = true;
+      handoffBtn.classList.add("is-disabled");
+      handoffBtn.title = "실행/토론 진행 중에는 다른 AI에게 전달할 수 없습니다 (완료 후 가능)";
+    } else {
+      handoffBtn.title = "이 메시지를 다른 AI에게 전달";
+    }
     handoffBtn.textContent = "다른 AI에게 전달";
     handoffBtn.addEventListener("click", (event) => {
       event.stopPropagation();
+      if (specialistRunning) return;
       openHandoffPopover(handoffBtn, message.id, message.author);
     });
     body.append(handoffBtn);
@@ -3159,9 +3229,10 @@ window.chatApi.onAgents(({ sessionId, agents: nextAgents }) => {
   renderAgents();
   renderHeader();
 });
-window.chatApi.onSpecialistResumeState(({ sessionId, available }) => {
+window.chatApi.onSpecialistResumeState(({ sessionId, available, blocked }) => {
   if (sessionId !== activeSessionId) return;
   specialistResumeAvailable = Boolean(available);
+  specialistBlockedAvailable = Boolean(blocked);
   renderHeader();
 });
 function lockComposer(locked) {

@@ -18,6 +18,7 @@ const {
 const { MemoryStore } = require("../agora/memory-store");
 const { parseRecorderOutput } = require("../agora/recorder-output");
 const turnCheckpoint = require("../agora/turn-checkpoint");
+const { TaskManager } = require("../agora/task-manager");
 const {
   createCapabilityService,
   toPublicProviders,
@@ -640,6 +641,38 @@ function roomMeta(meta) {
       prepareAgent: options.prepareAgent,
       meta: roomMeta(session.meta),
       checkpoint: options.checkpoint || turnCheckpoint,
+      taskManager: options.taskManager || new TaskManager(),
+      // TASK-007: Planner가 TASK.md를 만들면 workflow.json에 metadata를 등록합니다.
+      // 조기 등록 → 사용자가 승인 전에도 작업 목록에서 확인 가능 (status: todo)
+      onTaskCreated: (task) => {
+        try {
+          const workflow = ensureWorkflowStore();
+          if (!workflow) return;
+          const project = projectForSession(store.readMeta(sessionId));
+          if (!project) return;
+          const entry = workflow.createTask({
+            projectId: project.id,
+            title: task.title || "Planner Task",
+            description: task.description || "",
+            contentSource: task.contentSource || "file",
+            taskPath: task.taskPath || null,
+            taskHash: task.taskHash || null,
+            status: task.status || "todo",
+            role: task.role || "implementation",
+            chatId: sessionId,
+            origin: "recorder",
+          });
+          if (entry) {
+            refreshWorkflowForProject(project.id);
+            broadcast("chat:workflow-changed", {
+              projectId: project.id,
+              workflow: workflowForProject(project.id),
+            });
+          }
+        } catch (error) {
+          console.warn("[agora] Planner Task workflow 등록 실패:", error?.message || error);
+        }
+      },
     });
 
     room.on("message", (message) => {

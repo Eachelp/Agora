@@ -1,5 +1,9 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { TaskManager } = require("../src/agora/task-manager");
 const { ChatRoom } = require("../src/chat/chat-room");
 
 function makeAgents() {
@@ -1245,4 +1249,167 @@ test("handoffMessage는 없는 메시지나 사용자 메시지를 전달할 수
 
   const noUser = room.handoffMessage("codex", "msg-user", "CONTINUE");
   assert.equal(noUser.ok, false);
+});
+
+test("TASK-007: Planner PLAN_READY 결과로 TASK.md를 만들고 workflow에 등록한다", async () => {
+  const calls = [];
+  const created = [];
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "agora-room-task-"));
+  const taskManager = new TaskManager();
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace: ws },
+    taskManager,
+    onTaskCreated: (task) => created.push(task),
+    runAgent: fakeRunner(
+      {
+        claude: [
+          { ok: true, text: "## 목표\n로그인\nSTATUS: PLAN_READY" },
+        ],
+        codex: [
+          { ok: true, text: "구현 완료\nSTATUS: DONE" },
+          { ok: true, text: "검토 통과\nVERDICT: PASS" },
+        ],
+      },
+      calls
+    ),
+  });
+
+  const result = await room.startSpecialist({
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      implementation: { agent: room.findAgent("codex") },
+      review: { agent: room.findAgent("codex") },
+    },
+    mode: "quick",
+  });
+
+  // quick 모드: planner PLAN_READY → TASK 저장 → freeze → builder → review PASS
+  assert.equal(result.ok, true);
+  assert.equal(created.length, 1);
+  assert.equal(created[0].contentSource, "file");
+  assert.ok(created[0].taskPath.includes("TASK-001.md"));
+
+  // TASK.md가 실제로 생성되었고 STATUS 마커가 제거되었는지 확인.
+  const taskPath = path.join(ws, created[0].taskPath);
+  assert.ok(fs.existsSync(taskPath));
+  const taskContent = fs.readFileSync(taskPath, "utf8");
+  assert.ok(!/STATUS:\s*PLAN_READY/.test(taskContent));
+  assert.ok(taskContent.includes("로그인"));
+
+  const builderPrompt = calls.find((call) => call.agentId === "codex").prompt;
+  const frozenTaskBlock = builderPrompt.slice(
+    builderPrompt.indexOf("=== 실행 계약 (Frozen Task) ==="),
+    builderPrompt.indexOf("=== 실행 계약 끝 ===")
+  );
+  assert.ok(frozenTaskBlock.includes("로그인"));
+  assert.ok(!frozenTaskBlock.includes("STATUS: PLAN_READY"));
+
+  // Run snapshot이 생성되었는지 확인.
+  const runsDir = path.join(ws, ".project-memory", "runs");
+  assert.ok(fs.existsSync(runsDir));
+});
+
+test("TASK-007: step 모드에서 승인(resume) 후 같은 Frozen Task로 Builder/Reviewer가 실행된다", async () => {
+  const calls = [];
+  const created = [];
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "agora-room-step-"));
+  const taskManager = new TaskManager();
+  let plannerReply = true;
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace: ws },
+    taskManager,
+    onTaskCreated: (task) => created.push(task),
+    runAgent: ({ agent, prompt }) => {
+      calls.push({ agentId: agent.id, prompt });
+      let reply;
+      if (agent.id === "claude" && plannerReply) {
+        plannerReply = false;
+        reply = { ok: true, text: "## 목표\n메서드 분리\nSTATUS: PLAN_READY" };
+      } else if (agent.id === "codex") {
+        reply = { ok: true, text: "수정 완료\nSTATUS: DONE" };
+      } else {
+        reply = { ok: true, text: "통과\nVERDICT: PASS" };
+      }
+      return { promise: Promise.resolve(reply), cancel: () => {} };
+    },
+  });
+
+  const first = await room.startSpecialist({
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      implementation: { agent: room.findAgent("codex") },
+      review: { agent: room.findAgent("claude") },
+    },
+    mode: "step",
+  });
+
+  // step 모드: PLAN_READY 후 승인 Gate에서 멈춤.
+  assert.equal(first.ok, false);
+  assert.equal(first.stopReason, "PLAN_READY");
+  assert.equal(created.length, 1);
+
+  // 승인 전에는 Run이 아직 생성되지 않아야 한다 (freeze는 승인 시점).
+  const runsBefore = path.join(ws, ".project-memory", "runs");
+  assert.ok(!fs.existsSync(runsBefore), "승인 전에는 Run이 없어야 한다");
+
+  // 승인(resume) 후 실행.
+  const second = await room.resumeSpecialist();
+  assert.equal(second.ok, true);
+
+  // Builder와 Reviewer 프롬프트 모두 같은 Frozen Task 본문을 봐야 한다.
+  const builderPrompt = calls.find((call) => call.agentId === "codex").prompt;
+  const reviewPrompt = calls.find((call) => call.agentId === "claude" && call.prompt.includes("Frozen Task")).prompt;
+  assert.ok(builderPrompt.includes("실행 계약 (Frozen Task)"));
+  assert.ok(builderPrompt.includes("메서드 분리"));
+  assert.ok(reviewPrompt.includes("실행 계약 (Frozen Task)"));
+  assert.ok(reviewPrompt.includes("메서드 분리"));
+
+  // TASK-008: Reviewer 프롬프트에 Builder Diff 섹션이 주입되어야 한다.
+  assert.ok(reviewPrompt.includes("실제 변경 (Builder Diff)"), "Reviewer에 Builder Diff 섹션이 있어야 한다");
+});
+
+test("TASK-008: git workspace에서 Builder가 파일을 바꾸면 Reviewer가 실제 Diff를 받는다", async (t) => {
+  const calls = [];
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "agora-room-diff-"));
+  t.after(() => fs.rmSync(ws, { recursive: true, force: true }));
+  const run = (args) => require("node:child_process").execFileSync("git", args, { cwd: ws, encoding: "utf8" });
+  run(["init"]);
+  run(["config", "user.email", "t@example.com"]);
+  run(["config", "user.name", "tester"]);
+  fs.writeFileSync(path.join(ws, "a.txt"), "hello\n", "utf8");
+  run(["add", "."]);
+  run(["commit", "-m", "init"]);
+
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace: ws },
+    runAgent: ({ agent, prompt }) => {
+      calls.push({ agentId: agent.id, prompt });
+      let reply;
+      if (agent.id === "codex") {
+        // Builder가 실제로 파일을 수정한다.
+        fs.writeFileSync(path.join(ws, "a.txt"), "hello modified\n", "utf8");
+        reply = { ok: true, text: "수정 완료\nSTATUS: DONE" };
+      } else {
+        reply = { ok: true, text: "통과\nVERDICT: PASS" };
+      }
+      return { promise: Promise.resolve(reply), cancel: () => {} };
+    },
+  });
+
+  const result = await room.startSpecialist({
+    stages: {
+      implementation: { agent: room.findAgent("codex") },
+      review: { agent: room.findAgent("claude") },
+    },
+    mode: "step",
+  });
+  assert.equal(result.ok, true);
+
+  const reviewPrompt = calls.find((call) => call.agentId === "claude").prompt;
+  assert.ok(reviewPrompt.includes("실제 변경 (Builder Diff)"), "Reviewer에 Diff 섹션이 있어야 한다");
+  assert.ok(reviewPrompt.includes("a.txt"), "Diff에 변경된 파일명이 포함되어야 한다");
+  assert.ok(reviewPrompt.includes("hello modified"), "Diff에 실제 변경 내용이 포함되어야 한다");
 });

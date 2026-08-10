@@ -70,3 +70,42 @@ test("손상된 workflow 파일은 덮어쓰지 않고 읽기 전용으로 연�
   assert.throws(() => store.createTask({ projectId: "p", title: "실행" }), /읽기 전용/);
   assert.equal(fs.readFileSync(file, "utf8"), "{깨진 JSON");
 });
+
+test("file 기반 Task는 contentSource/taskPath/taskHash를 저장하고 description은 복제하지 않는다", () => {
+  const root = makeRoot();
+  const store = new WorkflowStore({ root }).init();
+  const task = store.createTask({
+    projectId: "project-a",
+    title: "TASK-001.md",
+    description: "",
+    contentSource: "file",
+    taskPath: ".project-memory/tasks/TASK-001.md",
+    taskHash: "abc123",
+    status: "todo",
+    role: "implementation",
+  });
+  assert.equal(task.contentSource, "file");
+  assert.equal(task.taskPath, ".project-memory/tasks/TASK-001.md");
+  assert.equal(task.taskHash, "abc123");
+  assert.equal(task.description, "");
+
+  const reloaded = new WorkflowStore({ root }).init();
+  const got = reloaded.getTask(task.id);
+  assert.equal(got.contentSource, "file");
+  assert.equal(got.taskPath, ".project-memory/tasks/TASK-001.md");
+  assert.equal(got.taskHash, "abc123");
+});
+
+test("contentSource가 없는 기존 Task는 legacy inline으로 취급된다", () => {
+  const root = makeRoot();
+  const store = new WorkflowStore({ root }).init();
+  const task = store.createTask({
+    projectId: "project-a",
+    title: "수동 작업",
+    description: "본문 내용",
+  });
+  assert.equal(task.contentSource, "inline");
+  assert.equal(task.taskPath, null);
+  assert.equal(task.taskHash, null);
+  assert.equal(task.description, "본문 내용");
+});

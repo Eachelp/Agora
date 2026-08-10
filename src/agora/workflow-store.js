@@ -96,11 +96,19 @@ function normalizeTask(input = {}, now = Date.now()) {
   if (!projectId || !title) return null;
   const role = ROLE_IDS.includes(input.role) ? input.role : "implementation";
   const status = TASK_STATUSES.includes(input.status) ? input.status : "todo";
+  // TASK-007: Task 본문 저장 방식
+  // - "inline" → description이 본문 (기존/수동 Task, contentSource 없음 = legacy inline)
+  // - "file"   → taskPath가 가리키는 TASK.md가 본문 (Planner Task)
+  // file 기반 Task의 본문은 workflow.json에 복제하지 않습니다.
+  const contentSource = input.contentSource === "file" ? "file" : "inline";
   return {
     id: cleanId(input.id, 160) || newId("t", now),
     projectId,
     title,
     description: cleanText(input.description, 20000),
+    contentSource,
+    taskPath: contentSource === "file" ? cleanId(input.taskPath, 500) : null,
+    taskHash: contentSource === "file" ? cleanId(input.taskHash, 96) : null,
     status,
     role,
     agentId: validAgentId(input.agentId),

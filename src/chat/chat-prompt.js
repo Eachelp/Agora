@@ -137,6 +137,16 @@ function buildAgentPrompt({
       lines.push("이전 단계에서 전달된 내용:");
       lines.push(specialist.feedback);
     }
+    // TASK-007: Builder/Reviewer는 실행 계약(Task Contract)을 Frozen Task로 받습니다.
+    // 이 계약은 실행 시점에 동결된 불변 요구사항이며, 수정·삭제·이동할 수 없습니다.
+    if (specialist.frozenTask) {
+      lines.push("");
+      lines.push("=== 실행 계약 (Frozen Task) ===");
+      lines.push(`Run: ${specialist.frozenTask.runId || "(unknown)"}`);
+      lines.push("이 계약은 현재 실행의 유일한 요구사항 기준입니다. 아래 내용이 현재 Task의 기준입니다.");
+      lines.push(specialist.frozenTask.content);
+      lines.push("=== 실행 계약 끝 ===");
+    }
     if (specialist.stage === "planner") {
       lines.push("- 사용자의 목표와 앞선 논의를 실행 가능한 작업 계약(Task)으로 정리하세요.");
       lines.push("- 확정된 결정은 요구사항·제약으로, 미확정 제안은 참고·Open Question으로 구분하세요.");
@@ -148,9 +158,19 @@ function buildAgentPrompt({
       lines.push("- 작업을 끝낸 뒤 변경 내용과 검증 결과를 짧게 정리하세요.");
       lines.push("- 구현은 당신의 몫입니다. 다른 에이전트에게 구현·스크립트 작성·실행을 넘기거나 위임하지 마세요.");
       lines.push("- 권한이나 도구가 부족하다고 판단되면, 다른 참가자에게 맡기지 말고 현재 단계의 결과물에 그 사유와 필요한 조치를 적으세요.");
+      lines.push("- Task Contract 파일(.project-memory/tasks/ 및 현재 Run의 frozen task.md)은 실행 대상이 아닙니다. 읽기 전용 계약으로 취급하며 수정·삭제·이동하지 마세요.");
+      lines.push("- 계약(Task) 변경이 필요하면 직접 수정하지 말고 `STATUS: BLOCKED`로 반환하세요.");
       lines.push("- 완료하면 `STATUS: DONE`, 막혀서 진행할 수 없으면 `STATUS: BLOCKED`를 응답 안에 넣으세요.");
     } else if (specialist.stage === "review") {
       lines.push("- 구현 결과를 요구사항·현재 작업공간·대화 맥락과 대조하세요.");
+      lines.push("- 검수 기준은 현재 TASK.md가 아니라 위 '실행 계약 (Frozen Task)'입니다. 이 계약과 실제 변경(Diff)·테스트 결과를 대조하세요.");
+      // TASK-008: Builder가 실제로 만든 변경(Diff)을 주입합니다.
+      if (specialist.reviewDiff) {
+        lines.push("");
+        lines.push("=== 실제 변경 (Builder Diff) ===");
+        lines.push(specialist.reviewDiff);
+        lines.push("=== 실제 변경 끝 ===");
+      }
       lines.push("- 수정이 필요하면 구체적인 파일·문제·수정 방향을 적으세요.");
       lines.push("- 구현자가 작업을 다른 에이전트에게 넘기려 하거나 권한이 없어 실제 변경을 못 했다면, 통과시키지 말고 구현 단계로 되돌리세요.");
       lines.push("- 응답 안에 `VERDICT: PASS` 또는 `VERDICT: FIX_REQUIRED` 또는 `VERDICT: UNKNOWN` 하나를 넣으세요.");

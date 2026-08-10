@@ -368,17 +368,26 @@ textarea:focus-visible {
   padding: 2px 8px;
   font-size: 11px;
   cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, opacity 0.15s;
 }
 
-.message-handoff-button:hover {
+.message-handoff-button:hover:not(:disabled) {
   color: var(--ink-soft);
   border-color: var(--accent);
 }
 
+.message-handoff-button:disabled,
+.message-handoff-button.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  border-color: var(--line);
+}
+
 .message .meta {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
   font-size: 11px;
   color: var(--muted);
 }
@@ -387,6 +396,120 @@ textarea:focus-visible {
   font-weight: 700;
   color: var(--ink-soft);
   font-size: 12px;
+}
+
+.role-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.role-badge.role-planning,
+.role-badge.role-planner,
+.role-badge.role-design {
+  background: rgba(59, 130, 246, 0.12);
+  color: #2563eb;
+  border: 1px solid rgba(59, 130, 246, 0.25);
+}
+
+.role-badge.role-implementation,
+.role-badge.role-builder {
+  background: rgba(16, 185, 129, 0.12);
+  color: #059669;
+  border: 1px solid rgba(16, 185, 129, 0.25);
+}
+
+.role-badge.role-review,
+.role-badge.role-reviewer {
+  background: rgba(139, 92, 246, 0.12);
+  color: #7c3aed;
+  border: 1px solid rgba(139, 92, 246, 0.25);
+}
+
+.role-badge.role-recorder {
+  background: rgba(245, 158, 11, 0.12);
+  color: #d97706;
+  border: 1px solid rgba(245, 158, 11, 0.25);
+}
+
+.meta-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--page);
+  border: 1px solid var(--line);
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.meta-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  font-weight: 500;
+  font-family: monospace;
+}
+
+.frozen-task-chip {
+  background: rgba(99, 102, 241, 0.08);
+  color: #4f46e5;
+  border: 1px solid rgba(99, 102, 241, 0.2);
+}
+
+.message-usage {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--line);
+  font-size: 10.5px;
+  color: var(--muted);
+  font-family: monospace;
+}
+
+.blocked-actions-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px;
+  background: var(--page);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.blocked-actions-primary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.blocked-dropdown-wrapper {
+  position: relative;
+  display: inline-block;
+}
+
+.blocked-dropdown-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 10;
+  margin-top: 4px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: var(--shadow);
+  min-width: 140px;
 }
 
 .message .bubble {

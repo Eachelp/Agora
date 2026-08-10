@@ -2,6 +2,8 @@ const { EventEmitter } = require("node:events");
 const { GROUP_ALIASES } = require("./chat-agents");
 const { parseMentions } = require("./chat-mention");
 const { buildAgentPrompt } = require("./chat-prompt");
+const { TaskManager } = require("../agora/task-manager");
+const { describeWorkspaceChanges } = require("../agora/workspace-diff");
 
 // 채팅방 오케스트레이션.
 // - 멘션이 없으면 세션 참가자 전체, 있으면 멘션된 참가자만 응답합니다.
@@ -46,6 +48,12 @@ class ChatRoom extends EventEmitter {
     // TASK-006 Turn Checkpoint 엔진. 제공되지 않으면 사용하지 않습니다.
     // { createCheckpoint, restoreCheckpoint, cleanupCheckpoint } 형태입니다.
     this.checkpointEngine = options.checkpoint || null;
+    // TASK-007 Task Manager — Planner Task 저장/Freeze/Run 정규화를 담당합니다.
+    // workspace 복원용 checkpoint와는 별개의 실행 계약 보존 모듈입니다.
+    this.taskManager = options.taskManager || new TaskManager();
+    // TASK-007: Planner가 TASK.md를 만들면 호출되는 콜백으로, 호출 측(chat-ipc)이
+    // workflow.json에 metadata를 등록합니다. chat-room은 workflow 저장소를 직접 모릅니다.
+    this.onTaskCreated = typeof options.onTaskCreated === "function" ? options.onTaskCreated : null;
     this.meta = {
       permissionMode: "chat",
       ...(options.meta || {}),
@@ -641,6 +649,7 @@ class ChatRoom extends EventEmitter {
     this.appendSystem(`전문 모드 시작 · 구현 @${implementation.agent.id} · 검토 @${review.agent.id}`);
 
     let feedback = "";
+    let taskInfo = null;
     try {
       // Planner (선택): NEEDS_DECISION이면 STOP. PLAN_READY면 step/auto는 승인에서 멈추고,
       // quick은 그대로 구현을 진행합니다.
@@ -661,11 +670,41 @@ class ChatRoom extends EventEmitter {
             result: plannerResult,
           };
         }
-        // PLAN_READY: 기획 결과를 구현 단계에 Task로 전달.
-        feedback = plannerResult.text || "";
+        // PLAN_READY: 기획 결과를 file-backed TASK.md로 저장하고 workflow에 등록합니다.
+        // (TASK-007 1단계: Planner가 만든 직후 등록, status: todo)
+        if (this.meta.workspace) {
+          try {
+            taskInfo = this.taskManager.createTaskFromPlanner(plannerResult.text || "", this.meta.workspace);
+            if (taskInfo && this.onTaskCreated) {
+              this.onTaskCreated({
+                title: taskInfo.filename,
+                description: "",
+                contentSource: "file",
+                taskPath: taskInfo.relativePath,
+                taskHash: taskInfo.hash,
+                status: "todo",
+                role: "implementation",
+              });
+            }
+          } catch (error) {
+            this.appendSystem(`기획 결과를 TASK.md로 저장하지 못했습니다. (${error?.message || "알 수 없는 오류"})`);
+            return {
+              ok: false,
+              stage: "planner",
+              completedIterations: 0,
+              needsUserDecision: true,
+              stopReason: "PLAN_READY",
+              result: plannerResult,
+              taskError: error?.message || "알 수 없는 오류",
+            };
+          }
+        }
+        // Builder 실행 계약 source는 기획 텍스트가 아니라 Frozen Task입니다.
+        // 실행 승인 시점에 freeze하므로, 여기서는 taskInfo만 보관합니다.
+        feedback = taskInfo ? taskInfo.content : plannerResult.text || "";
         if (mode !== "quick") {
           // step/auto → 사람 승인 Gate. 이어서 진행할 상태를 저장하고 멈춥니다.
-          this.specialistResume = { stages, mode, maxAutoRevisions, feedback };
+          this.specialistResume = { stages, mode, maxAutoRevisions, feedback, taskInfo };
           this.emit("specialist-resume-state", { available: true, mode });
           this.appendSystem("기획(PLAN_READY)이 완료되었습니다. 승인하시면 구현을 이어서 진행합니다.");
           return {
@@ -684,6 +723,7 @@ class ChatRoom extends EventEmitter {
         mode,
         maxAutoRevisions,
         feedback,
+        taskInfo,
         round: 1,
         requestedGeneration,
       });
@@ -720,6 +760,7 @@ class ChatRoom extends EventEmitter {
         mode: resume.mode,
         maxAutoRevisions: resume.maxAutoRevisions,
         feedback: resume.feedback,
+        taskInfo: resume.taskInfo || null,
         round: 1,
         requestedGeneration,
       });
@@ -732,13 +773,42 @@ class ChatRoom extends EventEmitter {
   }
 
   // Builder → Reviewer → (auto면 자동 보완) → 기록관(블록 끝) 실행 블록.
-  async runExecutionBlock({ stages, mode, maxAutoRevisions, feedback, round, requestedGeneration }) {
+  async runExecutionBlock({ stages, mode, maxAutoRevisions, feedback, taskInfo, round, requestedGeneration }) {
     const implementation = stages.implementation;
     const review = stages.review;
     const recorder = stages.recorder;
     const maxRounds = mode === "auto" ? maxAutoRevisions + 1 : 1;
     let autoRevisionCount = 0;
     let recorderResult = null;
+    // TASK-008: Builder가 만든 실제 변경(Diff)을 수집해 Reviewer에게 전달합니다.
+    // 각 Builder 실행 직후 갱신되며, 검토자는 이 Diff를 Frozen Task와 함께 받습니다.
+    let builderChanges = "";
+
+    // TASK-007: 실행 계약(Freeze)을 checkpoint보다 먼저 수행합니다.
+    // 실행 순서: Task 승인 → Run 생성/Freeze → Checkpoint → Builder
+    // - runInfo가 이미 있으면(같은 Run의 자동 보완) 재freeze하지 않고 재사용합니다.
+    // - Planner Task(inline 포함)든 수동 Task든 하나의 RUN/task.md로 정규화합니다.
+    // - Frozen Task 누락/손상 시 현재 TASK.md로 fallback 하지 않고 중단합니다.
+    let runInfo = null;
+    const workspace = this.meta.workspace;
+    if (taskInfo) {
+      try {
+        runInfo = this.taskManager.freezeTask(
+          { contentSource: "file", taskPath: taskInfo.relativePath || null, description: "" },
+          workspace
+        );
+      } catch (error) {
+        this.appendSystem(`Frozen Task를 만들지 못해 실행을 중단합니다. (${error?.message || "알 수 없는 오류"})`);
+        return {
+          ok: false,
+          stage: "planner",
+          completedIterations: 0,
+          needsUserDecision: true,
+          stopReason: "FROZEN_TASK_MISSING",
+          taskError: error?.message || "알 수 없는 오류",
+        };
+      }
+    }
 
     // TASK-006: Builder 실행 직전 workspace 상태를 보존합니다.
     // 지원되지 않는 workspace(git 아님/없음)라면 checkpoint를 만들지 않고 진행합니다.
@@ -753,9 +823,19 @@ class ChatRoom extends EventEmitter {
     };
 
     let builderResult = await this.scheduleResponse(implementation.agent, {
-      specialist: { stage: "implementation", round, maxRounds, feedback },
+      specialist: {
+        stage: "implementation",
+        round,
+        maxRounds,
+        // TASK-007: Builder의 실행 계약 source는 Frozen Task입니다.
+        // runInfo가 있으면 그 본문을, 없으면 기존 feedback 텍스트를 사용합니다.
+        feedback: runInfo ? runInfo.content : feedback,
+        frozenTask: runInfo ? { runId: runInfo.runId, content: runInfo.content } : null,
+      },
       agentConfig: implementation.agentConfig,
     });
+    // Builder 실행이 끝난 뒤 실제 변경분을 수집합니다. (git 아니면 빈 값)
+    builderChanges = (await describeWorkspaceChanges(workspace)).text;
     if (requestedGeneration !== this.generation) {
       await restoreCheckpoint();
       return { ok: false, cancelled: true };
@@ -780,7 +860,15 @@ class ChatRoom extends EventEmitter {
     // 검토 → (자동 보완) 루프.
     while (true) {
       const reviewResult = await this.scheduleResponse(review.agent, {
-        specialist: { stage: "review", round, maxRounds },
+        specialist: {
+          stage: "review",
+          round,
+          maxRounds,
+          // TASK-007: Reviewer는 동일 Run의 Frozen Task + 실제 Diff + Test 기준으로 검수합니다.
+          frozenTask: runInfo ? { runId: runInfo.runId, content: runInfo.content } : null,
+          // TASK-008: Builder가 실제로 만든 변경(Diff)을 주입합니다.
+          reviewDiff: builderChanges,
+        },
         agentConfig: review.agentConfig,
       });
       if (requestedGeneration !== this.generation) {
@@ -841,9 +929,18 @@ class ChatRoom extends EventEmitter {
       feedback = reviewResult.text || "검토자가 수정이 필요하다고 판단했습니다.";
       this.appendSystem(`검토 결과 수정 필요 · 자동 보완 ${autoRevisionCount}/${maxAutoRevisions}회`);
       builderResult = await this.scheduleResponse(implementation.agent, {
-        specialist: { stage: "implementation", round, maxRounds, feedback },
+        specialist: {
+          stage: "implementation",
+          round,
+          maxRounds,
+          // TASK-007: 자동 보완도 같은 Run, 같은 Frozen Task를 사용합니다.
+          feedback: runInfo ? runInfo.content : feedback,
+          frozenTask: runInfo ? { runId: runInfo.runId, content: runInfo.content } : null,
+        },
         agentConfig: implementation.agentConfig,
       });
+      // 자동 보완 후에도 diff를 다시 수집해 최신 변경분을 검토에 반영합니다.
+      builderChanges = (await describeWorkspaceChanges(workspace)).text;
       if (requestedGeneration !== this.generation) {
         await restoreCheckpoint();
         return { ok: false, cancelled: true };
