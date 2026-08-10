@@ -62,6 +62,7 @@ const {
   detectSpriteRows,
   directionIndexFromVector,
 } = require("./sprite-layout");
+const { PetWatcherGate } = require("./agora/pet-watcher-gate");
 
 const APP_NAME = "Agora";
 const APP_ID = "app.agora.desktop";
@@ -738,6 +739,10 @@ codexAccountSwitcher.ensureCurrentAccountProfile();
 const codexWatcher = new CodexWatcher();
 const antigravityWatcher = new AntigravityWatcher();
 const claudeWatcher = new ClaudeWatcher();
+const petWatcherGate = new PetWatcherGate({
+  start: [() => codexWatcher.start(), () => antigravityWatcher.start(), () => claudeWatcher.start()],
+  stop: [() => codexWatcher.stop(), () => antigravityWatcher.stop(), () => claudeWatcher.stop()],
+});
 // macOS에서는 Claude Code live 자격 증명이 Keychain에 있으므로 플랫폼 저장소를 주입합니다.
 const claudeLiveStore = createClaudeLiveStore();
 const claudeAccountSwitcher = new ClaudeAccountSwitcher({ liveStore: claudeLiveStore });
@@ -2147,11 +2152,13 @@ function setPetEnabled(enabled) {
     if (!petWindow || petWindow.isDestroyed()) createWindow();
     else showPetWindowFromTray();
     if (!bubbleWindow || bubbleWindow.isDestroyed()) createBubbleWindow();
+    petWatcherGate.start();
   } else {
     petHiddenToTray = true;
     stopMovementLoop();
     hideBubble();
     if (petWindow && !petWindow.isDestroyed()) petWindow.hide();
+    petWatcherGate.stop();
   }
 
   refreshTrayMenu();
@@ -3560,9 +3567,7 @@ app.whenReady().then(() => {
   }
   // 사용량 풍선은 수동 호출이라 문제가 없지만, 대화 말풍선은 watcher가 시작되지 않으면 절대 뜨지 않습니다.
   // 그래서 말풍선 renderer 로드 여부와 무관하게 감시를 바로 시작하고, 표시 데이터는 showBubble()에서 큐잉합니다.
-  codexWatcher.start();
-  antigravityWatcher.start();
-  claudeWatcher.start();
+  if (petEnabled) petWatcherGate.start();
   codexProxyStartupPromise = restoreCodexProxyMode();
   void codexProxyStartupPromise;
 
