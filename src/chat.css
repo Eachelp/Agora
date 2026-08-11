@@ -1536,6 +1536,11 @@ textarea:focus-visible {
   padding: 12px;
   display: grid;
   gap: 8px;
+  /* 내용이 길어도 화면을 넘지 않도록 높이를 제한하고 내부에서 스크롤합니다.
+     (제한이 없으면 위치 계산이 어긋나 화면에 걸친 채 남습니다.) */
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .popover.is-project-settings,

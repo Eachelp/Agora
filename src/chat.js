@@ -1149,20 +1149,48 @@ function openPopover(anchor, build) {
   build(popover);
   popover.hidden = false;
   popoverBackdrop.hidden = false;
+  // 위치 계산 전에 이전 위치를 지워 크기를 정확히 측정합니다.
+  popover.style.top = "0px";
+  popover.style.left = "0px";
+
+  const margin = 8;
   const rect = anchor.getBoundingClientRect();
   const popRect = popover.getBoundingClientRect();
-  let left = Math.min(rect.left, window.innerWidth - popRect.width - 12);
-  let top = rect.bottom + 6;
-  if (top + popRect.height > window.innerHeight - 8) {
-    top = Math.max(8, rect.top - popRect.height - 6);
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+
+  // 가로: 기준 버튼 왼쪽에 맞추되 화면 밖으로 나가지 않게 합니다.
+  const left = Math.max(
+    margin,
+    Math.min(rect.left, viewportWidth - popRect.width - margin)
+  );
+
+  // 세로: 버튼 아래를 우선하고, 자리가 부족하면 위쪽에 붙입니다.
+  // 양쪽 모두 부족하면(내용이 화면보다 긴 경우) 위에서 여백만큼 띄우고
+  // 팝오버 내부 스크롤(CSS max-height)로 나머지를 처리합니다.
+  const spaceBelow = viewportHeight - rect.bottom - margin;
+  const spaceAbove = rect.top - margin;
+  let top;
+  if (popRect.height <= spaceBelow) {
+    top = rect.bottom + 6;
+  } else if (popRect.height <= spaceAbove) {
+    top = rect.top - popRect.height - 6;
+  } else {
+    top = Math.max(margin, viewportHeight - popRect.height - margin);
   }
-  popover.style.left = `${Math.max(8, left)}px`;
+
+  popover.style.left = `${left}px`;
   popover.style.top = `${top}px`;
 }
 
 popoverBackdrop.addEventListener("click", closePopover);
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !popover.hidden) closePopover();
+});
+
+// 창 크기가 바뀌면 기준 버튼과 어긋나므로 닫습니다.
+window.addEventListener("resize", () => {
+  if (!popover.hidden) closePopover();
 });
 
 function makeField(labelText, control) {
