@@ -191,4 +191,4 @@ result: --effort is not supported for this model
 - 기존 CodePet이 실행 중이어서 `~/.code-pet/index.json`은 감사 중에도 자체 갱신됨
 - GitHub 업로드: 없음
 - 기준 커밋: `c2ff8fa`
-- 후속 구현 계획: `AGORA_IMPLEMENTATION_PLAN.md`
+- 후속 구현 계획: `../design/AGORA_IMPLEMENTATION_PLAN.md`

@@ -203,7 +203,7 @@ class CodexProxy {
         if (!response.headersSent) {
           response.writeHead(502, { "content-type": "application/json" });
         }
-        response.end(JSON.stringify({ error: { message: `codepet proxy error: ${error.message || error}` } }));
+        response.end(JSON.stringify({ error: { message: `Agora proxy error: ${error.message || error}` } }));
       });
     });
     // Codex 데스크톱 앱은 responses를 WebSocket으로 보냅니다. 업그레이드 요청은 원시 터널로 중계합니다.
@@ -606,7 +606,7 @@ class CodexProxy {
 
     response.writeHead(503, { "content-type": "application/json" });
     response.end(JSON.stringify({
-      error: { message: "codepet proxy: 사용할 수 있는 Codex 계정이 없습니다. (전부 한도 초과 또는 로그인 만료)" },
+      error: { message: "Agora proxy: 사용할 수 있는 Codex 계정이 없습니다. (전부 한도 초과 또는 로그인 만료)" },
     }));
   }
 }

@@ -166,7 +166,7 @@ const MOVEMENT_CONFIG = Object.freeze({
 
 // Codex 계정 전환 뒤 Codex Desktop App을 다시 띄우는 설정입니다.
 // codex-auth/codex-profile류 스위처들은 auth를 바꾼 뒤 실행 중인 클라이언트를 재시작해야
-// 새 auth가 확실히 적용되는 구조를 씁니다. 원본 CodePet도 같은 흐름을 따릅니다.
+// 새 auth가 확실히 적용되는 구조를 씁니다.
 // enabledAfterAccountSwitch를 false로 바꾸면 active 프로필만 저장하고 재시작은 하지 않습니다.
 const CODEX_DESKTOP_RESTART_CONFIG = Object.freeze({
   enabledAfterAccountSwitch: true,
@@ -1343,7 +1343,7 @@ function quoteCmdArgument(value) {
 function appendDebugLog(message) {
   try {
     const line = `[${new Date().toISOString()}] ${message}\n`;
-    fs.appendFileSync(path.join(app.getPath("userData"), "codepet.log"), line, "utf8");
+    fs.appendFileSync(path.join(app.getPath("userData"), "agora.log"), line, "utf8");
   } catch {
     // 로그 쓰기 실패 때문에 앱 기능 자체를 막지는 않습니다.
   }
@@ -1390,8 +1390,8 @@ function writeCodexLoginScript(profile) {
   if (["darwin", "linux"].includes(process.platform)) {
     const codexCommand = resolveCommand("codex", codexCommandCandidates());
     const fileName = process.platform === "darwin"
-      ? "codepet-codex-login.command"
-      : "codepet-codex-login.sh";
+      ? "agora-codex-login.command"
+      : "agora-codex-login.sh";
     const scriptPath = writeMacLoginScript(fileName, [
       `echo "Agora Codex Login - ${profile.id}"`,
       `export CODEX_HOME=${quoteShellArgument(profile.homePath)}`,
@@ -1403,7 +1403,7 @@ function writeCodexLoginScript(profile) {
     return scriptPath;
   }
 
-  const scriptPath = path.join(app.getPath("userData"), "codepet-codex-login.cmd");
+  const scriptPath = path.join(app.getPath("userData"), "agora-codex-login.cmd");
   const codexCommand = codexAccountSwitcher.resolveCodexCommandForBatch();
   const codexLoginLine = codexCommand
     ? `call ${quoteCmdArgument(codexCommand)} login`
@@ -1433,10 +1433,10 @@ function writeCodexLoginScript(profile) {
       codexCommand ? "" : "  exit /b 1",
       codexCommand ? "" : ")",
       codexLoginLine,
-      "set CODEPET_LOGIN_EXIT=%ERRORLEVEL%",
+      "set AGORA_LOGIN_EXIT=%ERRORLEVEL%",
       "echo.",
-      "if not \"%CODEPET_LOGIN_EXIT%\"==\"0\" (",
-      "  echo Codex login exited with code %CODEPET_LOGIN_EXIT%.",
+      "if not \"%AGORA_LOGIN_EXIT%\"==\"0\" (",
+      "  echo Codex login exited with code %AGORA_LOGIN_EXIT%.",
       ") else (",
       "  echo Codex login command finished.",
       ")",
@@ -1695,15 +1695,15 @@ function writeClaudeLoginScript() {
 
   if (["darwin", "linux"].includes(process.platform)) {
     const fileName = process.platform === "darwin"
-      ? "codepet-claude-login.command"
-      : "codepet-claude-login.sh";
+      ? "agora-claude-login.command"
+      : "agora-claude-login.sh";
     return writeMacLoginScript(fileName, [
       'echo "Agora Claude Login"',
       `${quoteShellArgument(claudeCommand)} auth login`,
     ]);
   }
 
-  const scriptPath = path.join(app.getPath("userData"), "codepet-claude-login.cmd");
+  const scriptPath = path.join(app.getPath("userData"), "agora-claude-login.cmd");
   fs.writeFileSync(
     scriptPath,
     [

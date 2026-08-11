@@ -380,8 +380,8 @@ Builder가 `BLOCKED` 상태로 STOP했을 때, 프로그램은 사용자에게 �
 
 `@all` 요청 시 **같은 턴의 다른 AI 답변(형제 메시지)을 서로 전달하지 않고**, 동일한 전(前) 턴 맥락 스냅샷만 보고 각각 독립 응답한다.
 
-- **구현 지점**: [chat-room.js](/D:/Projects/Agora/src/chat/chat-room.js:141) `independent` 플래그, [chat-room.js](/D:/Projects/Agora/src/chat/chat-room.js:379) `promptMessages(promptLimit, independent)`, [chat-prompt.js](/D:/Projects/Agora/src/chat/chat-prompt.js:113) broadcast 분기.
-- **UI**: [chat.html](/D:/Projects/Agora/src/chat.html:118) `@all 응답 방식` 토글 (이어 발언 / 독립 발언).
+- **구현 지점**: [chat-room.js](../../src/chat/chat-room.js#L141) `independent` 플래그, [chat-room.js](../../src/chat/chat-room.js#L379) `promptMessages(promptLimit, independent)`, [chat-prompt.js](../../src/chat/chat-prompt.js#L113) broadcast 분기.
+- **UI**: [chat.html](../../src/chat.html#L118) `@all 응답 방식` 토글 (이어 발언 / 독립 발언).
 - **상태**: 현재 미커밋 작업으로 구현되어 있으며, 커밋 예정.
 
 ---
@@ -467,7 +467,7 @@ selfExploreWorkspace : true/false
 
 - **실행 블록(구현→검토→보완)이 PASS로 끝나면, 그 블록의 마지막 단계로 기록관을 자동 호출**해 블록을 마무리한다. 자동 수정 루프에 끼어들지 않고, 블록의 종착역 역할을 한다.
 - 사용자가 필요할 때만 별도로 호출(`recordDiscussion`)할 수도 있다.
-- 기존 `proposed → 사용자 승인` 저장 구조와 [recorder-output.js](/D:/Projects/Agora/src/agora/recorder-output.js)를 유지한다.
+- 기존 `proposed → 사용자 승인` 저장 구조와 [recorder-output.js](../../src/agora/recorder-output.js)를 유지한다.
 
 ---
 

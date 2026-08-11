@@ -14,7 +14,7 @@ const { defaultAgoraHome } = require("./app-paths");
 // 이 구조는 JHKS24/codex-usage-switcher의 "profile auth 저장소 + live auth 교체" 흐름을
 // Electron Agora에 맞춘 것입니다. 예전처럼 빈 ~/.codexN을 만들거나 auth 기록을 자동 이관하지 않습니다.
 const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
-const USER_AGENT = "codex_cli_rs/0.76.0 (Windows; CodePet)";
+const USER_AGENT = "codex_cli_rs/0.76.0 (Windows; Agora)";
 const AUTH_FILE = "auth.json";
 const BACKUP_KEEP = 20;
 const USAGE_CACHE_TTL_MS = 60000;
