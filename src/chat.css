@@ -413,6 +413,56 @@ textarea:focus-visible {
   opacity: 0.75;
 }
 
+/* --- 전문 모드 실행 방식 카드 ---
+   설명과 버튼이 흩어져 어느 설명이 어느 버튼 것인지 헷갈리던 문제를 없애기 위해
+   각 실행 방식을 하나의 카드(제목 · 흐름 · 설명 · 버튼)로 묶습니다. */
+.mode-card-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.mode-card {
+  display: grid;
+  gap: 5px;
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.mode-card:hover {
+  border-color: var(--line-strong);
+}
+
+.mode-card-title {
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.mode-card-flow {
+  margin: 0;
+  font-size: 11px;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.mode-card-desc {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.mode-card-field {
+  margin: 3px 0 1px;
+}
+
+.mode-card .button {
+  margin-top: 3px;
+  width: 100%;
+}
+
 /* 마우스 오버가 없는 환경(터치 등)에서는 항상 보이게 둡니다. */
 @media (hover: none) {
   .message .message-actions {

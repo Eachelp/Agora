@@ -2147,7 +2147,7 @@ specialistButton.addEventListener("click", async () => {
 
     const desc = document.createElement("p");
     desc.className = "popover-status";
-    desc.textContent = "구현·검토를 어떻게 실행할지 선택하세요. 검토자가 수정을 요구해도, 승인한 범위 안에서만 자동으로 이어집니다.";
+    desc.textContent = "사람이 어디까지 확인할지 고르세요. 아래 셋 중 하나를 누르면 바로 시작합니다.";
     root.append(desc);
 
     // 구현이 막힘(BLOCKED)으로 멈춰 있으면 후속 처리부터 고르게 합니다.
@@ -2176,57 +2176,90 @@ specialistButton.addEventListener("click", async () => {
       return;
     }
 
-    // 단계별 실행
-    const stepBtn = document.createElement("button");
-    stepBtn.type = "button";
-    stepBtn.className = "button";
-    stepBtn.textContent = "단계별 실행 (기획 → 승인 → 구현 → 검토)";
-    stepBtn.addEventListener("click", () => {
-      closePopover();
-      runSpecialist({ mode: "step" });
-    });
-    root.append(stepBtn);
+    // 실행 방식 3종을 각각 하나의 카드로 묶습니다.
+    // (제목 · 흐름 · 설명 · 실행 버튼이 항상 같은 카드 안에 있어 짝이 헷갈리지 않습니다.)
+    const modeList = document.createElement("div");
+    modeList.className = "mode-card-list";
 
-    // 제한 자동 실행 + 보완 횟수
-    const autoHint = document.createElement("p");
-    autoHint.className = "popover-hint";
-    autoHint.textContent = "제한 자동 실행: 검토에서 수정이 필요하면 작업 범위 안의 문제에 한해 자동 보완을 최대 N회 시도합니다. 범위 밖·판단 불가면 즉시 멈춥니다.";
-    root.append(autoHint);
+    // 카드 하나를 만듭니다. extra가 있으면 버튼 위에 추가 입력을 넣습니다.
+    const makeModeCard = ({ name, flow, summary, buttonLabel, primary, extra, onRun }) => {
+      const card = document.createElement("div");
+      card.className = "mode-card";
 
+      const cardTitle = document.createElement("strong");
+      cardTitle.className = "mode-card-title";
+      cardTitle.textContent = name;
+
+      const cardFlow = document.createElement("p");
+      cardFlow.className = "mode-card-flow";
+      cardFlow.textContent = flow;
+
+      const cardDesc = document.createElement("p");
+      cardDesc.className = "mode-card-desc";
+      cardDesc.textContent = summary;
+
+      card.append(cardTitle, cardFlow, cardDesc);
+      if (extra) card.append(extra);
+
+      const runBtn = document.createElement("button");
+      runBtn.type = "button";
+      runBtn.className = primary ? "button button-primary" : "button";
+      runBtn.textContent = buttonLabel;
+      runBtn.addEventListener("click", () => {
+        closePopover();
+        onRun();
+      });
+      card.append(runBtn);
+      return card;
+    };
+
+    // 1. 단계별 실행 — 매 단계마다 멈춤
+    modeList.append(
+      makeModeCard({
+        name: "단계별 실행",
+        flow: "기획 → 내가 확인 → 구현 → 검토",
+        summary: "각 단계가 끝날 때마다 멈춰서 결과를 보여줍니다. 가장 안전합니다.",
+        buttonLabel: "단계별로 실행",
+        onRun: () => runSpecialist({ mode: "step" }),
+      })
+    );
+
+    // 2. 제한 자동 실행 — 기획만 확인하고 구현·검토는 자동
     const autoSelect = document.createElement("select");
     for (const n of [0, 1, 2, 3]) {
       const option = document.createElement("option");
       option.value = String(n);
-      option.textContent = `자동 보완 최대 ${n}회`;
+      option.textContent = n === 0 ? "고치지 않고 바로 멈춤" : `최대 ${n}번까지 다시 고치기`;
       autoSelect.append(option);
     }
     autoSelect.value = "1";
+    const autoField = makeField("검토에서 문제가 나오면", autoSelect);
+    autoField.classList.add("mode-card-field");
 
-    const autoBtn = document.createElement("button");
-    autoBtn.type = "button";
-    autoBtn.className = "button button-primary";
-    autoBtn.textContent = "제한 자동 실행";
-    autoBtn.addEventListener("click", () => {
-      const n = Number(autoSelect.value);
-      closePopover();
-      runSpecialist({ mode: "auto", maxAutoRevisions: n });
-    });
-    root.append(makeField("자동 보완 횟수", autoSelect), autoBtn);
+    modeList.append(
+      makeModeCard({
+        name: "제한 자동 실행",
+        flow: "기획 → 내가 확인 → 구현 ↔ 검토 자동",
+        summary: "기획만 확인하면 구현과 검토는 알아서 돕니다. 작업 범위를 벗어나는 문제가 나오면 바로 멈춥니다.",
+        buttonLabel: "기획 확인 후 자동 실행",
+        primary: true,
+        extra: autoField,
+        onRun: () => runSpecialist({ mode: "auto", maxAutoRevisions: Number(autoSelect.value) }),
+      })
+    );
 
-    // 빠른 실행
-    const quickHint = document.createElement("p");
-    quickHint.className = "popover-hint";
-    quickHint.textContent = "빠른 실행: 가벼운 과제에 씁니다. 기획(PLAN_READY)이 끝나면 승인 없이 구현·검토까지 한 번에 진행합니다.";
-    root.append(quickHint);
-    const quickBtn = document.createElement("button");
-    quickBtn.type = "button";
-    quickBtn.className = "button";
-    quickBtn.textContent = "빠른 실행 (기획 → 구현 → 검토 한 번에)";
-    quickBtn.addEventListener("click", () => {
-      closePopover();
-      runSpecialist({ mode: "quick" });
-    });
-    root.append(quickBtn);
+    // 3. 빠른 실행 — 확인 없이 끝까지
+    modeList.append(
+      makeModeCard({
+        name: "빠른 실행",
+        flow: "기획 → 구현 → 검토 (멈춤 없음)",
+        summary: "확인 없이 끝까지 진행합니다. 가벼운 작업에만 쓰세요.",
+        buttonLabel: "한 번에 실행",
+        onRun: () => runSpecialist({ mode: "quick" }),
+      })
+    );
+
+    root.append(modeList);
   });
 });
 
