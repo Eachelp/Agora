@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("node:path");
+const winPath = path.win32;
 
 const {
   cliCandidates,
@@ -56,7 +57,7 @@ function makeService({
 
 test("agy 후보에 공식 Windows 설치 경로가 포함된다", () => {
   const candidates = cliCandidates("agy", "win32", WIN_ENV, "C:\\Users\\u");
-  assert.ok(candidates.includes(path.join(WIN_ENV.LOCALAPPDATA, "agy", "bin", "agy.exe")));
+  assert.ok(candidates.includes(winPath.join(WIN_ENV.LOCALAPPDATA, "agy", "bin", "agy.exe")));
 });
 
 test("GUI 흔적 경로는 Antigravity.exe를 가리키지만 실행 후보에는 없다", () => {
@@ -68,7 +69,7 @@ test("GUI 흔적 경로는 Antigravity.exe를 가리키지만 실행 후보에�
 
 test("CLI 없음 + GUI 설치 → gui-only 상태와 설치 안내", async () => {
   const files = new Set([
-    path.join(WIN_ENV.LOCALAPPDATA, "Programs", "antigravity", "Antigravity.exe"),
+    winPath.join(WIN_ENV.LOCALAPPDATA, "Programs", "antigravity", "Antigravity.exe"),
   ]);
   const { service } = makeService({ files });
   const records = await service.discover();
@@ -251,7 +252,7 @@ test("Codex app-server 카탈로그를 공개 모델과 모델별 노력 목록�
 });
 
 test("agy CLI가 공식 후보 경로에 있으면 PATH 없이도 cli 상태가 된다", async () => {
-  const agyPath = path.join(WIN_ENV.LOCALAPPDATA, "agy", "bin", "agy.exe");
+  const agyPath = winPath.join(WIN_ENV.LOCALAPPDATA, "agy", "bin", "agy.exe");
   const files = new Set([agyPath]);
   const { service, calls } = makeService({
     files,
@@ -266,7 +267,7 @@ test("agy CLI가 공식 후보 경로에 있으면 PATH 없이도 cli 상태가 
 });
 
 test("agy 모델 목록은 `agy models` 프로브로 갱신된다", async () => {
-  const agyPath = path.join(WIN_ENV.LOCALAPPDATA, "agy", "bin", "agy.exe");
+  const agyPath = winPath.join(WIN_ENV.LOCALAPPDATA, "agy", "bin", "agy.exe");
   const files = new Set([agyPath]);
   const cacheStore = {};
   const service = createCapabilityService({

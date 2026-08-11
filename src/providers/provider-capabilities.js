@@ -220,10 +220,11 @@ const PROVIDER_DEFS = Object.freeze([
 ]);
 
 function cliCandidates(providerId, platform, env, home) {
+  const pathApi = platform === "win32" ? path.win32 : path.posix;
   if (providerId === "claude") {
-    if (platform === "win32") return [path.join(home, ".local", "bin", "claude.exe")];
+    if (platform === "win32") return [pathApi.join(home, ".local", "bin", "claude.exe")];
     return [
-      path.join(home, ".local", "bin", "claude"),
+      pathApi.join(home, ".local", "bin", "claude"),
       "/opt/homebrew/bin/claude",
       "/usr/local/bin/claude",
     ];
@@ -231,7 +232,7 @@ function cliCandidates(providerId, platform, env, home) {
   if (providerId === "codex") {
     if (platform === "win32") return [];
     return [
-      path.join(home, ".local", "bin", "codex"),
+      pathApi.join(home, ".local", "bin", "codex"),
       "/opt/homebrew/bin/codex",
       "/usr/local/bin/codex",
     ];
@@ -239,12 +240,12 @@ function cliCandidates(providerId, platform, env, home) {
   if (providerId === "agy") {
     if (platform === "win32") {
       return [
-        path.join(env.LOCALAPPDATA || "", "agy", "bin", "agy.exe"),
-        path.join(env.LOCALAPPDATA || "", "Antigravity", "agy.exe"),
+        pathApi.join(env.LOCALAPPDATA || "", "agy", "bin", "agy.exe"),
+        pathApi.join(env.LOCALAPPDATA || "", "Antigravity", "agy.exe"),
       ].filter((candidate) => candidate && !candidate.startsWith(path.sep));
     }
     return [
-      path.join(home, ".local", "bin", "agy"),
+      pathApi.join(home, ".local", "bin", "agy"),
       "/opt/homebrew/bin/agy",
       "/usr/local/bin/agy",
     ];
@@ -257,9 +258,10 @@ function guiEvidencePaths(providerId, platform, env) {
   if (providerId !== "agy") return [];
   if (platform === "darwin") return ["/Applications/Antigravity.app"];
   if (platform === "linux") return ["/opt/Antigravity/antigravity", "/usr/share/antigravity"];
+  const pathApi = platform === "win32" ? path.win32 : path.posix;
   return [
-    path.join(env.LOCALAPPDATA || "", "Programs", "antigravity", "Antigravity.exe"),
-    path.join(env.ProgramFiles || "", "Antigravity", "Antigravity.exe"),
+    pathApi.join(env.LOCALAPPDATA || "", "Programs", "antigravity", "Antigravity.exe"),
+    pathApi.join(env.ProgramFiles || "", "Antigravity", "Antigravity.exe"),
   ].filter((candidate) => candidate && !candidate.startsWith(path.sep));
 }
 
