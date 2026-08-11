@@ -392,6 +392,35 @@ textarea:focus-visible {
   align-items: center;
 }
 
+/* 말풍선 액션(복사·전달)은 평소엔 숨기고, 마우스를 올리거나 키보드 포커스가
+   들어왔을 때만 보여 대화 화면을 조용하게 유지합니다.
+   자리는 그대로 두어(visibility) 나타날 때 레이아웃이 흔들리지 않게 합니다. */
+.message .message-actions {
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.message:hover .message-actions,
+.message:focus-within .message-actions {
+  visibility: visible;
+  opacity: 1;
+}
+
+/* 워크스페이스 폴더 아이콘 */
+.workspace-icon {
+  flex: none;
+  opacity: 0.75;
+}
+
+/* 마우스 오버가 없는 환경(터치 등)에서는 항상 보이게 둡니다. */
+@media (hover: none) {
+  .message .message-actions {
+    visibility: visible;
+    opacity: 1;
+  }
+}
+
 .message.is-user .message-actions {
   justify-self: end;
 }
