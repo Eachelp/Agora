@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { TaskManager } = require("../src/agora/task-manager");
+const turnCheckpoint = require("../src/agora/turn-checkpoint");
 const { ChatRoom } = require("../src/chat/chat-room");
 
 function makeAgents() {
@@ -1412,4 +1413,230 @@ test("TASK-008: git workspace에서 Builder가 파일을 바꾸면 Reviewer가 �
   assert.ok(reviewPrompt.includes("실제 변경 (Builder Diff)"), "Reviewer에 Diff 섹션이 있어야 한다");
   assert.ok(reviewPrompt.includes("a.txt"), "Diff에 변경된 파일명이 포함되어야 한다");
   assert.ok(reviewPrompt.includes("hello modified"), "Diff에 실제 변경 내용이 포함되어야 한다");
+});
+
+// --- BLOCKED 후속 처리 (A안: 즉시 복원하지 않고 사용자 선택까지 보류) ---
+
+test("BLOCKED이면 즉시 되돌리지 않고 Builder 변경을 남긴 채 사용자 선택을 기다린다", async (t) => {
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "agora-room-blocked-"));
+  t.after(() => fs.rmSync(ws, { recursive: true, force: true }));
+  const run = (args) => require("node:child_process").execFileSync("git", args, { cwd: ws, encoding: "utf8" });
+  run(["init"]);
+  run(["config", "user.email", "t@example.com"]);
+  run(["config", "user.name", "tester"]);
+  fs.writeFileSync(path.join(ws, "a.txt"), "hello\n", "utf8");
+  run(["add", "."]);
+  run(["commit", "-m", "init"]);
+
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace: ws },
+    checkpoint: turnCheckpoint,
+    runAgent: ({ agent }) => {
+      if (agent.id === "codex") {
+        // Builder가 절반쯤 고치고 막힌 상황.
+        fs.writeFileSync(path.join(ws, "a.txt"), "half done\n", "utf8");
+        return {
+          promise: Promise.resolve({ ok: true, text: "명세가 모호합니다\nSTATUS: BLOCKED" }),
+          cancel: () => {},
+        };
+      }
+      return { promise: Promise.resolve({ ok: true, text: "통과\nVERDICT: PASS" }), cancel: () => {} };
+    },
+  });
+
+  const result = await room.startSpecialist({
+    stages: {
+      implementation: { agent: room.findAgent("codex") },
+      review: { agent: room.findAgent("claude") },
+    },
+    mode: "step",
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.stopReason, "BLOCKED");
+  assert.equal(result.blocked, true);
+  // A안 핵심: 이 시점에는 아직 되돌리지 않았으므로 Builder 변경이 남아 있어야 한다.
+  assert.equal(
+    fs.readFileSync(path.join(ws, "a.txt"), "utf8").replace(/\r\n/g, "\n"),
+    "half done\n"
+  );
+  assert.ok(room.specialistBlocked, "후속 선택을 기다리는 보류 상태가 있어야 한다");
+});
+
+test("BLOCKED 후 keep을 고르면 변경을 그대로 두고 보류 상태만 해제한다", async (t) => {
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "agora-room-blocked-keep-"));
+  t.after(() => fs.rmSync(ws, { recursive: true, force: true }));
+  const run = (args) => require("node:child_process").execFileSync("git", args, { cwd: ws, encoding: "utf8" });
+  run(["init"]);
+  run(["config", "user.email", "t@example.com"]);
+  run(["config", "user.name", "tester"]);
+  fs.writeFileSync(path.join(ws, "a.txt"), "hello\n", "utf8");
+  run(["add", "."]);
+  run(["commit", "-m", "init"]);
+
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace: ws },
+    checkpoint: turnCheckpoint,
+    runAgent: ({ agent }) => {
+      if (agent.id === "codex") {
+        fs.writeFileSync(path.join(ws, "a.txt"), "half done\n", "utf8");
+        return { promise: Promise.resolve({ ok: true, text: "STATUS: BLOCKED" }), cancel: () => {} };
+      }
+      return { promise: Promise.resolve({ ok: true, text: "VERDICT: PASS" }), cancel: () => {} };
+    },
+  });
+
+  await room.startSpecialist({
+    stages: {
+      implementation: { agent: room.findAgent("codex") },
+      review: { agent: room.findAgent("claude") },
+    },
+    mode: "step",
+  });
+
+  const resolved = await room.resolveBlocked("keep");
+  assert.equal(resolved.ok, true);
+  assert.equal(resolved.action, "keep");
+  assert.equal(
+    fs.readFileSync(path.join(ws, "a.txt"), "utf8").replace(/\r\n/g, "\n"),
+    "half done\n"
+  );
+  assert.equal(room.specialistBlocked, null);
+});
+
+test("BLOCKED 후 restore를 고르면 작업 전 상태로 되돌린다", async (t) => {
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "agora-room-blocked-restore-"));
+  t.after(() => fs.rmSync(ws, { recursive: true, force: true }));
+  const run = (args) => require("node:child_process").execFileSync("git", args, { cwd: ws, encoding: "utf8" });
+  run(["init"]);
+  run(["config", "user.email", "t@example.com"]);
+  run(["config", "user.name", "tester"]);
+  fs.writeFileSync(path.join(ws, "a.txt"), "hello\n", "utf8");
+  run(["add", "."]);
+  run(["commit", "-m", "init"]);
+
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace: ws },
+    checkpoint: turnCheckpoint,
+    runAgent: ({ agent }) => {
+      if (agent.id === "codex") {
+        fs.writeFileSync(path.join(ws, "a.txt"), "half done\n", "utf8");
+        fs.writeFileSync(path.join(ws, "new-file.txt"), "builder made this\n", "utf8");
+        return { promise: Promise.resolve({ ok: true, text: "STATUS: BLOCKED" }), cancel: () => {} };
+      }
+      return { promise: Promise.resolve({ ok: true, text: "VERDICT: PASS" }), cancel: () => {} };
+    },
+  });
+
+  await room.startSpecialist({
+    stages: {
+      implementation: { agent: room.findAgent("codex") },
+      review: { agent: room.findAgent("claude") },
+    },
+    mode: "step",
+  });
+
+  const resolved = await room.resolveBlocked("restore");
+  assert.equal(resolved.ok, true);
+  assert.equal(resolved.restored, true);
+  // 실행 전 내용으로 복원되고, Builder가 새로 만든 파일은 제거되어야 한다.
+  // (Windows에서는 git이 줄바꿈을 CRLF로 바꿀 수 있어 줄바꿈은 정규화해 비교한다.)
+  assert.equal(
+    fs.readFileSync(path.join(ws, "a.txt"), "utf8").replace(/\r\n/g, "\n"),
+    "hello\n"
+  );
+  assert.equal(fs.existsSync(path.join(ws, "new-file.txt")), false);
+  assert.equal(room.specialistBlocked, null);
+});
+
+test("보류 중인 BLOCKED가 없으면 후속 처리를 거부한다", async () => {
+  const room = new ChatRoom({ agents: makeAgents(), runAgent: fakeRunner({}, []) });
+  const resolved = await room.resolveBlocked("keep");
+  assert.equal(resolved.ok, false);
+});
+
+test("BLOCKED 후속 처리 동작 이름이 올바르지 않으면 거부한다", async (t) => {
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "agora-room-blocked-bad-"));
+  t.after(() => fs.rmSync(ws, { recursive: true, force: true }));
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace: ws },
+    runAgent: ({ agent }) =>
+      agent.id === "codex"
+        ? { promise: Promise.resolve({ ok: true, text: "STATUS: BLOCKED" }), cancel: () => {} }
+        : { promise: Promise.resolve({ ok: true, text: "VERDICT: PASS" }), cancel: () => {} },
+  });
+  await room.startSpecialist({
+    stages: {
+      implementation: { agent: room.findAgent("codex") },
+      review: { agent: room.findAgent("claude") },
+    },
+    mode: "step",
+  });
+  const resolved = await room.resolveBlocked("nope");
+  assert.equal(resolved.ok, false);
+});
+
+// --- Frozen Task 인디케이터 (메시지 agentMeta 연결) ---
+
+test("전문 실행 메시지에 Frozen Task 정보(runId/taskId/taskHash)가 실린다", async (t) => {
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "agora-room-chip-"));
+  t.after(() => fs.rmSync(ws, { recursive: true, force: true }));
+  const taskManager = new TaskManager();
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace: ws },
+    taskManager,
+    runAgent: fakeRunner(
+      {
+        claude: [{ ok: true, text: "## 목표\n로그인\nSTATUS: PLAN_READY" }],
+        codex: [
+          { ok: true, text: "구현 완료\nSTATUS: DONE" },
+          { ok: true, text: "검토 통과\nVERDICT: PASS" },
+        ],
+      },
+      []
+    ),
+  });
+
+  const result = await room.startSpecialist({
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      implementation: { agent: room.findAgent("codex") },
+      review: { agent: room.findAgent("codex") },
+    },
+    mode: "quick",
+  });
+  assert.equal(result.ok, true);
+
+  const builderMessage = room.messages.find(
+    (message) => message.agentMeta?.specialistStage === "implementation"
+  );
+  assert.ok(builderMessage, "구현 단계 메시지가 있어야 한다");
+  assert.equal(builderMessage.agentMeta.taskId, "TASK-001");
+  assert.ok(builderMessage.agentMeta.runId?.startsWith("RUN-"));
+  assert.ok(builderMessage.agentMeta.taskHash, "Task revision 해시가 있어야 한다");
+
+  const reviewMessage = room.messages.find(
+    (message) => message.agentMeta?.specialistStage === "review"
+  );
+  // Reviewer도 같은 Run/Task revision 기준이어야 한다.
+  assert.equal(reviewMessage.agentMeta.runId, builderMessage.agentMeta.runId);
+  assert.equal(reviewMessage.agentMeta.taskHash, builderMessage.agentMeta.taskHash);
+});
+
+test("일반 대화 메시지에는 Frozen Task 정보가 붙지 않는다", async () => {
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({ claude: [{ ok: true, text: "안녕하세요" }] }, []),
+  });
+  room.sendUserMessage("@claude 안녕");
+  await room.waitForIdle();
+  const agentMessage = room.messages.find((message) => message.authorType === "agent");
+  assert.ok(agentMessage);
+  assert.equal(agentMessage.agentMeta.taskId, undefined);
+  assert.equal(agentMessage.agentMeta.runId, undefined);
 });

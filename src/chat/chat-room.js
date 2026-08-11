@@ -86,6 +86,9 @@ class ChatRoom extends EventEmitter {
     this.specialistActive = false;
     // 전문 실행 중 "기획 승인 후 이어서 진행"할 상태(step/auto에서 PLAN_READY로 멈출 때 저장).
     this.specialistResume = null;
+    // BLOCKED로 멈췄을 때 사용자의 후속 선택(복원/유지/폐기)을 기다리는 상태.
+    // A안: BLOCKED 시점에 즉시 되돌리지 않고, 사용자가 결정할 때까지 작업물을 보존합니다.
+    this.specialistBlocked = null;
     this.cancels = new Set();
     this.typingCounts = new Map();
     this.activeRuns = 0;
@@ -555,6 +558,17 @@ class ChatRoom extends EventEmitter {
         effort: agent.effort || "default",
         version: agent.version || "",
         ...(context.specialist?.stage ? { specialistStage: context.specialist.stage } : {}),
+        // 불변 실행 계약(Frozen Task) 표시용. 어떤 Run/Task revision 기준으로
+        // 일한 결과인지 메시지에 남겨 화면에서 칩으로 보여줍니다.
+        ...(context.specialist?.frozenTask?.runId
+          ? { runId: context.specialist.frozenTask.runId }
+          : {}),
+        ...(context.specialist?.frozenTask?.taskId
+          ? { taskId: context.specialist.frozenTask.taskId }
+          : {}),
+        ...(context.specialist?.frozenTask?.taskHash
+          ? { taskHash: context.specialist.frozenTask.taskHash }
+          : {}),
       },
       ...(context.turnRootId ? { turnRootId: context.turnRootId } : {}),
       ...(result.deliveries ? { deliveries: result.deliveries } : {}),
@@ -639,7 +653,15 @@ class ChatRoom extends EventEmitter {
     const requestedGeneration = this.generation;
     this.specialistActive = true;
     this.specialistResume = null;
-    this.emit("specialist-resume-state", { available: false });
+    // 이전 실행에서 BLOCKED로 보류된 checkpoint가 남아 있으면 리소스만 정리합니다.
+    // (작업물은 사용자 소유이므로 되돌리지 않습니다.)
+    if (this.specialistBlocked) {
+      if (this.checkpointEngine && this.specialistBlocked.checkpoint) {
+        this.checkpointEngine.cleanupCheckpoint(this.specialistBlocked.checkpoint);
+      }
+      this.specialistBlocked = null;
+    }
+    this.emit("specialist-resume-state", { available: false, blocked: false });
     await this.waitForIdle();
     if (requestedGeneration !== this.generation) {
       this.specialistActive = false;
@@ -815,11 +837,59 @@ class ChatRoom extends EventEmitter {
     const checkpoint = this.checkpointEngine
       ? await this.checkpointEngine.createCheckpoint(this.meta.workspace)
       : null;
+
+    // 화면에 "어떤 Task revision 기준으로 일하는 중인지" 칩으로 보여주기 위한 값.
+    // TASK-003.md → "TASK-003" 형태의 표시용 id를 만듭니다.
+    const frozenTaskId = taskInfo?.filename
+      ? String(taskInfo.filename).replace(/\.md$/i, "")
+      : null;
+    const frozenTaskMeta = () =>
+      runInfo
+        ? {
+            runId: runInfo.runId,
+            content: runInfo.content,
+            taskId: frozenTaskId,
+            taskHash: runInfo.taskHash || null,
+          }
+        : null;
     const checkpointSupported = Boolean(checkpoint && checkpoint.supported === true);
     const restoreCheckpoint = async () => {
       if (!checkpointSupported || !this.checkpointEngine) return;
       await this.checkpointEngine.restoreCheckpoint(this.meta.workspace, checkpoint);
       this.checkpointEngine.cleanupCheckpoint(checkpoint);
+    };
+
+    // BLOCKED(A안): 즉시 되돌리지 않고 Builder 작업물을 그대로 둔 채 멈춥니다.
+    // 사용자가 [작업 전으로 복원]/[Task 폐기]를 고르면 그때 복원합니다.
+    const holdForBlocked = (blockedRound, blockedResult) => {
+      this.specialistBlocked = {
+        checkpoint: checkpointSupported ? checkpoint : null,
+        canRestore: checkpointSupported,
+        taskPath: taskInfo?.relativePath || null,
+        runId: runInfo?.runId || null,
+        stage: "implementation",
+      };
+      this.emit("specialist-resume-state", {
+        available: false,
+        blocked: true,
+        canRestore: checkpointSupported,
+        hasTask: Boolean(taskInfo?.relativePath),
+      });
+      this.appendSystem(
+        checkpointSupported
+          ? "구현이 막혔습니다(BLOCKED). 지금까지의 변경은 그대로 두었습니다. 아래에서 다음 처리를 선택해 주세요."
+          : "구현이 막혔습니다(BLOCKED). 아래에서 다음 처리를 선택해 주세요. (git workspace가 아니라 자동 복원은 지원되지 않습니다)"
+      );
+      return {
+        ok: false,
+        stage: "implementation",
+        completedIterations: blockedRound,
+        needsUserDecision: true,
+        stopReason: "BLOCKED",
+        blocked: true,
+        canRestore: checkpointSupported,
+        result: blockedResult,
+      };
     };
 
     let builderResult = await this.scheduleResponse(implementation.agent, {
@@ -830,7 +900,7 @@ class ChatRoom extends EventEmitter {
         // TASK-007: Builder의 실행 계약 source는 Frozen Task입니다.
         // runInfo가 있으면 그 본문을, 없으면 기존 feedback 텍스트를 사용합니다.
         feedback: runInfo ? runInfo.content : feedback,
-        frozenTask: runInfo ? { runId: runInfo.runId, content: runInfo.content } : null,
+        frozenTask: frozenTaskMeta(),
       },
       agentConfig: implementation.agentConfig,
     });
@@ -845,16 +915,7 @@ class ChatRoom extends EventEmitter {
       return this.specialistFail(implementation, "implementation", round, builderResult);
     }
     if (builderResult.builderStatus === "BLOCKED") {
-      await restoreCheckpoint();
-      return {
-        ok: false,
-        stage: "implementation",
-        completedIterations: round,
-        needsUserDecision: true,
-        stopReason: "BLOCKED",
-        blocked: true,
-        result: builderResult,
-      };
+      return holdForBlocked(round, builderResult);
     }
 
     // 검토 → (자동 보완) 루프.
@@ -865,7 +926,7 @@ class ChatRoom extends EventEmitter {
           round,
           maxRounds,
           // TASK-007: Reviewer는 동일 Run의 Frozen Task + 실제 Diff + Test 기준으로 검수합니다.
-          frozenTask: runInfo ? { runId: runInfo.runId, content: runInfo.content } : null,
+          frozenTask: frozenTaskMeta(),
           // TASK-008: Builder가 실제로 만든 변경(Diff)을 주입합니다.
           reviewDiff: builderChanges,
         },
@@ -935,7 +996,7 @@ class ChatRoom extends EventEmitter {
           maxRounds,
           // TASK-007: 자동 보완도 같은 Run, 같은 Frozen Task를 사용합니다.
           feedback: runInfo ? runInfo.content : feedback,
-          frozenTask: runInfo ? { runId: runInfo.runId, content: runInfo.content } : null,
+          frozenTask: frozenTaskMeta(),
         },
         agentConfig: implementation.agentConfig,
       });
@@ -950,16 +1011,7 @@ class ChatRoom extends EventEmitter {
         return this.specialistFail(implementation, "implementation", round, builderResult);
       }
       if (builderResult.builderStatus === "BLOCKED") {
-        await restoreCheckpoint();
-        return {
-          ok: false,
-          stage: "implementation",
-          completedIterations: round,
-          needsUserDecision: true,
-          stopReason: "BLOCKED",
-          blocked: true,
-          result: builderResult,
-        };
+        return holdForBlocked(round, builderResult);
       }
     }
 
@@ -1044,16 +1096,58 @@ class ChatRoom extends EventEmitter {
 
   // 전문 모드 실패 시 어떤 역할/에이전트/모델에서 실패했는지 정보를 담아 반환합니다.
   specialistFail(stageAgent, stage, completedIterations, result = {}) {
-    const model = stageAgent?.agentConfig?.model || stageAgent?.agent?.modelId || "기본";
     return {
       ok: false,
       stage,
       completedIterations,
       role: stage,
       agentId: stageAgent?.agent?.id || null,
-      model,
+      model: stageAgent?.agentConfig?.model || stageAgent?.agent?.modelId || "기본",
       error: result?.error || `${stage} 단계에서 에이전트 실행에 실패했습니다.`
     };
+  }
+
+  // BLOCKED 후속 처리 (A안).
+  // BLOCKED 시점에는 되돌리지 않고 보류했으므로, 사용자가 고른 조치를 여기서 수행합니다.
+  //   keep    — 현재 변경을 그대로 유지하고 보류 상태만 해제
+  //   restore — checkpoint 시점(=Builder 실행 전)으로 되돌림. 사용자 사전 변경은 보존
+  //   discard — 되돌린 뒤 Task까지 폐기 대상으로 표시
+  async resolveBlocked(action) {
+    const pending = this.specialistBlocked;
+    if (!pending) {
+      return { ok: false, error: "처리할 막힘(BLOCKED) 상태가 없습니다." };
+    }
+    if (!["keep", "restore", "discard"].includes(action)) {
+      return { ok: false, error: "올바르지 않은 처리 동작입니다." };
+    }
+    if ((action === "restore" || action === "discard") && !pending.canRestore) {
+      return { ok: false, error: "git workspace가 아니어서 자동 복원을 할 수 없습니다." };
+    }
+
+    let restored = false;
+    if (action === "restore" || action === "discard") {
+      if (this.checkpointEngine && pending.checkpoint) {
+        const result = await this.checkpointEngine.restoreCheckpoint(this.meta.workspace, pending.checkpoint);
+        restored = Boolean(result?.ok);
+        if (!restored) {
+          return { ok: false, error: "작업 전 상태로 되돌리지 못했습니다. 변경은 그대로 두었습니다." };
+        }
+      }
+    }
+    if (this.checkpointEngine && pending.checkpoint) {
+      this.checkpointEngine.cleanupCheckpoint(pending.checkpoint);
+    }
+
+    this.specialistBlocked = null;
+    this.emit("specialist-resume-state", { available: false, blocked: false });
+    this.appendSystem(
+      action === "keep"
+        ? "막힘 처리: 지금까지의 변경을 그대로 유지합니다."
+        : action === "restore"
+          ? "막힘 처리: 작업 전 상태로 되돌렸습니다. (실행 전부터 있던 사용자 변경은 보존)"
+          : "막힘 처리: 작업 전 상태로 되돌리고 이 작업을 폐기했습니다."
+    );
+    return { ok: true, action, restored, taskPath: pending.taskPath || null };
   }
 
   async runRecorder(options = {}) {

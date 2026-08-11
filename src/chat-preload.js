@@ -37,6 +37,8 @@ const INVOKE = Object.freeze({
   DISCUSSION_START: "chat:discussion:start",
   SPECIALIST_START: "chat:specialist:start",
   SPECIALIST_RESUME: "chat:specialist:resume",
+  SPECIALIST_BLOCKED: "chat:specialist:blocked",
+  TASK_OPEN_FILE: "chat:task:open-file",
   MESSAGE_HANDOFF: "chat:message:handoff",
   APPROVAL_RESPOND: "chat:approval:respond",
   WORKSPACE_CHOOSE: "chat:workspace:choose",
@@ -112,6 +114,10 @@ contextBridge.exposeInMainWorld("chatApi", {
     ipcRenderer.invoke(INVOKE.SPECIALIST_START, { sessionId, ...options }),
   specialistResume: (sessionId) =>
     ipcRenderer.invoke(INVOKE.SPECIALIST_RESUME, { sessionId }),
+  specialistResolveBlocked: (sessionId, action) =>
+    ipcRenderer.invoke(INVOKE.SPECIALIST_BLOCKED, { sessionId, action }),
+  openTaskFile: (sessionId, taskPath) =>
+    ipcRenderer.invoke(INVOKE.TASK_OPEN_FILE, { sessionId, taskPath }),
   handoffMessage: (sessionId, targetAgentId, messageId, intent) =>
     ipcRenderer.invoke(INVOKE.MESSAGE_HANDOFF, { sessionId, targetAgentId, messageId, intent }),
   approvalRespond: (sessionId, approvalId, decision) =>

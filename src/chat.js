@@ -1096,8 +1096,14 @@ function renderHeader() {
   const implementation = roleConfigFromProject(project, "implementation");
   const review = roleConfigFromProject(project, "review");
   specialistButton.disabled = !activeSessionId || specialistRunning;
-  specialistButton.textContent = specialistResumeAvailable ? "기획 승인" : "전문 실행";
-  specialistButton.title = implementation.agentId && review.agentId
+  specialistButton.textContent = specialistBlockedAvailable
+    ? "막힘 처리"
+    : specialistResumeAvailable
+      ? "기획 승인"
+      : "전문 실행";
+  specialistButton.title = specialistBlockedAvailable
+    ? "구현이 막혔습니다. 클릭해 다음 처리를 선택하세요"
+    : implementation.agentId && review.agentId
     ? specialistResumeAvailable
       ? "기획 승인 후 이어서 진행합니다"
       : "프로젝트 설정의 구현·검토·기록 담당자로 진행합니다"
@@ -2142,6 +2148,14 @@ specialistButton.addEventListener("click", async () => {
     desc.textContent = "구현·검토를 어떻게 실행할지 선택하세요. 검토자가 수정을 요구해도, 승인한 범위 안에서만 자동으로 이어집니다.";
     root.append(desc);
 
+    // 구현이 막힘(BLOCKED)으로 멈춰 있으면 후속 처리부터 고르게 합니다.
+    // A안: 이 시점에는 아직 되돌리지 않았으므로 작업물이 그대로 남아 있습니다.
+    if (specialistBlockedAvailable) {
+      desc.textContent = "구현이 막혔습니다(BLOCKED). 계획에 빠진 조건이 있을 수 있습니다. 다음 처리를 선택해 주세요.";
+      renderBlockedActions(root);
+      return;
+    }
+
     // 이어서 진행할 기획이 있으면 먼저 승인 버튼을 띄웁니다.
     if (specialistResumeAvailable) {
       const resumeHint = document.createElement("p");
@@ -2215,6 +2229,7 @@ specialistButton.addEventListener("click", async () => {
 });
 
 async function runSpecialist({ mode, maxAutoRevisions }) {
+  specialistBlockedAvailable = false;
   specialistResumeAvailable = false;
   specialistRunning = true;
   specialistButton.disabled = true;
@@ -2241,6 +2256,125 @@ async function resumeSpecialist() {
   specialistButton.disabled = false;
   specialistButton.textContent = specialistResumeAvailable ? "기획 승인" : "전문 실행";
   renderHeader();
+}
+
+// 구현이 막혔을 때(BLOCKED) 고를 수 있는 후속 처리를 그립니다.
+// 주 액션 2개는 바로 노출하고, 되돌리기 계열은 접이식 메뉴로 묶습니다.
+function renderBlockedActions(root) {
+  const plannerBtn = document.createElement("button");
+  plannerBtn.type = "button";
+  plannerBtn.className = "button button-primary";
+  plannerBtn.textContent = "기획자에게 다시 맡기기";
+  plannerBtn.title = "막힌 사유를 기획자에게 전달해 작업 지시서를 다시 쓰게 합니다";
+  plannerBtn.addEventListener("click", () => {
+    closePopover();
+    handoffBlockedToPlanner();
+  });
+  root.append(plannerBtn);
+
+  const editBtn = document.createElement("button");
+  editBtn.type = "button";
+  editBtn.className = "button";
+  editBtn.textContent = "작업 지시서 직접 수정";
+  editBtn.title = "TASK.md를 직접 열어 빠진 조건을 보완합니다";
+  editBtn.addEventListener("click", () => {
+    closePopover();
+    openTaskFileForEdit();
+  });
+  root.append(editBtn);
+
+  const changesHint = document.createElement("p");
+  changesHint.className = "popover-hint";
+  changesHint.textContent = "구현자가 막히기 전까지 만든 변경은 아직 그대로 있습니다. 아래에서 처리 방법을 고르세요.";
+  root.append(changesHint);
+
+  const changeSelect = document.createElement("select");
+  for (const option of [
+    { value: "", label: "변경사항 처리…" },
+    { value: "keep", label: "현재 변경 유지" },
+    { value: "restore", label: "작업 전으로 복원" },
+    { value: "discard", label: "작업 폐기 (복원 + 지시서 폐기)" },
+  ]) {
+    const el = document.createElement("option");
+    el.value = option.value;
+    el.textContent = option.label;
+    changeSelect.append(el);
+  }
+  changeSelect.addEventListener("change", () => {
+    const action = changeSelect.value;
+    if (!action) return;
+    changeSelect.value = "";
+    closePopover();
+    resolveBlocked(action);
+  });
+  root.append(changeSelect);
+}
+
+// 선택한 후속 처리를 백엔드에 전달합니다.
+async function resolveBlocked(action) {
+  if (action === "discard" || action === "restore") {
+    const label = action === "discard" ? "작업을 폐기" : "작업 전 상태로 복원";
+    if (!window.confirm(`${label}하시겠습니까? 구현자가 만든 변경은 사라집니다. (실행 전부터 있던 변경은 보존됩니다)`)) {
+      return;
+    }
+  }
+  const result = await call(window.chatApi.specialistResolveBlocked(activeSessionId, action));
+  if (result) {
+    flashNotice(
+      action === "keep"
+        ? "현재 변경을 유지했습니다."
+        : action === "restore"
+          ? "작업 전 상태로 되돌렸습니다."
+          : "작업을 폐기했습니다.",
+      false
+    );
+  }
+  if (result?.meta) sessionMeta = result.meta;
+  specialistBlockedAvailable = false;
+  renderHeader();
+}
+
+// 막힌 사유를 기획자에게 넘겨 지시서를 다시 쓰게 합니다.
+// 별도 실행 경로를 만들지 않고, 기존 Handoff로 마지막 구현자 메시지를 전달합니다.
+function handoffBlockedToPlanner() {
+  const project = projects.find((entry) => entry.id === activeProjectId);
+  const planner = roleConfigFromProject(project, "planning");
+  if (!planner?.agentId) {
+    flashNotice("프로젝트 설정에서 기획 담당자를 먼저 지정해 주세요.");
+    return;
+  }
+  const lastAgentMessage = [...messages].reverse().find(
+    (message) => message.authorType === "agent" && message.id
+  );
+  if (!lastAgentMessage) {
+    flashNotice("전달할 구현자 메시지를 찾지 못했습니다.");
+    return;
+  }
+  call(
+    window.chatApi.handoffMessage(activeSessionId, planner.agentId, lastAgentMessage.id, "REVIEW")
+  ).then((result) => {
+    if (result) flashNotice("기획자에게 막힘 사유를 전달했습니다.", false);
+    if (result?.meta) sessionMeta = result.meta;
+  });
+}
+
+// 작업 지시서(TASK.md)를 OS 기본 편집기로 엽니다.
+function openTaskFileForEdit() {
+  const workspace = sessionMeta?.workspace;
+  if (!workspace) {
+    flashNotice("워크스페이스가 연결되어 있지 않습니다.");
+    return;
+  }
+  const activeTask = (workflow?.tasks || []).find(
+    (task) => task.contentSource === "file" && task.taskPath && task.status !== "rejected"
+  );
+  if (!activeTask) {
+    flashNotice("수정할 작업 지시서를 찾지 못했습니다.");
+    return;
+  }
+  call(window.chatApi.openTaskFile(activeSessionId, activeTask.taskPath)).then((result) => {
+    if (result) flashNotice("작업 지시서를 열었습니다. 수정 후 전문 실행을 다시 시작하세요.", false);
+  });
 }
 discussionButton.addEventListener("click", () => {
   openPopover(discussionButton, (root) => {
@@ -2516,6 +2650,61 @@ function scrollToBottom(force = false) {
   if (force || isNearBottom()) chatScroll.scrollTop = chatScroll.scrollHeight;
 }
 
+// 마크다운 기호를 걷어내 순수 텍스트로 만듭니다.
+// 메모장·메신저처럼 마크다운을 해석하지 않는 곳에 붙여넣기 위한 용도입니다.
+function stripMarkdown(text) {
+  let out = String(text || "");
+  // 코드 펜스는 내용만 남깁니다.
+  out = out.replace(/```[^\n]*\n([\s\S]*?)```/g, "$1");
+  // 이미지 → 대체 텍스트, 링크 → 표시 텍스트만.
+  out = out.replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1");
+  out = out.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");
+  // 제목·인용 기호 제거.
+  out = out.replace(/^\s{0,3}#{1,6}\s+/gm, "");
+  out = out.replace(/^\s{0,3}>\s?/gm, "");
+  // 강조 기호 제거 (굵게/기울임/취소선/인라인 코드).
+  out = out.replace(/(\*\*\*|___)(.+?)\1/g, "$2");
+  out = out.replace(/(\*\*|__)(.+?)\1/g, "$2");
+  out = out.replace(/(\*|_)(?=\S)(.+?)(?<=\S)\1/g, "$2");
+  out = out.replace(/~~(.+?)~~/g, "$1");
+  out = out.replace(/`([^`]+)`/g, "$1");
+  // 목록 기호는 가운뎃점으로, 수평선은 제거.
+  out = out.replace(/^\s{0,3}[-*+]\s+/gm, "· ");
+  out = out.replace(/^\s{0,3}(?:[-*_]\s*){3,}$/gm, "");
+  // 표 구분선 제거.
+  out = out.replace(/^\s*\|?[\s:|-]+\|[\s:|-]*$/gm, "");
+  return out.replace(/\n{3,}/g, "\n\n").trim();
+}
+
+// 클릭하면 클립보드에 넣고 잠시 "복사됨"으로 바뀌는 작은 버튼을 만듭니다.
+function makeCopyButton(label, title, getText) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "message-copy-button";
+  button.textContent = label;
+  button.title = title;
+  button.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    const text = getText();
+    if (!text) {
+      flashNotice("복사할 내용이 없습니다.");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      button.textContent = "복사됨";
+      button.classList.add("is-copied");
+      setTimeout(() => {
+        button.textContent = label;
+        button.classList.remove("is-copied");
+      }, 1200);
+    } catch {
+      flashNotice("복사하지 못했습니다.");
+    }
+  });
+  return button;
+}
+
 function renderMessage(message) {
   const item = document.createElement("li");
   item.className = "message";
@@ -2654,6 +2843,17 @@ function renderMessage(message) {
 
   // 전달(Handoff) 버튼: 다른 AI가 보낸 에이전트 메시지를 다른 에이전트에게 이어서 전달합니다.
   if (!isUser && message.id) {
+    // 말풍선 하단 액션 줄: 복사 2종 + 전달을 한 줄에 나란히 놓습니다.
+    const actions = document.createElement("div");
+    actions.className = "message-actions";
+
+    // 복사 버튼 2종: 마크다운 원본(옵시디언/노션용)과 서식 없는 순수 텍스트(메모장/메신저용).
+    const copyMarkdownBtn = makeCopyButton("복사", "마크다운 원본 그대로 복사", () => message.text || "");
+    const copyPlainBtn = makeCopyButton("서식 없이 복사", "굵게·제목 등 기호를 걷어낸 순수 텍스트로 복사", () =>
+      stripMarkdown(message.text || "")
+    );
+    actions.append(copyMarkdownBtn, copyPlainBtn);
+
     const handoffBtn = document.createElement("button");
     handoffBtn.type = "button";
     handoffBtn.className = "message-handoff-button";
@@ -2670,7 +2870,8 @@ function renderMessage(message) {
       if (specialistRunning) return;
       openHandoffPopover(handoffBtn, message.id, message.author);
     });
-    body.append(handoffBtn);
+    actions.append(handoffBtn);
+    body.append(actions);
   }
 
   if (!isUser) {

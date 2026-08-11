@@ -876,6 +876,28 @@ function roomMeta(meta) {
       })
     );
 
+    // 작업 지시서(TASK.md)를 OS 기본 편집기로 엽니다.
+    // 임의 경로 열기를 막기 위해 해당 세션 workspace 안의 파일만 허용합니다.
+    ipcMain.handle(
+      "chat:task:open-file",
+      wrap(async ({ sessionId, taskPath }) => {
+        requireSession(sessionId);
+        const meta = store.readMeta(sessionId);
+        const workspace = meta?.workspace;
+        if (!workspace) throw new Error("워크스페이스가 연결되어 있지 않습니다.");
+        const relative = String(taskPath || "");
+        if (!relative || path.isAbsolute(relative)) throw new Error("올바르지 않은 작업 지시서 경로입니다.");
+        const workspaceRoot = path.resolve(workspace);
+        const target = path.resolve(workspaceRoot, relative);
+        const prefix = workspaceRoot.endsWith(path.sep) ? workspaceRoot : workspaceRoot + path.sep;
+        if (!target.startsWith(prefix)) throw new Error("워크스페이스 밖의 파일은 열 수 없습니다.");
+        if (!fs.existsSync(target)) throw new Error("작업 지시서 파일을 찾을 수 없습니다.");
+        const error = await shell.openPath(target);
+        if (error) throw new Error(error);
+        return {};
+      })
+    );
+
     ipcMain.handle(
       "chat:projects:create",
       wrap(async ({ name, workspace }) => {
@@ -1447,6 +1469,38 @@ function roomMeta(meta) {
         const room = getRoom(sessionId);
         const result = room.handoffMessage(targetAgentId, messageId, intent);
         if (result.ok === false) throw new Error(result.error);
+        return { meta: publicMeta(store.readMeta(sessionId)) };
+      })
+    );
+
+    // BLOCKED 후속 처리 (keep / restore / discard).
+    // discard는 되돌린 뒤 해당 Task를 폐기(rejected) 상태로 표시합니다.
+    ipcMain.handle(
+      "chat:specialist:blocked",
+      wrap(async ({ sessionId, action }) => {
+        requireSession(sessionId);
+        const room = getRoom(sessionId);
+        const result = await room.resolveBlocked(action);
+        if (result.ok === false) throw new Error(result.error);
+        // discard: 되돌린 뒤 해당 file-backed Task를 폐기(rejected) 상태로 표시합니다.
+        if (action === "discard" && result.taskPath) {
+          const meta = store.readMeta(sessionId);
+          const projectId = meta?.projectId || getActiveProjectId();
+          const workflow = ensureWorkflowStore();
+          if (workflow && !workflow.readOnly && projectId) {
+            const target = workflow
+              .listTasks(projectId)
+              .find((task) => task.taskPath === result.taskPath);
+            if (target) {
+              workflow.updateTask(target.id, { status: "rejected" });
+              broadcast("chat:workflow-changed", {
+                projectId,
+                workflow: workflowForProject(projectId),
+              });
+              refreshWorkflowForProject(projectId);
+            }
+          }
+        }
         return { meta: publicMeta(store.readMeta(sessionId)) };
       })
     );

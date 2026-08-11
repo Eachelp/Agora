@@ -383,6 +383,41 @@ textarea:focus-visible {
   border-color: var(--line);
 }
 
+/* 말풍선 단위 복사 버튼 (마크다운 원본 / 서식 없이) */
+.message-actions {
+  justify-self: start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.message.is-user .message-actions {
+  justify-self: end;
+}
+
+.message-copy-button {
+  justify-self: start;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.message-copy-button:hover {
+  color: var(--ink-soft);
+  border-color: var(--accent);
+}
+
+.message-copy-button.is-copied {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 .message .meta {
   display: flex;
   align-items: center;
