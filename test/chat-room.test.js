@@ -138,6 +138,72 @@ test("제한 자동 실행은 검토 수정 요구를 범위 안에서 자동 �
   assert.equal(room.messages.filter((message) => message.authorType === "agent").length, 5);
 });
 
+test("빠른 실행도 Frozen Task와 검토 피드백을 유지하며 제한 자동 보완한다", async (t) => {
+  const calls = [];
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-room-quick-revise-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const replies = {
+    claude: [
+      { ok: true, text: "## 목표\n빠른 실행 보완\nSTATUS: PLAN_READY" },
+      { ok: true, text: "누락된 검증을 추가하세요.\nVERDICT: FIX_REQUIRED\nISSUES:\n1.\nscope: IN\nseverity: BLOCKING\nlocation: src/a.js\nproblem: 검증 누락\nevidence: 테스트 실패\nimpact: 회귀 가능" },
+      { ok: true, text: "통과\nVERDICT: PASS" },
+      { ok: true, text: "기록 완료" },
+    ],
+    codex: [
+      { ok: true, text: "첫 구현\nSTATUS: DONE" },
+      { ok: true, text: "보완 구현\nSTATUS: DONE" },
+    ],
+  };
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    runAgent: fakeRunner(replies, calls),
+  });
+
+  const result = await room.startSpecialist({
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      implementation: { agent: room.findAgent("codex") },
+      review: { agent: room.findAgent("claude") },
+      recorder: { agent: room.findAgent("claude") },
+    },
+    mode: "quick",
+    maxAutoRevisions: 1,
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls.map((call) => call.agentId), ["claude", "codex", "claude", "codex", "claude", "claude"]);
+  assert.match(calls[3].prompt, /누락된 검증을 추가하세요/);
+  assert.match(calls[3].prompt, /실행 계약 \(Frozen Task\)/);
+});
+
+test("전문 실행 승인 대기 중에는 일반 메시지를 받지 않고 취소 후 다시 받을 수 있다", async () => {
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({
+      claude: [{ ok: true, text: "기획 완료\nSTATUS: PLAN_READY" }],
+    }),
+  });
+
+  const started = await room.startSpecialist({
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      implementation: { agent: room.findAgent("codex") },
+      review: { agent: room.findAgent("claude") },
+    },
+    mode: "step",
+  });
+  assert.equal(started.stopReason, "PLAN_READY");
+  assert.equal(room.specialistState().available, true);
+  assert.throws(() => room.sendUserMessage("일반 대화가 끼면 안 됩니다"), /전문 실행/);
+
+  const cancelled = room.cancelSpecialist();
+  assert.equal(cancelled.ok, true);
+  assert.equal(room.specialistState().available, false);
+  assert.ok(room.sendUserMessage("이제 일반 대화가 됩니다"));
+});
+
 test("단계별 실행은 구현 후 검토 결과를 사용자에게 반환하고 자동 보완하지 않는다", async () => {
   const calls = [];
   const replies = {
@@ -298,8 +364,19 @@ test("승인(resume) 후 기획을 이어서 구현·검토를 진행한다", as
   assert.equal(started.ok, false);
   assert.equal(started.stopReason, "PLAN_READY");
 
-  const result = await room.resumeSpecialist();
-  assert.equal(result.ok, true);
+  // step 모드: 승인 1회 → Builder 실행 후 builder_done에서 멈춤.
+  const afterBuilder = await room.resumeSpecialist();
+  assert.equal(afterBuilder.ok, false);
+  assert.equal(afterBuilder.stopReason, "BUILDER_DONE");
+
+  // 승인 2회 → Reviewer 실행 후 review_pass로 멈춤.
+  const afterReview = await room.resumeSpecialist();
+  assert.equal(afterReview.ok, false);
+  assert.equal(afterReview.stopReason, "REVIEW_PASS");
+
+  // 승인 3회 → 기록 후 완료.
+  const afterRecord = await room.resumeSpecialist();
+  assert.equal(afterRecord.ok, true);
   assert.deepEqual(calls.map((call) => call.agentId), ["claude", "codex", "claude"]);
 });
 
@@ -1355,9 +1432,20 @@ test("TASK-007: step 모드에서 승인(resume) 후 같은 Frozen Task로 Build
   const runsBefore = path.join(ws, ".project-memory", "runs");
   assert.ok(!fs.existsSync(runsBefore), "승인 전에는 Run이 없어야 한다");
 
-  // 승인(resume) 후 실행.
+  // 승인(resume) 후 Builder 실행 → step 모드라 builder_done에서 멈춤.
   const second = await room.resumeSpecialist();
-  assert.equal(second.ok, true);
+  assert.equal(second.ok, false);
+  assert.equal(second.stopReason, "BUILDER_DONE");
+  assert.ok(calls.some((call) => call.agentId === "codex"), "Builder가 실행되어야 한다");
+
+  // 다시 승인 → Reviewer 실행 → review_pass로 멈춤.
+  const third = await room.resumeSpecialist();
+  assert.equal(third.ok, false);
+  assert.equal(third.stopReason, "REVIEW_PASS");
+
+  // 마지막 승인 → 기록 후 완료.
+  const fourth = await room.resumeSpecialist();
+  assert.equal(fourth.ok, true);
 
   // Builder와 Reviewer 프롬프트 모두 같은 Frozen Task 본문을 봐야 한다.
   const builderPrompt = calls.find((call) => call.agentId === "codex").prompt;
@@ -1369,6 +1457,50 @@ test("TASK-007: step 모드에서 승인(resume) 후 같은 Frozen Task로 Build
 
   // TASK-008: Reviewer 프롬프트에 Builder Diff 섹션이 주입되어야 한다.
   assert.ok(reviewPrompt.includes("실제 변경 (Builder Diff)"), "Reviewer에 Builder Diff 섹션이 있어야 한다");
+});
+
+test("step 모드가 완료·판단 불가로 끝나면 임시 Checkpoint를 정리한다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-room-step-cleanup-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const checkpoint = { supported: true, id: "step-checkpoint" };
+  const cleaned = [];
+  let plannerReply = true;
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    checkpoint: {
+      createCheckpoint: async () => checkpoint,
+      cleanupCheckpoint: (value) => cleaned.push(value),
+    },
+    runAgent: ({ agent }) => {
+      let text = "";
+      if (agent.id === "claude" && plannerReply) {
+        plannerReply = false;
+        text = "## 목표\n정리\nSTATUS: PLAN_READY";
+      } else if (agent.id === "codex") {
+        text = "구현 완료\nSTATUS: DONE";
+      } else {
+        text = "통과\nVERDICT: PASS";
+      }
+      return { promise: Promise.resolve({ ok: true, text }), cancel: () => {} };
+    },
+  });
+
+  await room.startSpecialist({
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      implementation: { agent: room.findAgent("codex") },
+      review: { agent: room.findAgent("claude") },
+    },
+    mode: "step",
+  });
+  await room.resumeSpecialist();
+  await room.resumeSpecialist();
+  const completed = await room.resumeSpecialist();
+
+  assert.equal(completed.ok, true);
+  assert.deepEqual(cleaned, [checkpoint]);
 });
 
 test("TASK-008: git workspace에서 Builder가 파일을 바꾸면 Reviewer가 실제 Diff를 받는다", async (t) => {
@@ -1456,6 +1588,7 @@ test("BLOCKED이면 즉시 되돌리지 않고 Builder 변경을 남긴 채 사�
   assert.equal(result.ok, false);
   assert.equal(result.stopReason, "BLOCKED");
   assert.equal(result.blocked, true);
+  assert.equal(result.canRestore, true);
   // A안 핵심: 이 시점에는 아직 되돌리지 않았으므로 Builder 변경이 남아 있어야 한다.
   assert.equal(
     fs.readFileSync(path.join(ws, "a.txt"), "utf8").replace(/\r\n/g, "\n"),

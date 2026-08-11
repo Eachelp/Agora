@@ -50,6 +50,13 @@ v1에서 확정된 사용자 흐름은 네 가지 실행 방식으로 나뉜다.
 
 누가 다음 단계를 시작할 권한을 갖느냐가 핵심 차이다. 단계별과 제한 자동은 둘 다 "기획은 사람이 꼭 봐야 한다"는 원칙을 지키고, 기획 통과 **이후**에 구현·검토·보완을 내가 한 번씩 눌러 진행하느냐(단계별) vs 한 번 위임하고 자동으로 맡기느냐(제한 자동)가 다르다. 빠른 실행은 기획 확인 단계 자체를 건너뛰는, 가벼운 과제용 원샷 실행이다.
 
+### 2.0.1 실행 상태 보호
+
+- 전문 실행은 `실행 중 / 승인 대기 / BLOCKED`를 대화별 상태로 공개한다. 창을 다시 열거나 다른 대화로 이동해도 현재 대화의 상태만 복원한다.
+- 이 세 상태에서는 일반 채팅과 Handoff를 renderer와 backend 양쪽에서 차단한다. 따라서 일반 응답이 Reviewer·Recorder 맥락에 섞이지 않는다.
+- 승인 대기 단계에서는 **전문 실행 취소**를 제공한다. 이미 만들어진 Builder 변경은 유지하고, 임시 Checkpoint만 정리한다.
+- 빠른 실행과 제한 자동 실행은 모두 `FIX_REQUIRED + Scope: IN + 남은 횟수`일 때만 자동 보완한다. 자동 보완 Builder는 같은 Frozen Task와 Reviewer 피드백을 함께 받는다.
+
 ### 2.1 단계별 실행 (Step-by-step)
 
 - Planner → **PLAN_READY → STOP → 사용자 승인 Gate**
@@ -471,19 +478,19 @@ selfExploreWorkspace : true/false
 ```text
 TASK-000  P1 미해결 이슈 재확인 (범위 고정)
 TASK-001  독립 발언 — 구현 완료 (커밋 6853c45)
-TASK-002  전문 모드 자동 재시도 제거 (REVISE → FIX_REQUIRED 정규화, 기본 STOP)
-TASK-003  Reviewer 출력 계약 파싱 (VERDICT/ISSUES, scope, stopReason)
+TASK-002  전문 모드 자동 재시도 제어 (REVISE → FIX_REQUIRED 정규화, 기본 STOP) — 구현 완료
+TASK-003  Reviewer 출력 계약 파싱 (VERDICT/ISSUES, scope, stopReason) — 구현 완료
 TASK-004  전문 실행 3모드 (단계별 / 제한 자동 / 빠른 실행) + PLAN_READY 승인 Gate + resume — 구현 완료
           - Step-by-step / Bounded 선택
           - 자동 보완 N=0~3 (최초 1회 + 보완 N회, maxAutoRevisions 모델링)
           - Scope Gate (IN/OUT, UNKNOWN/누락 방지)
-TASK-005  Planner 실행 경로 연결 (PLAN_READY / NEEDS_DECISION 및 Output Contract 파싱)
+TASK-005  Planner 실행 경로 연결 (PLAN_READY / NEEDS_DECISION 및 Output Contract 파싱) — 구현 완료
 TASK-006  Turn Checkpoint (pre-turn workspace 복원 요구사항 준수) — 구현 완료
-TASK-007  TASK.md SoT + Run Freeze + BLOCKED 처리 및 후속 경로
-TASK-008  Reviewer Contract 상세화 (diff-first, 근거 강제, scope 구분)
+TASK-007  TASK.md SoT + Run Freeze + BLOCKED 처리 및 후속 경로 — 구현 완료
+TASK-008  Reviewer Contract 상세화 (diff-first, 근거 강제, scope 구분) — 구현 완료
 TASK-009  Handoff (검토 요청 / 이어서 작업) — 구현 완료
 TASK-010  Usage / Role UI (역할·모델·능력 표시) — 구현 완료
-TASK-011  v1 패키징·릴리스 검증
+TASK-011  v1 패키징·릴리스 검증 — Windows portable build 검증 완료, 실제 회사 PC 최초 실행은 수동 확인 필요
 ```
 
 ---
@@ -502,7 +509,7 @@ TASK-011  v1 패키징·릴리스 검증
 
 ## 13. 테스트 기준
 
-- 전체 `npm test` 통과 (기준: 367 pass / 0 fail)
+- 전체 `npm test` 통과 (기준: 423 pass / 0 fail)
 - 독립 발언 테스트 추가
 - 전문 모드 시그널 파싱 테스트 (PASS/FIX_REQUIRED/UNKNOWN, scope, stopReason)
 - 순차 모드·토론 회귀 테스트 통과

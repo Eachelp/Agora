@@ -63,6 +63,11 @@ const doctorSummary = document.getElementById("doctor-summary");
 const doctorRefresh = document.getElementById("doctor-refresh");
 const doctorClose = document.getElementById("doctor-close");
 const doctorDone = document.getElementById("doctor-done");
+const specialistBackdrop = document.getElementById("specialist-backdrop");
+const specialistBody = document.getElementById("specialist-body");
+const specialistStartBtn = document.getElementById("specialist-start");
+const specialistCancelBtn = document.getElementById("specialist-cancel");
+const specialistCloseBtn = document.getElementById("specialist-close");
 
 let providers = [];
 let diagnostics = [];
@@ -85,6 +90,10 @@ let specialistRunning = false;
 let specialistResumeAvailable = false;
 // 구현이 막힘(BLOCKED)으로 멈춰 사용자의 후속 선택을 기다리는 중인지.
 let specialistBlockedAvailable = false;
+// 단계별(step) 실행에서 현재 멈춘 단계(plan_ready/builder_done/review_fix_required/review_pass).
+let specialistResumePhase = null;
+// 전문 실행 진행 상태(진행 표시·입력창 잠금에 사용).
+let specialistActive = false;
 
 const SIDEBAR_WIDTH_KEY = "agora.chat.sidebarWidth";
 const SIDEBAR_COLLAPSED_KEY = "agora.chat.sidebarCollapsed";
@@ -267,6 +276,43 @@ function roleConfigFromProject(project, roleId) {
     model: String(raw.model || ""),
     effort: String(raw.effort || ""),
   };
+}
+
+// 단계별(step) 실행에서 멈춘 지점에 따라 버튼 라벨을 결정합니다.
+function stepResumeLabel() {
+  if (specialistResumePhase === "builder_done") return "검토 시작";
+  if (specialistResumePhase === "review_fix_required") return "수정 진행";
+  if (specialistResumePhase === "review_pass") return "기록하고 완료";
+  return "기획 승인";
+}
+
+// 단계별(step) 실행에서 멈춘 지점에 따라 안내 문구를 결정합니다.
+function resumeHintText() {
+  if (specialistResumePhase === "builder_done") {
+    return "구현이 완료되어 있습니다. 검토를 시작하려면 승인해 주세요.";
+  }
+  if (specialistResumePhase === "review_fix_required") {
+    return "검토에서 수정 필요가 나왔습니다. 수정을 진행하려면 승인해 주세요.";
+  }
+  if (specialistResumePhase === "review_pass") {
+    return "검토가 통과되었습니다. 기록하고 완료하려면 승인해 주세요.";
+  }
+  return "기획이 완료되어 있습니다. 승인하면 구현을 이어서 진행합니다.";
+}
+
+function setSpecialistState(state = {}) {
+  specialistActive = Boolean(state.active);
+  specialistResumeAvailable = Boolean(state.available);
+  specialistBlockedAvailable = Boolean(state.blocked);
+  specialistResumePhase = specialistResumeAvailable ? state.phase || null : null;
+}
+
+function specialistLocksComposer() {
+  return Boolean(specialistActive || specialistResumeAvailable || specialistBlockedAvailable);
+}
+
+function syncComposerLock() {
+  lockComposer(Boolean(activeApproval || specialistLocksComposer()));
 }
 
 function doctorStatus(diagnostic) {
@@ -1095,21 +1141,26 @@ function renderHeader() {
     ? "활성 에이전트들이 정해진 라운드만큼 토론합니다"
     : "토론에는 사용 가능한 에이전트가 두 명 이상 필요합니다";
   const project = projects.find((entry) => entry.id === activeProjectId);
+  const planner = roleConfigFromProject(project, "planning");
   const implementation = roleConfigFromProject(project, "implementation");
   const review = roleConfigFromProject(project, "review");
-  specialistButton.disabled = !activeSessionId || specialistRunning;
+  specialistButton.disabled = !activeSessionId || specialistRunning || specialistActive;
   specialistButton.textContent = specialistBlockedAvailable
     ? "막힘 처리"
     : specialistResumeAvailable
-      ? "기획 승인"
-      : "전문 실행";
+      ? stepResumeLabel()
+      : specialistActive
+        ? "전문 실행 중…"
+        : "작업 시작";
   specialistButton.title = specialistBlockedAvailable
     ? "구현이 막혔습니다. 클릭해 다음 처리를 선택하세요"
-    : implementation.agentId && review.agentId
+    : specialistActive
+      ? "전문 실행이 진행 중입니다"
+    : planner.agentId && implementation.agentId && review.agentId
     ? specialistResumeAvailable
-      ? "기획 승인 후 이어서 진행합니다"
-      : "프로젝트 설정의 구현·검토·기록 담당자로 진행합니다"
-    : "프로젝트 설정에서 구현·검토 담당자를 지정하면 사용할 수 있습니다";
+      ? "전문 실행을 이어서 진행합니다"
+      : "프로젝트 설정의 기획·구현·검토·기록 담당자로 진행합니다"
+    : "프로젝트 설정에서 기획·구현·검토 담당자를 지정하면 사용할 수 있습니다";
 }
 
 // --- 에이전트 칩 + 팝오버 ---
@@ -2155,169 +2206,284 @@ function openWorkflowPopover(anchor) {
 
 // --- 토론 팝오버 ---
 workflowButton.addEventListener("click", () => openWorkflowPopover(workflowButton));
-specialistButton.addEventListener("click", async () => {
+// 작업 시작 모달을 열고 상태에 따라 본문을 채웁니다.
+function openSpecialistDialog() {
   if (!activeSessionId) return;
-  const project = projects.find((entry) => entry.id === activeProjectId);
-  const implementation = roleConfigFromProject(project, "implementation");
-  const review = roleConfigFromProject(project, "review");
-  if (!implementation.agentId || !review.agentId) {
-    flashNotice("프로젝트 설정에서 구현·검토 담당자를 먼저 지정해 주세요.");
+  renderSpecialistDialog();
+  specialistBackdrop.hidden = false;
+}
+
+function closeSpecialistDialog() {
+  specialistBackdrop.hidden = true;
+  specialistBody.textContent = "";
+}
+
+// 상태(BLOCKED / 기획 승인 대기 / 신규 시작)에 따라 모달 본문을 그립니다.
+function renderSpecialistDialog() {
+  specialistBody.textContent = "";
+  specialistStartBtn.disabled = false;
+  specialistCancelBtn.textContent = "취소";
+
+  if (specialistBlockedAvailable) {
+    const hint = document.createElement("p");
+    hint.className = "specialist-missing";
+    hint.textContent = "구현이 막혔습니다(BLOCKED). 계획에 빠진 조건이 있을 수 있습니다. 다음 처리를 선택해 주세요.";
+    specialistBody.append(hint);
+    renderBlockedActions(specialistBody);
+    specialistStartBtn.hidden = true;
+    specialistCancelBtn.textContent = "닫기";
     return;
   }
-  // 실행 방식을 사용자가 미리 결정하도록 합니다.
-  openPopover(specialistButton, (root) => {
-    const head = document.createElement("div");
-    head.className = "popover-head";
-    const title = document.createElement("strong");
-    title.textContent = "전문 모드 실행";
-    head.append(title);
-    root.append(head);
 
-    const desc = document.createElement("p");
-    desc.className = "popover-status";
-    desc.textContent = "사람이 어디까지 확인할지 고르세요. 아래 셋 중 하나를 누르면 바로 시작합니다.";
-    root.append(desc);
+  if (specialistResumeAvailable) {
+    const hint = document.createElement("p");
+    hint.className = "specialist-missing";
+    hint.textContent = resumeHintText();
+    specialistBody.append(hint);
+    specialistStartBtn.hidden = false;
+    specialistStartBtn.textContent = stepResumeLabel();
+    specialistCancelBtn.textContent = "전문 실행 취소";
+    return;
+  }
 
-    // 구현이 막힘(BLOCKED)으로 멈춰 있으면 후속 처리부터 고르게 합니다.
-    // A안: 이 시점에는 아직 되돌리지 않았으므로 작업물이 그대로 남아 있습니다.
-    if (specialistBlockedAvailable) {
-      desc.textContent = "구현이 막혔습니다(BLOCKED). 계획에 빠진 조건이 있을 수 있습니다. 다음 처리를 선택해 주세요.";
-      renderBlockedActions(root);
-      return;
-    }
+  specialistStartBtn.hidden = false;
+  specialistStartBtn.textContent = "작업 시작";
+  buildStartDialog(specialistBody);
+}
 
-    // 이어서 진행할 기획이 있으면 먼저 승인 버튼을 띄웁니다.
-    if (specialistResumeAvailable) {
-      const resumeHint = document.createElement("p");
-      resumeHint.className = "popover-status";
-      resumeHint.textContent = "기획(PLAN_READY)이 완료되어 있습니다. 승인하면 구현을 이어서 진행합니다.";
-      root.append(resumeHint);
-      const resumeBtn = document.createElement("button");
-      resumeBtn.type = "button";
-      resumeBtn.className = "button button-primary";
-      resumeBtn.textContent = "기획 승인 후 구현 진행";
-      resumeBtn.addEventListener("click", () => {
-        closePopover();
-        resumeSpecialist();
+// 신규 시작 창 본문: 실행 방식 + 자동 보완 횟수 + 역할·모델 요약 + 누락 안내.
+function buildStartDialog(root) {
+  const project = projects.find((entry) => entry.id === activeProjectId);
+  const planner = roleConfigFromProject(project, "planning");
+  const implementation = roleConfigFromProject(project, "implementation");
+  const review = roleConfigFromProject(project, "review");
+  const recorder = roleConfigFromProject(project, "recorder");
+
+  // 실행 방식 선택.
+  const modeSection = document.createElement("div");
+  modeSection.className = "specialist-section";
+  const modeTitle = document.createElement("div");
+  modeTitle.className = "specialist-section-title";
+  modeTitle.textContent = "실행 방식";
+  modeSection.append(modeTitle);
+
+  const modeList = document.createElement("div");
+  modeList.className = "specialist-mode-list";
+  const modes = [
+    { id: "step", label: "단계별 실행", desc: "기획·구현·검토가 끝날 때마다 멈춰서 결과를 보여줍니다." },
+    { id: "auto", label: "제한 자동 실행", desc: "기획만 확인하면 구현과 검토는 범위 안에서 자동으로 진행합니다." },
+    { id: "quick", label: "빠른 실행", desc: "기획 확인 없이 끝까지 진행합니다. 가벼운 작업에만 쓰세요." },
+  ];
+  const modeInputs = {};
+  for (const m of modes) {
+    const label = document.createElement("label");
+    label.className = "specialist-mode";
+    const input = document.createElement("input");
+    input.type = "radio";
+    input.name = "specialist-mode";
+    input.value = m.id;
+    modeInputs[m.id] = input;
+    const strong = document.createElement("strong");
+    strong.textContent = m.label;
+    const p = document.createElement("p");
+    p.textContent = m.desc;
+    label.append(input, strong, p);
+    modeList.append(label);
+  }
+  modeInputs.auto.checked = true;
+  modeSection.append(modeList);
+  root.append(modeSection);
+
+  // 자동 보완 횟수(단계별에서는 숨김).
+  const supplement = document.createElement("div");
+  supplement.className = "specialist-section specialist-supplement";
+  const supplementLabel = document.createElement("label");
+  supplementLabel.textContent = "검토에서 문제가 나오면 자동 보완";
+  const autoSelect = document.createElement("select");
+  autoSelect.id = "specialist-auto-revisions";
+  for (const n of [0, 1, 2, 3]) {
+    const option = document.createElement("option");
+    option.value = String(n);
+    option.textContent = n === 0 ? "0회 (고치지 않고 멈춤)" : `${n}회`;
+    autoSelect.append(option);
+  }
+  autoSelect.value = "1";
+  supplement.append(supplementLabel, autoSelect);
+  supplement.hidden = false;
+  root.append(supplement);
+
+  // 빠른 실행 경고 문구.
+  const quickWarning = document.createElement("p");
+  quickWarning.className = "specialist-warning";
+  quickWarning.textContent = "빠른 실행은 사람의 확인 없이 끝까지 진행합니다.";
+  quickWarning.hidden = true;
+  root.append(quickWarning);
+
+  // 모드 변경 시 보완/경고 표시 갱신.
+  const syncModeUI = () => {
+    const selected = document.querySelector('input[name="specialist-mode"]:checked')?.value || "auto";
+    supplement.hidden = selected === "step";
+    quickWarning.hidden = selected !== "quick";
+  };
+  for (const input of Object.values(modeInputs)) {
+    input.addEventListener("change", syncModeUI);
+  }
+  syncModeUI();
+
+  // 역할·모델 요약.
+  const roleSection = document.createElement("div");
+  roleSection.className = "specialist-section";
+  const roleTitle = document.createElement("div");
+  roleTitle.className = "specialist-section-title";
+  roleTitle.textContent = "담당 에이전트";
+  roleSection.append(roleTitle);
+  const roleList = document.createElement("div");
+  roleList.className = "specialist-role-list";
+  const roles = [
+    { id: "planning", label: "기획", config: planner },
+    { id: "implementation", label: "구현", config: implementation },
+    { id: "review", label: "검토", config: review },
+    { id: "recorder", label: "기록", config: recorder },
+  ];
+  for (const role of roles) {
+    const row = document.createElement("div");
+    row.className = "specialist-role";
+    const labelEl = document.createElement("span");
+    labelEl.className = "specialist-role-label";
+    labelEl.textContent = role.label;
+    const valueEl = document.createElement("span");
+    valueEl.className = "specialist-role-value";
+    const agent = role.config.agentId ? agentById(role.config.agentId) : null;
+    const model = role.config.model || agent?.model || "기본값";
+    const effort = role.config.effort || agent?.effort || "기본값";
+    valueEl.textContent = agent ? `${agent.name} · ${model} · ${effort}` : "미지정";
+    row.append(labelEl, valueEl);
+    roleList.append(row);
+  }
+  roleSection.append(roleList);
+  root.append(roleSection);
+
+  // 누락 안내(기획 필수).
+  const missing = [];
+  if (!planner.agentId) missing.push("기획");
+  if (!implementation.agentId) missing.push("구현");
+  if (!review.agentId) missing.push("검토");
+  if (!chatMessages.some((message) => message.authorType === "user")) missing.push("작업 요청");
+  if (missing.length > 0) {
+    const missEl = document.createElement("p");
+    missEl.className = "specialist-missing";
+    missEl.textContent = `${missing.join("·")} 담당자가 지정되지 않았습니다. 프로젝트 설정에서 지정해 주세요.`;
+    root.append(missEl);
+    if (planner.agentId && implementation.agentId && review.agentId) {
+      const hint = document.createElement("p");
+      hint.className = "specialist-permission";
+      hint.textContent = "먼저 채팅 입력창에 무엇을 할지 적어 주세요.";
+      root.append(hint);
+    } else {
+      const openSettings = document.createElement("button");
+      openSettings.type = "button";
+      openSettings.className = "button button-small";
+      openSettings.textContent = "프로젝트 설정 열기";
+      openSettings.addEventListener("click", () => {
+        closeSpecialistDialog();
+        openProjectSettings(specialistButton, project);
       });
-      root.append(resumeBtn);
-      return;
+      root.append(openSettings);
     }
+    specialistStartBtn.disabled = true;
+  } else {
+    specialistStartBtn.disabled = false;
+  }
 
-    // 실행 방식 3종을 각각 하나의 카드로 묶습니다.
-    // (제목 · 흐름 · 설명 · 실행 버튼이 항상 같은 카드 안에 있어 짝이 헷갈리지 않습니다.)
-    const modeList = document.createElement("div");
-    modeList.className = "mode-card-list";
+  // 권한 안내.
+  const perm = document.createElement("p");
+  perm.className = "specialist-permission";
+  perm.textContent = "이 작업은 워크스페이스 쓰기 권한으로 실행됩니다.";
+  root.append(perm);
+}
 
-    // 카드 하나를 만듭니다. extra가 있으면 버튼 위에 추가 입력을 넣습니다.
-    const makeModeCard = ({ name, flow, summary, buttonLabel, primary, extra, onRun }) => {
-      const card = document.createElement("div");
-      card.className = "mode-card";
+specialistButton.addEventListener("click", () => {
+  if (!activeSessionId) return;
+  if (specialistRunning || specialistActive) {
+    flashNotice("전문 실행이 진행 중입니다. 완료 후 다시 시도해 주세요.");
+    return;
+  }
+  openSpecialistDialog();
+});
 
-      const cardTitle = document.createElement("strong");
-      cardTitle.className = "mode-card-title";
-      cardTitle.textContent = name;
+specialistStartBtn.addEventListener("click", () => {
+  if (specialistResumeAvailable) {
+    closeSpecialistDialog();
+    resumeSpecialist();
+    return;
+  }
+  const mode = document.querySelector('input[name="specialist-mode"]:checked')?.value || "auto";
+  const maxAutoRevisions = Number(document.getElementById("specialist-auto-revisions")?.value ?? 1);
+  closeSpecialistDialog();
+  runSpecialist({ mode, maxAutoRevisions });
+});
 
-      const cardFlow = document.createElement("p");
-      cardFlow.className = "mode-card-flow";
-      cardFlow.textContent = flow;
-
-      const cardDesc = document.createElement("p");
-      cardDesc.className = "mode-card-desc";
-      cardDesc.textContent = summary;
-
-      card.append(cardTitle, cardFlow, cardDesc);
-      if (extra) card.append(extra);
-
-      const runBtn = document.createElement("button");
-      runBtn.type = "button";
-      runBtn.className = primary ? "button button-primary" : "button";
-      runBtn.textContent = buttonLabel;
-      runBtn.addEventListener("click", () => {
-        closePopover();
-        onRun();
-      });
-      card.append(runBtn);
-      return card;
-    };
-
-    // 1. 단계별 실행 — 매 단계마다 멈춤
-    modeList.append(
-      makeModeCard({
-        name: "단계별 실행",
-        flow: "기획 → 내가 확인 → 구현 → 검토",
-        summary: "각 단계가 끝날 때마다 멈춰서 결과를 보여줍니다. 가장 안전합니다.",
-        buttonLabel: "단계별로 실행",
-        onRun: () => runSpecialist({ mode: "step" }),
-      })
-    );
-
-    // 2. 제한 자동 실행 — 기획만 확인하고 구현·검토는 자동
-    const autoSelect = document.createElement("select");
-    for (const n of [0, 1, 2, 3]) {
-      const option = document.createElement("option");
-      option.value = String(n);
-      option.textContent = n === 0 ? "고치지 않고 바로 멈춤" : `최대 ${n}번까지 다시 고치기`;
-      autoSelect.append(option);
-    }
-    autoSelect.value = "1";
-    const autoField = makeField("검토에서 문제가 나오면", autoSelect);
-    autoField.classList.add("mode-card-field");
-
-    modeList.append(
-      makeModeCard({
-        name: "제한 자동 실행",
-        flow: "기획 → 내가 확인 → 구현 ↔ 검토 자동",
-        summary: "기획만 확인하면 구현과 검토는 알아서 돕니다. 작업 범위를 벗어나는 문제가 나오면 바로 멈춥니다.",
-        buttonLabel: "기획 확인 후 자동 실행",
-        primary: true,
-        extra: autoField,
-        onRun: () => runSpecialist({ mode: "auto", maxAutoRevisions: Number(autoSelect.value) }),
-      })
-    );
-
-    // 3. 빠른 실행 — 확인 없이 끝까지
-    modeList.append(
-      makeModeCard({
-        name: "빠른 실행",
-        flow: "기획 → 구현 → 검토 (멈춤 없음)",
-        summary: "확인 없이 끝까지 진행합니다. 가벼운 작업에만 쓰세요.",
-        buttonLabel: "한 번에 실행",
-        onRun: () => runSpecialist({ mode: "quick" }),
-      })
-    );
-
-    root.append(modeList);
-  });
+specialistCancelBtn.addEventListener("click", () => {
+  if (specialistResumeAvailable) {
+    cancelSpecialist();
+    return;
+  }
+  closeSpecialistDialog();
+});
+specialistCloseBtn.addEventListener("click", closeSpecialistDialog);
+specialistBackdrop.addEventListener("click", (event) => {
+  if (event.target === specialistBackdrop) closeSpecialistDialog();
 });
 
 async function runSpecialist({ mode, maxAutoRevisions }) {
-  specialistBlockedAvailable = false;
-  specialistResumeAvailable = false;
   specialistRunning = true;
+  specialistActive = true;
   specialistButton.disabled = true;
   specialistButton.textContent = "전문 실행 중…";
+  lockComposer(true);
   const result = await call(
     window.chatApi.specialistStart(activeSessionId, { mode, maxAutoRevisions })
   );
   if (result) flashNotice("전문 모드를 시작했습니다.", false);
   if (result?.meta) sessionMeta = result.meta;
+  if (result?.specialist) setSpecialistState(result.specialist);
+  else if (!result) specialistActive = false;
   specialistRunning = false;
   specialistButton.disabled = false;
-  specialistButton.textContent = "전문 실행";
+  specialistButton.textContent = specialistResumeAvailable
+    ? stepResumeLabel()
+    : "작업 시작";
+  // 승인 Gate(기획/구현/검토)에서 멈추면 일반 채팅을 막아 전문 실행 중 끼어들기를 방지합니다.
+  syncComposerLock();
   renderHeader();
 }
 
 async function resumeSpecialist() {
   specialistRunning = true;
+  specialistActive = true;
   specialistButton.disabled = true;
   specialistButton.textContent = "전문 실행 중…";
+  lockComposer(true);
   const result = await call(window.chatApi.specialistResume(activeSessionId));
   if (result) flashNotice("전문 모드를 이어서 진행합니다.", false);
   if (result?.meta) sessionMeta = result.meta;
+  if (result?.specialist) setSpecialistState(result.specialist);
+  else if (!result) specialistActive = false;
   specialistRunning = false;
   specialistButton.disabled = false;
-  specialistButton.textContent = specialistResumeAvailable ? "기획 승인" : "전문 실행";
+  specialistButton.textContent = specialistResumeAvailable ? "기획 승인" : "작업 시작";
+  syncComposerLock();
+  renderHeader();
+}
+
+async function cancelSpecialist() {
+  const result = await call(window.chatApi.specialistCancel(activeSessionId));
+  if (!result) return;
+  if (result?.meta) sessionMeta = result.meta;
+  if (result?.specialist) setSpecialistState(result.specialist);
+  closeSpecialistDialog();
+  flashNotice("전문 실행을 취소했습니다. 현재 작업 결과는 유지됩니다.", false);
+  syncComposerLock();
   renderHeader();
 }
 
@@ -2330,7 +2496,7 @@ function renderBlockedActions(root) {
   plannerBtn.textContent = "기획자에게 다시 맡기기";
   plannerBtn.title = "막힌 사유를 기획자에게 전달해 작업 지시서를 다시 쓰게 합니다";
   plannerBtn.addEventListener("click", () => {
-    closePopover();
+    closeSpecialistDialog();
     handoffBlockedToPlanner();
   });
   root.append(plannerBtn);
@@ -2341,7 +2507,7 @@ function renderBlockedActions(root) {
   editBtn.textContent = "작업 지시서 직접 수정";
   editBtn.title = "TASK.md를 직접 열어 빠진 조건을 보완합니다";
   editBtn.addEventListener("click", () => {
-    closePopover();
+    closeSpecialistDialog();
     openTaskFileForEdit();
   });
   root.append(editBtn);
@@ -2367,7 +2533,7 @@ function renderBlockedActions(root) {
     const action = changeSelect.value;
     if (!action) return;
     changeSelect.value = "";
-    closePopover();
+    closeSpecialistDialog();
     resolveBlocked(action);
   });
   root.append(changeSelect);
@@ -2923,7 +3089,7 @@ function renderMessage(message) {
     const handoffBtn = document.createElement("button");
     handoffBtn.type = "button";
     handoffBtn.className = "message-handoff-button";
-    if (specialistRunning) {
+    if (specialistRunning || specialistLocksComposer()) {
       handoffBtn.disabled = true;
       handoffBtn.classList.add("is-disabled");
       handoffBtn.title = "실행/토론 진행 중에는 다른 AI에게 전달할 수 없습니다 (완료 후 가능)";
@@ -2933,7 +3099,7 @@ function renderMessage(message) {
     handoffBtn.textContent = "다른 AI에게 전달";
     handoffBtn.addEventListener("click", (event) => {
       event.stopPropagation();
-      if (specialistRunning) return;
+      if (specialistRunning || specialistLocksComposer()) return;
       openHandoffPopover(handoffBtn, message.id, message.author);
     });
     actions.append(handoffBtn);
@@ -3280,6 +3446,10 @@ function autoresize() {
 }
 
 async function sendCurrentMessage() {
+  if (specialistLocksComposer()) {
+    flashNotice("전문 실행이 진행 중이거나 승인 대기 중입니다. 먼저 작업을 완료하거나 취소해 주세요.");
+    return;
+  }
   const text = composerInput.value.trim();
   if (!text && pendingAttachments.length === 0) return;
   const attachmentIds = pendingAttachments.map((attachment) => attachment.id);
@@ -3418,6 +3588,7 @@ function applyFullState(full) {
   if (full.session) {
     sessionMeta = full.session.meta;
     agents = full.session.agents || [];
+    setSpecialistState(full.session.specialist || {});
     typingAgents.clear();
     for (const agentId of full.session.typing || []) typingAgents.add(agentId);
     pendingAttachments = full.session.pendingAttachments || [];
@@ -3448,6 +3619,7 @@ function applyFullState(full) {
   renderAgents();
   renderTyping();
   renderPendingAttachments();
+  syncComposerLock();
 }
 
 // --- 이벤트 구독 ---
@@ -3496,14 +3668,16 @@ window.chatApi.onAgents(({ sessionId, agents: nextAgents }) => {
   renderAgents();
   renderHeader();
 });
-window.chatApi.onSpecialistResumeState(({ sessionId, available, blocked }) => {
+window.chatApi.onSpecialistResumeState(({ sessionId, ...state }) => {
   if (sessionId !== activeSessionId) return;
-  specialistResumeAvailable = Boolean(available);
-  specialistBlockedAvailable = Boolean(blocked);
+  setSpecialistState(state);
+  syncComposerLock();
   renderHeader();
 });
 function lockComposer(locked) {
   composerInput.disabled = locked;
+  sendButton.disabled = locked;
+  attachButton.disabled = locked;
   composerInput.placeholder = locked ? "승인 창을 먼저 처리해 주세요" : "메시지 입력...";
   if (locked) composerInput.blur();
 }
@@ -3514,7 +3688,7 @@ function showNextApproval() {
   approvalSummary.textContent = `${agent?.name || activeApproval.agentId}: ${activeApproval.summary}`;
   approvalDetail.textContent = activeApproval.detail || "세부 정보가 없습니다.";
   approvalBackdrop.hidden = false;
-  lockComposer(true);
+  syncComposerLock();
 }
 async function answerApproval(decision) {
   if (!activeApproval) return;
@@ -3522,7 +3696,7 @@ async function answerApproval(decision) {
   activeApproval = null;
   approvalBackdrop.hidden = true;
   await call(window.chatApi.approvalRespond(current.sessionId, current.approvalId, decision));
-  lockComposer(false);
+  syncComposerLock();
   composerInput.focus();
   showNextApproval();
 }

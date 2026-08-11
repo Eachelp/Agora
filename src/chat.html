@@ -105,7 +105,7 @@
             <div class="room-controls-actions">
               <button class="chip-button workflow-button" id="btn-workflow" type="button" title="이 프로젝트의 메모리·결정·작업 기록">프로젝트 기록</button>
               <button class="chip-button discussion-button" id="btn-discussion" type="button" title="에이전트 토론 시작">토론 시작</button>
-              <button class="chip-button specialist-button" id="btn-specialist" type="button" title="프로젝트 설정의 구현·검토·기록 담당자로 진행">전문 실행</button>
+              <button class="chip-button specialist-button" id="btn-specialist" type="button" title="프로젝트 설정의 기획·구현·검토·기록 담당자로 진행">작업 시작</button>
             </div>
           </div>
         </header>
@@ -167,6 +167,19 @@
         <div class="approval-actions">
           <button class="button" id="approval-deny" type="button">거부</button>
           <button class="button button-primary" id="approval-approve" type="button">이 턴 승인 후 다시 실행</button>
+        </div>
+      </section>
+    </div>
+    <div class="specialist-backdrop" id="specialist-backdrop" hidden>
+      <section class="specialist-dialog" role="dialog" aria-modal="true" aria-labelledby="specialist-title">
+        <div class="specialist-head">
+          <h2 id="specialist-title">작업 시작</h2>
+          <button class="icon-button specialist-close" id="specialist-close" type="button" aria-label="작업 시작 창 닫기">×</button>
+        </div>
+        <div class="specialist-body" id="specialist-body"></div>
+        <div class="specialist-actions">
+          <button class="button" id="specialist-cancel" type="button">취소</button>
+          <button class="button button-primary" id="specialist-start" type="button">작업 시작</button>
         </div>
       </section>
     </div>

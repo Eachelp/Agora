@@ -603,9 +603,13 @@ function roomMeta(meta) {
       if (!stage.ok) return stage;
       stages[roleId] = stage;
     }
-    // Planner(기획)는 선택입니다. 지정되지 않으면 실행하지 않습니다.
+    // Planner(기획)는 세 실행 방식 모두 거치는 필수 역할입니다.
+    // 없으면 어떤 에이전트도 호출하지 않고 실행을 거부합니다.
     const planner = specialistStageFor(project, room, "planning");
-    if (planner.ok) stages.planner = planner;
+    if (!planner.ok) {
+      return { ok: false, error: "전문 모드는 기획 담당자가 필요합니다. 프로젝트 설정에서 기획 담당자를 지정해 주세요." };
+    }
+    stages.planner = planner;
     return { ok: true, stages };
   }
 
@@ -722,6 +726,7 @@ function roomMeta(meta) {
       })),
       typing: room.state().typing,
       turnState: room.turnState(),
+      specialist: room.specialistState(),
       pendingAttachments: [...pendingFor(sessionId).values()].map(publicAttachment),
     };
   }
@@ -1331,6 +1336,9 @@ function roomMeta(meta) {
       wrap(async ({ sessionId, text, attachmentIds, independent }) => {
         requireSession(sessionId);
         const room = getRoom(sessionId);
+        if (room.isSpecialistLocked()) {
+          throw new Error("전문 실행이 진행 중이거나 승인 대기 중입니다. 먼저 작업을 완료하거나 취소해 주세요.");
+        }
         const pending = pendingFor(sessionId);
         const attachments = [];
         for (const id of Array.isArray(attachmentIds) ? attachmentIds : []) {
@@ -1405,6 +1413,9 @@ function roomMeta(meta) {
       wrap(async ({ sessionId, mode, maxAutoRevisions }) => {
         requireSession(sessionId);
         const room = getRoom(sessionId);
+        if (!room.messages.some((message) => message.authorType === "user")) {
+          throw new Error("전문 실행을 시작하려면 먼저 이 대화에 작업 요청을 남겨 주세요.");
+        }
         const project = projectForSession(store.readMeta(sessionId));
         const planned = specialistStagesFor(project, room);
         if (!planned.ok) throw new Error(planned.error);
@@ -1442,8 +1453,11 @@ function roomMeta(meta) {
             }
           })
           .catch(() => {});
-        if (result && result.ok === false) throw new Error(result.error);
-        return { meta: publicMeta(store.readMeta(sessionId)) };
+        // PLAN_READY 등 사람 판단을 기다리는 정상 STOP은 오류가 아닙니다.
+        if (result && result.ok === false && !result.needsUserDecision && !result.cancelled) {
+          throw new Error(result.error || "전문 실행을 시작하지 못했습니다.");
+        }
+        return { meta: publicMeta(store.readMeta(sessionId)), specialist: room.specialistState() };
       })
     );
 
@@ -1452,13 +1466,39 @@ function roomMeta(meta) {
       wrap(async ({ sessionId }) => {
         requireSession(sessionId);
         const room = getRoom(sessionId);
+        const project = projectForSession(store.readMeta(sessionId));
+        const recorderAgentId = room.specialistResume?.stages?.recorder?.agent?.id || null;
         const started = room.resumeSpecialist();
         const result = await Promise.race([
           started,
           new Promise((resolve) => setImmediate(() => resolve({ ok: true, pending: true }))),
         ]);
-        if (result && result.ok === false) throw new Error(result.error);
-        return { meta: publicMeta(store.readMeta(sessionId)) };
+        started
+          .then((completed) => {
+            if (completed?.ok && completed.recording) {
+              saveRecorderOutput(project.id, completed.recording, "전문 모드 실행 요약 초안", {
+                chatId: sessionId,
+                recorderAgentId,
+              });
+            }
+          })
+          .catch(() => {});
+        // 단계별 실행의 다음 Gate(BUILDER_DONE/REVIEW_PASS)도 정상 STOP입니다.
+        if (result && result.ok === false && !result.needsUserDecision && !result.cancelled) {
+          throw new Error(result.error || "전문 실행을 이어서 진행하지 못했습니다.");
+        }
+        return { meta: publicMeta(store.readMeta(sessionId)), specialist: room.specialistState() };
+      })
+    );
+
+    ipcMain.handle(
+      "chat:specialist:cancel",
+      wrap(async ({ sessionId }) => {
+        requireSession(sessionId);
+        const room = getRoom(sessionId);
+        const result = room.cancelSpecialist();
+        if (!result.ok) throw new Error(result.error);
+        return { meta: publicMeta(store.readMeta(sessionId)), specialist: room.specialistState() };
       })
     );
 

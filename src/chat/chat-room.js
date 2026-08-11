@@ -135,6 +135,30 @@ class ChatRoom extends EventEmitter {
     };
   }
 
+  // 전문 실행 상태는 renderer 재연결·대화 전환에도 대화별로 복원할 수 있어야 합니다.
+  // 실행 중(active), 사람 승인 대기(available), BLOCKED는 서로 다른 상태입니다.
+  specialistState() {
+    return {
+      active: Boolean(this.specialistActive),
+      available: Boolean(this.specialistResume),
+      mode: this.specialistResume?.mode || null,
+      phase: this.specialistResume?.phase || null,
+      blocked: Boolean(this.specialistBlocked),
+      canRestore: Boolean(this.specialistBlocked?.canRestore),
+      hasTask: Boolean(
+        this.specialistBlocked?.taskPath || this.specialistResume?.taskInfo?.relativePath
+      ),
+    };
+  }
+
+  emitSpecialistState() {
+    this.emit("specialist-resume-state", this.specialistState());
+  }
+
+  isSpecialistLocked() {
+    return Boolean(this.specialistActive || this.specialistResume || this.specialistBlocked);
+  }
+
   appendMessage(message) {
     const entry = { id: nextMessageId(), ts: Date.now(), ...message };
     this.messages.push(entry);
@@ -156,6 +180,10 @@ class ChatRoom extends EventEmitter {
     const attachments = Array.isArray(payload.attachments) ? payload.attachments : [];
     const independent = Boolean(payload.independent);
     if (!trimmed && attachments.length === 0) return null;
+    // renderer 잠금이 늦게 반영되거나 우회되어도 전문 실행 맥락에는 일반 대화가 끼지 않습니다.
+    if (this.isSpecialistLocked()) {
+      throw new Error("전문 실행이 진행 중이거나 승인 대기 중입니다. 먼저 작업을 완료하거나 취소해 주세요.");
+    }
 
     const entry = this.appendMessage({
       authorType: "user",
@@ -296,6 +324,11 @@ class ChatRoom extends EventEmitter {
   // 사용자에게 돌려줍니다. 중지 직전에 도착한 응답이나 @멘션도 세대 가드로
   // 버리며, 다음 사용자 발화 전까지 에이전트발 호출을 만들지 않습니다.
   interject() {
+    if (this.specialistActive || this.specialistResume) {
+      const cancelled = this.cancelSpecialist();
+      this.mentionsMuted = true;
+      return { dropped: 0, interrupted: Boolean(cancelled.ok) };
+    }
     const dropped = this.turnQueue.length + this.deferredTurnQueue.length;
     const interrupted = dropped > 0 || this.currentTurn !== null || this.cancels.size > 0;
     this.stopAllSilently();
@@ -603,7 +636,7 @@ class ChatRoom extends EventEmitter {
   // 다른 AI가 보낸 특정 메시지를 선택한 에이전트에게 전달해 이어서 답하게 합니다.
   // intent: "REVIEW_OPINION"(검토 요청) 또는 "CONTINUE"(이어서 작업).
   handoffMessage(targetAgentId, messageId, intent = "CONTINUE") {
-    if (this.discussionRequested || this.discussionActive || this.specialistActive) {
+    if (this.discussionRequested || this.discussionActive || this.isSpecialistLocked()) {
       return { ok: false, error: "토론이나 전문 실행이 진행 중에는 전달할 수 없습니다." };
     }
     const target = this.findAgent(targetAgentId);
@@ -633,8 +666,13 @@ class ChatRoom extends EventEmitter {
   //  - quick  (빠른 실행): 기획(PLAN_READY)이면 승인 없이 구현까지 한 번에 진행.
   // 새 workflow framework를 만들지 않고 기존 단일 턴 큐를 재사용합니다.
   async startSpecialist(options = {}) {
-    if (this.discussionRequested || this.discussionActive || this.specialistActive) {
+    if (this.discussionRequested || this.discussionActive || this.isSpecialistLocked()) {
       return { ok: false, error: "이미 다른 전문 작업이나 토론이 진행 중입니다." };
+    }
+    // 일반 응답이 실행·대기 중이면 전문 실행을 큐 뒤에 넣지 않고 즉시 거부합니다.
+    // (전문 실행이 일반 응답 뒤에 몰래 대기하지 않도록 합니다.)
+    if (this.turnActive || this.turnQueue.length > 0 || this.deferredTurnQueue.length > 0) {
+      return { ok: false, error: "응답이 진행 중입니다. 응답이 끝난 뒤 다시 시작해 주세요." };
     }
     const stages = options.stages || {};
     const implementation = stages.implementation;
@@ -648,7 +686,7 @@ class ChatRoom extends EventEmitter {
     const mode = options.mode === "auto" ? "auto" : options.mode === "quick" ? "quick" : "step";
     const maxAutoRevisions = Number.isInteger(options.maxAutoRevisions) && options.maxAutoRevisions >= 0
       ? Math.min(options.maxAutoRevisions, 3)
-      : mode === "auto" ? 1 : 0;
+      : mode === "step" ? 0 : 1;
 
     const requestedGeneration = this.generation;
     this.specialistActive = true;
@@ -661,10 +699,11 @@ class ChatRoom extends EventEmitter {
       }
       this.specialistBlocked = null;
     }
-    this.emit("specialist-resume-state", { available: false, blocked: false });
+    this.emitSpecialistState();
     await this.waitForIdle();
     if (requestedGeneration !== this.generation) {
       this.specialistActive = false;
+      this.emitSpecialistState();
       return { ok: false, cancelled: true };
     }
 
@@ -726,8 +765,9 @@ class ChatRoom extends EventEmitter {
         feedback = taskInfo ? taskInfo.content : plannerResult.text || "";
         if (mode !== "quick") {
           // step/auto → 사람 승인 Gate. 이어서 진행할 상태를 저장하고 멈춥니다.
-          this.specialistResume = { stages, mode, maxAutoRevisions, feedback, taskInfo };
-          this.emit("specialist-resume-state", { available: true, mode });
+          // step은 Builder·Reviewer 각 단계 경계에서도 멈추기 위해 phase를 추적합니다.
+          this.specialistResume = { stages, mode, maxAutoRevisions, feedback, taskInfo, phase: "plan_ready" };
+          this.emitSpecialistState();
           this.appendSystem("기획(PLAN_READY)이 완료되었습니다. 승인하시면 구현을 이어서 진행합니다.");
           return {
             ok: false,
@@ -765,16 +805,26 @@ class ChatRoom extends EventEmitter {
     if (!this.specialistResume) {
       return { ok: false, error: "이어서 진행할 기획이 없습니다. 전문 모드를 다시 시작해 주세요." };
     }
+    // 일반 응답이 실행·대기 중이면 이어서 진행하지 않고 거부합니다.
+    if (this.turnActive || this.turnQueue.length > 0 || this.deferredTurnQueue.length > 0) {
+      return { ok: false, error: "응답이 진행 중입니다. 응답이 끝난 뒤 다시 시도해 주세요." };
+    }
     const resume = this.specialistResume;
     const requestedGeneration = this.generation;
     this.specialistActive = true;
+    this.emitSpecialistState();
     await this.waitForIdle();
     if (requestedGeneration !== this.generation) {
       this.specialistActive = false;
+      this.emitSpecialistState();
       return { ok: false, cancelled: true };
     }
     this.specialistResume = null;
-    this.emit("specialist-resume-state", { available: false });
+    this.emitSpecialistState();
+    // 단계별(step) 실행은 phase에 따라 다음 한 단계만 진행합니다.
+    if (resume.mode === "step") {
+      return this.resumeStepPhase(resume, requestedGeneration);
+    }
     this.appendSystem("기획이 승인되었습니다. 구현을 이어서 진행합니다.");
     try {
       return await this.runExecutionBlock({
@@ -788,6 +838,189 @@ class ChatRoom extends EventEmitter {
       });
     } finally {
       this.specialistActive = false;
+      this.emitSpecialistState();
+      this.turnQueue.push(...this.deferredTurnQueue.splice(0));
+      this.emitTurnState();
+      this.pumpTurnQueue();
+    }
+  }
+
+  // 승인 대기 중인 전문 실행을 명시적으로 끝냅니다.
+  // 이미 만들어진 Builder 변경은 복원하지 않고 보존합니다. 복원이 필요하면 BLOCKED 메뉴를 씁니다.
+  cancelSpecialist() {
+    if (!this.specialistActive && !this.specialistResume) {
+      return { ok: false, error: "취소할 전문 실행이 없습니다." };
+    }
+    const checkpoint = this.specialistResume?.checkpoint || null;
+    this.specialistResume = null;
+    this.specialistActive = false;
+    this.stopAllSilently();
+    if (checkpoint && this.checkpointEngine) {
+      this.checkpointEngine.cleanupCheckpoint(checkpoint);
+    }
+    this.emitSpecialistState();
+    this.appendSystem("전문 실행을 취소했습니다. 현재 작업 결과는 그대로 유지됩니다.");
+    return { ok: true, cancelled: true };
+  }
+
+  // 단계별(step) 실행의 다음 단계를 진행합니다.
+  //   plan_ready          → Builder 실행 후 phase: builder_done으로 멈춤
+  //   builder_done        → Reviewer 실행
+  //   review_fix_required → Builder 보완 (step에서는 사용자 확인 후 수동 진행)
+  //   review_pass         → Recorder 실행 후 완료
+  async resumeStepPhase(resume, requestedGeneration) {
+    const { stages, feedback, taskInfo, maxAutoRevisions } = resume;
+    const implementation = stages.implementation;
+    const review = stages.review;
+    const recorder = stages.recorder;
+    const workspace = this.meta.workspace;
+    // TASK-007: step 모드에서도 실행 시점에 Task를 동결(Freeze)합니다.
+    // 승인 시점에 한 번 FREEZE하고, 같은 Run의 모든 단계(builder·review·보완)가
+    // 동일한 불변 Frozen Task를 사용하도록 resume에 runInfo를 보관합니다.
+    let runInfo = resume.runInfo || null;
+    let checkpoint = resume.checkpoint || null;
+    let retainCheckpoint = false;
+    const frozenTaskId = taskInfo?.filename ? String(taskInfo.filename).replace(/\.md$/i, "") : null;
+    const frozenTaskMeta = () =>
+      runInfo
+        ? {
+            runId: runInfo.runId,
+            content: runInfo.content,
+            taskId: frozenTaskId,
+            taskHash: runInfo.taskHash || null,
+          }
+        : null;
+    const freezeOnce = async () => {
+      if (runInfo) return runInfo;
+      if (taskInfo) {
+        runInfo = this.taskManager.freezeTask(
+          { contentSource: "file", taskPath: taskInfo.relativePath || null, description: "" },
+          workspace
+        );
+      }
+      // TASK-006: Builder 실행 직전 workspace 상태 보존 (지원 시).
+      if (!checkpoint && this.checkpointEngine) {
+        checkpoint = await this.checkpointEngine.createCheckpoint(workspace);
+      }
+      return runInfo;
+    };
+    const cleanupCheckpoint = () => {
+      if (checkpoint?.supported === true && this.checkpointEngine) {
+        this.checkpointEngine.cleanupCheckpoint(checkpoint);
+      }
+    };
+    const holdForBlocked = (blockedRound, blockedResult) => {
+      const canRestore = Boolean(checkpoint && checkpoint.supported === true);
+      this.specialistBlocked = {
+        checkpoint: canRestore ? checkpoint : null,
+        canRestore,
+        taskPath: taskInfo?.relativePath || null,
+        runId: runInfo?.runId || null,
+        stage: "implementation",
+      };
+      retainCheckpoint = canRestore;
+      this.specialistActive = false;
+      this.emitSpecialistState();
+      this.appendSystem("구현이 막혔습니다(BLOCKED). 아래에서 다음 처리를 선택해 주세요.");
+      return { ok: false, stage: "implementation", completedIterations: blockedRound, needsUserDecision: true, stopReason: "BLOCKED", blocked: true, canRestore, result: blockedResult };
+    };
+
+    try {
+      if (resume.phase === "plan_ready") {
+        // 승인 시점에 Task를 동결하고 Checkpoint를 생성합니다.
+        try {
+          await freezeOnce();
+        } catch (error) {
+          this.appendSystem(`Frozen Task를 만들지 못해 실행을 중단합니다. (${error?.message || "알 수 없는 오류"})`);
+          return { ok: false, stage: "planner", completedIterations: 0, needsUserDecision: true, stopReason: "FROZEN_TASK_MISSING", taskError: error?.message || "알 수 없는 오류" };
+        }
+        // Builder 실행.
+        const builderResult = await this.scheduleResponse(implementation.agent, {
+          specialist: { stage: "implementation", round: 1, maxRounds: 1, feedback: runInfo ? runInfo.content : feedback, frozenTask: frozenTaskMeta() },
+          agentConfig: implementation.agentConfig,
+        });
+        if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
+        if (!builderResult?.ok) return this.specialistFail(implementation, "implementation", 1, builderResult);
+        if (builderResult.builderStatus === "BLOCKED") return holdForBlocked(1, builderResult);
+        // 구현 완료 → 사용자 확인 대기.
+        this.specialistResume = { ...resume, phase: "builder_done", runInfo, checkpoint, builderChanges: (await describeWorkspaceChanges(workspace)).text };
+        retainCheckpoint = Boolean(checkpoint?.supported);
+        this.emitSpecialistState();
+        this.appendSystem("구현이 완료되었습니다. 검토를 시작하려면 승인해 주세요.");
+        return { ok: false, stage: "implementation", completedIterations: 1, needsUserDecision: true, stopReason: "BUILDER_DONE" };
+      }
+
+      if (resume.phase === "builder_done") {
+        // Reviewer 실행.
+        const reviewResult = await this.scheduleResponse(review.agent, {
+          specialist: { stage: "review", round: 1, maxRounds: 1, frozenTask: frozenTaskMeta(), reviewDiff: resume.builderChanges || "" },
+          agentConfig: review.agentConfig,
+        });
+        if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
+        if (!reviewResult?.ok) return this.specialistFail(review, "review", 1, reviewResult);
+        const contract = this.parseReviewContract(reviewResult.text || "", reviewResult.specialistSignal);
+        if (contract.verdict === "PASS") {
+          this.specialistResume = { ...resume, phase: "review_pass", runInfo, checkpoint };
+          retainCheckpoint = Boolean(checkpoint?.supported);
+          this.emitSpecialistState();
+          this.appendSystem("검토가 통과되었습니다. 기록하고 완료하려면 승인해 주세요.");
+          return { ok: false, stage: "review", completedIterations: 1, needsUserDecision: true, stopReason: "REVIEW_PASS", contract };
+        }
+        if (contract.verdict === "UNKNOWN") {
+          this.specialistActive = false;
+          return { ok: false, stage: "review", completedIterations: 1, needsUserDecision: true, stopReason: "INSUFFICIENT_EVIDENCE", contract, review: reviewResult };
+        }
+        // FIX_REQUIRED → 사용자 확인 후 수동 보완.
+        this.specialistResume = { ...resume, phase: "review_fix_required", reviewContract: contract, reviewText: reviewResult.text || "", runInfo, checkpoint };
+        retainCheckpoint = Boolean(checkpoint?.supported);
+        this.emitSpecialistState();
+        this.appendSystem("검토에서 수정 필요가 나왔습니다. 수정을 진행하려면 승인해 주세요.");
+        return { ok: false, stage: "review", completedIterations: 1, needsUserDecision: true, stopReason: "FIX_REQUIRED", contract, review: reviewResult };
+      }
+
+      if (resume.phase === "review_fix_required") {
+        // Builder 보완 후 다시 검토.
+        const builderResult = await this.scheduleResponse(implementation.agent, {
+          specialist: { stage: "implementation", round: 2, maxRounds: 1, feedback: resume.reviewText || feedback, frozenTask: frozenTaskMeta() },
+          agentConfig: implementation.agentConfig,
+        });
+        if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
+        if (!builderResult?.ok) return this.specialistFail(implementation, "implementation", 2, builderResult);
+        if (builderResult.builderStatus === "BLOCKED") return holdForBlocked(2, builderResult);
+        this.specialistResume = { ...resume, phase: "builder_done", runInfo, checkpoint, builderChanges: (await describeWorkspaceChanges(workspace)).text };
+        retainCheckpoint = Boolean(checkpoint?.supported);
+        this.emitSpecialistState();
+        this.appendSystem("보완이 완료되었습니다. 다시 검토를 시작하려면 승인해 주세요.");
+        return { ok: false, stage: "implementation", completedIterations: 2, needsUserDecision: true, stopReason: "BUILDER_DONE" };
+      }
+
+      if (resume.phase === "review_pass") {
+        // Recorder 실행 후 완료.
+        let recorderResult = null;
+        if (recorder?.agent) {
+          recorderResult = await this.scheduleResponse(recorder.agent, {
+            specialist: { stage: "recorder", round: 1, maxRounds: 1 },
+            agentConfig: recorder.agentConfig,
+          });
+          if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
+          if (!recorderResult?.ok) {
+            this.specialistActive = false;
+            const recordError = recorderResult?.error || "기록관 실행이 실패했습니다.";
+            this.appendSystem(`전문 모드 구현·검토는 통과했지만 기록관이 결과를 정리하지 못했습니다. (${recordError})`);
+            return { ok: true, completedIterations: 1, recorded: false, recording: recorderResult?.text || "", recordError };
+          }
+        }
+        this.specialistActive = false;
+        this.appendSystem("전문 모드 구현·검토·기록이 완료되었습니다.");
+        return { ok: true, completedIterations: 1, recorded: Boolean(recorderResult?.ok), recording: recorderResult?.text || "" };
+      }
+
+      this.specialistActive = false;
+      return { ok: false, error: "알 수 없는 단계입니다." };
+    } finally {
+      this.specialistActive = false;
+      if (!retainCheckpoint) cleanupCheckpoint();
+      this.emitSpecialistState();
       this.turnQueue.push(...this.deferredTurnQueue.splice(0));
       this.emitTurnState();
       this.pumpTurnQueue();
@@ -799,7 +1032,9 @@ class ChatRoom extends EventEmitter {
     const implementation = stages.implementation;
     const review = stages.review;
     const recorder = stages.recorder;
-    const maxRounds = mode === "auto" ? maxAutoRevisions + 1 : 1;
+    // 제한 자동과 빠른 실행은 모두 사용자가 정한 보완 상한을 적용합니다.
+    const canAutoRevise = mode === "auto" || mode === "quick";
+    const maxRounds = canAutoRevise ? maxAutoRevisions + 1 : 1;
     let autoRevisionCount = 0;
     let recorderResult = null;
     // TASK-008: Builder가 만든 실제 변경(Diff)을 수집해 Reviewer에게 전달합니다.
@@ -858,6 +1093,11 @@ class ChatRoom extends EventEmitter {
       await this.checkpointEngine.restoreCheckpoint(this.meta.workspace, checkpoint);
       this.checkpointEngine.cleanupCheckpoint(checkpoint);
     };
+    const cleanupCheckpoint = () => {
+      if (checkpointSupported && this.checkpointEngine) {
+        this.checkpointEngine.cleanupCheckpoint(checkpoint);
+      }
+    };
 
     // BLOCKED(A안): 즉시 되돌리지 않고 Builder 작업물을 그대로 둔 채 멈춥니다.
     // 사용자가 [작업 전으로 복원]/[Task 폐기]를 고르면 그때 복원합니다.
@@ -869,12 +1109,8 @@ class ChatRoom extends EventEmitter {
         runId: runInfo?.runId || null,
         stage: "implementation",
       };
-      this.emit("specialist-resume-state", {
-        available: false,
-        blocked: true,
-        canRestore: checkpointSupported,
-        hasTask: Boolean(taskInfo?.relativePath),
-      });
+      this.specialistActive = false;
+      this.emitSpecialistState();
       this.appendSystem(
         checkpointSupported
           ? "구현이 막혔습니다(BLOCKED). 지금까지의 변경은 그대로 두었습니다. 아래에서 다음 처리를 선택해 주세요."
@@ -897,8 +1133,8 @@ class ChatRoom extends EventEmitter {
         stage: "implementation",
         round,
         maxRounds,
-        // TASK-007: Builder의 실행 계약 source는 Frozen Task입니다.
-        // runInfo가 있으면 그 본문을, 없으면 기존 feedback 텍스트를 사용합니다.
+        // TASK-007: 최초 Builder의 실행 계약 source는 Frozen Task입니다.
+        // (자동 보완에서는 아래에서 Reviewer 피드백도 별도로 전달합니다.)
         feedback: runInfo ? runInfo.content : feedback,
         frozenTask: frozenTaskMeta(),
       },
@@ -907,7 +1143,7 @@ class ChatRoom extends EventEmitter {
     // Builder 실행이 끝난 뒤 실제 변경분을 수집합니다. (git 아니면 빈 값)
     builderChanges = (await describeWorkspaceChanges(workspace)).text;
     if (requestedGeneration !== this.generation) {
-      await restoreCheckpoint();
+      cleanupCheckpoint();
       return { ok: false, cancelled: true };
     }
     if (!builderResult?.ok) {
@@ -933,7 +1169,7 @@ class ChatRoom extends EventEmitter {
         agentConfig: review.agentConfig,
       });
       if (requestedGeneration !== this.generation) {
-        await restoreCheckpoint();
+        cleanupCheckpoint();
         return { ok: false, cancelled: true };
       }
       if (!reviewResult?.ok) {
@@ -969,14 +1205,14 @@ class ChatRoom extends EventEmitter {
           review: reviewResult,
         };
       }
-      if (mode !== "auto" || autoRevisionCount >= maxAutoRevisions) {
+      if (!canAutoRevise || autoRevisionCount >= maxAutoRevisions) {
         await restoreCheckpoint();
         return {
           ok: false,
           stage: "review",
           completedIterations: round,
           needsUserDecision: true,
-          stopReason: mode !== "auto"
+          stopReason: !canAutoRevise
             ? "FIX_REQUIRED"
             : "LIMIT_EXCEEDED",
           contract,
@@ -995,7 +1231,8 @@ class ChatRoom extends EventEmitter {
           round,
           maxRounds,
           // TASK-007: 자동 보완도 같은 Run, 같은 Frozen Task를 사용합니다.
-          feedback: runInfo ? runInfo.content : feedback,
+          // Frozen Task는 요구사항 기준이고, feedback은 이번에 고칠 Reviewer 지시입니다.
+          feedback,
           frozenTask: frozenTaskMeta(),
         },
         agentConfig: implementation.agentConfig,
@@ -1003,7 +1240,7 @@ class ChatRoom extends EventEmitter {
       // 자동 보완 후에도 diff를 다시 수집해 최신 변경분을 검토에 반영합니다.
       builderChanges = (await describeWorkspaceChanges(workspace)).text;
       if (requestedGeneration !== this.generation) {
-        await restoreCheckpoint();
+        cleanupCheckpoint();
         return { ok: false, cancelled: true };
       }
       if (!builderResult?.ok) {
@@ -1139,7 +1376,7 @@ class ChatRoom extends EventEmitter {
     }
 
     this.specialistBlocked = null;
-    this.emit("specialist-resume-state", { available: false, blocked: false });
+    this.emitSpecialistState();
     this.appendSystem(
       action === "keep"
         ? "막힘 처리: 지금까지의 변경을 그대로 유지합니다."
@@ -1172,7 +1409,7 @@ class ChatRoom extends EventEmitter {
     if (pool.length < 2) {
       return { ok: false, error: "토론에는 사용 가능한 에이전트가 두 명 이상 필요합니다." };
     }
-    if (this.discussionRequested || this.discussionActive || this.specialistActive) {
+    if (this.discussionRequested || this.discussionActive || this.isSpecialistLocked()) {
       return { ok: false, error: "이미 토론이 진행 중입니다." };
     }
 
@@ -1231,6 +1468,10 @@ class ChatRoom extends EventEmitter {
   }
 
   stopAll() {
+    if (this.specialistActive || this.specialistResume) {
+      const cancelled = this.cancelSpecialist();
+      if (cancelled.ok) return;
+    }
     const hadWork = this.cancels.size > 0 || this.typingCounts.size > 0
       || this.turnQueue.length > 0 || this.deferredTurnQueue.length > 0;
     this.stopAllSilently();
@@ -1238,6 +1479,7 @@ class ChatRoom extends EventEmitter {
   }
 
   clear() {
+    if (this.specialistActive || this.specialistResume) this.cancelSpecialist();
     this.stopAllSilently();
     this.messages = [];
     this.emit("reset");
