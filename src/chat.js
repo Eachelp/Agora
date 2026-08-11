@@ -2774,23 +2774,26 @@ function renderMessage(message) {
   meta.append(nameEl);
 
   if (!isUser) {
-    // 1. 역할 배지 (Planner / Builder / Reviewer / Recorder)
-    const stage = agentMeta.specialistStage || message.role;
-    if (stage) {
+    // 1. 역할 배지 — 전문 모드로 실행된 응답에만 붙입니다.
+    //    일반 대화·토론 응답에는 specialistStage가 없으므로 배지도 생기지 않습니다.
+    //    (알 수 없는 값은 배지로 만들지 않아 엉뚱한 라벨이 뜨지 않게 합니다.)
+    const STAGE_LABELS = {
+      planner: "기획",
+      planning: "기획",
+      design: "기획",
+      implementation: "구현",
+      builder: "구현",
+      review: "검수",
+      reviewer: "검수",
+      recorder: "기록",
+    };
+    const stageKey = String(agentMeta.specialistStage || "").toLowerCase();
+    const stageLabel = STAGE_LABELS[stageKey];
+    if (stageLabel) {
       const roleBadge = document.createElement("span");
-      const stageLower = String(stage).toLowerCase();
-      roleBadge.className = `role-badge role-${stageLower}`;
-      const stageMap = {
-        planning: "기획 Planner",
-        planner: "기획 Planner",
-        design: "기획 Planner",
-        implementation: "구현 Builder",
-        builder: "구현 Builder",
-        review: "검수 Reviewer",
-        reviewer: "검수 Reviewer",
-        recorder: "기록 Recorder",
-      };
-      roleBadge.textContent = stageMap[stageLower] || stage;
+      roleBadge.className = `role-badge role-${stageKey}`;
+      roleBadge.textContent = stageLabel;
+      roleBadge.title = `전문 모드 ${stageLabel} 단계에서 나온 응답입니다`;
       meta.append(roleBadge);
     }
 
