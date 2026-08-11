@@ -83,6 +83,8 @@ let mentionState = null;
 let noticeTimer = null;
 let specialistRunning = false;
 let specialistResumeAvailable = false;
+// 구현이 막힘(BLOCKED)으로 멈춰 사용자의 후속 선택을 기다리는 중인지.
+let specialistBlockedAvailable = false;
 
 const SIDEBAR_WIDTH_KEY = "agora.chat.sidebarWidth";
 const SIDEBAR_COLLAPSED_KEY = "agora.chat.sidebarCollapsed";

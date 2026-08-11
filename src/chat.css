@@ -1798,6 +1798,25 @@ textarea:focus-visible {
   gap: 7px;
 }
 
+/* 실행 버튼 묶음은 항상 오른쪽 끝에 고정합니다.
+   왼쪽 "적용 방식" 안내 문구 길이가 바뀌어도 버튼이 밀려다니지 않도록 합니다. */
+.room-controls-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+}
+
+/* 안내 문구는 남는 공간 안에서만 줄어들고, 길면 말줄임 처리합니다. */
+.enforcement-hint {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .chip-button,
 #permission-select {
   min-height: 32px;
@@ -1921,6 +1940,12 @@ textarea:focus-visible {
 
   .discussion-button {
     margin-left: 0;
+  }
+
+  /* 좁은 화면에서는 오른쪽 고정을 풀고 자연스럽게 줄바꿈되게 합니다. */
+  .room-controls-actions {
+    margin-left: 0;
+    flex-wrap: wrap;
   }
 
   .chat-scroll {
