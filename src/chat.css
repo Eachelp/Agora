@@ -1706,28 +1706,8 @@ textarea:focus-visible {
 .specialist-head h2 { margin: 0; font-size: 18px; }
 .specialist-close { flex: none; border: 0; box-shadow: none; }
 .specialist-body { margin: 14px 0; display: grid; gap: 14px; }
-.specialist-section { display: grid; gap: 8px; }
-.specialist-section-title { font-size: 12px; font-weight: 800; color: var(--muted); letter-spacing: .04em; }
-.specialist-mode-list { display: grid; gap: 8px; }
-.specialist-mode {
-  display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 4px 10px; align-items: center;
-  padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 10px; cursor: pointer;
-  background: var(--page);
-}
-.specialist-mode input { margin: 0; }
-.specialist-mode strong { font-size: 13px; }
-.specialist-mode p { grid-column: 2; margin: 0; color: var(--muted); font-size: 11.5px; }
-.specialist-supplement { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.specialist-supplement label { font-size: 12.5px; }
-.specialist-supplement select { min-width: 120px; }
-.specialist-warning { color: #92400e; font-size: 11.5px; }
-.specialist-role-list { display: grid; gap: 6px; }
-.specialist-role { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; padding: 7px 10px; background: var(--page); border-radius: 8px; }
-.specialist-role-label { color: var(--muted); }
-.specialist-role-value { font-weight: 700; }
 .specialist-missing { color: var(--danger); font-size: 12px; }
 .specialist-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
-.specialist-permission { font-size: 11.5px; color: var(--muted); }
 
 /* --- Agora workspace shell --- */
 .titlebar {
@@ -1963,6 +1943,32 @@ textarea:focus-visible {
 
 .professional-plan-view {
   margin-left: 6px;
+}
+
+/* 전문 실행 버튼 앞의 단계 번호(①②③) 뱃지. */
+.professional-actions .step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: var(--line);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* 지금 바로 실행할 수 있는 다음 단계 버튼을 강조합니다. */
+.professional-actions .chip-button.is-next-step:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.professional-actions .chip-button.is-next-step:not(:disabled) .step-num {
+  background: var(--accent);
+  color: var(--surface);
 }
 
 /* 기획안 미리보기 팝오버: 길어지면 내부 스크롤로 처리합니다. */

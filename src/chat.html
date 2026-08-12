@@ -112,9 +112,9 @@
 
         <div class="professional-actions" id="professional-actions" hidden aria-label="전문 실행">
           <span class="professional-actions-label">전문 실행</span>
-          <button class="chip-button" id="btn-professional-plan" type="button" title="기획을 만들고 다른 담당자가 기획을 검수합니다">기획·검수</button>
-          <button class="chip-button" id="btn-professional-implementation" type="button" title="기획 검수를 통과한 작업을 구현하고 검수합니다">구현·검수</button>
-          <button class="chip-button" id="btn-professional-record" type="button" title="현재 대화와 결과를 기록관에게 정리하게 합니다">기록</button>
+          <button class="chip-button" id="btn-professional-plan" type="button" title="기획을 만들고 다른 담당자가 기획을 검수합니다"><span class="step-num">1</span>기획·검수</button>
+          <button class="chip-button" id="btn-professional-implementation" type="button" title="기획 검수를 통과한 작업을 구현하고 검수합니다"><span class="step-num">2</span>구현·검수</button>
+          <button class="chip-button" id="btn-professional-record" type="button" title="현재 대화와 결과를 기록관에게 정리하게 합니다"><span class="step-num">3</span>기록</button>
           <button class="chip-button professional-full-button" id="btn-professional-full" type="button" title="기획·검수 다음 구현·검수·기록까지 이어서 실행합니다">전체 실행</button>
           <button class="chip-button professional-plan-view" id="btn-professional-plan-view" type="button" hidden title="승인된 기획안(TASK.md)을 열어 봅니다">기획안 보기</button>
         </div>
@@ -182,13 +182,12 @@
     <div class="specialist-backdrop" id="specialist-backdrop" hidden>
       <section class="specialist-dialog" role="dialog" aria-modal="true" aria-labelledby="specialist-title">
         <div class="specialist-head">
-          <h2 id="specialist-title">작업 시작</h2>
-          <button class="icon-button specialist-close" id="specialist-close" type="button" aria-label="작업 시작 창 닫기">×</button>
+          <h2 id="specialist-title">막힘 처리</h2>
+          <button class="icon-button specialist-close" id="specialist-close" type="button" aria-label="막힘 처리 창 닫기">×</button>
         </div>
         <div class="specialist-body" id="specialist-body"></div>
         <div class="specialist-actions">
           <button class="button" id="specialist-cancel" type="button">취소</button>
-          <button class="button button-primary" id="specialist-start" type="button">작업 시작</button>
         </div>
       </section>
     </div>

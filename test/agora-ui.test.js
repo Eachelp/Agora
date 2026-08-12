@@ -123,6 +123,13 @@ test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있
   ]) {
     assert.match(html, new RegExp(`id="${id}"`));
   }
+  // 전문 실행 버튼에 단계 번호(①②③)가 붙어 순서를 드러낸다.
+  assert.match(html, /<span class="step-num">1<\/span>기획·검수/);
+  assert.match(html, /<span class="step-num">2<\/span>구현·검수/);
+  assert.match(html, /<span class="step-num">3<\/span>기록/);
+  // 옛 모달 시작 화면(3방식 선택)은 제거되어 renderer에 남지 않는다.
+  assert.doesNotMatch(renderer, /function buildStartDialog/);
+  assert.doesNotMatch(renderer, /async function runSpecialist\(/);
   assert.match(preload, /projectsCreate: \(name, workspace\)/);
   assert.match(preload, /projectsSelect: \(projectId\)/);
   assert.match(preload, /projectsUpdate: \(projectId, patch\)/);
