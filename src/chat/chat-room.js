@@ -164,6 +164,18 @@ class ChatRoom extends EventEmitter {
         this.specialistResume?.phase
       ),
       planReady: Boolean(this.professionalPlan),
+      // 승인된 기획안(Frozen Task 원본)을 채팅에서 열어볼 수 있게 경로/제목을 노출합니다.
+      planTaskPath:
+        this.professionalPlan?.taskInfo?.relativePath ||
+        this.specialistResume?.taskInfo?.relativePath ||
+        null,
+      planTaskId: (() => {
+        const filename =
+          this.professionalPlan?.taskInfo?.filename ||
+          this.specialistResume?.taskInfo?.filename ||
+          null;
+        return filename ? String(filename).replace(/\.md$/i, "") : null;
+      })(),
       blocked: Boolean(this.specialistBlocked),
       canRestore: Boolean(this.specialistBlocked?.canRestore),
       hasTask: Boolean(

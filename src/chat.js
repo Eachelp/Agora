@@ -52,6 +52,7 @@ const professionalPlanButton = document.getElementById("btn-professional-plan");
 const professionalImplementationButton = document.getElementById("btn-professional-implementation");
 const professionalRecordButton = document.getElementById("btn-professional-record");
 const professionalFullButton = document.getElementById("btn-professional-full");
+const professionalPlanViewButton = document.getElementById("btn-professional-plan-view");
 const storeWarning = document.getElementById("store-warning");
 const popover = document.getElementById("popover");
 const popoverBackdrop = document.getElementById("popover-backdrop");
@@ -104,6 +105,9 @@ let specialistActive = false;
 let specialistNeedsInput = false;
 let specialistPlanReady = false;
 let professionalModeEnabled = false;
+// 승인된 기획안(TASK.md) 경로/제목. "기획안 보기" 버튼으로 열람합니다.
+let specialistPlanTaskPath = null;
+let specialistPlanTaskId = null;
 
 const SIDEBAR_WIDTH_KEY = "agora.chat.sidebarWidth";
 const SIDEBAR_COLLAPSED_KEY = "agora.chat.sidebarCollapsed";
@@ -317,6 +321,8 @@ function setSpecialistState(state = {}) {
   specialistResumePhase = specialistResumeAvailable ? state.phase || null : null;
   specialistNeedsInput = Boolean(state.needsInput);
   specialistPlanReady = Boolean(state.planReady);
+  specialistPlanTaskPath = state.planTaskPath || null;
+  specialistPlanTaskId = state.planTaskId || null;
 }
 
 function specialistLocksComposer() {
@@ -1183,6 +1189,13 @@ function renderHeader() {
     ? "현재 대화와 결과를 기록관에게 정리하게 합니다"
     : "기록 담당자가 비어 있어 검토 담당자가 기록을 정리합니다";
   professionalFullButton.disabled = !configured || blockedOrBusy;
+  // 저장된 기획안이 있으면(승인 대기 중이거나 통과한 경우) 열람 버튼을 노출합니다.
+  const hasPlanTask = Boolean(specialistPlanTaskPath);
+  professionalPlanViewButton.hidden = !hasPlanTask;
+  professionalPlanViewButton.disabled = specialistRunning || specialistActive;
+  professionalPlanViewButton.textContent = specialistPlanTaskId
+    ? `기획안 보기 (${specialistPlanTaskId})`
+    : "기획안 보기";
   professionalImplementationButton.title = specialistPlanReady
     ? "기획 검수를 통과한 작업을 구현하고 검수합니다"
     : "먼저 기획·검수를 통과시켜 주세요";
@@ -1215,13 +1228,13 @@ function renderAgents() {
 function closePopover() {
   popover.hidden = true;
   popover.textContent = "";
-  popover.classList.remove("is-project-settings", "is-workflow");
+  popover.classList.remove("is-project-settings", "is-workflow", "plan-preview-popover");
   popoverBackdrop.hidden = true;
 }
 
 function openPopover(anchor, build) {
   popover.textContent = "";
-  popover.classList.remove("is-project-settings", "is-workflow");
+  popover.classList.remove("is-project-settings", "is-workflow", "plan-preview-popover");
   build(popover);
   popover.hidden = false;
   popoverBackdrop.hidden = false;
@@ -2441,6 +2454,51 @@ professionalPlanButton.addEventListener("click", () => runProfessionalAction("pl
 professionalImplementationButton.addEventListener("click", () => runProfessionalAction("implementation"));
 professionalRecordButton.addEventListener("click", () => runProfessionalAction("record"));
 professionalFullButton.addEventListener("click", () => runProfessionalAction("full"));
+professionalPlanViewButton.addEventListener("click", () => openPlanPreview(professionalPlanViewButton));
+
+// 승인된 기획안(TASK.md)을 읽어 팝오버로 보여줍니다. 구현 담당에게 넘기기 전에
+// 사용자가 "이 기획안 기준으로 진행되는 게 맞는지" 확인하는 지점입니다.
+async function openPlanPreview(anchor) {
+  if (!activeSessionId || !specialistPlanTaskPath) return;
+  const taskPath = specialistPlanTaskPath;
+  const taskId = specialistPlanTaskId;
+  const result = await call(window.chatApi.readTaskFile(activeSessionId, taskPath));
+  if (!result) return;
+  openPopover(anchor, (root) => {
+    root.classList.add("plan-preview-popover");
+    const head = document.createElement("div");
+    head.className = "popover-head";
+    const title = document.createElement("strong");
+    title.textContent = taskId ? `기획안 ${taskId}` : "기획안";
+    head.append(title);
+    root.append(head);
+
+    const note = document.createElement("p");
+    note.className = "popover-status";
+    note.textContent = "구현 담당은 이 기획안(Frozen Task)만 기준으로 작업합니다.";
+    root.append(note);
+
+    const body = document.createElement("div");
+    body.className = "plan-preview-body";
+    const content = String(result.content || "").trim();
+    if (content) renderRichText(body, content);
+    else body.textContent = "기획안 내용이 비어 있습니다.";
+    root.append(body);
+
+    const actions = document.createElement("div");
+    actions.className = "popover-actions";
+    const openInEditor = document.createElement("button");
+    openInEditor.type = "button";
+    openInEditor.textContent = "편집기로 열기";
+    openInEditor.title = "OS 기본 편집기로 TASK.md를 엽니다";
+    openInEditor.addEventListener("click", async () => {
+      closePopover();
+      await call(window.chatApi.openTaskFile(activeSessionId, taskPath));
+    });
+    actions.append(openInEditor);
+    root.append(actions);
+  });
+}
 
 specialistStartBtn.addEventListener("click", () => {
   if (specialistResumeAvailable) {

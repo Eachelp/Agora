@@ -920,6 +920,27 @@ function roomMeta(meta) {
       })
     );
 
+    // 작업 지시서(TASK.md) 내용을 읽어 채팅 화면 안에서 보여줍니다(읽기 전용).
+    // open-file과 같은 경로 검증을 써서 세션 workspace 밖 파일은 읽지 않습니다.
+    ipcMain.handle(
+      "chat:task:read-file",
+      wrap(async ({ sessionId, taskPath }) => {
+        requireSession(sessionId);
+        const meta = store.readMeta(sessionId);
+        const workspace = meta?.workspace;
+        if (!workspace) throw new Error("워크스페이스가 연결되어 있지 않습니다.");
+        const relative = String(taskPath || "");
+        if (!relative || path.isAbsolute(relative)) throw new Error("올바르지 않은 작업 지시서 경로입니다.");
+        const workspaceRoot = path.resolve(workspace);
+        const target = path.resolve(workspaceRoot, relative);
+        const prefix = workspaceRoot.endsWith(path.sep) ? workspaceRoot : workspaceRoot + path.sep;
+        if (!target.startsWith(prefix)) throw new Error("워크스페이스 밖의 파일은 읽을 수 없습니다.");
+        if (!fs.existsSync(target)) throw new Error("작업 지시서 파일을 찾을 수 없습니다.");
+        const content = fs.readFileSync(target, "utf8");
+        return { content, taskPath: relative };
+      })
+    );
+
     ipcMain.handle(
       "chat:projects:create",
       wrap(async ({ name, workspace }) => {

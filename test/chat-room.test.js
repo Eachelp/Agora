@@ -1805,6 +1805,10 @@ test("버튼형 기획·검수는 Planner와 Reviewer를 차례로 호출하고 
   assert.equal(room.specialistState().planReady, true);
   assert.deepEqual(calls.map((call) => call.agentId), ["claude", "codex"]);
   assert.match(calls[1].prompt, /전문 모드: 기획 검수/);
+  // 승인된 기획안을 채팅에서 열어볼 수 있도록 경로/제목이 상태로 노출된다.
+  const state = room.specialistState();
+  assert.match(state.planTaskPath, /TASK-001\.md$/);
+  assert.equal(state.planTaskId, "TASK-001");
 });
 
 test("Open Question은 PLAN_READY 마커가 있어도 답변 대기로 멈추고 답변 후 기획을 다시 검수한다", async (t) => {

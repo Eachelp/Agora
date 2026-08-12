@@ -119,6 +119,7 @@ test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있
     "btn-professional-implementation",
     "btn-professional-record",
     "btn-professional-full",
+    "btn-professional-plan-view",
   ]) {
     assert.match(html, new RegExp(`id="${id}"`));
   }
@@ -129,6 +130,7 @@ test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있
   assert.match(preload, /sessionsMove: \(sessionId, projectId, applyProjectWorkspace = false\)/);
   assert.match(preload, /specialistStart: \(sessionId, options = \{\}\)/);
   assert.match(preload, /specialistPlanAnswer: \(sessionId, text\)/);
+  assert.match(preload, /readTaskFile: \(sessionId, taskPath\)/);
   assert.match(preload, /memoryAppend: \(projectId, content, title\)/);
   assert.match(preload, /decisionsCreate: \(input\)/);
   assert.match(preload, /tasksCreate: \(input\)/);
@@ -142,10 +144,12 @@ test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있
   assert.match(renderer, /project-move-apply-workspace/);
   assert.match(renderer, /전문 모드 역할 설정/);
   assert.match(renderer, /runProfessionalAction\(action\)/);
+  assert.match(renderer, /function openPlanPreview\(anchor\)/);
   assert.match(renderer, /누적 요약/);
   assert.match(ipc, /applyProjectWorkspace = false/);
   assert.match(ipc, /"chat:specialist:start"/);
   assert.match(ipc, /"chat:specialist:plan-answer"/);
+  assert.match(ipc, /"chat:task:read-file"/);
   assert.match(ipc, /"chat:memory:append"/);
   assert.match(ipc, /"chat:projects:create"/);
   assert.match(ipc, /"chat:projects:select"/);

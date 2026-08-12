@@ -1961,6 +1961,21 @@ textarea:focus-visible {
   font-weight: 700;
 }
 
+.professional-plan-view {
+  margin-left: 6px;
+}
+
+/* 기획안 미리보기 팝오버: 길어지면 내부 스크롤로 처리합니다. */
+.plan-preview-popover .plan-preview-body {
+  max-height: 46vh;
+  overflow-y: auto;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
 /* 안내 문구는 남는 공간 안에서만 줄어들고, 길면 말줄임 처리합니다. */
 .enforcement-hint {
   min-width: 0;
