@@ -158,7 +158,9 @@ function buildAgentPrompt({
       lines.push("- 이것은 구현 검수가 아니라 기획 검수입니다. 코드를 수정하거나 구현을 시작하지 마세요.");
       lines.push("- 기획안이 사용자 목표·제약·완료 조건을 충족하는지, Open Question이 남았는지 검토하세요.");
       lines.push("- 기획안이 충분하면 `VERDICT: PASS`를, 보완이 필요하면 `VERDICT: FIX_REQUIRED`를, 판단 근거가 부족하면 `VERDICT: UNKNOWN`을 넣으세요.");
-      lines.push("- FIX_REQUIRED라면 `ISSUES:` 아래에 빠진 결정·모호한 조건·위험을 구체적으로 적으세요.");
+      lines.push("- FIX_REQUIRED라면 `ISSUES:` 아래에 이슈별로 `scope: IN/OUT`, `severity: BLOCKING/NON_BLOCKING`, `problem`, `evidence`, `impact`를 적으세요.");
+      lines.push("- 기존 대화와 사용자 결정만으로 기획자가 고칠 수 있는 문제만 `scope: IN`으로 표시하세요.");
+      lines.push("- 사용자 결정이 필요한 문제는 `## Open Questions`에 질문으로 적으세요. 이 질문은 자동 보완하지 않고 사용자에게 반환됩니다.");
       lines.push("- Open Question이 남아 있으면 PASS로 처리하지 말고 FIX_REQUIRED로 반환하세요.");
     } else if (specialist.stage === "implementation") {
       lines.push("- 현재 결정과 작업 범위 안에서 실제 구현을 진행하세요.");

@@ -126,6 +126,8 @@ test("기획 검수는 Open Question이 남아 있으면 통과시키지 않는�
   });
   assert.match(prompt, /전문 모드: 기획 검수/);
   assert.match(prompt, /구현을 시작하지 마세요/);
+  assert.match(prompt, /scope: IN\/OUT/);
+  assert.match(prompt, /사용자 결정이 필요한 문제는 `## Open Questions`/);
   assert.match(prompt, /Open Question이 남아 있으면 PASS로 처리하지 말고/);
 });
 

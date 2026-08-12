@@ -1448,7 +1448,14 @@ function roomMeta(meta) {
 
     ipcMain.handle(
       "chat:specialist:start",
-      wrap(async ({ sessionId, action, mode, maxAutoRevisions }) => {
+      wrap(async ({
+        sessionId,
+        action,
+        mode,
+        maxAutoRevisions,
+        planAutoRevisions,
+        implementationAutoRevisions,
+      }) => {
         requireSession(sessionId);
         const room = getRoom(sessionId);
         if (!room.messages.some((message) => message.authorType === "user")) {
@@ -1475,6 +1482,16 @@ function roomMeta(meta) {
           stages: planned.stages,
           ...(selectedAction ? { action: selectedAction } : {}),
           mode: mode === "auto" ? "auto" : mode === "quick" ? "quick" : "step",
+          planAutoRevisions:
+            Number.isInteger(planAutoRevisions) && planAutoRevisions >= 0
+              ? Math.min(planAutoRevisions, 3)
+              : 0,
+          implementationAutoRevisions:
+            Number.isInteger(implementationAutoRevisions) && implementationAutoRevisions >= 0
+              ? Math.min(implementationAutoRevisions, 3)
+              : Number.isInteger(maxAutoRevisions) && maxAutoRevisions >= 0
+                ? Math.min(maxAutoRevisions, 3)
+                : 0,
           maxAutoRevisions:
             Number.isInteger(maxAutoRevisions) && maxAutoRevisions >= 0
               ? maxAutoRevisions

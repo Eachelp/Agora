@@ -1912,6 +1912,7 @@ textarea:focus-visible {
 .professional-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 5px;
   padding: 7px 28px;
   border-bottom: 1px solid var(--line);
@@ -1932,6 +1933,86 @@ textarea:focus-visible {
   color: var(--muted);
   font-size: 11px;
   font-weight: 700;
+}
+
+.professional-auto-options {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-right: 5px;
+  padding-right: 10px;
+  border-right: 1px solid var(--line);
+}
+
+.auto-revise-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.auto-revise-option input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.switch-track {
+  position: relative;
+  display: inline-flex;
+  width: 30px;
+  height: 17px;
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  transition: border-color 120ms ease-out, background 120ms ease-out;
+}
+
+.switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: transform 120ms ease-out, background 120ms ease-out;
+}
+
+.auto-revise-option input:checked + .switch-track,
+.work-mode-switch[aria-checked="true"] .switch-track {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.auto-revise-option input:checked + .switch-track .switch-thumb,
+.work-mode-switch[aria-checked="true"] .switch-thumb {
+  transform: translateX(13px);
+  background: var(--accent);
+}
+
+.auto-revise-option:focus-within .switch-track,
+.work-mode-switch:focus-visible .switch-track {
+  outline: 2px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  outline-offset: 2px;
+}
+
+.professional-auto-options select {
+  min-height: 25px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--ink-soft);
+  padding: 2px 5px;
+  font-size: 11px;
+}
+
+.professional-auto-options select:disabled {
+  opacity: 0.48;
 }
 
 .professional-full-button {
@@ -2023,22 +2104,39 @@ textarea:focus-visible {
   background: var(--accent-strong);
 }
 
-.specialist-button {
-  border-color: var(--ink);
-  background: var(--ink);
-  color: var(--surface);
+.work-mode-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 11px;
   font-weight: 700;
+  cursor: pointer;
 }
 
-.specialist-button:hover {
-  border-color: var(--accent-strong);
-  background: var(--accent-strong);
-}
-
-.specialist-button.is-active {
+.work-mode-switch:hover {
   border-color: var(--accent);
-  background: var(--accent-soft);
-  color: var(--accent-strong);
+}
+
+.work-mode-switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.work-mode-switch .work-mode-chat,
+.work-mode-switch[aria-checked="true"] .work-mode-professional {
+  color: var(--ink);
+}
+
+.work-mode-switch .work-mode-professional,
+.work-mode-switch[aria-checked="true"] .work-mode-chat {
+  color: var(--muted);
 }
 
 .room-controls-actions.is-professional-mode .discussion-button,

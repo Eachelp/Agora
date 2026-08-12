@@ -1203,6 +1203,43 @@ test("run-event가 시작/진행/종료 순으로 전달된다", async () => {
   assert.ok(events[0].runId);
 });
 
+test("전문 실행 이벤트와 메시지는 일반 채팅 모델 대신 실제 역할 모델을 남긴다", async () => {
+  const events = [];
+  const room = new ChatRoom({
+    agents: makeAgents().map((agent) =>
+      agent.id === "codex" ? { ...agent, model: "gpt-chat-default", effort: "medium" } : agent
+    ),
+    runAgent: fakeRunner({
+      codex: [{ ok: true, text: "구현 완료\nSTATUS: DONE" }],
+      claude: [{ ok: true, text: "검수 통과\nVERDICT: PASS" }],
+    }),
+  });
+  room.on("run-event", (event) => events.push(event));
+
+  const result = await room.startSpecialist({
+    stages: {
+      implementation: {
+        agent: room.findAgent("codex"),
+        agentConfig: { model: "gpt-role-builder", effort: "high" },
+      },
+      review: { agent: room.findAgent("claude") },
+    },
+    mode: "step",
+  });
+
+  assert.equal(result.ok, true);
+  const start = events.find(
+    (event) => event.kind === "run-start" && event.specialistStage === "implementation"
+  );
+  assert.equal(start.model, "gpt-role-builder");
+  assert.equal(start.effort, "high");
+  const message = room.messages.find(
+    (entry) => entry.agentMeta?.specialistStage === "implementation"
+  );
+  assert.equal(message.agentMeta.model, "gpt-role-builder");
+  assert.equal(message.agentMeta.effort, "high");
+});
+
 test("첨부가 있는 사용자 메시지는 첨부 메타와 함께 저장되고 러너로 전달된다", async () => {
   const received = [];
   const room = new ChatRoom({
@@ -1809,6 +1846,127 @@ test("버튼형 기획·검수는 Planner와 Reviewer를 차례로 호출하고 
   const state = room.specialistState();
   assert.match(state.planTaskPath, /TASK-001\.md$/);
   assert.equal(state.planTaskId, "TASK-001");
+});
+
+test("기획 자동 보완은 범위 안의 검수 지적만 제한 횟수 안에서 다시 기획한다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-plan-auto-revise-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    runAgent: fakeRunner({
+      claude: [
+        { ok: true, text: "## 목표\n초안\nSTATUS: PLAN_READY" },
+        { ok: true, text: "## 목표\n검증 조건을 보완한 기획\nSTATUS: PLAN_READY" },
+      ],
+      codex: [
+        {
+          ok: true,
+          text: "검증 조건을 추가하세요.\nVERDICT: FIX_REQUIRED\nISSUES:\n1.\nscope: IN\nseverity: BLOCKING\nproblem: 검증 조건 누락\nevidence: 완료 조건에 테스트가 없음\nimpact: 완료 판단 불가",
+        },
+        { ok: true, text: "기획 검수 통과\nVERDICT: PASS" },
+      ],
+    }, calls),
+  });
+
+  const result = await room.startSpecialist({
+    action: "plan",
+    planAutoRevisions: 2,
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls.map((call) => call.agentId), ["claude", "codex", "claude", "codex"]);
+  assert.equal(room.specialistState().planTaskId, "TASK-001");
+  assert.match(fs.readFileSync(path.join(workspace, ".project-memory", "tasks", "TASK-001.md"), "utf8"), /검증 조건을 보완한 기획/);
+});
+
+test("기획 자동 보완 중에도 Open Question은 사용자에게 반환한다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-plan-auto-question-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    runAgent: fakeRunner({
+      claude: [{ ok: true, text: "## 목표\n초안\nSTATUS: PLAN_READY" }],
+      codex: [{
+        ok: true,
+        text: "사용자 결정이 필요합니다.\nVERDICT: FIX_REQUIRED\nISSUES:\n1.\nscope: IN\nseverity: BLOCKING\nproblem: 대상 미정\nevidence: 대화에 없음\nimpact: 범위 불명확\n## Open Questions\n1. 어느 화면까지 포함할까요?",
+      }],
+    }, calls),
+  });
+
+  const result = await room.startSpecialist({
+    action: "plan",
+    planAutoRevisions: 3,
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.stopReason, "NEEDS_DECISION");
+  assert.equal(room.specialistState().needsInput, true);
+  assert.deepEqual(calls.map((call) => call.agentId), ["claude", "codex"]);
+});
+
+test("구현 자동 보완 스위치 값은 버튼형 구현·검수의 제한 루프에 적용된다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-implementation-auto-revise-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    runAgent: fakeRunner({
+      claude: [
+        { ok: true, text: "## 목표\n자동 보완 구현\nSTATUS: PLAN_READY" },
+        { ok: true, text: "첫 구현\nSTATUS: DONE" },
+        { ok: true, text: "보완 구현\nSTATUS: DONE" },
+      ],
+      codex: [
+        { ok: true, text: "기획 검수 통과\nVERDICT: PASS" },
+        {
+          ok: true,
+          text: "테스트를 보완하세요.\nVERDICT: FIX_REQUIRED\nISSUES:\n1.\nscope: IN\nseverity: BLOCKING\nlocation: test/a.test.js\nproblem: 테스트 누락\nevidence: 신규 경로 미검증\nimpact: 회귀 가능",
+        },
+        { ok: true, text: "구현 검수 통과\nVERDICT: PASS" },
+      ],
+    }, calls),
+  });
+
+  const plan = await room.startSpecialist({
+    action: "plan",
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+    },
+  });
+  assert.equal(plan.ok, true);
+
+  const result = await room.startSpecialist({
+    action: "implementation",
+    implementationAutoRevisions: 1,
+    stages: {
+      implementation: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.completedIterations, 2);
+  assert.deepEqual(
+    calls.map((call) => call.agentId),
+    ["claude", "codex", "claude", "codex", "claude", "codex"]
+  );
 });
 
 test("Open Question은 PLAN_READY 마커가 있어도 답변 대기로 멈추고 답변 후 기획을 다시 검수한다", async (t) => {

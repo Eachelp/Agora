@@ -53,6 +53,10 @@ const professionalImplementationButton = document.getElementById("btn-profession
 const professionalRecordButton = document.getElementById("btn-professional-record");
 const professionalFullButton = document.getElementById("btn-professional-full");
 const professionalPlanViewButton = document.getElementById("btn-professional-plan-view");
+const planAutoReviseToggle = document.getElementById("plan-auto-revise");
+const planAutoLimitSelect = document.getElementById("plan-auto-limit");
+const implementationAutoReviseToggle = document.getElementById("implementation-auto-revise");
+const implementationAutoLimitSelect = document.getElementById("implementation-auto-limit");
 const storeWarning = document.getElementById("store-warning");
 const popover = document.getElementById("popover");
 const popoverBackdrop = document.getElementById("popover-backdrop");
@@ -111,8 +115,64 @@ let specialistPlanTaskId = null;
 const SIDEBAR_WIDTH_KEY = "agora.chat.sidebarWidth";
 const SIDEBAR_COLLAPSED_KEY = "agora.chat.sidebarCollapsed";
 const DOCTOR_SEEN_KEY = "agora.chat.doctorSeen.v1";
+const PLAN_AUTO_REVISE_KEY = "agora.chat.planAutoRevise";
+const PLAN_AUTO_LIMIT_KEY = "agora.chat.planAutoLimit";
+const IMPLEMENTATION_AUTO_REVISE_KEY = "agora.chat.implementationAutoRevise";
+const IMPLEMENTATION_AUTO_LIMIT_KEY = "agora.chat.implementationAutoLimit";
 const SIDEBAR_MIN_WIDTH = 180;
 const SIDEBAR_MAX_WIDTH = 420;
+const SPECIALIST_STAGE_LABELS = Object.freeze({
+  planner: "기획",
+  planning: "기획",
+  design: "기획",
+  plan_review: "기획 검수",
+  implementation: "구현",
+  builder: "구현",
+  review: "검수",
+  reviewer: "검수",
+  recorder: "기록",
+});
+
+function boundedRevisionLimit(value, fallback = 1) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) ? Math.min(3, Math.max(1, parsed)) : fallback;
+}
+
+planAutoReviseToggle.checked = localStorage.getItem(PLAN_AUTO_REVISE_KEY) === "true";
+planAutoLimitSelect.value = String(
+  boundedRevisionLimit(localStorage.getItem(PLAN_AUTO_LIMIT_KEY), 2)
+);
+implementationAutoReviseToggle.checked =
+  localStorage.getItem(IMPLEMENTATION_AUTO_REVISE_KEY) === "true";
+implementationAutoLimitSelect.value = String(
+  boundedRevisionLimit(localStorage.getItem(IMPLEMENTATION_AUTO_LIMIT_KEY), 1)
+);
+
+function syncAutoRevisionControls() {
+  planAutoLimitSelect.disabled = !planAutoReviseToggle.checked;
+  implementationAutoLimitSelect.disabled = !implementationAutoReviseToggle.checked;
+}
+
+for (const [control, key] of [
+  [planAutoReviseToggle, PLAN_AUTO_REVISE_KEY],
+  [implementationAutoReviseToggle, IMPLEMENTATION_AUTO_REVISE_KEY],
+]) {
+  control.addEventListener("change", () => {
+    localStorage.setItem(key, String(control.checked));
+    syncAutoRevisionControls();
+  });
+}
+
+for (const [control, key] of [
+  [planAutoLimitSelect, PLAN_AUTO_LIMIT_KEY],
+  [implementationAutoLimitSelect, IMPLEMENTATION_AUTO_LIMIT_KEY],
+]) {
+  control.addEventListener("change", () => {
+    control.value = String(boundedRevisionLimit(control.value));
+    localStorage.setItem(key, control.value);
+  });
+}
+syncAutoRevisionControls();
 
 function clampSidebarWidth(value) {
   const viewportMax = Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, window.innerWidth * 0.46));
@@ -1141,13 +1201,7 @@ function renderHeader() {
   const review = roleConfigFromProject(project, "review");
   const configured = Boolean(planner.agentId && implementation.agentId && review.agentId);
   specialistButton.disabled = !activeSessionId || specialistRunning || specialistActive;
-  specialistButton.classList.toggle("is-active", professionalModeEnabled);
-  specialistButton.setAttribute("aria-pressed", String(professionalModeEnabled));
-  specialistButton.textContent = specialistBlockedAvailable
-    ? "막힘 처리"
-    : professionalModeEnabled
-      ? "전문 모드 끄기"
-      : "전문 모드";
+  specialistButton.setAttribute("aria-checked", String(professionalModeEnabled));
   specialistButton.title = specialistBlockedAvailable
     ? "구현이 막혔습니다. 다음 처리 방법을 선택하세요"
     : professionalModeEnabled
@@ -1155,6 +1209,10 @@ function renderHeader() {
       : configured
         ? "기획·검수, 구현·검수, 기록, 전체 실행 버튼을 표시합니다"
         : "프로젝트 설정에서 기획·구현·검토 담당자를 지정하면 사용할 수 있습니다";
+  specialistButton.setAttribute(
+    "aria-label",
+    professionalModeEnabled ? "전문 실행에서 일반 대화로 전환" : "일반 대화에서 전문 실행으로 전환"
+  );
   professionalActions.hidden = !professionalModeEnabled;
   roomControlsActions.classList.toggle("is-professional-mode", professionalModeEnabled);
   responseModeBar.hidden = professionalModeEnabled;
@@ -2323,8 +2381,18 @@ async function runProfessionalAction(action) {
   specialistActive = true;
   renderHeader();
   syncComposerLock();
+  const planAutoRevisions = planAutoReviseToggle.checked
+    ? boundedRevisionLimit(planAutoLimitSelect.value, 2)
+    : 0;
+  const implementationAutoRevisions = implementationAutoReviseToggle.checked
+    ? boundedRevisionLimit(implementationAutoLimitSelect.value, 1)
+    : 0;
   const result = await call(
-    window.chatApi.specialistStart(activeSessionId, { action, maxAutoRevisions: 1 })
+    window.chatApi.specialistStart(activeSessionId, {
+      action,
+      planAutoRevisions,
+      implementationAutoRevisions,
+    })
   );
   if (result) {
     const labels = {
@@ -2827,19 +2895,8 @@ function renderMessage(message) {
     // 1. 역할 배지 — 전문 모드로 실행된 응답에만 붙입니다.
     //    일반 대화·토론 응답에는 specialistStage가 없으므로 배지도 생기지 않습니다.
     //    (알 수 없는 값은 배지로 만들지 않아 엉뚱한 라벨이 뜨지 않게 합니다.)
-    const STAGE_LABELS = {
-      planner: "기획",
-      planning: "기획",
-      design: "기획",
-      plan_review: "기획 검수",
-      implementation: "구현",
-      builder: "구현",
-      review: "검수",
-      reviewer: "검수",
-      recorder: "기록",
-    };
     const stageKey = String(agentMeta.specialistStage || "").toLowerCase();
-    const stageLabel = STAGE_LABELS[stageKey];
+    const stageLabel = SPECIALIST_STAGE_LABELS[stageKey];
     if (stageLabel) {
       const roleBadge = document.createElement("span");
       roleBadge.className = `role-badge role-${stageKey}`;
@@ -3082,8 +3139,10 @@ function handleRunEvent(payload) {
     const nameEl = document.createElement("span");
     nameEl.className = "name";
     const liveMeta = [agent?.name || agentId, `@${agentId}`];
-    liveMeta.push(agent?.model || "모델 확인 중");
-    liveMeta.push(effortLabel(agent?.effort || "추론 강도 확인 중"));
+    const stageLabel = SPECIALIST_STAGE_LABELS[String(payload.specialistStage || "").toLowerCase()];
+    if (stageLabel) liveMeta.push(stageLabel);
+    liveMeta.push(payload.model || agent?.model || "모델 확인 중");
+    liveMeta.push(effortLabel(payload.effort || agent?.effort || "추론 강도 확인 중"));
     liveMeta.push("응답 중");
     nameEl.textContent = liveMeta.join(" · ");
     meta.append(nameEl);

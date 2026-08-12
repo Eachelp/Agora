@@ -120,6 +120,10 @@ test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있
     "btn-professional-record",
     "btn-professional-full",
     "btn-professional-plan-view",
+    "plan-auto-revise",
+    "plan-auto-limit",
+    "implementation-auto-revise",
+    "implementation-auto-limit",
   ]) {
     assert.match(html, new RegExp(`id="${id}"`));
   }
@@ -151,6 +155,10 @@ test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있
   assert.match(renderer, /project-move-apply-workspace/);
   assert.match(renderer, /전문 모드 역할 설정/);
   assert.match(renderer, /runProfessionalAction\(action\)/);
+  assert.match(renderer, /planAutoRevisions/);
+  assert.match(renderer, /implementationAutoRevisions/);
+  assert.match(renderer, /payload\.model \|\| agent\?\.model/);
+  assert.match(html, /role="switch"/);
   assert.match(renderer, /function openPlanPreview\(anchor\)/);
   assert.match(renderer, /누적 요약/);
   assert.match(ipc, /applyProjectWorkspace = false/);
