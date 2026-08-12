@@ -36,6 +36,7 @@ const INVOKE = Object.freeze({
   TURN_CANCEL: "chat:turn:cancel",
   DISCUSSION_START: "chat:discussion:start",
   SPECIALIST_START: "chat:specialist:start",
+  SPECIALIST_PLAN_ANSWER: "chat:specialist:plan-answer",
   SPECIALIST_RESUME: "chat:specialist:resume",
   SPECIALIST_CANCEL: "chat:specialist:cancel",
   SPECIALIST_BLOCKED: "chat:specialist:blocked",
@@ -113,6 +114,8 @@ contextBridge.exposeInMainWorld("chatApi", {
     ipcRenderer.invoke(INVOKE.DISCUSSION_START, { sessionId, agentIds }),
   specialistStart: (sessionId, options = {}) =>
     ipcRenderer.invoke(INVOKE.SPECIALIST_START, { sessionId, ...options }),
+  specialistPlanAnswer: (sessionId, text) =>
+    ipcRenderer.invoke(INVOKE.SPECIALIST_PLAN_ANSWER, { sessionId, text }),
   specialistResume: (sessionId) =>
     ipcRenderer.invoke(INVOKE.SPECIALIST_RESUME, { sessionId }),
   specialistCancel: (sessionId) =>

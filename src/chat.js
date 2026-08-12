@@ -12,6 +12,7 @@ const mentionPopup = document.getElementById("mention-popup");
 const attachmentRow = document.getElementById("attachment-row");
 const btnModeSequential = document.getElementById("btn-mode-sequential");
 const btnModeIndependent = document.getElementById("btn-mode-independent");
+const responseModeBar = document.getElementById("response-mode-bar");
 
 let isIndependentResponseMode = false;
 
@@ -45,6 +46,12 @@ const enforcementHint = document.getElementById("enforcement-hint");
 const discussionButton = document.getElementById("btn-discussion");
 const workflowButton = document.getElementById("btn-workflow");
 const specialistButton = document.getElementById("btn-specialist");
+const roomControlsActions = document.querySelector(".room-controls-actions");
+const professionalActions = document.getElementById("professional-actions");
+const professionalPlanButton = document.getElementById("btn-professional-plan");
+const professionalImplementationButton = document.getElementById("btn-professional-implementation");
+const professionalRecordButton = document.getElementById("btn-professional-record");
+const professionalFullButton = document.getElementById("btn-professional-full");
 const storeWarning = document.getElementById("store-warning");
 const popover = document.getElementById("popover");
 const popoverBackdrop = document.getElementById("popover-backdrop");
@@ -94,6 +101,9 @@ let specialistBlockedAvailable = false;
 let specialistResumePhase = null;
 // 전문 실행 진행 상태(진행 표시·입력창 잠금에 사용).
 let specialistActive = false;
+let specialistNeedsInput = false;
+let specialistPlanReady = false;
+let professionalModeEnabled = false;
 
 const SIDEBAR_WIDTH_KEY = "agora.chat.sidebarWidth";
 const SIDEBAR_COLLAPSED_KEY = "agora.chat.sidebarCollapsed";
@@ -305,10 +315,12 @@ function setSpecialistState(state = {}) {
   specialistResumeAvailable = Boolean(state.available);
   specialistBlockedAvailable = Boolean(state.blocked);
   specialistResumePhase = specialistResumeAvailable ? state.phase || null : null;
+  specialistNeedsInput = Boolean(state.needsInput);
+  specialistPlanReady = Boolean(state.planReady);
 }
 
 function specialistLocksComposer() {
-  return Boolean(specialistActive || specialistResumeAvailable || specialistBlockedAvailable);
+  return Boolean(specialistActive || specialistBlockedAvailable || (specialistResumeAvailable && !specialistNeedsInput));
 }
 
 function syncComposerLock() {
@@ -1144,23 +1156,36 @@ function renderHeader() {
   const planner = roleConfigFromProject(project, "planning");
   const implementation = roleConfigFromProject(project, "implementation");
   const review = roleConfigFromProject(project, "review");
+  const configured = Boolean(planner.agentId && implementation.agentId && review.agentId);
   specialistButton.disabled = !activeSessionId || specialistRunning || specialistActive;
+  specialistButton.classList.toggle("is-active", professionalModeEnabled);
+  specialistButton.setAttribute("aria-pressed", String(professionalModeEnabled));
   specialistButton.textContent = specialistBlockedAvailable
     ? "막힘 처리"
-    : specialistResumeAvailable
-      ? stepResumeLabel()
-      : specialistActive
-        ? "전문 실행 중…"
-        : "작업 시작";
+    : professionalModeEnabled
+      ? "전문 모드 끄기"
+      : "전문 모드";
   specialistButton.title = specialistBlockedAvailable
-    ? "구현이 막혔습니다. 클릭해 다음 처리를 선택하세요"
-    : specialistActive
-      ? "전문 실행이 진행 중입니다"
-    : planner.agentId && implementation.agentId && review.agentId
-    ? specialistResumeAvailable
-      ? "전문 실행을 이어서 진행합니다"
-      : "프로젝트 설정의 기획·구현·검토·기록 담당자로 진행합니다"
-    : "프로젝트 설정에서 기획·구현·검토 담당자를 지정하면 사용할 수 있습니다";
+    ? "구현이 막혔습니다. 다음 처리 방법을 선택하세요"
+    : professionalModeEnabled
+      ? "일반 대화 화면으로 돌아갑니다"
+      : configured
+        ? "기획·검수, 구현·검수, 기록, 전체 실행 버튼을 표시합니다"
+        : "프로젝트 설정에서 기획·구현·검토 담당자를 지정하면 사용할 수 있습니다";
+  professionalActions.hidden = !professionalModeEnabled;
+  roomControlsActions.classList.toggle("is-professional-mode", professionalModeEnabled);
+  responseModeBar.hidden = professionalModeEnabled;
+  const blockedOrBusy = specialistRunning || specialistActive || specialistBlockedAvailable || specialistResumeAvailable;
+  professionalPlanButton.disabled = !configured || blockedOrBusy;
+  professionalImplementationButton.disabled = !configured || blockedOrBusy || !specialistPlanReady;
+  professionalRecordButton.disabled = !review.agentId || blockedOrBusy;
+  professionalRecordButton.title = roleConfigFromProject(project, "recorder").agentId
+    ? "현재 대화와 결과를 기록관에게 정리하게 합니다"
+    : "기록 담당자가 비어 있어 검토 담당자가 기록을 정리합니다";
+  professionalFullButton.disabled = !configured || blockedOrBusy;
+  professionalImplementationButton.title = specialistPlanReady
+    ? "기획 검수를 통과한 작업을 구현하고 검수합니다"
+    : "먼저 기획·검수를 통과시켜 주세요";
 }
 
 // --- 에이전트 칩 + 팝오버 ---
@@ -2403,13 +2428,19 @@ function buildStartDialog(root) {
 }
 
 specialistButton.addEventListener("click", () => {
-  if (!activeSessionId) return;
-  if (specialistRunning || specialistActive) {
-    flashNotice("전문 실행이 진행 중입니다. 완료 후 다시 시도해 주세요.");
+  if (!activeSessionId || specialistRunning || specialistActive) return;
+  if (specialistBlockedAvailable) {
+    openSpecialistDialog();
     return;
   }
-  openSpecialistDialog();
+  professionalModeEnabled = !professionalModeEnabled;
+  renderHeader();
 });
+
+professionalPlanButton.addEventListener("click", () => runProfessionalAction("plan"));
+professionalImplementationButton.addEventListener("click", () => runProfessionalAction("implementation"));
+professionalRecordButton.addEventListener("click", () => runProfessionalAction("record"));
+professionalFullButton.addEventListener("click", () => runProfessionalAction("full"));
 
 specialistStartBtn.addEventListener("click", () => {
   if (specialistResumeAvailable) {
@@ -2454,6 +2485,32 @@ async function runSpecialist({ mode, maxAutoRevisions }) {
     ? stepResumeLabel()
     : "작업 시작";
   // 승인 Gate(기획/구현/검토)에서 멈추면 일반 채팅을 막아 전문 실행 중 끼어들기를 방지합니다.
+  syncComposerLock();
+  renderHeader();
+}
+
+async function runProfessionalAction(action) {
+  if (!activeSessionId || specialistRunning || specialistActive) return;
+  specialistRunning = true;
+  specialistActive = true;
+  renderHeader();
+  syncComposerLock();
+  const result = await call(
+    window.chatApi.specialistStart(activeSessionId, { action, maxAutoRevisions: 1 })
+  );
+  if (result) {
+    const labels = {
+      plan: "기획·검수를 시작했습니다.",
+      implementation: "구현·검수를 시작했습니다.",
+      record: "기록을 시작했습니다.",
+      full: "전체 실행을 시작했습니다.",
+    };
+    flashNotice(labels[action], false);
+  }
+  if (result?.meta) sessionMeta = result.meta;
+  if (result?.specialist) setSpecialistState(result.specialist);
+  else if (!result) specialistActive = false;
+  specialistRunning = false;
   syncComposerLock();
   renderHeader();
 }
@@ -2975,6 +3032,7 @@ function renderMessage(message) {
       planner: "기획",
       planning: "기획",
       design: "기획",
+      plan_review: "기획 검수",
       implementation: "구현",
       builder: "구현",
       review: "검수",
@@ -3446,11 +3504,30 @@ function autoresize() {
 }
 
 async function sendCurrentMessage() {
+  const text = composerInput.value.trim();
+  if (specialistNeedsInput) {
+    if (!text) return;
+    const draftText = composerInput.value;
+    composerInput.value = "";
+    closeMentionPopup();
+    autoresize();
+    const result = await call(window.chatApi.specialistPlanAnswer(activeSessionId, text));
+    if (!result) {
+      composerInput.value = draftText;
+      autoresize();
+    } else {
+      if (result.meta) sessionMeta = result.meta;
+      if (result.specialist) setSpecialistState(result.specialist);
+    }
+    syncComposerLock();
+    renderHeader();
+    composerInput.focus();
+    return;
+  }
   if (specialistLocksComposer()) {
     flashNotice("전문 실행이 진행 중이거나 승인 대기 중입니다. 먼저 작업을 완료하거나 취소해 주세요.");
     return;
   }
-  const text = composerInput.value.trim();
   if (!text && pendingAttachments.length === 0) return;
   const attachmentIds = pendingAttachments.map((attachment) => attachment.id);
   // 전송 실패 시 작성 중이던 내용을 복원하기 위해 보관해 둔다.
@@ -3677,8 +3754,14 @@ window.chatApi.onSpecialistResumeState(({ sessionId, ...state }) => {
 function lockComposer(locked) {
   composerInput.disabled = locked;
   sendButton.disabled = locked;
-  attachButton.disabled = locked;
-  composerInput.placeholder = locked ? "승인 창을 먼저 처리해 주세요" : "메시지 입력...";
+  attachButton.disabled = locked || specialistNeedsInput;
+  if (specialistNeedsInput) {
+    composerInput.placeholder = "기획자의 Open Question에 답하세요 (Enter 전송)";
+    sendButton.textContent = "답변 보내기";
+  } else {
+    composerInput.placeholder = locked ? "전문 실행이 끝난 뒤 입력할 수 있습니다" : "질문이나 작업을 입력하세요  (@로 대상 지정 · Enter 전송)";
+    sendButton.textContent = "전송";
+  }
   if (locked) composerInput.blur();
 }
 function showNextApproval() {

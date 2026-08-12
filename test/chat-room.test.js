@@ -1778,3 +1778,160 @@ test("일반 대화 메시지에는 Frozen Task 정보가 붙지 않는다", asy
   assert.equal(agentMessage.agentMeta.taskId, undefined);
   assert.equal(agentMessage.agentMeta.runId, undefined);
 });
+
+test("버튼형 기획·검수는 Planner와 Reviewer를 차례로 호출하고 구현 대기 상태를 남긴다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-plan-review-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    runAgent: fakeRunner({
+      claude: [{ ok: true, text: "## 목표\n로그인 화면 개선\nSTATUS: PLAN_READY" }],
+      codex: [{ ok: true, text: "기획 검수 통과\nVERDICT: PASS" }],
+    }, calls),
+  });
+
+  const result = await room.startSpecialist({
+    action: "plan",
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(room.specialistState().planReady, true);
+  assert.deepEqual(calls.map((call) => call.agentId), ["claude", "codex"]);
+  assert.match(calls[1].prompt, /전문 모드: 기획 검수/);
+});
+
+test("Open Question은 PLAN_READY 마커가 있어도 답변 대기로 멈추고 답변 후 기획을 다시 검수한다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-plan-question-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    runAgent: fakeRunner({
+      claude: [
+        { ok: true, text: "## 목표\n화면 개선\n## Open Question\n1. 어느 화면까지 포함할까요?\nSTATUS: PLAN_READY" },
+        { ok: true, text: "## 목표\n로그인 화면만 개선\nSTATUS: PLAN_READY" },
+      ],
+      codex: [{ ok: true, text: "검수 통과\nVERDICT: PASS" }],
+    }, calls),
+  });
+  const stages = {
+    planner: { agent: room.findAgent("claude") },
+    review: { agent: room.findAgent("codex") },
+  };
+
+  const first = await room.startSpecialist({ action: "plan", stages });
+  assert.equal(first.stopReason, "NEEDS_DECISION");
+  assert.equal(room.specialistState().needsInput, true);
+  assert.deepEqual(calls.map((call) => call.agentId), ["claude"]);
+
+  const second = await room.answerPlanQuestion("로그인 화면만 포함하세요.");
+  assert.equal(second.ok, true);
+  assert.equal(room.specialistState().planReady, true);
+  assert.deepEqual(calls.map((call) => call.agentId), ["claude", "claude", "codex"]);
+  assert.match(calls[1].prompt, /로그인 화면만 포함하세요/);
+});
+
+test("전체 실행은 기획 검수 통과 뒤 구현·검수·기록까지 같은 전문 블록으로 이어간다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-professional-full-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    runAgent: fakeRunner({
+      claude: [
+        { ok: true, text: "## 목표\n전체 실행\nSTATUS: PLAN_READY" },
+        { ok: true, text: "구현 완료\nSTATUS: DONE" },
+      ],
+      codex: [
+        { ok: true, text: "기획 검수 통과\nVERDICT: PASS" },
+        { ok: true, text: "구현 검수 통과\nVERDICT: PASS" },
+        { ok: true, text: "{\"summary\":\"완료\",\"decisions\":[],\"nextActions\":[]}" },
+      ],
+    }, calls),
+  });
+
+  const result = await room.startSpecialist({
+    action: "full",
+    maxAutoRevisions: 1,
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      implementation: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+      recorder: { agent: room.findAgent("codex") },
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.recorded, true);
+  assert.deepEqual(calls.map((call) => call.agentId), ["claude", "codex", "claude", "codex", "codex"]);
+});
+
+test("전체 실행의 기획·검수 통과 사이에는 일반 응답을 끼워 넣지 않는다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-professional-full-lock-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  let releasePlanReview;
+  const planReviewPromise = new Promise((resolve) => { releasePlanReview = resolve; });
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    runAgent: ({ agent, prompt }) => {
+      calls.push({ agentId: agent.id, prompt });
+      if (/전문 모드: 기획 ===/.test(prompt)) {
+        return { promise: Promise.resolve({ ok: true, text: "## 목표\n전체 실행\nSTATUS: PLAN_READY" }), cancel: () => {} };
+      }
+      if (/전문 모드: 기획 검수/.test(prompt)) {
+        return { promise: planReviewPromise, cancel: () => {} };
+      }
+      if (/전문 모드: 구현/.test(prompt)) {
+        return { promise: Promise.resolve({ ok: true, text: "구현 완료\nSTATUS: DONE" }), cancel: () => {} };
+      }
+      if (/전문 모드: 검토/.test(prompt)) {
+        return { promise: Promise.resolve({ ok: true, text: "검수 통과\nVERDICT: PASS" }), cancel: () => {} };
+      }
+      if (/전문 모드: 기록/.test(prompt)) {
+        return { promise: Promise.resolve({ ok: true, text: "{\"summary\":\"완료\",\"decisions\":[],\"nextActions\":[]}" }), cancel: () => {} };
+      }
+      return { promise: Promise.resolve({ ok: true, text: "일반 답변" }), cancel: () => {} };
+    },
+  });
+  const started = room.startSpecialist({
+    action: "full",
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      implementation: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+      recorder: { agent: room.findAgent("codex") },
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.throws(() => room.sendUserMessage("이 응답은 끼면 안 됩니다"), /전문 실행/);
+  releasePlanReview({ ok: true, text: "기획 검수 통과\nVERDICT: PASS" });
+  const result = await started;
+  assert.equal(result.ok, true);
+});
+
+test("구현·검수는 기획 검수 통과 전에는 시작하지 않는다", async () => {
+  const room = new ChatRoom({ agents: makeAgents(), runAgent: fakeRunner({}, []) });
+  const result = await room.startSpecialist({
+    action: "implementation",
+    stages: {
+      implementation: { agent: room.findAgent("codex") },
+      review: { agent: room.findAgent("claude") },
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /기획 검수/);
+});

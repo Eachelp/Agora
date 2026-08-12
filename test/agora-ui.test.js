@@ -113,12 +113,22 @@ test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있
     assert.match(html, new RegExp(`id="${id}"`));
   }
   assert.match(html, /id="btn-specialist"/);
+  for (const id of [
+    "professional-actions",
+    "btn-professional-plan",
+    "btn-professional-implementation",
+    "btn-professional-record",
+    "btn-professional-full",
+  ]) {
+    assert.match(html, new RegExp(`id="${id}"`));
+  }
   assert.match(preload, /projectsCreate: \(name, workspace\)/);
   assert.match(preload, /projectsSelect: \(projectId\)/);
   assert.match(preload, /projectsUpdate: \(projectId, patch\)/);
   assert.match(preload, /projectsDelete: \(projectId\)/);
   assert.match(preload, /sessionsMove: \(sessionId, projectId, applyProjectWorkspace = false\)/);
   assert.match(preload, /specialistStart: \(sessionId, options = \{\}\)/);
+  assert.match(preload, /specialistPlanAnswer: \(sessionId, text\)/);
   assert.match(preload, /memoryAppend: \(projectId, content, title\)/);
   assert.match(preload, /decisionsCreate: \(input\)/);
   assert.match(preload, /tasksCreate: \(input\)/);
@@ -131,9 +141,11 @@ test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있
   assert.match(renderer, /sessionsMove\(session\.id, project\.id, applyWorkspace\)/);
   assert.match(renderer, /project-move-apply-workspace/);
   assert.match(renderer, /전문 모드 역할 설정/);
+  assert.match(renderer, /runProfessionalAction\(action\)/);
   assert.match(renderer, /누적 요약/);
   assert.match(ipc, /applyProjectWorkspace = false/);
   assert.match(ipc, /"chat:specialist:start"/);
+  assert.match(ipc, /"chat:specialist:plan-answer"/);
   assert.match(ipc, /"chat:memory:append"/);
   assert.match(ipc, /"chat:projects:create"/);
   assert.match(ipc, /"chat:projects:select"/);

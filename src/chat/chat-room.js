@@ -28,6 +28,19 @@ function stripEmoticonTags(value) {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
+
+function hasOpenQuestions(text) {
+  const source = String(text || "");
+  const match = /^#{1,6}\s*open\s+questions?\s*$/im.exec(source);
+  if (!match) return false;
+  const rest = source.slice((match.index || 0) + match[0].length);
+  const nextHeading = rest.search(/^#{1,6}\s+/m);
+  const content = (nextHeading >= 0 ? rest.slice(0, nextHeading) : rest)
+    .replace(/^\s*STATUS:\s*\w+.*$/gim, "")
+    .replace(/^\s*(?:[-*]|\d+[.)])\s*/gm, "")
+    .trim();
+  return content.length > 0 && !/^(?:없음|없습니다|none|n\/?a)\.?$/i.test(content);
+}
 const DEFAULT_MENTION_CHAIN_LIMIT = 2;
 
 let messageSeq = 0;
@@ -54,6 +67,7 @@ class ChatRoom extends EventEmitter {
     // TASK-007: Planner가 TASK.md를 만들면 호출되는 콜백으로, 호출 측(chat-ipc)이
     // workflow.json에 metadata를 등록합니다. chat-room은 workflow 저장소를 직접 모릅니다.
     this.onTaskCreated = typeof options.onTaskCreated === "function" ? options.onTaskCreated : null;
+    this.onTaskUpdated = typeof options.onTaskUpdated === "function" ? options.onTaskUpdated : null;
     this.meta = {
       permissionMode: "chat",
       ...(options.meta || {}),
@@ -86,6 +100,9 @@ class ChatRoom extends EventEmitter {
     this.specialistActive = false;
     // 전문 실행 중 "기획 승인 후 이어서 진행"할 상태(step/auto에서 PLAN_READY로 멈출 때 저장).
     this.specialistResume = null;
+    // 기획 검수를 통과하고 사용자가 승인한 live Task입니다. 구현·검수 블록은
+    // 이 Task를 시작 시점에 Frozen Run Contract로 동결해 사용합니다.
+    this.professionalPlan = null;
     // BLOCKED로 멈췄을 때 사용자의 후속 선택(복원/유지/폐기)을 기다리는 상태.
     // A안: BLOCKED 시점에 즉시 되돌리지 않고, 사용자가 결정할 때까지 작업물을 보존합니다.
     this.specialistBlocked = null;
@@ -143,6 +160,10 @@ class ChatRoom extends EventEmitter {
       available: Boolean(this.specialistResume),
       mode: this.specialistResume?.mode || null,
       phase: this.specialistResume?.phase || null,
+      needsInput: ["needs_decision", "plan_review_fix_required"].includes(
+        this.specialistResume?.phase
+      ),
+      planReady: Boolean(this.professionalPlan),
       blocked: Boolean(this.specialistBlocked),
       canRestore: Boolean(this.specialistBlocked?.canRestore),
       hasTask: Boolean(
@@ -557,7 +578,7 @@ class ChatRoom extends EventEmitter {
       discussionSignal = match ? match[1].toUpperCase() : "CONTINUE";
       if (match) rawText = rawText.slice(0, match.index).trim();
     }
-    if (context.specialist?.stage === "review") {
+    if (context.specialist?.stage === "review" || context.specialist?.stage === "plan_review") {
       const match = rawText.match(/\[\[CODEPET_REVIEW:(PASS|REVISE|FIX_REQUIRED|UNKNOWN)\]\]\s*$/i);
       specialistSignal = match ? match[1].toUpperCase() : "UNKNOWN";
       // 예전 Provider 출력·테스트 호환을 위해 REVISE는 FIX_REQUIRED로 정규화한다.
@@ -658,14 +679,138 @@ class ChatRoom extends EventEmitter {
     return { ok: true };
   }
 
-  // 전문 모드: 사용자가 확정한 방향을 구현하고, 검토 결과를 확인합니다.
-  // 실행 방식(mode)에 따라 동작이 다릅니다.
-  //  - step   (단계별): 각 역할이 끝나면 사용자에게 반환. 기획(PLAN_READY) 후에도 승인에서 멈춤.
-  //  - auto   (제한 자동): 기획은 승인에서 멈추고, 승인 후엔 검토자가 FIX_REQUIRED를 반환하고
-  //                       모든 Blocking 이슈가 범위 안(IN)일 때 승인된 횟수(N) 안에서 자동 보완.
-  //  - quick  (빠른 실행): 기획(PLAN_READY)이면 승인 없이 구현까지 한 번에 진행.
-  // 새 workflow framework를 만들지 않고 기존 단일 턴 큐를 재사용합니다.
+  // 기획·검수 블록: Planner → Reviewer(기획 검수)까지 실행합니다.
+  // 질문·보완이 있으면 입력 대기 상태로 멈추고, 통과한 기획만 professionalPlan에 남깁니다.
+  async runPlanBlock({ stages, feedback = "", taskInfo = null, mode = "step", maxAutoRevisions = 1, action = "plan" } = {}) {
+    const planner = stages?.planner;
+    const review = stages?.review;
+    if (!planner?.agent || !review?.agent) {
+      return { ok: false, error: "기획·검수 담당자를 프로젝트 설정에서 지정해 주세요." };
+    }
+    const requestedGeneration = this.generation;
+    this.specialistActive = true;
+    this.emitSpecialistState();
+    try {
+      const plannerResult = await this.scheduleResponse(planner.agent, {
+        specialist: { stage: "planner", round: 1, maxRounds: 1, feedback },
+        agentConfig: planner.agentConfig,
+      });
+      if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
+      if (!plannerResult?.ok) return this.specialistFail(planner, "planner", 0, plannerResult);
+
+      if (plannerResult.plannerStatus === "NEEDS_DECISION" || hasOpenQuestions(plannerResult.text)) {
+        this.specialistResume = {
+          stages, mode, maxAutoRevisions, action,
+          feedback: plannerResult.text || feedback,
+          taskInfo,
+          phase: "needs_decision",
+        };
+        this.appendSystem("기획자가 답변이 필요한 질문을 남겼습니다. 아래 전용 입력칸에서 답한 뒤 기획·검수를 다시 실행하세요.");
+        return { ok: false, stage: "planner", needsUserDecision: true, stopReason: "NEEDS_DECISION", result: plannerResult };
+      }
+
+      let nextTaskInfo = taskInfo;
+      if (this.meta.workspace) {
+        try {
+          nextTaskInfo = taskInfo
+            ? this.taskManager.updateTaskFromPlanner(taskInfo, plannerResult.text || "", this.meta.workspace)
+            : this.taskManager.createTaskFromPlanner(plannerResult.text || "", this.meta.workspace);
+          if (!taskInfo && nextTaskInfo && this.onTaskCreated) {
+            this.onTaskCreated({
+              title: nextTaskInfo.filename,
+              description: "",
+              contentSource: "file",
+              taskPath: nextTaskInfo.relativePath,
+              taskHash: nextTaskInfo.hash,
+              status: "todo",
+              role: "implementation",
+            });
+          } else if (taskInfo && nextTaskInfo && this.onTaskUpdated) {
+            this.onTaskUpdated({
+              taskPath: nextTaskInfo.relativePath,
+              taskHash: nextTaskInfo.hash,
+              status: "todo",
+            });
+          }
+        } catch (error) {
+          this.appendSystem(`기획 결과를 TASK.md로 저장하지 못했습니다. (${error?.message || "알 수 없는 오류"})`);
+          return { ok: false, stage: "planner", needsUserDecision: true, stopReason: "TASK_SAVE_FAILED", error: error?.message || "알 수 없는 오류" };
+        }
+      }
+
+      const planText = nextTaskInfo?.content || plannerResult.text || "";
+      const planReview = await this.scheduleResponse(review.agent, {
+        specialist: { stage: "plan_review", round: 1, maxRounds: 1, feedback: planText },
+        agentConfig: review.agentConfig,
+      });
+      if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
+      if (!planReview?.ok) return this.specialistFail(review, "plan_review", 0, planReview);
+      const contract = this.parseReviewContract(planReview.text || "", planReview.specialistSignal);
+      if (contract.verdict !== "PASS") {
+        this.specialistResume = {
+          stages, mode, maxAutoRevisions, action,
+          feedback: planReview.text || planText,
+          taskInfo: nextTaskInfo,
+          phase: "plan_review_fix_required",
+        };
+        this.appendSystem("기획 검수에서 보완 또는 사용자 답변이 필요하다고 판단했습니다. 아래 전용 입력칸에서 답한 뒤 기획·검수를 다시 실행하세요.");
+        return { ok: false, stage: "plan_review", needsUserDecision: true, stopReason: contract.stopReason || contract.verdict, contract, result: planReview };
+      }
+
+      this.professionalPlan = { stages, mode, maxAutoRevisions, taskInfo: nextTaskInfo, feedback: planText };
+      this.specialistResume = null;
+      this.appendSystem("기획 검수가 통과했습니다. 이제 구현·검수를 실행하거나 전체 실행으로 이어갈 수 있습니다.");
+      return { ok: true, stage: "plan_review", planReady: true, taskInfo: nextTaskInfo };
+    } finally {
+      // 전체 실행은 기획·검수와 구현·검수를 같은 블록으로 이어야 하므로,
+      // 기획 검수 통과 직후에는 일반 대화 대기열을 풀지 않습니다.
+      if (action === "full" && this.professionalPlan) {
+        this.emitSpecialistState();
+      } else {
+        this.specialistActive = false;
+        this.emitSpecialistState();
+        this.turnQueue.push(...this.deferredTurnQueue.splice(0));
+        this.emitTurnState();
+        this.pumpTurnQueue();
+      }
+    }
+  }
+
+  // Open Question·기획 검수 피드백에 대한 사용자 답변을 Planner의 다음 입력으로 보관합니다.
+  async answerPlanQuestion(answer) {
+    const resume = this.specialistResume;
+    if (!resume || !["needs_decision", "plan_review_fix_required"].includes(resume.phase)) {
+      return { ok: false, error: "답변을 기다리는 기획 질문이 없습니다." };
+    }
+    const text = String(answer || "").trim();
+    if (!text) return { ok: false, error: "기획자에게 보낼 답변을 입력해 주세요." };
+    this.specialistResume = null;
+    this.appendMessage({ authorType: "user", author: "user", text: `[기획 답변] ${text}` });
+    const feedback = `${resume.feedback || ""}\n\n=== 사용자 답변 ===\n${text}\n=== 사용자 답변 끝 ===`;
+    const result = await this.runPlanBlock({ ...resume, feedback, taskInfo: resume.taskInfo || null });
+    if (resume.action === "full" && result?.ok) {
+      return this.runProfessionalImplementation({
+        stages: resume.stages,
+        mode: resume.mode,
+        maxAutoRevisions: resume.maxAutoRevisions,
+        recordAfter: true,
+      });
+    }
+    return result;
+  }
+
+  // 기존 호출 경로는 유지합니다. action을 명시한 새 화면만 버튼형 전문 실행을 씁니다.
   async startSpecialist(options = {}) {
+    if (options.action) return this.startProfessionalAction(options);
+    return this.startLegacySpecialist(options);
+  }
+
+  // 전문 모드 진입점. 화면의 버튼은 action으로 구분합니다.
+  // - plan: 기획 → 기획 검수
+  // - implementation: 승인된 기획 → 구현 → 구현 검수
+  // - record: 기록관만 수동 실행
+  // - full: 기획·검수와 구현·검수를 연속 실행하되 질문/보완/막힘에서 중단
+  async startProfessionalAction(options = {}) {
     if (this.discussionRequested || this.discussionActive || this.isSpecialistLocked()) {
       return { ok: false, error: "이미 다른 전문 작업이나 토론이 진행 중입니다." };
     }
@@ -675,18 +820,57 @@ class ChatRoom extends EventEmitter {
       return { ok: false, error: "응답이 진행 중입니다. 응답이 끝난 뒤 다시 시작해 주세요." };
     }
     const stages = options.stages || {};
+    const action = ["plan", "implementation", "record", "full"].includes(options.action)
+      ? options.action
+      : "plan";
     const implementation = stages.implementation;
     const review = stages.review;
-    const planner = stages.planner;
-    if (!implementation?.agent || !review?.agent) {
+    if ((action === "plan" || action === "full") && (!stages.planner?.agent || !review?.agent)) {
+      return { ok: false, error: "전문 모드의 기획·검수 담당자를 프로젝트 설정에서 지정해 주세요." };
+    }
+    if ((action === "implementation" || action === "full") && (!implementation?.agent || !review?.agent)) {
       return { ok: false, error: "전문 모드의 구현·검토 담당자를 프로젝트 설정에서 지정해 주세요." };
     }
-
-    // 실행 모드: 기본은 단계별(step). auto는 사용자 사전 승인 시, quick은 기획 승인 없이 진행.
-    const mode = options.mode === "auto" ? "auto" : options.mode === "quick" ? "quick" : "step";
+    if (action === "full" && !stages.recorder?.agent) {
+      return { ok: false, error: "전체 실행에는 기록 담당자를 프로젝트 설정에서 지정해 주세요." };
+    }
+    // full은 기획 검수가 통과한 뒤 구현·검수 블록만 자동 연결합니다.
+    const mode = action === "full" || options.mode === "auto" ? "auto" : "step";
     const maxAutoRevisions = Number.isInteger(options.maxAutoRevisions) && options.maxAutoRevisions >= 0
       ? Math.min(options.maxAutoRevisions, 3)
       : mode === "step" ? 0 : 1;
+
+    if (action === "record") {
+      if (!stages.recorder?.agent) return { ok: false, error: "기록 담당자를 프로젝트 설정에서 지정해 주세요." };
+      this.specialistActive = true;
+      this.emitSpecialistState();
+      try {
+        const recorderResult = await this.runRecorder(stages.recorder);
+        return recorderResult?.ok
+          ? { ok: true, recorded: true, recording: recorderResult.text || "" }
+          : recorderResult;
+      } finally {
+        this.specialistActive = false;
+        this.emitSpecialistState();
+      }
+    }
+
+    if (action === "plan" || action === "full") {
+      this.professionalPlan = null;
+      const planResult = await this.runPlanBlock({ stages, mode, maxAutoRevisions, action });
+      if (action !== "full" || !planResult?.ok) return planResult;
+      return this.runProfessionalImplementation({ stages, mode, maxAutoRevisions, recordAfter: true });
+    }
+
+    return this.runProfessionalImplementation({ stages, mode, maxAutoRevisions, recordAfter: false });
+  }
+
+  async runProfessionalImplementation({ stages, mode, maxAutoRevisions, recordAfter }) {
+    const implementation = stages.implementation;
+    const review = stages.review;
+    if (!this.professionalPlan?.taskInfo) {
+      return { ok: false, error: "구현·검수는 기획 검수가 통과한 뒤에 실행할 수 있습니다. 먼저 기획·검수를 실행해 주세요." };
+    }
 
     const requestedGeneration = this.generation;
     this.specialistActive = true;
@@ -707,79 +891,11 @@ class ChatRoom extends EventEmitter {
       return { ok: false, cancelled: true };
     }
 
-    this.appendSystem(`전문 모드 시작 · 구현 @${implementation.agent.id} · 검토 @${review.agent.id}`);
+    this.appendSystem(`구현·검수 시작 · 구현 @${implementation.agent.id} · 검수 @${review.agent.id}`);
 
-    let feedback = "";
-    let taskInfo = null;
+    const feedback = this.professionalPlan.feedback || "";
+    const taskInfo = this.professionalPlan.taskInfo;
     try {
-      // Planner (선택): NEEDS_DECISION이면 STOP. PLAN_READY면 step/auto는 승인에서 멈추고,
-      // quick은 그대로 구현을 진행합니다.
-      if (planner?.agent) {
-        const plannerResult = await this.scheduleResponse(planner.agent, {
-          specialist: { stage: "planner", round: 1, maxRounds: 1 },
-          agentConfig: planner.agentConfig,
-        });
-        if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
-        if (!plannerResult?.ok) return this.specialistFail(planner, "planner", 0, plannerResult);
-        if (plannerResult.plannerStatus === "NEEDS_DECISION") {
-          return {
-            ok: false,
-            stage: "planner",
-            completedIterations: 0,
-            needsUserDecision: true,
-            stopReason: "NEEDS_DECISION",
-            result: plannerResult,
-          };
-        }
-        // PLAN_READY: 기획 결과를 file-backed TASK.md로 저장하고 workflow에 등록합니다.
-        // (TASK-007 1단계: Planner가 만든 직후 등록, status: todo)
-        if (this.meta.workspace) {
-          try {
-            taskInfo = this.taskManager.createTaskFromPlanner(plannerResult.text || "", this.meta.workspace);
-            if (taskInfo && this.onTaskCreated) {
-              this.onTaskCreated({
-                title: taskInfo.filename,
-                description: "",
-                contentSource: "file",
-                taskPath: taskInfo.relativePath,
-                taskHash: taskInfo.hash,
-                status: "todo",
-                role: "implementation",
-              });
-            }
-          } catch (error) {
-            this.appendSystem(`기획 결과를 TASK.md로 저장하지 못했습니다. (${error?.message || "알 수 없는 오류"})`);
-            return {
-              ok: false,
-              stage: "planner",
-              completedIterations: 0,
-              needsUserDecision: true,
-              stopReason: "PLAN_READY",
-              result: plannerResult,
-              taskError: error?.message || "알 수 없는 오류",
-            };
-          }
-        }
-        // Builder 실행 계약 source는 기획 텍스트가 아니라 Frozen Task입니다.
-        // 실행 승인 시점에 freeze하므로, 여기서는 taskInfo만 보관합니다.
-        feedback = taskInfo ? taskInfo.content : plannerResult.text || "";
-        if (mode !== "quick") {
-          // step/auto → 사람 승인 Gate. 이어서 진행할 상태를 저장하고 멈춥니다.
-          // step은 Builder·Reviewer 각 단계 경계에서도 멈추기 위해 phase를 추적합니다.
-          this.specialistResume = { stages, mode, maxAutoRevisions, feedback, taskInfo, phase: "plan_ready" };
-          this.emitSpecialistState();
-          this.appendSystem("기획(PLAN_READY)이 완료되었습니다. 승인하시면 구현을 이어서 진행합니다.");
-          return {
-            ok: false,
-            stage: "planner",
-            completedIterations: 0,
-            needsUserDecision: true,
-            stopReason: "PLAN_READY",
-            result: plannerResult,
-          };
-        }
-      }
-
       return await this.runExecutionBlock({
         stages,
         mode,
@@ -788,6 +904,7 @@ class ChatRoom extends EventEmitter {
         taskInfo,
         round: 1,
         requestedGeneration,
+        recordAfter,
       });
     } finally {
       this.specialistActive = false;
@@ -837,6 +954,125 @@ class ChatRoom extends EventEmitter {
         maxAutoRevisions: resume.maxAutoRevisions,
         feedback: resume.feedback,
         taskInfo: resume.taskInfo || null,
+        round: 1,
+        requestedGeneration,
+      });
+    } finally {
+      this.specialistActive = false;
+      this.emitSpecialistState();
+      this.turnQueue.push(...this.deferredTurnQueue.splice(0));
+      this.emitTurnState();
+      this.pumpTurnQueue();
+    }
+  }
+
+  // 기존 step / 제한 자동 / 빠른 실행 호출 호환용 경로입니다.
+  async startLegacySpecialist(options = {}) {
+    if (this.discussionRequested || this.discussionActive || this.isSpecialistLocked()) {
+      return { ok: false, error: "이미 다른 전문 작업이나 토론이 진행 중입니다." };
+    }
+    if (this.turnActive || this.turnQueue.length > 0 || this.deferredTurnQueue.length > 0) {
+      return { ok: false, error: "응답이 진행 중입니다. 응답이 끝난 뒤 다시 시작해 주세요." };
+    }
+    const stages = options.stages || {};
+    const implementation = stages.implementation;
+    const review = stages.review;
+    const planner = stages.planner;
+    if (!implementation?.agent || !review?.agent) {
+      return { ok: false, error: "전문 모드의 구현·검토 담당자를 프로젝트 설정에서 지정해 주세요." };
+    }
+
+    const mode = options.mode === "auto" ? "auto" : options.mode === "quick" ? "quick" : "step";
+    const maxAutoRevisions = Number.isInteger(options.maxAutoRevisions) && options.maxAutoRevisions >= 0
+      ? Math.min(options.maxAutoRevisions, 3)
+      : mode === "step" ? 0 : 1;
+    const requestedGeneration = this.generation;
+    this.specialistActive = true;
+    this.specialistResume = null;
+    if (this.specialistBlocked) {
+      if (this.checkpointEngine && this.specialistBlocked.checkpoint) {
+        this.checkpointEngine.cleanupCheckpoint(this.specialistBlocked.checkpoint);
+      }
+      this.specialistBlocked = null;
+    }
+    this.emitSpecialistState();
+    await this.waitForIdle();
+    if (requestedGeneration !== this.generation) {
+      this.specialistActive = false;
+      this.emitSpecialistState();
+      return { ok: false, cancelled: true };
+    }
+
+    this.appendSystem(`전문 모드 시작 · 구현 @${implementation.agent.id} · 검토 @${review.agent.id}`);
+    let feedback = "";
+    let taskInfo = null;
+    try {
+      if (planner?.agent) {
+        const plannerResult = await this.scheduleResponse(planner.agent, {
+          specialist: { stage: "planner", round: 1, maxRounds: 1 },
+          agentConfig: planner.agentConfig,
+        });
+        if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
+        if (!plannerResult?.ok) return this.specialistFail(planner, "planner", 0, plannerResult);
+        if (plannerResult.plannerStatus === "NEEDS_DECISION") {
+          return {
+            ok: false,
+            stage: "planner",
+            completedIterations: 0,
+            needsUserDecision: true,
+            stopReason: "NEEDS_DECISION",
+            result: plannerResult,
+          };
+        }
+        if (this.meta.workspace) {
+          try {
+            taskInfo = this.taskManager.createTaskFromPlanner(plannerResult.text || "", this.meta.workspace);
+            if (taskInfo && this.onTaskCreated) {
+              this.onTaskCreated({
+                title: taskInfo.filename,
+                description: "",
+                contentSource: "file",
+                taskPath: taskInfo.relativePath,
+                taskHash: taskInfo.hash,
+                status: "todo",
+                role: "implementation",
+              });
+            }
+          } catch (error) {
+            this.appendSystem(`기획 결과를 TASK.md로 저장하지 못했습니다. (${error?.message || "알 수 없는 오류"})`);
+            return {
+              ok: false,
+              stage: "planner",
+              completedIterations: 0,
+              needsUserDecision: true,
+              stopReason: "PLAN_READY",
+              result: plannerResult,
+              taskError: error?.message || "알 수 없는 오류",
+            };
+          }
+        }
+        feedback = taskInfo ? taskInfo.content : plannerResult.text || "";
+        if (mode !== "quick") {
+          this.specialistResume = { stages, mode, maxAutoRevisions, feedback, taskInfo, phase: "plan_ready" };
+          this.emitSpecialistState();
+          this.appendSystem("기획(PLAN_READY)이 완료되었습니다. 승인하시면 구현을 이어서 진행합니다.");
+          return {
+            ok: false,
+            stage: "planner",
+            completedIterations: 0,
+            needsUserDecision: true,
+            stopReason: "PLAN_READY",
+            result: plannerResult,
+          };
+        }
+      }
+
+      return await this.runExecutionBlock({
+        stages,
+        mode,
+        maxAutoRevisions,
+        feedback,
+        taskInfo,
         round: 1,
         requestedGeneration,
       });
@@ -1032,7 +1268,7 @@ class ChatRoom extends EventEmitter {
   }
 
   // Builder → Reviewer → (auto면 자동 보완) → 기록관(블록 끝) 실행 블록.
-  async runExecutionBlock({ stages, mode, maxAutoRevisions, feedback, taskInfo, round, requestedGeneration }) {
+  async runExecutionBlock({ stages, mode, maxAutoRevisions, feedback, taskInfo, round, requestedGeneration, recordAfter = true }) {
     const implementation = stages.implementation;
     const review = stages.review;
     const recorder = stages.recorder;
@@ -1262,7 +1498,7 @@ class ChatRoom extends EventEmitter {
     }
 
     // PASS 후 기록관(선택) 실행 — 실행 블록의 마지막 단계로 블록을 마무리합니다.
-    if (recorder?.agent) {
+    if (recordAfter && recorder?.agent) {
       recorderResult = await this.scheduleResponse(recorder.agent, {
         specialist: { stage: "recorder", round, maxRounds: 1 },
         agentConfig: recorder.agentConfig,

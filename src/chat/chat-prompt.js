@@ -126,6 +126,7 @@ function buildAgentPrompt({
   if (specialist) {
     const stageLabels = {
       planner: "기획",
+      plan_review: "기획 검수",
       implementation: "구현",
       review: "검토",
       recorder: "기록",
@@ -153,6 +154,12 @@ function buildAgentPrompt({
       lines.push("- 하나의 작업이 하나의 명확한 목표와 완료 조건을 갖도록 큰 작업을 분해하세요.");
       lines.push("- 코드를 수정하거나 구현을 시작하지 마세요. 구현 담당자를 자동으로 부르지 마세요.");
       lines.push("- 응답 안에 `STATUS: PLAN_READY` 또는 `STATUS: NEEDS_DECISION` 하나를 넣으세요.");
+    } else if (specialist.stage === "plan_review") {
+      lines.push("- 이것은 구현 검수가 아니라 기획 검수입니다. 코드를 수정하거나 구현을 시작하지 마세요.");
+      lines.push("- 기획안이 사용자 목표·제약·완료 조건을 충족하는지, Open Question이 남았는지 검토하세요.");
+      lines.push("- 기획안이 충분하면 `VERDICT: PASS`를, 보완이 필요하면 `VERDICT: FIX_REQUIRED`를, 판단 근거가 부족하면 `VERDICT: UNKNOWN`을 넣으세요.");
+      lines.push("- FIX_REQUIRED라면 `ISSUES:` 아래에 빠진 결정·모호한 조건·위험을 구체적으로 적으세요.");
+      lines.push("- Open Question이 남아 있으면 PASS로 처리하지 말고 FIX_REQUIRED로 반환하세요.");
     } else if (specialist.stage === "implementation") {
       lines.push("- 현재 결정과 작업 범위 안에서 실제 구현을 진행하세요.");
       lines.push("- 작업을 끝낸 뒤 변경 내용과 검증 결과를 짧게 정리하세요.");

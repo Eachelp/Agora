@@ -1929,6 +1929,38 @@ textarea:focus-visible {
   flex: none;
 }
 
+.professional-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 28px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-muted);
+}
+
+.professional-actions[hidden] {
+  display: none;
+}
+
+.professional-actions .chip-button {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.professional-actions-label {
+  margin-right: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.professional-full-button {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--surface);
+  font-weight: 700;
+}
+
 /* 안내 문구는 남는 공간 안에서만 줄어들고, 길면 말줄임 처리합니다. */
 .enforcement-hint {
   min-width: 0;
@@ -1980,6 +2012,17 @@ textarea:focus-visible {
 .specialist-button:hover {
   border-color: var(--accent-strong);
   background: var(--accent-strong);
+}
+
+.specialist-button.is-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.room-controls-actions.is-professional-mode .discussion-button,
+.room-controls-actions.is-professional-mode .workflow-button {
+  display: none;
 }
 
 .enforcement-hint {

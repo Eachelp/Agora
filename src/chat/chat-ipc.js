@@ -596,20 +596,20 @@ function roomMeta(meta) {
     return { ok: true, agent, agentConfig };
   }
 
-  function specialistStagesFor(project, room) {
+  function specialistStagesFor(project, room, action = "full") {
     const stages = {};
-    for (const roleId of ["implementation", "review", "recorder"]) {
+    const requiredRoles = action === "record"
+      ? ["recorder"]
+      : action === "plan"
+        ? ["planning", "review"]
+        : action === "implementation"
+          ? ["implementation", "review"]
+          : ["planning", "implementation", "review", "recorder"];
+    for (const roleId of requiredRoles) {
       const stage = specialistStageFor(project, room, roleId);
       if (!stage.ok) return stage;
-      stages[roleId] = stage;
+      stages[roleId === "planning" ? "planner" : roleId] = stage;
     }
-    // Planner(기획)는 세 실행 방식 모두 거치는 필수 역할입니다.
-    // 없으면 어떤 에이전트도 호출하지 않고 실행을 거부합니다.
-    const planner = specialistStageFor(project, room, "planning");
-    if (!planner.ok) {
-      return { ok: false, error: "전문 모드는 기획 담당자가 필요합니다. 프로젝트 설정에서 기획 담당자를 지정해 주세요." };
-    }
-    stages.planner = planner;
     return { ok: true, stages };
   }
 
@@ -675,6 +675,23 @@ function roomMeta(meta) {
           }
         } catch (error) {
           console.warn("[agora] Planner Task workflow 등록 실패:", error?.message || error);
+        }
+      },
+      onTaskUpdated: ({ taskPath, taskHash, status }) => {
+        try {
+          const workflow = ensureWorkflowStore();
+          const project = projectForSession(store.readMeta(sessionId));
+          if (!workflow || !project) return;
+          const target = workflow.listTasks(project.id).find((task) => task.taskPath === taskPath);
+          if (!target) return;
+          workflow.updateTask(target.id, { taskHash, status });
+          refreshWorkflowForProject(project.id);
+          broadcast("chat:workflow-changed", {
+            projectId: project.id,
+            workflow: workflowForProject(project.id),
+          });
+        } catch (error) {
+          console.warn("[agora] Planner Task workflow 갱신 실패:", error?.message || error);
         }
       },
     });
@@ -1410,17 +1427,19 @@ function roomMeta(meta) {
 
     ipcMain.handle(
       "chat:specialist:start",
-      wrap(async ({ sessionId, mode, maxAutoRevisions }) => {
+      wrap(async ({ sessionId, action, mode, maxAutoRevisions }) => {
         requireSession(sessionId);
         const room = getRoom(sessionId);
         if (!room.messages.some((message) => message.authorType === "user")) {
           throw new Error("전문 실행을 시작하려면 먼저 이 대화에 작업 요청을 남겨 주세요.");
         }
         const project = projectForSession(store.readMeta(sessionId));
-        const planned = specialistStagesFor(project, room);
+        const selectedAction = ["plan", "implementation", "record", "full"].includes(action)
+          ? action
+          : null;
+        const planned = specialistStagesFor(project, room, selectedAction || "full");
         if (!planned.ok) throw new Error(planned.error);
-        // 전문 모드는 실제 구현을 수행하므로 채팅이 쓰기 권한이어야 합니다.
-        // 그렇지 않으면 구현 담당자가 도구를 받지 못해 "입만 터는 구현"이 됩니다.
+        // 기획·기록도 Task/Memory를 프로젝트 폴더에 남기므로 전문 실행은 쓰기 권한을 사용합니다.
         const meta = store.readMeta(sessionId);
         if ((meta.permissionMode || "chat") !== "workspace-write") {
           if (!meta.workspace) {
@@ -1433,6 +1452,7 @@ function roomMeta(meta) {
         }
         const started = room.startSpecialist({
           stages: planned.stages,
+          ...(selectedAction ? { action: selectedAction } : {}),
           mode: mode === "auto" ? "auto" : mode === "quick" ? "quick" : "step",
           maxAutoRevisions:
             Number.isInteger(maxAutoRevisions) && maxAutoRevisions >= 0
@@ -1486,6 +1506,35 @@ function roomMeta(meta) {
         // 단계별 실행의 다음 Gate(BUILDER_DONE/REVIEW_PASS)도 정상 STOP입니다.
         if (result && result.ok === false && !result.needsUserDecision && !result.cancelled) {
           throw new Error(result.error || "전문 실행을 이어서 진행하지 못했습니다.");
+        }
+        return { meta: publicMeta(store.readMeta(sessionId)), specialist: room.specialistState() };
+      })
+    );
+
+    ipcMain.handle(
+      "chat:specialist:plan-answer",
+      wrap(async ({ sessionId, text }) => {
+        requireSession(sessionId);
+        const room = getRoom(sessionId);
+        const project = projectForSession(store.readMeta(sessionId));
+        const started = room.answerPlanQuestion(text);
+        const result = await Promise.race([
+          started,
+          new Promise((resolve) => setImmediate(() => resolve({ ok: true, pending: true }))),
+        ]);
+        started
+          .then((completed) => {
+            if (completed?.ok && completed.recording) {
+              const recorderAgentId = room.professionalPlan?.stages?.recorder?.agent?.id || null;
+              saveRecorderOutput(project.id, completed.recording, "전문 모드 실행 요약 초안", {
+                chatId: sessionId,
+                recorderAgentId,
+              });
+            }
+          })
+          .catch(() => {});
+        if (result && result.ok === false && !result.needsUserDecision && !result.cancelled) {
+          throw new Error(result.error || "기획 답변을 처리하지 못했습니다.");
         }
         return { meta: publicMeta(store.readMeta(sessionId)), specialist: room.specialistState() };
       })

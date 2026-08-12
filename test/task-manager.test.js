@@ -44,6 +44,19 @@ test("TASK 번호는 기존 파일 기준으로 증가한다", (t) => {
   assert.notEqual(first.absPath, second.absPath);
 });
 
+test("기획 보완은 live TASK.md만 갱신하고 기존 Frozen Run은 바꾸지 않는다", (t) => {
+  const ws = makeTempWorkspace(t);
+  const mgr = new TaskManager();
+  const task = mgr.createTaskFromPlanner("초기 기획\nSTATUS: PLAN_READY", ws);
+  const run = mgr.freezeTask({ contentSource: "file", taskPath: task.relativePath, description: "" }, ws);
+
+  const updated = mgr.updateTaskFromPlanner(task, "보완된 기획\nSTATUS: PLAN_READY", ws);
+
+  assert.equal(fs.readFileSync(updated.absPath, "utf8"), "보완된 기획");
+  assert.equal(fs.readFileSync(run.taskPath, "utf8"), "초기 기획");
+  assert.equal(updated.hash, hashText("보완된 기획"));
+});
+
 test("빈 Planner 결과로는 TASK.md를 만들지 않는다", (t) => {
   const ws = makeTempWorkspace(t);
   const mgr = new TaskManager();

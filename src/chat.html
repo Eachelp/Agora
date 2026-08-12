@@ -105,10 +105,18 @@
             <div class="room-controls-actions">
               <button class="chip-button workflow-button" id="btn-workflow" type="button" title="이 프로젝트의 메모리·결정·작업 기록">프로젝트 기록</button>
               <button class="chip-button discussion-button" id="btn-discussion" type="button" title="에이전트 토론 시작">토론 시작</button>
-              <button class="chip-button specialist-button" id="btn-specialist" type="button" title="프로젝트 설정의 기획·구현·검토·기록 담당자로 진행">작업 시작</button>
+              <button class="chip-button specialist-button" id="btn-specialist" type="button" aria-pressed="false" title="전문 모드 켜기">전문 모드</button>
             </div>
           </div>
         </header>
+
+        <div class="professional-actions" id="professional-actions" hidden aria-label="전문 실행">
+          <span class="professional-actions-label">전문 실행</span>
+          <button class="chip-button" id="btn-professional-plan" type="button" title="기획을 만들고 다른 담당자가 기획을 검수합니다">기획·검수</button>
+          <button class="chip-button" id="btn-professional-implementation" type="button" title="기획 검수를 통과한 작업을 구현하고 검수합니다">구현·검수</button>
+          <button class="chip-button" id="btn-professional-record" type="button" title="현재 대화와 결과를 기록관에게 정리하게 합니다">기록</button>
+          <button class="chip-button professional-full-button" id="btn-professional-full" type="button" title="기획·검수 다음 구현·검수·기록까지 이어서 실행합니다">전체 실행</button>
+        </div>
 
         <div class="store-warning" id="store-warning" hidden></div>
 

@@ -117,6 +117,18 @@ test("전문 모드 구현·검토·기록 지침과 누적 요약이 프롬프�
   assert.match(prompt, /VERDICT: UNKNOWN/);
 });
 
+test("기획 검수는 Open Question이 남아 있으면 통과시키지 않는다", () => {
+  const prompt = buildAgentPrompt({
+    agent: AGENTS[1],
+    agents: AGENTS,
+    messages: [message("user", "작업을 계획해", "user")],
+    specialist: { stage: "plan_review", round: 1, maxRounds: 1, feedback: "## 목표\n화면 개선" },
+  });
+  assert.match(prompt, /전문 모드: 기획 검수/);
+  assert.match(prompt, /구현을 시작하지 마세요/);
+  assert.match(prompt, /Open Question이 남아 있으면 PASS로 처리하지 말고/);
+});
+
 test("전문 모드 구현자는 위임 금지, 검토자는 위임 시 되돌림 지침을 받는다", () => {
   const implementation = buildAgentPrompt({
     agent: AGENTS[1],

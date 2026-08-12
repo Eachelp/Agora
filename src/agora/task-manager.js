@@ -133,6 +133,34 @@ class TaskManager {
     };
   }
 
+  // 기획 검수 후 Planner가 같은 작업 지시서를 보완할 때만 live TASK.md를 갱신합니다.
+  // 이미 동결된 RUN-xxx/task.md는 이 경로로 절대 건드리지 않습니다.
+  updateTaskFromPlanner(taskInfo, plannerText, workspace) {
+    const root = resolveWorkspace(workspace);
+    const memoryRoot = this.memoryRootFor(workspace);
+    const relativePath = String(taskInfo?.relativePath || "");
+    const absPath = root && relativePath
+      ? path.resolve(root, relativePath.replace(/^\.\/+/, ""))
+      : null;
+    const safeRoot = memoryRoot ? `${path.resolve(memoryRoot)}${path.sep}` : "";
+    const normalize = (value) => process.platform === "win32" ? value.toLowerCase() : value;
+    if (!absPath || !safeRoot || !normalize(absPath).startsWith(normalize(safeRoot))) {
+      throw new Error("갱신할 Planner Task 경로가 올바르지 않습니다.");
+    }
+    const content = stripControlMarkers(plannerText);
+    if (!content.trim()) {
+      throw new Error("Planner 결과가 비어 있어 TASK.md를 갱신할 수 없습니다.");
+    }
+    fs.writeFileSync(absPath, content, "utf8");
+    return {
+      ...taskInfo,
+      absPath,
+      relativePath,
+      content,
+      hash: hashText(content),
+    };
+  }
+
   // Task Contract 본문을 가져옵니다. file 기반이면 TASK.md를 읽고,
   // inline(기존/수동)이면 description을 사용합니다.
   resolveTaskContract(task, workspace) {
