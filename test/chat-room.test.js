@@ -315,6 +315,7 @@ test("기획 단계가 NEEDS_DECISION을 반환하면 구현을 시작하지 않
 
 test("단계 실행에서 기획이 PLAN_READY면 승인을 기다리며 구현을 시작하지 않는다", async () => {
   const calls = [];
+  const states = [];
   const replies = {
     claude: [{ ok: true, text: "기획 완료\nSTATUS: PLAN_READY" }],
     codex: [{ ok: true, text: "구현 완료" }],
@@ -323,6 +324,7 @@ test("단계 실행에서 기획이 PLAN_READY면 승인을 기다리며 구현�
     agents: makeAgents(),
     runAgent: fakeRunner(replies, calls),
   });
+  room.on("specialist-resume-state", (state) => states.push(state));
 
   const result = await room.startSpecialist({
     stages: {
@@ -337,6 +339,9 @@ test("단계 실행에서 기획이 PLAN_READY면 승인을 기다리며 구현�
   assert.equal(result.stopReason, "PLAN_READY");
   assert.equal(result.needsUserDecision, true);
   assert.deepEqual(calls.map((call) => call.agentId), ["claude"]);
+  assert.equal(states.at(-1).active, false);
+  assert.equal(states.at(-1).available, true);
+  assert.equal(states.at(-1).phase, "plan_ready");
 });
 
 test("승인(resume) 후 기획을 이어서 구현·검토를 진행한다", async () => {

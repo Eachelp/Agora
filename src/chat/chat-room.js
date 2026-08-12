@@ -791,6 +791,10 @@ class ChatRoom extends EventEmitter {
       });
     } finally {
       this.specialistActive = false;
+      // PLAN_READY 등 승인 Gate에서는 resume 상태가 이미 먼저 전송됩니다.
+      // 여기서 active=false를 다시 알리지 않으면 renderer가 "실행 중"으로
+      // 남아 승인 버튼을 비활성화한 채 멈춥니다.
+      this.emitSpecialistState();
       this.turnQueue.push(...this.deferredTurnQueue.splice(0));
       this.emitTurnState();
       this.pumpTurnQueue();
