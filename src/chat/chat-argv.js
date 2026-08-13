@@ -4,6 +4,18 @@
 // - 모델/노력 문자열은 허용 문자만 통과시켜 .cmd 셸 경유 시 주입을 차단합니다.
 
 const PERMISSION_MODES = Object.freeze(["chat", "workspace-read", "workspace-write"]);
+const PERMISSION_RANK = Object.freeze({
+  chat: 0,
+  "workspace-read": 1,
+  "workspace-write": 2,
+});
+const SPECIALIST_STAGE_CAPS = Object.freeze({
+  planner: "workspace-read",
+  plan_review: "workspace-read",
+  implementation: "workspace-write",
+  review: "workspace-write",
+  recorder: "chat",
+});
 const INLINE_TEXT_LIMIT = 16 * 1024;
 
 const SAFE_OPTION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,63}$/;
@@ -11,6 +23,19 @@ const AUTO_APPROVE_FLAGS = new Set([
   "--dangerously-skip-permissions",
   "--dangerously-bypass-approvals-and-sandbox",
 ]);
+
+function minPermissionMode(...modes) {
+  const values = modes.map((mode) => String(mode || "")).filter((mode) => PERMISSION_MODES.includes(mode));
+  if (values.length !== modes.length || values.length === 0) return null;
+  return values.reduce((lowest, mode) => (
+    PERMISSION_RANK[mode] < PERMISSION_RANK[lowest] ? mode : lowest
+  ), values[0]);
+}
+
+function specialistPermissionMode(stage, sessionPermission = "chat") {
+  if (!Object.prototype.hasOwnProperty.call(SPECIALIST_STAGE_CAPS, stage)) return null;
+  return minPermissionMode(sessionPermission, SPECIALIST_STAGE_CAPS[stage]);
+}
 
 function normalizeChoice(value) {
   const text = String(value || "").trim();
@@ -271,10 +296,14 @@ function buildAgentInvocation(input = {}) {
 
 module.exports = {
   PERMISSION_MODES,
+  PERMISSION_RANK,
+  SPECIALIST_STAGE_CAPS,
   INLINE_TEXT_LIMIT,
   buildAgentInvocation,
   assertSafeArgv,
   normalizeChoice,
+  minPermissionMode,
+  specialistPermissionMode,
   agyEffortForModel,
   attachmentKind,
 };

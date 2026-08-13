@@ -2,6 +2,7 @@ const { EventEmitter } = require("node:events");
 const { GROUP_ALIASES } = require("./chat-agents");
 const { parseMentions } = require("./chat-mention");
 const { buildAgentPrompt } = require("./chat-prompt");
+const { specialistPermissionMode } = require("./chat-argv");
 const { TaskManager } = require("../agora/task-manager");
 const { describeWorkspaceChanges } = require("../agora/workspace-diff");
 
@@ -523,14 +524,24 @@ class ChatRoom extends EventEmitter {
         : {}),
     };
 
+    const specialistStage = context.specialist?.stage || null;
+    const permissionMode = specialistStage
+      ? specialistPermissionMode(specialistStage, this.meta.permissionMode)
+      : this.meta.permissionMode;
+    if (!permissionMode) {
+      this.appendSystem("전문 실행 단계의 권한을 계산할 수 없어 실행을 중단했습니다.");
+      return { ok: false, stopReason: "UNKNOWN_SPECIALIST_STAGE" };
+    }
+    const builderStage = specialistStage === "implementation";
+
     const mentionDepth = context.mentionDepth || 0;
 
     const prompt = buildAgentPrompt({
       agent,
       agents: this.enabledAgents(),
-      messages: this.promptMessages(context.promptLimit, context.independent),
+      messages: builderStage ? [] : this.promptMessages(context.promptLimit, context.independent),
       maxMessages: this.maxPromptMessages,
-      permissionMode: this.meta.permissionMode,
+      permissionMode,
       projectContext: this.meta.projectContext,
       memoryContext: this.meta.memoryContext,
       rulesContext: this.meta.rulesContext,
@@ -578,6 +589,10 @@ class ChatRoom extends EventEmitter {
           runId,
           attachments: context.attachments || [],
           emitEvent,
+          permissionMode,
+          specialistStage,
+          // IPC 경계에서 최종 permissionMode를 다시 계산해 실제 invocation을 제한합니다.
+          // 여기서는 기존 승인 재시도 계약을 유지한 요청값만 전달합니다.
           autoApprove: agent.autoApprove || approvedRetry,
         });
         this.cancels.add(run.cancel);
@@ -1366,7 +1381,7 @@ class ChatRoom extends EventEmitter {
         }
         // Builder 실행.
         const builderResult = await this.scheduleResponse(implementation.agent, {
-          specialist: { stage: "implementation", round: 1, maxRounds: 1, feedback: runInfo ? runInfo.content : feedback, frozenTask: frozenTaskMeta() },
+          specialist: { stage: "implementation", round: 1, maxRounds: 1, feedback: runInfo ? "" : feedback, frozenTask: frozenTaskMeta() },
           agentConfig: implementation.agentConfig,
         });
         if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
@@ -1589,7 +1604,7 @@ class ChatRoom extends EventEmitter {
         maxRounds,
         // TASK-007: 최초 Builder의 실행 계약 source는 Frozen Task입니다.
         // (자동 보완에서는 아래에서 Reviewer 피드백도 별도로 전달합니다.)
-        feedback: runInfo ? runInfo.content : feedback,
+        feedback: runInfo ? "" : feedback,
         frozenTask: frozenTaskMeta(),
       },
       agentConfig: implementation.agentConfig,

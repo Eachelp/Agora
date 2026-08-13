@@ -26,7 +26,13 @@ const {
 const { toDiagnostics } = require("../providers/provider-diagnostics");
 const { roomAgentsFromCapabilities } = require("./chat-agents");
 const { ChatRoom, DEFAULT_DISCUSSION_RUN_BUDGET } = require("./chat-room");
-const { buildAgentInvocation, PERMISSION_MODES, INLINE_TEXT_LIMIT } = require("./chat-argv");
+const {
+  buildAgentInvocation,
+  PERMISSION_MODES,
+  INLINE_TEXT_LIMIT,
+  minPermissionMode,
+  specialistPermissionMode,
+} = require("./chat-argv");
 const { createLineParser } = require("./chat-events");
 const { runAgentProcess } = require("./chat-agent-runner");
 const {
@@ -413,7 +419,16 @@ function createChatFeature(options) {
   }
 
   function makeRunAgent(sessionId) {
-    return ({ agent, prompt, runId, attachments, emitEvent, autoApprove = false }) => {
+    return ({
+      agent,
+      prompt,
+      runId,
+      attachments,
+      emitEvent,
+      permissionMode: requestedPermission,
+      specialistStage = null,
+      autoApprove = false,
+    }) => {
       const record = ensureCapabilityService().getRecord(agent.id);
       const meta = store?.readMeta(sessionId);
       if (!record || !meta) {
@@ -423,6 +438,27 @@ function createChatFeature(options) {
         };
       }
       const config = meta.agents?.[agent.id] || {};
+      const sessionPermission = meta.permissionMode || "chat";
+      const stagePermission = specialistStage
+        ? specialistPermissionMode(specialistStage, sessionPermission)
+        : sessionPermission;
+      if (!stagePermission) {
+        return {
+          promise: Promise.resolve({ ok: false, error: "알 수 없는 전문 실행 단계라 권한을 계산할 수 없습니다." }),
+          cancel: () => {},
+        };
+      }
+      const permissionMode = minPermissionMode(
+        sessionPermission,
+        requestedPermission || sessionPermission,
+        stagePermission
+      );
+      if (!permissionMode) {
+        return {
+          promise: Promise.resolve({ ok: false, error: "전문 실행 권한을 안전하게 계산할 수 없습니다." }),
+          cancel: () => {},
+        };
+      }
       const attachmentsDir = store.attachmentsDir(sessionId);
       const enriched = (attachments || []).map((attachment) => ({
         ...attachment,
@@ -439,7 +475,7 @@ function createChatFeature(options) {
 
       const invocation = buildAgentInvocation({
         provider: record,
-        permissionMode: meta.permissionMode || "chat",
+        permissionMode,
         workspace: meta.workspace || null,
         model: agent.model,
         effort: agent.effort,
@@ -447,7 +483,7 @@ function createChatFeature(options) {
         chatCwd: store.runtimeChatDir(),
         attachmentsDir,
         outputFile,
-        autoApprove: (meta.permissionMode || "chat") === "workspace-write" && Boolean(config.autoApprove || autoApprove),
+        autoApprove: permissionMode === "workspace-write" && Boolean(config.autoApprove || autoApprove),
       });
       if (!invocation.ok) {
         return {
