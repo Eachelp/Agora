@@ -41,6 +41,29 @@ function hasOpenQuestions(text) {
     .trim();
   return content.length > 0 && !/^(?:없음|없습니다|none|n\/?a)\.?$/i.test(content);
 }
+
+// 코드펜스(``` ... ```) 안의 텍스트는 인용된 예시/설명일 가능성이 높아
+// STATUS/VERDICT 같은 제어 마커 탐지에서 제외합니다. 그렇지 않으면 검토자가
+// 예전 답변이나 예시 형식을 인용하기만 해도 그 인용문 속 마커가 실제 판정처럼 읽힙니다.
+function stripCodeFences(text) {
+  return String(text || "").replace(/```[\s\S]*?```/g, "");
+}
+
+// 응답 본문에서 STATUS/VERDICT 제어 마커를 찾습니다.
+// - 코드펜스 내부는 검사하지 않습니다.
+// - 서로 다른 값의 매치가 두 번 이상 나오면(인용·부정문·수정 흔적 등) 어느 것이
+//   진짜 결론인지 프로그램이 임의로 단정하지 않고 ambiguous=true로 표시합니다.
+//   (같은 값이 반복되는 것은 모호하지 않습니다.)
+// - 매치가 있으면 마지막 매치를 채택합니다. 결론은 보통 응답의 끝에 옵니다.
+function findControlMarker(text, pattern) {
+  const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
+  const globalPattern = new RegExp(pattern.source, flags);
+  const stripped = stripCodeFences(text);
+  const matches = [...stripped.matchAll(globalPattern)].map((match) => match[1].toUpperCase());
+  if (matches.length === 0) return { value: null, ambiguous: false };
+  const distinct = new Set(matches);
+  return { value: matches[matches.length - 1], ambiguous: distinct.size > 1 };
+}
 const DEFAULT_MENTION_CHAIN_LIMIT = 2;
 
 let messageSeq = 0;
@@ -616,19 +639,27 @@ class ChatRoom extends EventEmitter {
       if (match) rawText = rawText.slice(0, match.index).trim();
     }
     if (context.specialist?.stage === "review" || context.specialist?.stage === "plan_review") {
+      // 끝줄에 단독으로 붙는 앵커 마커만 신뢰합니다. 본문 중간의 VERDICT: 언급(인용,
+      // 예시, 부정문)은 이 마커를 덮어쓰지 않습니다 — parseReviewContract가 별도로
+      // 다루며, 앵커가 없을 때만 본문 마커를 (모호성 검사와 함께) 보조로 씁니다.
       const match = rawText.match(/\[\[CODEPET_REVIEW:(PASS|REVISE|FIX_REQUIRED|UNKNOWN)\]\]\s*$/i);
-      specialistSignal = match ? match[1].toUpperCase() : "UNKNOWN";
-      // 예전 Provider 출력·테스트 호환을 위해 REVISE는 FIX_REQUIRED로 정규화한다.
-      if (specialistSignal === "REVISE") specialistSignal = "FIX_REQUIRED";
-      if (match) rawText = rawText.slice(0, match.index).trim();
+      if (match) {
+        specialistSignal = match[1].toUpperCase();
+        // 예전 Provider 출력·테스트 호환을 위해 REVISE는 FIX_REQUIRED로 정규화한다.
+        if (specialistSignal === "REVISE") specialistSignal = "FIX_REQUIRED";
+        rawText = rawText.slice(0, match.index).trim();
+      }
     }
     if (context.specialist?.stage === "planner") {
-      const match = rawText.match(/STATUS:\s*(PLAN_READY|NEEDS_DECISION)\b/i);
-      plannerStatus = match ? match[1].toUpperCase() : "NEEDS_DECISION";
+      const { value, ambiguous } = findControlMarker(rawText, /STATUS:\s*(PLAN_READY|NEEDS_DECISION)\b/i);
+      // 서로 다른 STATUS 마커가 여러 번 나오면 어느 쪽이 진짜 결론인지 단정하지
+      // 않고 안전한 쪽(NEEDS_DECISION, 사용자 개입)으로 돌려보냅니다.
+      plannerStatus = ambiguous ? "NEEDS_DECISION" : value || "NEEDS_DECISION";
     }
     if (context.specialist?.stage === "implementation") {
-      const match = rawText.match(/STATUS:\s*(DONE|BLOCKED)\b/i);
-      builderStatus = match ? match[1].toUpperCase() : "DONE";
+      const { value, ambiguous } = findControlMarker(rawText, /STATUS:\s*(DONE|BLOCKED)\b/i);
+      // 마찬가지로 모호하면 DONE으로 단정하지 않고 BLOCKED(사용자 개입)로 취급합니다.
+      builderStatus = ambiguous ? "BLOCKED" : value || "DONE";
     }
 
     let text = stripEmoticonTags(rawText);
@@ -853,6 +884,8 @@ class ChatRoom extends EventEmitter {
         this.appendSystem(
           contract.stopReason === "NEEDS_DECISION"
             ? "기획 검수자가 사용자 결정이 필요한 질문을 남겨 자동 진행을 멈췄습니다. 아래 전용 입력칸에서 답해 주세요."
+            : contract.stopReason === "AMBIGUOUS_VERDICT"
+            ? "기획 검수 응답에서 서로 다른 VERDICT 표기가 여러 번 발견되어 어느 것이 최종 판정인지 판단할 수 없습니다. 아래 전용 입력칸에서 보완 내용을 알려 주세요."
             : contract.verdict === "UNKNOWN"
             ? "기획 검수에서 판단 근거가 부족해 자동 진행을 멈췄습니다. 아래 전용 입력칸에서 보완 내용을 알려 주세요."
             : planRevisionCount >= planRevisionLimit && planRevisionLimit > 0
@@ -1352,7 +1385,20 @@ class ChatRoom extends EventEmitter {
         }
         if (contract.verdict === "UNKNOWN") {
           this.specialistActive = false;
-          return { ok: false, stage: "review", completedIterations: 1, needsUserDecision: true, stopReason: "INSUFFICIENT_EVIDENCE", contract, review: reviewResult };
+          this.appendSystem(
+            contract.stopReason === "AMBIGUOUS_VERDICT"
+              ? "검토 응답에서 서로 다른 VERDICT 표기가 여러 번 발견되어 어느 것이 최종 판정인지 판단할 수 없습니다. 아래에서 직접 확인해 주세요."
+              : "검토에서 판단 근거가 부족해 자동 진행을 멈췄습니다. 아래에서 직접 확인해 주세요."
+          );
+          return {
+            ok: false,
+            stage: "review",
+            completedIterations: 1,
+            needsUserDecision: true,
+            stopReason: contract.stopReason || "INSUFFICIENT_EVIDENCE",
+            contract,
+            review: reviewResult,
+          };
         }
         // FIX_REQUIRED → 사용자 확인 후 수동 보완.
         this.specialistResume = { ...resume, phase: "review_fix_required", reviewContract: contract, reviewText: reviewResult.text || "", runInfo, checkpoint };
@@ -1566,12 +1612,17 @@ class ChatRoom extends EventEmitter {
       if (contract.verdict === "PASS") break;
       if (contract.verdict === "UNKNOWN") {
         await restoreCheckpoint();
+        this.appendSystem(
+          contract.stopReason === "AMBIGUOUS_VERDICT"
+            ? "검토 응답에서 서로 다른 VERDICT 표기가 여러 번 발견되어 어느 것이 최종 판정인지 판단할 수 없습니다. 아래에서 직접 확인해 주세요."
+            : "검토에서 판단 근거가 부족해 자동 진행을 멈췄습니다. 아래에서 직접 확인해 주세요."
+        );
         return {
           ok: false,
           stage: "review",
           completedIterations: round,
           needsUserDecision: true,
-          stopReason: "INSUFFICIENT_EVIDENCE",
+          stopReason: contract.stopReason || "INSUFFICIENT_EVIDENCE",
           contract,
           review: reviewResult,
         };
@@ -1665,16 +1716,26 @@ class ChatRoom extends EventEmitter {
     };
   }
 
-  // 검토자 출력 계약을 파싱합니다. 마커만 엄격히 읽고, 구조화 섹션은
-  // "있으면 사용, 없으면 SCOPE_UNSPECIFIED"로 처리합니다.
+  // 검토자 출력 계약을 파싱합니다. 판정(verdict)은 다음 우선순위로 정합니다:
+  //   1) 끝줄 단독 앵커 마커([[CODEPET_REVIEW:...]], respond()가 signal로 전달) —
+  //      본문 어디에도 등장하지 않는 전용 표기라 위조·오인 가능성이 가장 낮습니다.
+  //   2) 앵커가 없을 때만 본문 중 VERDICT: 마커를 보조로 씁니다. 단, 서로 다른 값의
+  //      마커가 두 번 이상 나오면(인용·부정문·수정 흔적 등) 어느 것이 진짜 결론인지
+  //      단정하지 않고 UNKNOWN + stopReason: AMBIGUOUS_VERDICT로 사용자에게 반환합니다.
+  // 구조화 섹션(ISSUES)은 "있으면 사용, 없으면 SCOPE_UNSPECIFIED"로 처리합니다.
   parseReviewContract(text, signal) {
-    const verdictMatch = text.match(/VERDICT:\s*(PASS|FIX_REQUIRED|REVISE|UNKNOWN)\b/i);
-    let verdict = signal || "UNKNOWN";
-    if (verdictMatch) {
-      verdict = verdictMatch[1].toUpperCase();
-      if (verdict === "REVISE") verdict = "FIX_REQUIRED";
-    } else if (!signal) {
+    const { value: bodyVerdict, ambiguous } = findControlMarker(
+      text,
+      /VERDICT:\s*(PASS|FIX_REQUIRED|REVISE|UNKNOWN)\b/i
+    );
+    const normalizedBodyVerdict = bodyVerdict === "REVISE" ? "FIX_REQUIRED" : bodyVerdict;
+    let verdict;
+    if (signal) {
+      verdict = signal;
+    } else if (ambiguous) {
       verdict = "UNKNOWN";
+    } else {
+      verdict = normalizedBodyVerdict || "UNKNOWN";
     }
 
     const issuesIndex = text.indexOf("ISSUES:");
@@ -1696,7 +1757,9 @@ class ChatRoom extends EventEmitter {
 
     let stopReason = null;
     let canAutoRevise = false;
-    if (verdict === "UNKNOWN") {
+    if (verdict === "UNKNOWN" && !signal && ambiguous) {
+      stopReason = "AMBIGUOUS_VERDICT";
+    } else if (verdict === "UNKNOWN") {
       stopReason = "INSUFFICIENT_EVIDENCE";
     } else if (verdict === "FIX_REQUIRED") {
       if (scopeUnspecified || blockingScopes.length === 0) {

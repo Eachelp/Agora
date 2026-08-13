@@ -32,6 +32,14 @@ const MAX_LINE_BUFFER_CHARS = 256 * 1024;
 // 초과 시 앞부분은 버리고 최근 구간만 유지해, 오류 진단과 부분 출력 보존에 씁니다.
 const MAX_DELTA_TEXT_CHARS = 2 * 1024 * 1024;
 
+// 무음(정체) 감지: 실행 시간 제한은 없지만(위 DEFAULT_TIMEOUT_MS 참고), CLI가
+// 크래시 없이 조용히 멈추면 사용자에게는 "입력 중" 표시만 남고 아무 신호가 없습니다.
+// 여기서는 실행을 죽이지 않고, stdout/stderr가 이 시간만큼 조용하면 상태 이벤트만
+// 남겨 사용자가 판단할 근거를 줍니다. 침묵이 계속되면 같은 간격으로 반복 알립니다.
+const DEFAULT_SILENCE_WARNING_MS = 5 * 60 * 1000;
+// 위 간격보다 촘촘하게 확인해, 경고가 실제 무음 시각에서 너무 늦게 뜨지 않게 합니다.
+const SILENCE_CHECK_INTERVAL_MS = 30 * 1000;
+
 
 // tail buffer가 유지하는 머리 부분 비율. 초반 지시/헤더와 최신 출력이 모두
 // 진단에 필요하므로 양쪽을 남기고 중간만 버립니다.
@@ -168,15 +176,18 @@ function runAgentProcess({
   hardOutputLimitBytes = DEFAULT_HARD_OUTPUT_LIMIT_BYTES,
   onRawChunk = null,
   promptTransport = "stdin",
+  silenceWarningMs = DEFAULT_SILENCE_WARNING_MS,
 }) {
   let child = null;
   let settled = false;
   let cancelled = false;
   let outputLimitHit = false;
   let timer = null;
+  let silenceTimer = null;
 
   const cleanup = () => {
     if (timer) clearTimeout(timer);
+    if (silenceTimer) clearInterval(silenceTimer);
     if (outputFile) {
       try {
         fs.rmSync(outputFile, { force: true });
@@ -228,6 +239,26 @@ function runAgentProcess({
     const stdoutDecoder = new StringDecoder("utf8");
     const stderrDecoder = new StringDecoder("utf8");
 
+    // 무음 감지: stdout/stderr가 silenceWarningMs만큼 조용하면 실행은 그대로 두고
+    // 상태 이벤트만 알립니다. 침묵이 계속되면 같은 간격으로 반복 알립니다.
+    let lastActivityAt = Date.now();
+    let nextSilenceWarnAt = lastActivityAt + silenceWarningMs;
+    const noteActivity = () => {
+      lastActivityAt = Date.now();
+      nextSilenceWarnAt = lastActivityAt + silenceWarningMs;
+    };
+    if (Number.isFinite(silenceWarningMs) && silenceWarningMs > 0) {
+      silenceTimer = setInterval(() => {
+        if (settled) return;
+        const now = Date.now();
+        if (now < nextSilenceWarnAt) return;
+        const idleMinutes = Math.max(1, Math.round((now - lastActivityAt) / 60000));
+        emit({ kind: "status", label: `${idleMinutes}분째 응답 없음` });
+        nextSilenceWarnAt = now + silenceWarningMs;
+      }, Math.min(silenceWarningMs, SILENCE_CHECK_INTERVAL_MS));
+      if (typeof silenceTimer.unref === "function") silenceTimer.unref();
+    }
+
     const emit = (event) => {
       if (!event || settled) return;
       if (event.kind === "final") parsedFinal = event.text;
@@ -277,6 +308,7 @@ function runAgentProcess({
     };
 
     child.stdout.on("data", (chunk) => {
+      noteActivity();
       const text = stdoutDecoder.write(chunk);
       stdoutBytes += chunk.length;
 
@@ -310,6 +342,7 @@ function runAgentProcess({
       handleLines(text);
     });
     child.stderr.on("data", (chunk) => {
+      noteActivity();
       if (stderr.length < MAX_STDERR_BYTES) stderr += stderrDecoder.write(chunk);
     });
     child.on("error", (error) => {
@@ -467,5 +500,6 @@ module.exports = {
   DEFAULT_TIMEOUT_MS,
   DEFAULT_CAPTURE_OUTPUT_BYTES,
   DEFAULT_HARD_OUTPUT_LIMIT_BYTES,
+  DEFAULT_SILENCE_WARNING_MS,
   MAX_ARGV_PROMPT_CHARS,
 };

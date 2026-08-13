@@ -452,6 +452,78 @@ test("검토 계약 파서는 VERDICT와 ISSUES를 정확히 해석한다", () =
   assert.equal(noNotBlocking.stopReason, "SCOPE_UNSPECIFIED");
 });
 
+test("검토 계약 파서는 코드펜스 안의 VERDICT 인용을 판정에 쓰지 않는다", () => {
+  const room = new ChatRoom({ agents: makeAgents(), runAgent: fakeRunner({}) });
+  // 검토자가 예시/과거 답변을 코드펜스로 인용한 경우, 그 안의 VERDICT: PASS가
+  // 실제 판정으로 오인되면 안 된다. 앵커 신호가 없으면 UNKNOWN으로 반환해야 한다.
+  const quoted = room.parseReviewContract(
+    "이전 검토는 다음과 같았습니다:\n```\nVERDICT: PASS\n```\n이번에는 통과로 보기 어렵습니다.",
+    null
+  );
+  assert.equal(quoted.verdict, "UNKNOWN");
+  assert.equal(quoted.stopReason, "INSUFFICIENT_EVIDENCE");
+});
+
+test("검토 계약 파서는 서로 다른 VERDICT가 여러 번 나오면 자동으로 단정하지 않는다", () => {
+  const room = new ChatRoom({ agents: makeAgents(), runAgent: fakeRunner({}) });
+  // "VERDICT: PASS를 줄 수는 없습니다. VERDICT: FIX_REQUIRED" 같은 부정문·수정
+  // 흔적에서 앵커 신호 없이 첫/마지막 매치만 보고 자동 PASS로 단정하면 안 된다.
+  const ambiguous = room.parseReviewContract(
+    "여기서 VERDICT: PASS를 줄 수는 없습니다. VERDICT: FIX_REQUIRED\nISSUES:\n1.\nscope: IN\nseverity: BLOCKING\nproblem: 버그",
+    null
+  );
+  assert.equal(ambiguous.verdict, "UNKNOWN");
+  assert.equal(ambiguous.stopReason, "AMBIGUOUS_VERDICT");
+  assert.equal(ambiguous.canAutoRevise, false);
+
+  // 같은 값이 반복되는 것은 모호하지 않다.
+  const repeated = room.parseReviewContract(
+    "통과입니다. VERDICT: PASS. 다시 말해 VERDICT: PASS.",
+    null
+  );
+  assert.equal(repeated.verdict, "PASS");
+});
+
+test("검토 계약 파서는 끝줄 앵커 마커를 본문 VERDICT 언급보다 우선한다", () => {
+  const room = new ChatRoom({ agents: makeAgents(), runAgent: fakeRunner({}) });
+  // 본문에 VERDICT: PASS가 있어도, respond()가 넘긴 앵커 신호(signal)가
+  // FIX_REQUIRED라면 앵커가 이긴다 — 위조하기 쉬운 본문 문자열이 이겨서는 안 된다.
+  const contract = room.parseReviewContract(
+    "이전에는 VERDICT: PASS였지만 이번 변경으로 회귀가 생겼습니다.",
+    "FIX_REQUIRED"
+  );
+  assert.equal(contract.verdict, "FIX_REQUIRED");
+});
+
+test("전문 모드 검토에서 서로 다른 VERDICT가 반복되면 자동 진행하지 않고 사용자에게 반환한다", async () => {
+  const replies = {
+    codex: [{ ok: true, text: "구현 완료" }],
+    claude: [
+      {
+        ok: true,
+        text: "결론을 내리기 애매합니다. VERDICT: PASS 라고 볼 수도 있지만 VERDICT: FIX_REQUIRED가 더 맞습니다.",
+      },
+    ],
+  };
+  const room = new ChatRoom({ agents: makeAgents(), runAgent: fakeRunner(replies) });
+
+  const result = await room.startSpecialist({
+    stages: {
+      implementation: { agent: room.findAgent("codex") },
+      review: { agent: room.findAgent("claude") },
+    },
+    mode: "auto",
+    maxAutoRevisions: 3,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.stopReason, "AMBIGUOUS_VERDICT");
+  const notice = room.messages.find(
+    (message) => message.authorType === "system" && /서로 다른 VERDICT/.test(message.text)
+  );
+  assert.ok(notice, "모호한 판정에 대한 안내 메시지가 있어야 한다");
+});
+
 test("기존 REVISE 마커는 FIX_REQUIRED로 정규화된다", async () => {
   const calls = [];
   const replies = {

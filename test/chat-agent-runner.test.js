@@ -297,6 +297,37 @@ test("cancel은 cancelled 플래그로 끝난다", async () => {
   assert.equal(result.cancelled, true);
 });
 
+test("stdout/stderr가 조용하면 실행을 죽이지 않고 상태 이벤트로만 알린다", async () => {
+  const events = [];
+  // 출력 없이 300ms를 보낸 뒤 답을 낸다. silenceWarningMs를 짧게 줘서
+  // 실제 실행 시간 제한(무제한) 정책은 그대로 둔 채 무음 경고만 검증한다.
+  const run = runNode("setTimeout(()=>process.stdout.write('완료'),300)", {
+    silenceWarningMs: 100,
+    onEvent: (event) => events.push(event),
+  });
+  const result = await run.promise;
+  assert.equal(result.ok, true, "무음 경고가 떠도 실행은 정상 종료되어야 한다");
+  assert.equal(result.text, "완료");
+  const silenceEvents = events.filter(
+    (event) => event.kind === "status" && /분째 응답 없음/.test(event.label)
+  );
+  assert.ok(silenceEvents.length > 0, "무음 경고 상태 이벤트가 최소 한 번은 떠야 한다");
+});
+
+test("silenceWarningMs를 0으로 주면 무음 경고를 내지 않는다", async () => {
+  const events = [];
+  const run = runNode("setTimeout(()=>process.stdout.write('완료'),300)", {
+    silenceWarningMs: 0,
+    onEvent: (event) => events.push(event),
+  });
+  const result = await run.promise;
+  assert.equal(result.ok, true);
+  const silenceEvents = events.filter(
+    (event) => event.kind === "status" && /분째 응답 없음/.test(event.label)
+  );
+  assert.equal(silenceEvents.length, 0);
+});
+
 test("실제 에이전트 실행은 기본 시간제한이 없다", async () => {
   assert.equal(DEFAULT_TIMEOUT_MS, null);
   const run = runAgentProcess({

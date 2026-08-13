@@ -80,7 +80,7 @@ function createRunLogWriter(store, sessionId, runId) {
         target.write(chunk);
       } catch (error) {
         failed = true;
-        if (entry) console.error("[Agora] 기록관 후보 등록 실패:", error && (error.message || error));
+        console.error("[Agora] 실행 원본 로그 기록 실패:", error && (error.message || error));
       }
     },
     close() {
