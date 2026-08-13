@@ -277,6 +277,49 @@ test("토론 태그 지시문이 그대로 남아있다", () => {
   assert.match(prompt, /\[\[CODEPET_DISCUSSION:CONCLUDE\]\]/);
 });
 
+test("Builder 프롬프트는 그룹채팅 프레이밍과 대화 transcript를 제외한다", () => {
+  const prompt = buildAgentPrompt({
+    agent: AGENTS[1],
+    agents: AGENTS,
+    messages: [message("user", "사용자 원문", "user"), message("claude", "이전 에이전트 의견")],
+    projectContext: "프로젝트 개요",
+    workflowContext: "진행 중 작업",
+    specialist: {
+      stage: "implementation",
+      round: 1,
+      maxRounds: 1,
+      frozenTask: { runId: "RUN-1", content: "Frozen Task" },
+    },
+  });
+  assert.match(prompt, /Agora 전문 실행의 Builder/);
+  assert.match(prompt, /Frozen Task/);
+  assert.doesNotMatch(prompt, /그룹 채팅의 참가자/);
+  assert.doesNotMatch(prompt, /참가자:/);
+  assert.doesNotMatch(prompt, /=== 대화 ===/);
+  assert.doesNotMatch(prompt, /사용자 원문/);
+  assert.doesNotMatch(prompt, /프로젝트 공통 맥락/);
+  assert.doesNotMatch(prompt, /채팅에 어울리게 간결히/);
+});
+
+test("Planner와 plan_review 프롬프트가 NEEDS_DECISION 및 repeat 규칙을 명시한다", () => {
+  const planner = buildAgentPrompt({
+    agent: AGENTS[0],
+    agents: AGENTS,
+    messages: [],
+    specialist: { stage: "planner" },
+  });
+  const review = buildAgentPrompt({
+    agent: AGENTS[1],
+    agents: AGENTS,
+    messages: [],
+    specialist: { stage: "plan_review" },
+  });
+  assert.match(planner, /TASK를 고친 것처럼 다시 쓰지 마세요/);
+  assert.match(planner, /STATUS: NEEDS_DECISION/);
+  assert.match(review, /repeat: YES\|NO/);
+  assert.match(review, /BLOCKING 이슈가 아직 해소되지 않았다면 반드시/);
+});
+
 test("Handoff(검토 요청)은 전달 메시지를 검토 의도로 주입한다", () => {
   const prompt = buildAgentPrompt({
     agent: AGENTS[1],

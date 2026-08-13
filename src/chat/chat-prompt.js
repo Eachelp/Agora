@@ -39,34 +39,42 @@ function buildAgentPrompt({
   mentionsEnabled = !discussion,
   extraLines = [],
 }) {
+  const isBuilder = specialist?.stage === "implementation";
   const agentsById = new Map(agents.map((entry) => [entry.id, entry]));
   const others = agents.filter((entry) => entry.id !== agent.id);
-  const recent = messages.slice(-maxMessages);
+  const recent = isBuilder ? [] : messages.slice(-maxMessages);
   const omitted = messages.length - recent.length;
 
   const lines = [];
-  lines.push(
-    `당신은 여러 AI 코딩 에이전트가 사용자와 함께 있는 그룹 채팅의 참가자 "@${agent.id}"(${agent.name})입니다.`
-  );
-  const roster = ["사용자(User)", ...agents.map((entry) => `@${entry.id}(${entry.name})`)];
-  lines.push(`참가자: ${roster.join(", ")}`);
-  lines.push("");
-  lines.push("규칙:");
-  lines.push("- 아래 대화의 마지막 메시지에 이어 자연스럽게 답하세요.");
-  lines.push(
-    `- 출력 전체가 채팅 메시지 하나로 그대로 전송됩니다. "[@${agent.id}]" 같은 접두어나 서명을 붙이지 마세요.`
-  );
-  if (others.length > 0 && mentionsEnabled) {
+  if (isBuilder) {
+    lines.push("당신은 Agora 전문 실행의 Builder입니다. 이 호출에서 실제 구현을 수행하세요.");
+    lines.push("그룹 채팅 참가자처럼 말하거나 다른 에이전트를 호출하지 말고, 아래 실행 계약과 현재 단계 지침만 따르세요.");
+  } else {
     lines.push(
-      `- 다른 참가자를 호출하려면 @이름(${others.map((entry) => `@${entry.id}`).join(", ")})을 쓰세요. 그러면 그 참가자가 이어서 답합니다. 호출 없이 언급만 할 때는 @ 없이 이름만 쓰세요. 호출은 꼭 필요할 때만 하세요.`
+      `당신은 여러 AI 코딩 에이전트가 사용자와 함께 있는 그룹 채팅의 참가자 "@${agent.id}"(${agent.name})입니다.`
     );
-    lines.push("- 한 번에 한 명만 발언합니다. 답을 마치면 사용자에게 결정을 넘기거나, 추가 의견이 꼭 필요할 때만 다른 참가자를 @로 호출해 다음 턴을 넘기세요.");
-  } else if (others.length > 0) {
-    lines.push("- 이번 턴에는 다른 참가자를 추가 호출할 수 없습니다. 다른 참가자를 언급하려면 @ 없이 이름만 쓰세요.");
+    const roster = ["사용자(User)", ...agents.map((entry) => `@${entry.id}(${entry.name})`)];
+    lines.push(`참가자: ${roster.join(", ")}`);
+    lines.push("");
+    lines.push("규칙:");
+    lines.push("- 아래 대화의 마지막 메시지에 이어 자연스럽게 답하세요.");
+    lines.push(
+      `- 출력 전체가 채팅 메시지 하나로 그대로 전송됩니다. "[@${agent.id}]" 같은 접두어나 서명을 붙이지 마세요.`
+    );
+    if (others.length > 0 && mentionsEnabled) {
+      lines.push(
+        `- 다른 참가자를 호출하려면 @이름(${others.map((entry) => `@${entry.id}`).join(", ")})을 쓰세요. 그러면 그 참가자가 이어서 답합니다. 호출 없이 언급만 할 때는 @ 없이 이름만 쓰세요. 호출은 꼭 필요할 때만 하세요.`
+      );
+      lines.push("- 한 번에 한 명만 발언합니다. 답을 마치면 사용자에게 결정을 넘기거나, 추가 의견이 꼭 필요할 때만 다른 참가자를 @로 호출해 다음 턴을 넘기세요.");
+    } else if (others.length > 0) {
+      lines.push("- 이번 턴에는 다른 참가자를 추가 호출할 수 없습니다. 다른 참가자를 언급하려면 @ 없이 이름만 쓰세요.");
+    }
   }
   lines.push(permissionRule(permissionMode));
-  lines.push("- 채팅에 어울리게 간결히 답하세요.");
-  lines.push("- 대화에서 쓰인 언어로 답하세요.");
+  if (!isBuilder) {
+    lines.push("- 채팅에 어울리게 간결히 답하세요.");
+    lines.push("- 대화에서 쓰인 언어로 답하세요.");
+  }
   const MAX_CONTEXT_CHARS = 16000;
   const rules = String(rulesContext || "").trim();
   if (rules) {
@@ -76,21 +84,21 @@ function buildAgentPrompt({
     lines.push("=== 프로젝트 현재 규칙 끝 ===");
     lines.push("- 이 규칙은 반드시 지키세요.");
   }
-  const context = String(projectContext || "").trim();
+  const context = isBuilder ? "" : String(projectContext || "").trim();
   if (context) {
     lines.push("");
     lines.push("=== 프로젝트 공통 맥락 ===");
     lines.push(context);
     lines.push("=== 프로젝트 공통 맥락 끝 ===");
   }
-  const workflow = String(workflowContext || "").trim();
+  const workflow = isBuilder ? "" : String(workflowContext || "").trim();
   if (workflow) {
     lines.push("");
     lines.push("=== 확정된 결정과 진행 중 작업 ===");
     lines.push(workflow);
     lines.push("=== 확정된 결정과 진행 중 작업 끝 ===");
   }
-  const memoryFull = String(memoryContext || "").trim();
+  const memoryFull = isBuilder ? "" : String(memoryContext || "").trim();
   if (memoryFull) {
     const usedSoFar = rules.length + context.length + workflow.length;
     const budget = Math.max(0, MAX_CONTEXT_CHARS - usedSoFar);
@@ -111,12 +119,12 @@ function buildAgentPrompt({
   }
   // 캐릭터 이모티콘 지시는 작업용 사용에 불필요해 프롬프트에서 제외합니다.
   // 예전 대화에 남은 [[CODEPET_EMOTE:...]] 태그는 chat-room.js에서 화면 노출 전에 제거합니다.
-  if (broadcast && broadcast.position > 1) {
+  if (!isBuilder && broadcast && broadcast.position > 1) {
     lines.push(
       `- 사용자 메시지에 참가자 ${broadcast.total}명이 차례로 답하는 중이고, 당신은 ${broadcast.position}번째입니다. 앞선 참가자의 답변을 읽고, 겹치는 내용은 반복하지 말고 보완하거나 다른 관점만 더하세요.`
     );
   }
-  if (discussion) {
+  if (!isBuilder && discussion) {
     lines.push(
       `- 지금은 자율 토론 ${discussion.turn}/${discussion.maxTurns}턴입니다. 앞선 답변을 검토해 새 근거가 있을 때만 짧게 기여하세요.`
     );
@@ -153,12 +161,14 @@ function buildAgentPrompt({
       lines.push("- 확정된 결정은 요구사항·제약으로, 미확정 제안은 참고·Open Question으로 구분하세요.");
       lines.push("- 하나의 작업이 하나의 명확한 목표와 완료 조건을 갖도록 큰 작업을 분해하세요.");
       lines.push("- 코드를 수정하거나 구현을 시작하지 마세요. 구현 담당자를 자동으로 부르지 마세요.");
+      lines.push("- BLOCKING 지적을 해결하지 못하거나 수용하지 않을 때는 TASK를 고친 것처럼 다시 쓰지 마세요. `STATUS: NEEDS_DECISION`과 그 이유·사용자에게 필요한 질문을 반환하고, 기존 TASK.md를 덮어쓰지 마세요.");
       lines.push("- 응답 안에 `STATUS: PLAN_READY` 또는 `STATUS: NEEDS_DECISION` 하나를 넣으세요.");
     } else if (specialist.stage === "plan_review") {
       lines.push("- 이것은 구현 검수가 아니라 기획 검수입니다. 코드를 수정하거나 구현을 시작하지 마세요.");
       lines.push("- 기획안이 사용자 목표·제약·완료 조건을 충족하는지, Open Question이 남았는지 검토하세요.");
       lines.push("- 기획안이 충분하면 `VERDICT: PASS`를, 보완이 필요하면 `VERDICT: FIX_REQUIRED`를, 판단 근거가 부족하면 `VERDICT: UNKNOWN`을 넣으세요.");
       lines.push("- FIX_REQUIRED라면 `ISSUES:` 아래에 이슈별로 `scope: IN/OUT`, `severity: BLOCKING/NON_BLOCKING`, `problem`, `evidence`, `impact`를 적으세요.");
+      lines.push("- 각 이슈에 `repeat: YES|NO`를 표시하세요. 이전 라운드에서 지적한 BLOCKING 이슈가 아직 해소되지 않았다면 반드시 `repeat: YES`로 기록하세요.");
       lines.push("- 기존 대화와 사용자 결정만으로 기획자가 고칠 수 있는 문제만 `scope: IN`으로 표시하세요.");
       lines.push("- 사용자 결정이 필요한 문제는 `## Open Questions`에 질문으로 적으세요. 이 질문은 자동 보완하지 않고 사용자에게 반환됩니다.");
       lines.push("- Open Question이 남아 있으면 PASS로 처리하지 말고 FIX_REQUIRED로 반환하세요.");
@@ -195,7 +205,7 @@ function buildAgentPrompt({
     }
     lines.push("=== 전문 모드 끝 ===");
   }
-  if (handoff) {
+  if (handoff && !isBuilder) {
     lines.push("");
     lines.push("=== 이전 메시지 전달 (Handoff) ===");
     lines.push(`전달 의도: ${handoff.intent === "REVIEW_OPINION" ? "검토 요청" : "이어서 작업"}`);
@@ -209,16 +219,18 @@ function buildAgentPrompt({
       lines.push("- 전달받은 메시지를 출발점으로 후속 작업을 이어가세요.");
     }
   }
-  lines.push("");
-  lines.push("=== 대화 ===");
-  if (omitted > 0) lines.push(`(이전 메시지 ${omitted}개 생략)`);
-  for (const message of recent) {
-    lines.push(`[${speakerLabel(message, agentsById)}] ${message.text}${attachmentSuffix(message)}`);
+  if (!isBuilder) {
+    lines.push("");
+    lines.push("=== 대화 ===");
+    if (omitted > 0) lines.push(`(이전 메시지 ${omitted}개 생략)`);
+    for (const message of recent) {
+      lines.push(`[${speakerLabel(message, agentsById)}] ${message.text}${attachmentSuffix(message)}`);
+    }
+    lines.push("=== 대화 끝 ===");
   }
-  lines.push("=== 대화 끝 ===");
   for (const line of extraLines) lines.push(line);
   lines.push("");
-  lines.push(`지금 "@${agent.id}"로서 답할 차례입니다.`);
+  lines.push(isBuilder ? "현재 단계의 구현 결과와 선언을 반환하세요." : `지금 "@${agent.id}"로서 답할 차례입니다.`);
   return lines.join("\n");
 }
 

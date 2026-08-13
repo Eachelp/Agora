@@ -1,7 +1,13 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { buildAgentInvocation, assertSafeArgv, INLINE_TEXT_LIMIT } = require("../src/chat/chat-argv");
+const {
+  buildAgentInvocation,
+  assertSafeArgv,
+  INLINE_TEXT_LIMIT,
+  minPermissionMode,
+  specialistPermissionMode,
+} = require("../src/chat/chat-argv");
 
 const CHAT_CWD = "C:\\Users\\u\\.agora\\runtime\\chat";
 const WORKSPACE = "D:\\work\\my project";
@@ -35,6 +41,16 @@ function build(id, input = {}) {
     ...input,
   });
 }
+
+test("전문 단계 권한 cap은 세션 권한보다 높아지지 않는다", () => {
+  assert.equal(minPermissionMode("workspace-write", "workspace-read"), "workspace-read");
+  assert.equal(specialistPermissionMode("planner", "workspace-write"), "workspace-read");
+  assert.equal(specialistPermissionMode("plan_review", "workspace-write"), "workspace-read");
+  assert.equal(specialistPermissionMode("implementation", "workspace-write"), "workspace-write");
+  assert.equal(specialistPermissionMode("review", "workspace-write"), "workspace-write");
+  assert.equal(specialistPermissionMode("recorder", "workspace-write"), "chat");
+  assert.equal(specialistPermissionMode("unknown", "workspace-write"), null);
+});
 
 test("claude chat 모드: 도구 전면 차단 + strict mcp + stream-json", () => {
   const result = build("claude");
