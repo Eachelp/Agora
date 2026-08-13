@@ -200,6 +200,7 @@ class ChatRoom extends EventEmitter {
         return filename ? String(filename).replace(/\.md$/i, "") : null;
       })(),
       blocked: Boolean(this.specialistBlocked),
+      blockReason: this.specialistBlocked?.blockReason || null,
       canRestore: Boolean(this.specialistBlocked?.canRestore),
       hasTask: Boolean(
         this.specialistBlocked?.taskPath || this.specialistResume?.taskInfo?.relativePath
@@ -658,8 +659,9 @@ class ChatRoom extends EventEmitter {
     }
     if (context.specialist?.stage === "implementation") {
       const { value, ambiguous } = findControlMarker(rawText, /STATUS:\s*(DONE|BLOCKED)\b/i);
-      // 마찬가지로 모호하면 DONE으로 단정하지 않고 BLOCKED(사용자 개입)로 취급합니다.
-      builderStatus = ambiguous ? "BLOCKED" : value || "DONE";
+      // DONE을 선언하지 않은 실행을 성공으로 단정하지 않습니다. 모호하거나
+      // 누락된 선언은 실제 BLOCKED와 구분해 사용자 개입으로 돌립니다.
+      builderStatus = ambiguous ? "AMBIGUOUS" : value || "MISSING";
     }
 
     let text = stripEmoticonTags(rawText);
@@ -1326,20 +1328,31 @@ class ChatRoom extends EventEmitter {
         this.checkpointEngine.cleanupCheckpoint(checkpoint);
       }
     };
-    const holdForBlocked = (blockedRound, blockedResult) => {
+    const holdForBlocked = (blockedRound, blockedResult, declaration = "BLOCKED") => {
       const canRestore = Boolean(checkpoint && checkpoint.supported === true);
+      const stopReason = declaration === "MISSING"
+        ? "BUILDER_STATUS_MISSING"
+        : declaration === "AMBIGUOUS"
+          ? "BUILDER_STATUS_AMBIGUOUS"
+          : "BLOCKED";
+      const message = declaration === "MISSING"
+        ? "구현 결과에 STATUS: DONE 또는 STATUS: BLOCKED가 없어 안전하게 멈췄습니다. 아래에서 다음 처리를 선택해 주세요."
+        : declaration === "AMBIGUOUS"
+          ? "구현 결과에 서로 다른 STATUS 표기가 있어 최종 상태를 판단할 수 없습니다. 아래에서 다음 처리를 선택해 주세요."
+          : "구현이 막혔습니다(BLOCKED). 아래에서 다음 처리를 선택해 주세요.";
       this.specialistBlocked = {
         checkpoint: canRestore ? checkpoint : null,
         canRestore,
         taskPath: taskInfo?.relativePath || null,
         runId: runInfo?.runId || null,
         stage: "implementation",
+        blockReason: stopReason,
       };
       retainCheckpoint = canRestore;
       this.specialistActive = false;
       this.emitSpecialistState();
-      this.appendSystem("구현이 막혔습니다(BLOCKED). 아래에서 다음 처리를 선택해 주세요.");
-      return { ok: false, stage: "implementation", completedIterations: blockedRound, needsUserDecision: true, stopReason: "BLOCKED", blocked: true, canRestore, result: blockedResult };
+      this.appendSystem(message);
+      return { ok: false, stage: "implementation", completedIterations: blockedRound, needsUserDecision: true, stopReason, blocked: true, canRestore, result: blockedResult };
     };
 
     try {
@@ -1358,7 +1371,7 @@ class ChatRoom extends EventEmitter {
         });
         if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
         if (!builderResult?.ok) return this.specialistFail(implementation, "implementation", 1, builderResult);
-        if (builderResult.builderStatus === "BLOCKED") return holdForBlocked(1, builderResult);
+        if (builderResult.builderStatus !== "DONE") return holdForBlocked(1, builderResult, builderResult.builderStatus);
         // 구현 완료 → 사용자 확인 대기.
         this.specialistResume = { ...resume, phase: "builder_done", runInfo, checkpoint, builderChanges: (await describeWorkspaceChanges(workspace)).text };
         retainCheckpoint = Boolean(checkpoint?.supported);
@@ -1416,7 +1429,7 @@ class ChatRoom extends EventEmitter {
         });
         if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
         if (!builderResult?.ok) return this.specialistFail(implementation, "implementation", 2, builderResult);
-        if (builderResult.builderStatus === "BLOCKED") return holdForBlocked(2, builderResult);
+        if (builderResult.builderStatus !== "DONE") return holdForBlocked(2, builderResult, builderResult.builderStatus);
         this.specialistResume = { ...resume, phase: "builder_done", runInfo, checkpoint, builderChanges: (await describeWorkspaceChanges(workspace)).text };
         retainCheckpoint = Boolean(checkpoint?.supported);
         this.emitSpecialistState();
@@ -1532,27 +1545,37 @@ class ChatRoom extends EventEmitter {
 
     // BLOCKED(A안): 즉시 되돌리지 않고 Builder 작업물을 그대로 둔 채 멈춥니다.
     // 사용자가 [작업 전으로 복원]/[Task 폐기]를 고르면 그때 복원합니다.
-    const holdForBlocked = (blockedRound, blockedResult) => {
+    const holdForBlocked = (blockedRound, blockedResult, declaration = "BLOCKED") => {
+      const stopReason = declaration === "MISSING"
+        ? "BUILDER_STATUS_MISSING"
+        : declaration === "AMBIGUOUS"
+          ? "BUILDER_STATUS_AMBIGUOUS"
+          : "BLOCKED";
       this.specialistBlocked = {
         checkpoint: checkpointSupported ? checkpoint : null,
         canRestore: checkpointSupported,
         taskPath: taskInfo?.relativePath || null,
         runId: runInfo?.runId || null,
         stage: "implementation",
+        blockReason: stopReason,
       };
       this.specialistActive = false;
       this.emitSpecialistState();
       this.appendSystem(
-        checkpointSupported
-          ? "구현이 막혔습니다(BLOCKED). 지금까지의 변경은 그대로 두었습니다. 아래에서 다음 처리를 선택해 주세요."
-          : "구현이 막혔습니다(BLOCKED). 아래에서 다음 처리를 선택해 주세요. (git workspace가 아니라 자동 복원은 지원되지 않습니다)"
+        declaration === "MISSING"
+          ? "구현 결과에 STATUS: DONE 또는 STATUS: BLOCKED가 없어 안전하게 멈췄습니다. 아래에서 다음 처리를 선택해 주세요."
+          : declaration === "AMBIGUOUS"
+            ? "구현 결과에 서로 다른 STATUS 표기가 있어 최종 상태를 판단할 수 없습니다. 아래에서 다음 처리를 선택해 주세요."
+            : checkpointSupported
+              ? "구현이 막혔습니다(BLOCKED). 지금까지의 변경은 그대로 두었습니다. 아래에서 다음 처리를 선택해 주세요."
+              : "구현이 막혔습니다(BLOCKED). 아래에서 다음 처리를 선택해 주세요. (git workspace가 아니라 자동 복원은 지원되지 않습니다)"
       );
       return {
         ok: false,
         stage: "implementation",
         completedIterations: blockedRound,
         needsUserDecision: true,
-        stopReason: "BLOCKED",
+        stopReason,
         blocked: true,
         canRestore: checkpointSupported,
         result: blockedResult,
@@ -1581,8 +1604,8 @@ class ChatRoom extends EventEmitter {
       await restoreCheckpoint();
       return this.specialistFail(implementation, "implementation", round, builderResult);
     }
-    if (builderResult.builderStatus === "BLOCKED") {
-      return holdForBlocked(round, builderResult);
+    if (builderResult.builderStatus !== "DONE") {
+      return holdForBlocked(round, builderResult, builderResult.builderStatus);
     }
 
     // 검토 → (자동 보완) 루프.
@@ -1683,8 +1706,8 @@ class ChatRoom extends EventEmitter {
         await restoreCheckpoint();
         return this.specialistFail(implementation, "implementation", round, builderResult);
       }
-      if (builderResult.builderStatus === "BLOCKED") {
-        return holdForBlocked(round, builderResult);
+      if (builderResult.builderStatus !== "DONE") {
+        return holdForBlocked(round, builderResult, builderResult.builderStatus);
       }
     }
 

@@ -97,8 +97,8 @@ test("제한 자동 실행은 검토 수정 요구를 범위 안에서 자동 �
   const calls = [];
   const replies = {
     codex: [
-      { ok: true, text: "첫 구현" },
-      { ok: true, text: "수정 구현" },
+      { ok: true, text: "첫 구현\nSTATUS: DONE" },
+      { ok: true, text: "수정 구현\nSTATUS: DONE" },
     ],
     claude: [
       {
@@ -207,7 +207,7 @@ test("전문 실행 승인 대기 중에는 일반 메시지를 받지 않고 �
 test("단계별 실행은 구현 후 검토 결과를 사용자에게 반환하고 자동 보완하지 않는다", async () => {
   const calls = [];
   const replies = {
-    codex: [{ ok: true, text: "구현 완료" }],
+    codex: [{ ok: true, text: "구현 완료\nSTATUS: DONE" }],
     claude: [
       {
         ok: true,
@@ -237,7 +237,7 @@ test("단계별 실행은 구현 후 검토 결과를 사용자에게 반환하�
 test("검토자 판정이 범위 밖이면 자동 보완하지 않고 SCOPE_OUT으로 반환한다", async () => {
   const calls = [];
   const replies = {
-    codex: [{ ok: true, text: "구현 완료" }],
+    codex: [{ ok: true, text: "구현 완료\nSTATUS: DONE" }],
     claude: [
       {
         ok: true,
@@ -267,7 +267,7 @@ test("검토자 판정이 범위 밖이면 자동 보완하지 않고 SCOPE_OUT�
 test("검토자 판정이 UNKNOWN이면 자동 보완하지 않고 반환한다", async () => {
   const calls = [];
   const replies = {
-    codex: [{ ok: true, text: "구현 완료" }],
+    codex: [{ ok: true, text: "구현 완료\nSTATUS: DONE" }],
     claude: [{ ok: true, text: "판단 불가\nVERDICT: UNKNOWN" }],
   };
   const room = new ChatRoom({
@@ -318,7 +318,7 @@ test("단계 실행에서 기획이 PLAN_READY면 승인을 기다리며 구현�
   const states = [];
   const replies = {
     claude: [{ ok: true, text: "기획 완료\nSTATUS: PLAN_READY" }],
-    codex: [{ ok: true, text: "구현 완료" }],
+    codex: [{ ok: true, text: "구현 완료\nSTATUS: DONE" }],
   };
   const room = new ChatRoom({
     agents: makeAgents(),
@@ -351,7 +351,7 @@ test("승인(resume) 후 기획을 이어서 구현·검토를 진행한다", as
       { ok: true, text: "기획 완료\nSTATUS: PLAN_READY" },
       { ok: true, text: "검토 통과\nVERDICT: PASS" },
     ],
-    codex: [{ ok: true, text: "구현 완료" }],
+    codex: [{ ok: true, text: "구현 완료\nSTATUS: DONE" }],
   };
   const room = new ChatRoom({
     agents: makeAgents(),
@@ -392,7 +392,7 @@ test("빠른 실행은 기획이 PLAN_READY면 승인 없이 구현·검토까�
       { ok: true, text: "기획 완료\nSTATUS: PLAN_READY" },
       { ok: true, text: "검토 통과\nVERDICT: PASS" },
     ],
-    codex: [{ ok: true, text: "구현 완료" }],
+    codex: [{ ok: true, text: "구현 완료\nSTATUS: DONE" }],
   };
   const room = new ChatRoom({
     agents: makeAgents(),
@@ -497,7 +497,7 @@ test("검토 계약 파서는 끝줄 앵커 마커를 본문 VERDICT 언급보�
 
 test("전문 모드 검토에서 서로 다른 VERDICT가 반복되면 자동 진행하지 않고 사용자에게 반환한다", async () => {
   const replies = {
-    codex: [{ ok: true, text: "구현 완료" }],
+    codex: [{ ok: true, text: "구현 완료\nSTATUS: DONE" }],
     claude: [
       {
         ok: true,
@@ -527,7 +527,7 @@ test("전문 모드 검토에서 서로 다른 VERDICT가 반복되면 자동 �
 test("기존 REVISE 마커는 FIX_REQUIRED로 정규화된다", async () => {
   const calls = [];
   const replies = {
-    codex: [{ ok: true, text: "구현 완료" }],
+    codex: [{ ok: true, text: "구현 완료\nSTATUS: DONE" }],
     claude: [{ ok: true, text: "수정 필요\n[[CODEPET_REVIEW:REVISE]]" }],
   };
   const room = new ChatRoom({
@@ -548,7 +548,7 @@ test("전문 모드 실행 중에는 @멘션 호출이 꺼진다", async () => {
   const calls = [];
   const replies = {
     codex: [
-      { ok: true, text: "구현 완료. @claude 이어서 확인 부탁" },
+      { ok: true, text: "구현 완료. @claude 이어서 확인 부탁\nSTATUS: DONE" },
       { ok: true, text: "기록" },
     ],
     claude: [{ ok: true, text: "검토 통과\n[[CODEPET_REVIEW:PASS]]" }],
@@ -577,6 +577,57 @@ test("전문 모드 실행 중에는 @멘션 호출이 꺼진다", async () => {
   assert.deepEqual(calls.map((call) => call.agentId), ["codex", "claude", "codex"]);
   const implementationPrompt = calls[0].prompt;
   assert.match(implementationPrompt, /위임하지 마세요/);
+});
+
+test("Builder STATUS가 누락되면 DONE이 아니라 사용자 결정으로 멈춘다", async () => {
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({
+      codex: [{ ok: true, text: "구현은 끝났습니다" }],
+      claude: [{ ok: true, text: "검수하면 안 됩니다\nVERDICT: PASS" }],
+    }, calls),
+  });
+
+  const result = await room.startSpecialist({
+    stages: {
+      implementation: { agent: room.findAgent("codex") },
+      review: { agent: room.findAgent("claude") },
+    },
+    mode: "auto",
+    maxAutoRevisions: 1,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.stopReason, "BUILDER_STATUS_MISSING");
+  assert.equal(result.blocked, true);
+  assert.deepEqual(calls.map((call) => call.agentId), ["codex"]);
+  assert.equal(room.specialistBlocked.blockReason, "BUILDER_STATUS_MISSING");
+});
+
+test("Builder STATUS가 서로 다르면 AMBIGUOUS로 멈춘다", async () => {
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({
+      codex: [{ ok: true, text: "STATUS: DONE\n중간 기록\nSTATUS: BLOCKED" }],
+      claude: [{ ok: true, text: "검수하면 안 됩니다\nVERDICT: PASS" }],
+    }, calls),
+  });
+
+  const result = await room.startSpecialist({
+    stages: {
+      implementation: { agent: room.findAgent("codex") },
+      review: { agent: room.findAgent("claude") },
+    },
+    mode: "auto",
+    maxAutoRevisions: 1,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.stopReason, "BUILDER_STATUS_AMBIGUOUS");
+  assert.equal(result.blocked, true);
+  assert.deepEqual(calls.map((call) => call.agentId), ["codex"]);
 });
 
 test("멘션이 없으면 세션에 참여 중인 모든 에이전트가 응답한다", async () => {
