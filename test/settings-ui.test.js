@@ -13,6 +13,7 @@ const settingsCss = source("src/settings.css");
 const bubbleCss = source("src/bubble.css");
 const bubbleJs = source("src/bubble.js");
 const mainJs = source("src/main.js");
+const accountSwitchingJs = source("src/agora/account-switching.js");
 const rendererJs = source("src/renderer.js");
 const packageJson = JSON.parse(source("package.json"));
 
@@ -150,8 +151,9 @@ test("메뉴에서 사용량 보기와 활동 말풍선 항목을 제거하고 �
   assert.match(mainJs, /let remaining = 2/);
   assert.match(rendererJs, /window\.petApi\.showCodexStatus\(\)/);
   assert.match(mainJs, /SHOW_CODEX_STATUS[\s\S]*void showUsageBubble\(\)/);
-  assert.match(mainJs, /readSettings\(\)\.codexProxyMode === true/);
-  assert.doesNotMatch(mainJs, /readSettings\(\)\.codexProxyMode !== false/);
+  // isCodexProxyModeEnabled는 src/agora/account-switching.js로 옮겨졌습니다.
+  assert.match(accountSwitchingJs, /readSettings\(\)\.codexProxyMode === true/);
+  assert.doesNotMatch(accountSwitchingJs, /readSettings\(\)\.codexProxyMode !== false/);
   assert.match(
     mainJs,
     /function showWatcherActivityBubble[\s\S]*pendingBubbleData && !pendingBubbleData\.activityPrivacy/

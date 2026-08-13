@@ -25,7 +25,6 @@ function fakeRecord(id, name) {
     efforts: ["medium"],
     allowCustomModel: false,
     supportsImages: false,
-    streaming: true,
     permissions: {
       chat: { supported: true, enforcement: "prompt" },
       "workspace-read": { supported: true, enforcement: "tools" },

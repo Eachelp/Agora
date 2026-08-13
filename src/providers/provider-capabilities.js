@@ -159,7 +159,6 @@ const PROVIDER_DEFS = Object.freeze([
     efforts: Object.freeze(["default", "low", "medium", "high", "xhigh", "max"]),
     allowCustomModel: false,
     supportsImages: "workspace-read-required",
-    streaming: "stream-json",
     permissions: Object.freeze({
       chat: Object.freeze({ supported: true, enforcement: "tool-policy" }),
       "workspace-read": Object.freeze({ supported: true, enforcement: "tool-policy" }),
@@ -182,7 +181,6 @@ const PROVIDER_DEFS = Object.freeze([
     allowCustomModel: false,
     modelCatalogProbe: "codex-app-server",
     supportsImages: "native",
-    streaming: "jsonl",
     permissions: Object.freeze({
       chat: Object.freeze({ supported: true, enforcement: "sandbox" }),
       "workspace-read": Object.freeze({ supported: true, enforcement: "sandbox" }),
@@ -208,9 +206,6 @@ const PROVIDER_DEFS = Object.freeze([
     allowCustomModel: false,
     modelsProbeArgs: Object.freeze(["models"]),
     supportsImages: "unsupported",
-    // --output-format stream-json 플래그는 존재하지만 이 기기에서 이벤트 형식을
-    // 스모크 검증하지 못해, 안정성이 확인된 일반 텍스트 출력을 사용합니다.
-    streaming: "text",
     permissions: Object.freeze({
       chat: Object.freeze({ supported: true, enforcement: "sandbox" }),
       "workspace-read": Object.freeze({ supported: true, enforcement: "sandbox" }),
@@ -418,7 +413,6 @@ function createCapabilityService(options = {}) {
       efforts: [...def.efforts],
       allowCustomModel: def.allowCustomModel,
       supportsImages: def.supportsImages,
-      streaming: def.streaming,
       permissions: def.permissions,
       guiInstalled: false,
       authStatus: "unavailable",
