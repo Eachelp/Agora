@@ -44,10 +44,10 @@ const {
 const {
   DEFAULT_SPRITE_ROWS,
   V2_SPRITE_ROWS,
-  detectSpriteRows,
   directionIndexFromVector,
 } = require("./sprite-layout");
 const { PetWatcherGate } = require("./agora/pet-watcher-gate");
+const { createPetSprites } = require("./agora/pet-sprites");
 
 const APP_NAME = "Agora";
 const APP_ID = "app.agora.desktop";
@@ -313,140 +313,30 @@ function buildActivityBubbleModeSubmenu() {
   ];
 }
 
-// 사용할 수 있는 펫 목록을 우선순위 순서로 모읍니다.
-//  1. exe(또는 프로젝트) 옆 pet/spritesheet.webp — 목록에 없는 커스텀 스프라이트용
-//  2. ~/.codex/pets/* — Codex가 설치한 펫들 (pet.json의 displayName을 메뉴 이름으로 사용)
-//  3. 내장 기본 스프라이트
-function listAvailablePets() {
-  const pets = [];
-
-  const customDir = path.join(getBaseDir(), "pet");
-  const customPath = path.join(customDir, "spritesheet.webp");
-  if (fs.existsSync(customPath)) {
-    let spriteVersionNumber = null;
-    try {
-      const meta = JSON.parse(fs.readFileSync(path.join(customDir, "pet.json"), "utf8"));
-      spriteVersionNumber = Number(meta.spriteVersionNumber) || null;
-    } catch {
-      // pet.json이 없어도 이미지 크기로 규격을 판별합니다.
-    }
-    pets.push({
-      key: "custom",
-      label: "커스텀 (pet 폴더)",
-      spritePath: customPath,
-      spriteVersionNumber,
-    });
-  }
-
-  let codexPetNames = [];
-  try {
-    codexPetNames = fs.readdirSync(CODEX_PETS_DIR);
-  } catch {
-    // Codex가 설치되지 않은 PC면 그냥 건너뜁니다.
-  }
-
-  for (const name of codexPetNames) {
-    const spritePath = path.join(CODEX_PETS_DIR, name, "spritesheet.webp");
-    if (!fs.existsSync(spritePath)) continue;
-
-    let label = name;
-    let spriteVersionNumber = null;
-    try {
-      const meta = JSON.parse(
-        fs.readFileSync(path.join(CODEX_PETS_DIR, name, "pet.json"), "utf8")
-      );
-      if (meta.displayName) label = meta.displayName;
-      spriteVersionNumber = Number(meta.spriteVersionNumber) || null;
-    } catch {
-      // pet.json이 없거나 형식이 달라도 폴더명으로 표시하면 됩니다.
-    }
-
-    pets.push({ key: `codex:${name}`, label, spritePath, spriteVersionNumber });
-  }
-
-  if (fs.existsSync(SPRITE_ASSET.filePath)) {
-    pets.push({
-      key: "builtin",
-      label: "기본 펫 (내장)",
-      spritePath: SPRITE_ASSET.filePath,
-      spriteVersionNumber: SPRITE_ASSET.spriteVersionNumber,
-    });
-  }
-
-  return pets;
-}
-
-// 저장된 선택이 유효하면 그 펫을, 아니면(첫 실행, 펫 삭제됨 등) 목록의 첫 번째를 사용합니다.
-function resolveSelectedPet() {
-  const pets = listAvailablePets();
-  if (pets.length === 0) return null;
-
-  const savedKey = readSettings().petKey;
-  return pets.find((pet) => pet.key === savedKey) || pets[0];
-}
-
-function detectPetSpriteRows(pet = resolveSelectedPet()) {
-  if (!pet?.spritePath) return null;
-
-  try {
-    const size = nativeImage.createFromPath(pet.spritePath).getSize();
-    return detectSpriteRows({
-      width: size.width,
-      height: size.height,
-      spriteVersionNumber: pet.spriteVersionNumber,
-    });
-  } catch (error) {
-    console.warn("[desktop-pet] Failed to detect sprite rows for menu.", error.message);
-    return Number(pet.spriteVersionNumber) === 2 ? V2_SPRITE_ROWS : null;
-  }
-}
-
-// 스프라이트 파일을 renderer가 바로 쓸 수 있는 data URL로 바꿉니다.
-// portable exe에서는 내장 assets가 app.asar 안에 들어가고, renderer가 file:// 경로를 직접 읽으면
-// 투명창만 뜨는 식으로 실패할 수 있습니다. main process가 파일을 읽어서 넘기면
-// 내장 스프라이트, ~/.codex/pets, exe 옆 pet 폴더를 같은 방식으로 안정적으로 처리할 수 있습니다.
-function createSpritePayload(pet) {
-  if (!pet) {
-    return {
-      spriteUrl: null,
-      spritePath: "pet/spritesheet.webp (not found)",
-      assetExists: false,
-    };
-  }
-
-  try {
-    const spriteBuffer = fs.readFileSync(pet.spritePath);
-    const spriteUrl = `data:${SPRITE_ASSET.mimeType};base64,${spriteBuffer.toString("base64")}`;
-
-    return {
-      spriteUrl,
-      spritePath: pet.spritePath,
-      spriteVersionNumber: pet.spriteVersionNumber || null,
-      assetExists: true,
-    };
-  } catch (error) {
-    console.error(`[desktop-pet] Failed to read sprite: ${pet.spritePath}`, error);
-
-    return {
-      spriteUrl: null,
-      spritePath: pet.spritePath,
-      assetExists: false,
-    };
-  }
-}
-
-// 메뉴에서 펫을 고르면 저장하고 renderer의 스프라이트를 즉시 교체합니다.
-function applyPet(petKey) {
-  writeSettings({ petKey });
-
-  const pet = resolveSelectedPet();
-  if (!pet) return;
-  runtime.spriteRows = detectPetSpriteRows(pet) || DEFAULT_SPRITE_ROWS;
-  if (!petWindow || petWindow.isDestroyed()) return;
-
-  petWindow.webContents.send(IPC_CHANNELS.SET_SPRITE, createSpritePayload(pet));
-  refreshTrayMenu();
-}
+// 펫 스프라이트 선택·로딩은 agora/pet-sprites.js가 담당합니다. 이동/드래그 루프와
+// 달리 runtime.spriteRows 갱신 + petWindow로의 SET_SPRITE 전송만 필요해 접근자
+// 두 개만 주입하면 됩니다 (SPRITE_ASSET.filePath는 이 파일의 __dirname 기준으로
+// 만들어지므로 새 모듈에서 다시 계산하지 않고 값 그대로 넘깁니다).
+const {
+  listAvailablePets,
+  resolveSelectedPet,
+  detectPetSpriteRows,
+  createSpritePayload,
+  applyPet,
+  buildPetSelectionSubmenu,
+} = createPetSprites({
+  CODEX_PETS_DIR,
+  SPRITE_ASSET,
+  getBaseDir,
+  readSettings,
+  writeSettings,
+  refreshTrayMenu,
+  getPetWindow: () => petWindow,
+  setSpriteRows: (rows) => {
+    runtime.spriteRows = rows;
+  },
+  setSpriteChannel: IPC_CHANNELS.SET_SPRITE,
+});
 
 // 말풍선 창 관련 설정입니다. 너비는 고정하고 높이는 내용에 맞춰 renderer가 보고합니다.
 const BUBBLE_CONFIG = Object.freeze({
@@ -1101,29 +991,6 @@ function toggleAutoLaunch() {
     openAtLogin: !isAutoLaunchEnabled(),
     ...getLoginItemOptions(),
   });
-}
-
-// 펫 선택 메뉴는 펫 우클릭 메뉴와 시스템 트레이 메뉴에서 같이 사용합니다.
-// 새 펫 소스를 추가할 때 listAvailablePets()만 확장하면 두 메뉴가 동시에 갱신됩니다.
-function buildPetSelectionSubmenu() {
-  const currentPetKey = resolveSelectedPet()?.key;
-  const pets = listAvailablePets();
-
-  if (pets.length === 0) {
-    return [
-      {
-        label: "사용 가능한 스프라이트 없음",
-        enabled: false,
-      },
-    ];
-  }
-
-  return pets.map((pet) => ({
-    label: pet.label,
-    type: "radio",
-    checked: pet.key === currentPetKey,
-    click: () => applyPet(pet.key),
-  }));
 }
 
 // 시스템 트레이 메뉴는 창이 투명해져서 펫 우클릭 메뉴를 못 여는 상황에서도 접근할 수 있는 안전장치입니다.
