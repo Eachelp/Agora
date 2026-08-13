@@ -13,7 +13,7 @@ const SPECIALIST_STAGE_CAPS = Object.freeze({
   planner: "workspace-read",
   plan_review: "workspace-read",
   implementation: "workspace-write",
-  review: "workspace-write",
+  review: "workspace-read",
   recorder: "chat",
 });
 const INLINE_TEXT_LIMIT = 16 * 1024;

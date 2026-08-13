@@ -184,6 +184,8 @@ function runAgentProcess({
   let outputLimitHit = false;
   let timer = null;
   let silenceTimer = null;
+  const commandEvents = [];
+  const pendingCommands = [];
 
   const cleanup = () => {
     if (timer) clearTimeout(timer);
@@ -200,7 +202,11 @@ function runAgentProcess({
       if (settled) return;
       settled = true;
       cleanup();
-      resolve(result);
+      const finishedCommands = commandEvents.filter((event) => event.kind === "command-finished");
+      const boundedCommands = (finishedCommands.length > 0 ? finishedCommands : commandEvents).slice(-20);
+      resolve(boundedCommands.length > 0
+        ? { ...result, evidence: { commands: boundedCommands } }
+        : result);
     };
 
     if (promptTransport === "argv" && needsShell) {
@@ -266,6 +272,31 @@ function runAgentProcess({
       // turn.failed 원인이 사용자에게 더 유용하므로 최신 오류를 보존합니다.
       if (event.kind === "error") parsedError = event.message;
       if (event.kind === "approval-required" && !parsedApproval) parsedApproval = event;
+      if (event.kind === "command-started") {
+        pendingCommands.push(event);
+        commandEvents.push(event);
+        if (commandEvents.length > 80) commandEvents.splice(0, commandEvents.length - 80);
+      }
+      if (event.kind === "command-finished") {
+        const command = event.command || null;
+        let index = -1;
+        for (let i = pendingCommands.length - 1; i >= 0; i -= 1) {
+          if (!command || !pendingCommands[i].command || pendingCommands[i].command === command) {
+            index = i;
+            break;
+          }
+        }
+        const started = index >= 0 ? pendingCommands.splice(index, 1)[0] : null;
+        const normalized = {
+          ...event,
+          ...(event.command || started?.command ? { command: event.command || started.command } : {}),
+          ...(event.startedAt != null || started?.startedAt != null
+            ? { startedAt: event.startedAt ?? started.startedAt }
+            : {}),
+        };
+        commandEvents.push(normalized);
+        if (commandEvents.length > 80) commandEvents.splice(0, commandEvents.length - 80);
+      }
       if (event.kind === "delta") {
         deltaText += event.text;
         if (deltaText.length > MAX_DELTA_TEXT_CHARS) {

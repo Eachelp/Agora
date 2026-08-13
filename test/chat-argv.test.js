@@ -47,7 +47,7 @@ test("전문 단계 권한 cap은 세션 권한보다 높아지지 않는다", (
   assert.equal(specialistPermissionMode("planner", "workspace-write"), "workspace-read");
   assert.equal(specialistPermissionMode("plan_review", "workspace-write"), "workspace-read");
   assert.equal(specialistPermissionMode("implementation", "workspace-write"), "workspace-write");
-  assert.equal(specialistPermissionMode("review", "workspace-write"), "workspace-write");
+  assert.equal(specialistPermissionMode("review", "workspace-write"), "workspace-read");
   assert.equal(specialistPermissionMode("recorder", "workspace-write"), "chat");
   assert.equal(specialistPermissionMode("unknown", "workspace-write"), null);
 });
@@ -67,6 +67,14 @@ test("claude chat 모드: 도구 전면 차단 + strict mcp + stream-json", () =
     "stream-json",
   ]);
   assert.equal(result.enforcement, "tool-policy");
+});
+
+test("일반 채팅 provider invocation은 Professional 단계 cap 없이 기존 chat 계약을 사용한다", () => {
+  const result = build("codex", { permissionMode: "chat" });
+  assert.equal(result.ok, true);
+  assert.equal(result.argv[result.argv.indexOf("--sandbox") + 1], "read-only");
+  assert.ok(result.argv.includes("--ephemeral"));
+  assert.ok(!result.argv.some((arg) => /dangerously|bypass|full-access|full-auto/i.test(arg)));
 });
 
 test("claude workspace-read: 읽기 도구만 + add-dir", () => {

@@ -1,4 +1,5 @@
 const { EventEmitter } = require("node:events");
+const path = require("node:path");
 const { GROUP_ALIASES } = require("./chat-agents");
 const { parseMentions } = require("./chat-mention");
 const { buildAgentPrompt } = require("./chat-prompt");
@@ -16,6 +17,26 @@ const { describeWorkspaceChanges } = require("../agora/workspace-diff");
 // - 에이전트 간 토론은 startDiscussion()으로만, 라운드(1~3)와
 //   총 실행 예산 두 가지 상한 아래에서만 진행됩니다.
 const DEFAULT_DISCUSSION_RUN_BUDGET = 9;
+const SAFE_BLOCK_REASONS = new Set([
+  "BLOCKED",
+  "BUILDER_STATUS_MISSING",
+  "BUILDER_STATUS_AMBIGUOUS",
+  "FROZEN_TASK_CORRUPTED",
+  "DIFF_UNAVAILABLE",
+  "DIFF_COLLECTION_FAILED",
+  "EVIDENCE_WRITE_FAILED",
+  "PROMPT_BUDGET_EXCEEDED",
+  "RECOVERY_JOURNAL_WRITE_FAILED",
+  "TRANSPORT_FAILED",
+  "EXECUTION_BLOCKED",
+  "EXECUTION_INTERRUPTED",
+  "EXECUTION_INTERRUPTED_CHECKPOINTING",
+]);
+
+function safeBlockReason(value) {
+  const reason = String(value || "");
+  return SAFE_BLOCK_REASONS.has(reason) ? reason : "EXECUTION_BLOCKED";
+}
 
 // 작업용 채팅에서는 캐릭터 이모티콘 이미지를 더 이상 렌더링하지 않습니다.
 // 다만 예전 습관이나 실수로 에이전트가 [[CODEPET_EMOTE:...]] 표기를 남기면
@@ -73,6 +94,14 @@ function nextMessageId() {
   return `m${Date.now()}-${messageSeq}`;
 }
 
+function runGeneratedPaths(workspace, runInfo) {
+  if (!workspace || !runInfo?.runDir) return [];
+  const relativeRun = path.relative(workspace, runInfo.runDir);
+  if (!relativeRun || relativeRun.startsWith("..")) return [];
+  return ["task.md", "task-hash", "evidence.json", "invalid.json"]
+    .map((name) => path.join(relativeRun, name));
+}
+
 class ChatRoom extends EventEmitter {
   constructor(options = {}) {
     super();
@@ -85,6 +114,11 @@ class ChatRoom extends EventEmitter {
     // TASK-006 Turn Checkpoint 엔진. 제공되지 않으면 사용하지 않습니다.
     // { createCheckpoint, restoreCheckpoint, cleanupCheckpoint } 형태입니다.
     this.checkpointEngine = options.checkpoint || null;
+    this.checkpointRoot = options.checkpointRoot || null;
+    this.strictReviewDiff = Boolean(options.strictReviewDiff);
+    this.persistRecovery = typeof options.persistRecovery === "function"
+      ? options.persistRecovery
+      : null;
     // TASK-007 Task Manager — Planner Task 저장/Freeze/Run 정규화를 담당합니다.
     // workspace 복원용 checkpoint와는 별개의 실행 계약 보존 모듈입니다.
     this.taskManager = options.taskManager || new TaskManager();
@@ -129,12 +163,262 @@ class ChatRoom extends EventEmitter {
     this.professionalPlan = null;
     // BLOCKED로 멈췄을 때 사용자의 후속 선택(복원/유지/폐기)을 기다리는 상태.
     // A안: BLOCKED 시점에 즉시 되돌리지 않고, 사용자가 결정할 때까지 작업물을 보존합니다.
-    this.specialistBlocked = null;
+    this.specialistBlocked = this.rehydrateRecovery(options.initialRecovery || null);
     this.cancels = new Set();
     this.typingCounts = new Map();
     this.activeRuns = 0;
     this.approvalSeq = 0;
     this.pendingApprovals = new Map();
+  }
+
+  rehydrateRecovery(recovery) {
+    if (!recovery || typeof recovery !== "object") return null;
+    const checkpoint = recovery.checkpointId
+      ? {
+          supported: true,
+          checkpointId: recovery.checkpointId,
+          storageRoot: this.checkpointRoot,
+          sessionId: this.sessionId,
+          runId: recovery.runId || null,
+        }
+      : null;
+    let canRestore = false;
+    if (checkpoint && this.checkpointEngine) {
+      try {
+        const inspected = typeof this.checkpointEngine.inspectCheckpoint === "function"
+          ? this.checkpointEngine.inspectCheckpoint(checkpoint)
+          : null;
+        canRestore = inspected ? inspected.ok === true : Boolean(checkpoint.supported);
+      } catch {
+        canRestore = false;
+      }
+    }
+    const reason = safeBlockReason(recovery.blockReason || (
+      recovery.status === "checkpointing"
+        ? "EXECUTION_INTERRUPTED_CHECKPOINTING"
+        : "EXECUTION_INTERRUPTED"
+    ));
+    return {
+      checkpoint: canRestore ? checkpoint : null,
+      canRestore,
+      taskPath: recovery.taskPath || null,
+      runId: recovery.runId || null,
+      stage: recovery.stage || "implementation",
+      blockReason: reason,
+      recoveryStatus: recovery.status || "interrupted",
+    };
+  }
+
+  persistRecoveryState(recovery) {
+    if (!this.persistRecovery) return true;
+    try {
+      return this.persistRecovery(recovery) !== false;
+    } catch {
+      return false;
+    }
+  }
+
+  recoveryFor(checkpoint, {
+    status = "running",
+    runId = null,
+    taskPath = null,
+    stage = "implementation",
+    blockReason = null,
+  } = {}) {
+    return {
+      schemaVersion: 1,
+      status,
+      checkpointId: checkpoint?.checkpointId || null,
+      runId: runId || null,
+      taskPath: taskPath || null,
+      stage,
+      ...(blockReason ? { blockReason: safeBlockReason(blockReason) } : {}),
+      updatedAt: Date.now(),
+    };
+  }
+
+  clearRecoveryState() {
+    this.persistRecoveryState(null);
+  }
+
+  markCheckpointRecovery(checkpoint, options = {}) {
+    const persisted = this.persistRecoveryState(this.recoveryFor(checkpoint, options));
+    return persisted;
+  }
+
+  validateFrozenTask(runInfo) {
+    // Legacy/manual specialist calls may not have a Planner-backed Run. They
+    // retain the pre-existing behavior; every actual Run is checked below.
+    if (!runInfo) return { ok: true, frozen: null };
+    if (!runInfo.runDir || !this.taskManager?.readFrozenTask) {
+      return { ok: false, error: "Frozen Task 경로가 없습니다." };
+    }
+    if (typeof runInfo.taskHash !== "string" || !runInfo.taskHash.trim()) {
+      return { ok: false, error: "최초 Run의 Frozen Task 해시가 없습니다." };
+    }
+    if (this.taskManager.isRunInvalid?.(runInfo)) {
+      return { ok: false, error: "이 Run은 이미 무효화되었습니다." };
+    }
+    try {
+      const frozen = this.taskManager.readFrozenTask(runInfo.runDir, runInfo.taskHash);
+      runInfo.content = frozen.content;
+      runInfo.taskHash = frozen.taskHash;
+      return { ok: true, frozen };
+    } catch (error) {
+      return { ok: false, error: error?.message || "Frozen Task를 검증하지 못했습니다." };
+    }
+  }
+
+  holdForFrozenTaskCorruption({ runInfo, taskInfo, checkpoint, stage = "implementation", round = 1, error = "" } = {}) {
+    const reason = "FROZEN_TASK_CORRUPTED";
+    if (runInfo && this.taskManager?.markRunInvalid) {
+      this.taskManager.markRunInvalid(runInfo, reason);
+    }
+    this.persistRecoveryState(this.recoveryFor(checkpoint, {
+      status: "invalid",
+      runId: runInfo?.runId || null,
+      taskPath: taskInfo?.relativePath || null,
+      stage,
+      blockReason: reason,
+    }));
+    this.specialistBlocked = {
+      checkpoint: checkpoint?.supported === true ? checkpoint : null,
+      canRestore: Boolean(checkpoint?.supported === true),
+      taskPath: taskInfo?.relativePath || null,
+      runId: runInfo?.runId || null,
+      stage,
+      blockReason: reason,
+      recoveryStatus: "invalid",
+    };
+    this.specialistActive = false;
+    this.emitSpecialistState();
+    this.appendSystem(`Frozen Task가 손상되어 실행을 중단했습니다. 변경은 그대로 남아 있습니다. (${error || "해시 불일치"})`);
+    return {
+      ok: false,
+      stage,
+      completedIterations: round,
+      needsUserDecision: true,
+      stopReason: reason,
+      blocked: true,
+      canRestore: Boolean(checkpoint?.supported === true),
+    };
+  }
+
+  holdForDegradedReview({ runInfo, taskInfo, checkpoint, stage = "review", round = 1, changes = null, review = null } = {}) {
+    const reason = "DIFF_UNAVAILABLE";
+    const canRestore = Boolean(checkpoint?.supported === true);
+    this.specialistBlocked = {
+      checkpoint: canRestore ? checkpoint : null,
+      canRestore,
+      taskPath: taskInfo?.relativePath || null,
+      runId: runInfo?.runId || null,
+      stage,
+      blockReason: reason,
+    };
+    this.persistRecoveryState(this.recoveryFor(checkpoint, {
+      status: "blocked",
+      runId: runInfo?.runId || null,
+      taskPath: taskInfo?.relativePath || null,
+      stage,
+      blockReason: reason,
+    }));
+    this.specialistActive = false;
+    this.emitSpecialistState();
+    this.appendSystem(
+      canRestore
+        ? "Git diff를 사용할 수 없어 현재 파일을 기준으로 검수했습니다. PASS 결과를 자동 완료로 처리하지 않고 사용자 확인을 기다립니다."
+        : "Git diff를 사용할 수 없어 현재 파일을 기준으로 검수했습니다. PASS 결과를 자동 완료로 처리하지 않고 사용자 확인을 기다립니다. (자동 복원은 지원되지 않습니다)"
+    );
+    return {
+      ok: false,
+      stage,
+      completedIterations: round,
+      needsUserDecision: true,
+      stopReason: reason,
+      blocked: true,
+      canRestore,
+      changes,
+      review,
+    };
+  }
+
+  holdForRecovery({
+    runInfo,
+    taskInfo,
+    checkpoint,
+    stage = "implementation",
+    round = 1,
+    stopReason = "EXECUTION_BLOCKED",
+    result = null,
+    message = "전문 실행을 안전하게 중단했습니다. 변경은 그대로 남아 있습니다. 아래에서 다음 처리를 선택해 주세요.",
+  } = {}) {
+    const canRestore = Boolean(checkpoint?.supported === true);
+    this.specialistBlocked = {
+      checkpoint: canRestore ? checkpoint : null,
+      canRestore,
+      taskPath: taskInfo?.relativePath || null,
+      runId: runInfo?.runId || null,
+      stage,
+      blockReason: safeBlockReason(stopReason),
+    };
+    this.persistRecoveryState(this.recoveryFor(checkpoint, {
+      status: "blocked",
+      runId: runInfo?.runId || null,
+      taskPath: taskInfo?.relativePath || null,
+      stage,
+      blockReason: stopReason,
+    }));
+    this.specialistActive = false;
+    this.emitSpecialistState();
+    this.appendSystem(message);
+    return {
+      ok: false,
+      stage,
+      completedIterations: round,
+      needsUserDecision: true,
+      stopReason,
+      blocked: true,
+      canRestore,
+      ...(result ? { result } : {}),
+    };
+  }
+
+  executionAxes({ builderResult = null, diff = null } = {}) {
+    const commands = builderResult?.evidence?.commands || [];
+    const hasFinished = commands.some((entry) => entry?.kind === "command-finished" || Number.isInteger(entry?.exitCode));
+    return {
+      transport: builderResult?.transport || "COMPLETED",
+      declaration: builderResult?.builderStatus || "MISSING",
+      changes: diff?.status || "UNSUPPORTED",
+      execution: hasFinished ? "OBSERVED" : commands.length > 0 ? "PARTIAL" : "UNAVAILABLE",
+    };
+  }
+
+  evidencePayload({ runInfo, builderResult, diff, round, provider }) {
+    const axes = this.executionAxes({ builderResult, diff });
+    const commands = (builderResult?.evidence?.commands || [])
+      .filter((entry) => entry?.kind === "command-finished" || Number.isInteger(entry?.exitCode))
+      .slice(0, 20);
+    const payload = {
+      schemaVersion: 1,
+      round: round || 1,
+      invocationId: builderResult?.runId || null,
+      provider: provider || null,
+      source: { kind: "provider-event", provider: provider || null },
+      ...axes,
+      sessionPersisted: builderResult?.evidencePersisted !== false,
+      commands,
+    };
+    if (!runInfo || !this.taskManager?.writeRunEvidence) return { ok: true, payload };
+    const ok = this.taskManager.writeRunEvidence(runInfo, payload);
+    return ok ? { ok: true, payload } : { ok: false, payload };
+  }
+
+  prepareReviewEvidence({ runInfo, builderResult, diff, round, provider }) {
+    const evidence = this.evidencePayload({ runInfo, builderResult, diff, round, provider });
+    if (evidence.ok) return evidence;
+    this.appendSystem("실행 근거를 저장하지 못해 검수를 시작하지 않았습니다. 변경은 그대로 남아 있습니다.");
+    return { ok: false, stopReason: "EVIDENCE_WRITE_FAILED", payload: evidence.payload };
   }
 
   setAgents(agents) {
@@ -201,7 +485,7 @@ class ChatRoom extends EventEmitter {
         return filename ? String(filename).replace(/\.md$/i, "") : null;
       })(),
       blocked: Boolean(this.specialistBlocked),
-      blockReason: this.specialistBlocked?.blockReason || null,
+      blockReason: this.specialistBlocked ? safeBlockReason(this.specialistBlocked.blockReason) : null,
       canRestore: Boolean(this.specialistBlocked?.canRestore),
       hasTask: Boolean(
         this.specialistBlocked?.taskPath || this.specialistResume?.taskInfo?.relativePath
@@ -536,24 +820,31 @@ class ChatRoom extends EventEmitter {
 
     const mentionDepth = context.mentionDepth || 0;
 
-    const prompt = buildAgentPrompt({
-      agent,
-      agents: this.enabledAgents(),
-      messages: builderStage ? [] : this.promptMessages(context.promptLimit, context.independent),
-      maxMessages: this.maxPromptMessages,
-      permissionMode,
-      projectContext: this.meta.projectContext,
-      memoryContext: this.meta.memoryContext,
-      rulesContext: this.meta.rulesContext,
-      workflowContext: this.meta.workflowContext,
-      discussion: context.discussion || null,
-      specialist: context.specialist || null,
-      broadcast: context.broadcast || null,
-      handoff: context.handoff || null,
-      // 전문 모드 실행 중에는 @멘션 호출을 끕니다. 구현·검토·기록이
-      // 담당자 밖으로 새어 나가는 것을 막기 위해서입니다.
-      mentionsEnabled: !context.discussion && !context.specialist && mentionDepth < this.mentionChainLimit,
-    });
+    let prompt;
+    try {
+      prompt = buildAgentPrompt({
+        agent,
+        agents: this.enabledAgents(),
+        messages: builderStage ? [] : this.promptMessages(context.promptLimit, context.independent),
+        maxMessages: this.maxPromptMessages,
+        permissionMode,
+        projectContext: this.meta.projectContext,
+        memoryContext: this.meta.memoryContext,
+        rulesContext: this.meta.rulesContext,
+        workflowContext: this.meta.workflowContext,
+        discussion: context.discussion || null,
+        specialist: context.specialist || null,
+        broadcast: context.broadcast || null,
+        handoff: context.handoff || null,
+        // 전문 모드 실행 중에는 @멘션 호출을 끕니다. 구현·검토·기록이
+        // 담당자 밖으로 새어 나가는 것을 막기 위해서입니다.
+        mentionsEnabled: !context.discussion && !context.specialist && mentionDepth < this.mentionChainLimit,
+      });
+    } catch (error) {
+      const stopReason = error?.code || "PROMPT_BUILD_FAILED";
+      this.appendSystem(`프롬프트 예산을 초과해 전문 실행을 중단했습니다. (${error?.message || "프롬프트를 만들지 못했습니다."})`);
+      return { ok: false, stopReason, error: error?.message || stopReason };
+    }
 
     let result;
     let runId;
@@ -593,7 +884,12 @@ class ChatRoom extends EventEmitter {
           specialistStage,
           // IPC 경계에서 최종 permissionMode를 다시 계산해 실제 invocation을 제한합니다.
           // 여기서는 기존 승인 재시도 계약을 유지한 요청값만 전달합니다.
-          autoApprove: agent.autoApprove || approvedRetry,
+          // 일반 채팅의 승인 재시도 계약은 유지한다. 실제 provider argv에서는
+          // IPC 경계가 workspace-write가 아닌 autoApprove를 다시 차단한다.
+          // 전문 실행만 stage cap을 이미 적용한 최종 권한으로 제한한다.
+          autoApprove: context.specialist
+            ? permissionMode === "workspace-write" && (agent.autoApprove || approvedRetry)
+            : agent.autoApprove || approvedRetry,
         });
         this.cancels.add(run.cancel);
         result = await run.promise;
@@ -641,7 +937,13 @@ class ChatRoom extends EventEmitter {
         runId,
         agentMeta: responseAgentMeta,
       });
-      return { ok: false };
+      return {
+        ok: false,
+        stopReason: result?.stopReason || (result?.outputLimited ? "OUTPUT_LIMITED" : result?.timedOut ? "TIMED_OUT" : "TRANSPORT_FAILED"),
+        error: result?.error || "에이전트 실행에 실패했습니다.",
+        evidence: result?.evidence || null,
+        transport: result?.cancelled ? "CANCELLED" : result?.timedOut ? "TIMED_OUT" : result?.outputLimited ? "OUTPUT_LIMITED" : "FAILED",
+      };
     }
 
     let rawText = String(result.text || "").trim();
@@ -708,7 +1010,18 @@ class ChatRoom extends EventEmitter {
         context.turnRootId
       );
     }
-    return { ok: true, discussionSignal, specialistSignal, plannerStatus, builderStatus, text, runId };
+    return {
+      ok: true,
+      discussionSignal,
+      specialistSignal,
+      plannerStatus,
+      builderStatus,
+      text,
+      runId,
+      evidence: result.evidence || null,
+      evidencePersisted: result.evidencePersisted !== false,
+      transport: "COMPLETED",
+    };
   }
 
   // 에이전트가 @이름으로 부르면 그 에이전트가 실제로 이어서 응답합니다.
@@ -1076,6 +1389,7 @@ class ChatRoom extends EventEmitter {
         this.checkpointEngine.cleanupCheckpoint(this.specialistBlocked.checkpoint);
       }
       this.specialistBlocked = null;
+      this.clearRecoveryState();
     }
     this.emitSpecialistState();
     await this.waitForIdle();
@@ -1188,6 +1502,7 @@ class ChatRoom extends EventEmitter {
         this.checkpointEngine.cleanupCheckpoint(this.specialistBlocked.checkpoint);
       }
       this.specialistBlocked = null;
+      this.clearRecoveryState();
     }
     this.emitSpecialistState();
     await this.waitForIdle();
@@ -1208,7 +1523,7 @@ class ChatRoom extends EventEmitter {
         });
         if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
         if (!plannerResult?.ok) return this.specialistFail(planner, "planner", 0, plannerResult);
-        if (plannerResult.plannerStatus === "NEEDS_DECISION") {
+        if (plannerResult.plannerStatus === "NEEDS_DECISION" || hasOpenQuestions(plannerResult.text)) {
           return {
             ok: false,
             stage: "planner",
@@ -1292,6 +1607,7 @@ class ChatRoom extends EventEmitter {
     if (checkpoint && this.checkpointEngine) {
       this.checkpointEngine.cleanupCheckpoint(checkpoint);
     }
+    this.clearRecoveryState();
     this.emitSpecialistState();
     this.appendSystem("전문 실행을 취소했습니다. 현재 작업 결과는 그대로 유지됩니다.");
     return { ok: true, cancelled: true };
@@ -1325,16 +1641,53 @@ class ChatRoom extends EventEmitter {
           }
         : null;
     const freezeOnce = async () => {
-      if (runInfo) return runInfo;
+      if (runInfo) {
+        const check = this.validateFrozenTask(runInfo);
+        if (!check.ok) {
+          const error = new Error(check.error);
+          error.code = "FROZEN_TASK_CORRUPTED";
+          throw error;
+        }
+        return runInfo;
+      }
       if (taskInfo) {
         runInfo = this.taskManager.freezeTask(
           { contentSource: "file", taskPath: taskInfo.relativePath || null, description: "" },
           workspace
         );
+        const check = this.validateFrozenTask(runInfo);
+        if (!check.ok) {
+          const error = new Error(check.error);
+          error.code = "FROZEN_TASK_CORRUPTED";
+          throw error;
+        }
+      }
+      // Checkpoint 생성 전 저널을 먼저 남겨, 생성 중 종료도 자동 재개하지 않고
+      // 사용자 선택 상태로 복원할 수 있게 합니다.
+      const recoveryContext = {
+        runId: runInfo?.runId || null,
+        taskPath: taskInfo?.relativePath || null,
+        stage: "implementation",
+      };
+      if (this.persistRecovery && !this.persistRecoveryState(this.recoveryFor(null, {
+        ...recoveryContext,
+        status: "checkpointing",
+      }))) {
+        throw new Error("복구 저널을 저장하지 못했습니다.");
       }
       // TASK-006: Builder 실행 직전 workspace 상태 보존 (지원 시).
       if (!checkpoint && this.checkpointEngine) {
-        checkpoint = await this.checkpointEngine.createCheckpoint(workspace);
+        checkpoint = await this.checkpointEngine.createCheckpoint(workspace, {
+          storageRoot: this.checkpointRoot,
+          sessionId: this.sessionId,
+          runId: runInfo?.runId || null,
+        });
+      }
+      if (this.persistRecovery && !this.persistRecoveryState(this.recoveryFor(checkpoint, {
+        ...recoveryContext,
+        status: "running",
+      }))) {
+        throw new Error("복구 저널을 저장하지 못했습니다.");
       }
       return runInfo;
     };
@@ -1363,6 +1716,13 @@ class ChatRoom extends EventEmitter {
         stage: "implementation",
         blockReason: stopReason,
       };
+      this.persistRecoveryState(this.recoveryFor(checkpoint, {
+        status: "blocked",
+        runId: runInfo?.runId || null,
+        taskPath: taskInfo?.relativePath || null,
+        stage: "implementation",
+        blockReason: stopReason,
+      }));
       retainCheckpoint = canRestore;
       this.specialistActive = false;
       this.emitSpecialistState();
@@ -1376,8 +1736,29 @@ class ChatRoom extends EventEmitter {
         try {
           await freezeOnce();
         } catch (error) {
+          if (error?.code === "FROZEN_TASK_CORRUPTED") {
+            return this.holdForFrozenTaskCorruption({
+              runInfo,
+              taskInfo,
+              checkpoint,
+              stage: "implementation",
+              round: 0,
+              error: error.message,
+            });
+          }
           this.appendSystem(`Frozen Task를 만들지 못해 실행을 중단합니다. (${error?.message || "알 수 없는 오류"})`);
           return { ok: false, stage: "planner", completedIterations: 0, needsUserDecision: true, stopReason: "FROZEN_TASK_MISSING", taskError: error?.message || "알 수 없는 오류" };
+        }
+        const frozenCheck = this.validateFrozenTask(runInfo);
+        if (!frozenCheck.ok) {
+          return this.holdForFrozenTaskCorruption({
+            runInfo,
+            taskInfo,
+            checkpoint,
+            stage: "implementation",
+            round: 1,
+            error: frozenCheck.error,
+          });
         }
         // Builder 실행.
         const builderResult = await this.scheduleResponse(implementation.agent, {
@@ -1385,10 +1766,60 @@ class ChatRoom extends EventEmitter {
           agentConfig: implementation.agentConfig,
         });
         if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
+        const frozenAfterBuilder = this.validateFrozenTask(runInfo);
+        if (!frozenAfterBuilder.ok) {
+          return this.holdForFrozenTaskCorruption({
+            runInfo,
+            taskInfo,
+            checkpoint,
+            stage: "implementation",
+            round: 1,
+            error: frozenAfterBuilder.error,
+          });
+        }
+        if (!builderResult?.ok && builderResult.stopReason === "PROMPT_BUDGET_EXCEEDED") {
+          return this.holdForRecovery({
+            runInfo,
+            taskInfo,
+            checkpoint,
+            stage: "implementation",
+            round: 1,
+            stopReason: builderResult.stopReason,
+            result: builderResult,
+            message: "구현 프롬프트가 허용된 크기를 넘어 시작하지 못했습니다. 변경은 그대로 남아 있습니다. 아래에서 다음 처리를 선택해 주세요.",
+          });
+        }
         if (!builderResult?.ok) return this.specialistFail(implementation, "implementation", 1, builderResult);
         if (builderResult.builderStatus !== "DONE") return holdForBlocked(1, builderResult, builderResult.builderStatus);
         // 구현 완료 → 사용자 확인 대기.
-        this.specialistResume = { ...resume, phase: "builder_done", runInfo, checkpoint, builderChanges: (await describeWorkspaceChanges(workspace)).text };
+        const changeSnapshot = await describeWorkspaceChanges(workspace, {
+          checkpoint,
+          excludePaths: runGeneratedPaths(workspace, runInfo),
+        });
+        if (changeSnapshot.diff.status === "FAILED") {
+          return this.holdForRecovery({
+            runInfo,
+            taskInfo,
+            checkpoint,
+            stage: "review",
+            round: 1,
+            stopReason: "DIFF_COLLECTION_FAILED",
+            result: { changes: changeSnapshot.diff },
+            message: "변경(Diff)을 수집하지 못해 검수를 시작할 수 없습니다. 변경은 그대로 남아 있습니다. 아래에서 다음 처리를 선택해 주세요.",
+          });
+        }
+        this.specialistResume = {
+          ...resume,
+          phase: "builder_done",
+          runInfo,
+          checkpoint,
+          builderChanges: changeSnapshot.text,
+          builderDiff: changeSnapshot.diff,
+          builderEvidence: builderResult.evidence || null,
+          builderTransport: builderResult.transport || "COMPLETED",
+          builderStatus: builderResult.builderStatus || "MISSING",
+          builderRunId: builderResult.runId || null,
+        };
         retainCheckpoint = Boolean(checkpoint?.supported);
         this.emitSpecialistState();
         this.appendSystem("구현이 완료되었습니다. 검토를 시작하려면 승인해 주세요.");
@@ -1396,15 +1827,99 @@ class ChatRoom extends EventEmitter {
       }
 
       if (resume.phase === "builder_done") {
+        const frozenCheck = this.validateFrozenTask(runInfo);
+        if (!frozenCheck.ok) {
+          return this.holdForFrozenTaskCorruption({
+            runInfo,
+            taskInfo,
+            checkpoint,
+            stage: "review",
+            round: 1,
+            error: frozenCheck.error,
+          });
+        }
+        const stepBuilderResult = {
+          ok: true,
+          runId: resume.builderRunId || null,
+          evidence: resume.builderEvidence || null,
+          transport: resume.builderTransport || "COMPLETED",
+          builderStatus: resume.builderStatus || "MISSING",
+        };
+        const stepEvidence = this.prepareReviewEvidence({
+          runInfo,
+          builderResult: stepBuilderResult,
+          diff: resume.builderDiff || { status: "NO_CHANGES" },
+          round: 1,
+          provider: implementation.agent.id,
+        });
+        if (!stepEvidence.ok) {
+          return this.holdForRecovery({
+            runInfo,
+            taskInfo,
+            checkpoint,
+            stage: "review",
+            round: 1,
+            stopReason: "EVIDENCE_WRITE_FAILED",
+            result: { evidence: stepEvidence.payload },
+            message: "실행 근거를 저장하지 못해 검수를 시작할 수 없습니다. 변경은 그대로 남아 있습니다. 아래에서 다음 처리를 선택해 주세요.",
+          });
+        }
         // Reviewer 실행.
         const reviewResult = await this.scheduleResponse(review.agent, {
-          specialist: { stage: "review", round: 1, maxRounds: 1, frozenTask: frozenTaskMeta(), reviewDiff: resume.builderChanges || "" },
+          specialist: {
+            stage: "review",
+            round: 1,
+            maxRounds: 1,
+            frozenTask: frozenTaskMeta(),
+            reviewDiff: resume.builderChanges || "",
+            changes: resume.builderDiff?.status || "UNSUPPORTED",
+            axes: this.executionAxes({ builderResult: stepBuilderResult, diff: resume.builderDiff }),
+            evidence: stepEvidence.payload,
+          },
           agentConfig: review.agentConfig,
         });
         if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
-        if (!reviewResult?.ok) return this.specialistFail(review, "review", 1, reviewResult);
+        const frozenAfterReview = this.validateFrozenTask(runInfo);
+        if (!frozenAfterReview.ok) {
+          return this.holdForFrozenTaskCorruption({
+            runInfo,
+            taskInfo,
+            checkpoint,
+            stage: "review",
+            round: 1,
+            error: frozenAfterReview.error,
+          });
+        }
+        if (!reviewResult?.ok) {
+          if (reviewResult.stopReason === "PROMPT_BUDGET_EXCEEDED") {
+            return this.holdForRecovery({
+              runInfo,
+              taskInfo,
+              checkpoint,
+              stage: "review",
+              round: 1,
+              stopReason: reviewResult.stopReason,
+              result: reviewResult,
+              message: "검수 프롬프트가 허용된 크기를 넘어 검수를 시작하지 못했습니다. 변경은 그대로 남아 있습니다. 아래에서 다음 처리를 선택해 주세요.",
+            });
+          }
+          return this.specialistFail(review, "review", 1, reviewResult);
+        }
         const contract = this.parseReviewContract(reviewResult.text || "", reviewResult.specialistSignal);
         if (contract.verdict === "PASS") {
+          if (this.strictReviewDiff && resume.builderDiff?.status === "UNSUPPORTED") {
+            const degraded = this.holdForDegradedReview({
+              runInfo,
+              taskInfo,
+              checkpoint,
+              stage: "review",
+              round: 1,
+              changes: resume.builderDiff,
+              review: reviewResult,
+            });
+            retainCheckpoint = Boolean(checkpoint?.supported);
+            return { ...degraded, contract };
+          }
           this.specialistResume = { ...resume, phase: "review_pass", runInfo, checkpoint };
           retainCheckpoint = Boolean(checkpoint?.supported);
           this.emitSpecialistState();
@@ -1437,15 +1952,78 @@ class ChatRoom extends EventEmitter {
       }
 
       if (resume.phase === "review_fix_required") {
+        const frozenCheck = this.validateFrozenTask(runInfo);
+        if (!frozenCheck.ok) {
+          return this.holdForFrozenTaskCorruption({
+            runInfo,
+            taskInfo,
+            checkpoint,
+            stage: "implementation",
+            round: 2,
+            error: frozenCheck.error,
+          });
+        }
         // Builder 보완 후 다시 검토.
         const builderResult = await this.scheduleResponse(implementation.agent, {
           specialist: { stage: "implementation", round: 2, maxRounds: 1, feedback: resume.reviewText || feedback, frozenTask: frozenTaskMeta() },
           agentConfig: implementation.agentConfig,
         });
         if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
-        if (!builderResult?.ok) return this.specialistFail(implementation, "implementation", 2, builderResult);
+        const frozenAfterRevision = this.validateFrozenTask(runInfo);
+        if (!frozenAfterRevision.ok) {
+          return this.holdForFrozenTaskCorruption({
+            runInfo,
+            taskInfo,
+            checkpoint,
+            stage: "implementation",
+            round: 2,
+            error: frozenAfterRevision.error,
+          });
+        }
+        if (!builderResult?.ok) {
+          if (builderResult.stopReason === "PROMPT_BUDGET_EXCEEDED") {
+            return this.holdForRecovery({
+              runInfo,
+              taskInfo,
+              checkpoint,
+              stage: "implementation",
+              round: 2,
+              stopReason: builderResult.stopReason,
+              result: builderResult,
+              message: "구현 프롬프트가 허용된 크기를 넘어 보완을 시작하지 못했습니다. 기존 변경은 그대로 남아 있습니다. 아래에서 다음 처리를 선택해 주세요.",
+            });
+          }
+          return this.specialistFail(implementation, "implementation", 2, builderResult);
+        }
         if (builderResult.builderStatus !== "DONE") return holdForBlocked(2, builderResult, builderResult.builderStatus);
-        this.specialistResume = { ...resume, phase: "builder_done", runInfo, checkpoint, builderChanges: (await describeWorkspaceChanges(workspace)).text };
+        const changeSnapshot = await describeWorkspaceChanges(workspace, {
+          checkpoint,
+          excludePaths: runGeneratedPaths(workspace, runInfo),
+        });
+        if (changeSnapshot.diff.status === "FAILED") {
+          return this.holdForRecovery({
+            runInfo,
+            taskInfo,
+            checkpoint,
+            stage: "review",
+            round: 2,
+            stopReason: "DIFF_COLLECTION_FAILED",
+            result: { changes: changeSnapshot.diff },
+            message: "보완 후 변경(Diff)을 수집하지 못해 검수를 시작할 수 없습니다. 변경은 그대로 남아 있습니다. 아래에서 다음 처리를 선택해 주세요.",
+          });
+        }
+        this.specialistResume = {
+          ...resume,
+          phase: "builder_done",
+          runInfo,
+          checkpoint,
+          builderChanges: changeSnapshot.text,
+          builderDiff: changeSnapshot.diff,
+          builderEvidence: builderResult.evidence || null,
+          builderTransport: builderResult.transport || "COMPLETED",
+          builderStatus: builderResult.builderStatus || "MISSING",
+          builderRunId: builderResult.runId || null,
+        };
         retainCheckpoint = Boolean(checkpoint?.supported);
         this.emitSpecialistState();
         this.appendSystem("보완이 완료되었습니다. 다시 검토를 시작하려면 승인해 주세요.");
@@ -1453,6 +2031,17 @@ class ChatRoom extends EventEmitter {
       }
 
       if (resume.phase === "review_pass") {
+        const frozenCheck = this.validateFrozenTask(runInfo);
+        if (!frozenCheck.ok) {
+          return this.holdForFrozenTaskCorruption({
+            runInfo,
+            taskInfo,
+            checkpoint,
+            stage: "recorder",
+            round: 1,
+            error: frozenCheck.error,
+          });
+        }
         // Recorder 실행 후 완료.
         let recorderResult = null;
         if (recorder?.agent) {
@@ -1477,7 +2066,10 @@ class ChatRoom extends EventEmitter {
       return { ok: false, error: "알 수 없는 단계입니다." };
     } finally {
       this.specialistActive = false;
-      if (!retainCheckpoint) cleanupCheckpoint();
+      if (!retainCheckpoint && !this.specialistBlocked) {
+        cleanupCheckpoint();
+        this.clearRecoveryState();
+      }
       this.emitSpecialistState();
       this.turnQueue.push(...this.deferredTurnQueue.splice(0));
       this.emitTurnState();
@@ -1499,6 +2091,8 @@ class ChatRoom extends EventEmitter {
     // TASK-008: Builder가 만든 실제 변경(Diff)을 수집해 Reviewer에게 전달합니다.
     // 각 Builder 실행 직후 갱신되며, 검토자는 이 Diff를 Frozen Task와 함께 받습니다.
     let builderChanges = "";
+    let changeSnapshot = null;
+    let reviewEvidence = null;
 
     // TASK-007: 실행 계약(Freeze)을 checkpoint보다 먼저 수행합니다.
     // 실행 순서: Task 승인 → Run 생성/Freeze → Checkpoint → Builder
@@ -1513,7 +2107,22 @@ class ChatRoom extends EventEmitter {
           { contentSource: "file", taskPath: taskInfo.relativePath || null, description: "" },
           workspace
         );
+        const frozenCheck = this.validateFrozenTask(runInfo);
+        if (!frozenCheck.ok) {
+          const error = new Error(frozenCheck.error);
+          error.code = "FROZEN_TASK_CORRUPTED";
+          throw error;
+        }
       } catch (error) {
+        if (error?.code === "FROZEN_TASK_CORRUPTED") {
+          return this.holdForFrozenTaskCorruption({
+            runInfo,
+            taskInfo,
+            stage: "implementation",
+            round,
+            error: error.message,
+          });
+        }
         this.appendSystem(`Frozen Task를 만들지 못해 실행을 중단합니다. (${error?.message || "알 수 없는 오류"})`);
         return {
           ok: false,
@@ -1528,9 +2137,42 @@ class ChatRoom extends EventEmitter {
 
     // TASK-006: Builder 실행 직전 workspace 상태를 보존합니다.
     // 지원되지 않는 workspace(git 아님/없음)라면 checkpoint를 만들지 않고 진행합니다.
+    if (this.persistRecovery && !this.persistRecoveryState(this.recoveryFor(null, {
+      status: "checkpointing",
+      runId: runInfo?.runId || null,
+      taskPath: taskInfo?.relativePath || null,
+      stage: "implementation",
+    }))) {
+      this.appendSystem("복구 저널을 저장하지 못해 전문 실행을 시작할 수 없습니다.");
+      return {
+        ok: false,
+        stage: "implementation",
+        needsUserDecision: true,
+        stopReason: "RECOVERY_JOURNAL_WRITE_FAILED",
+      };
+    }
     const checkpoint = this.checkpointEngine
-      ? await this.checkpointEngine.createCheckpoint(this.meta.workspace)
+      ? await this.checkpointEngine.createCheckpoint(this.meta.workspace, {
+          storageRoot: this.checkpointRoot,
+          sessionId: this.sessionId,
+          runId: runInfo?.runId || null,
+        })
       : null;
+    if (this.persistRecovery && !this.persistRecoveryState(this.recoveryFor(checkpoint, {
+      status: "running",
+      runId: runInfo?.runId || null,
+      taskPath: taskInfo?.relativePath || null,
+      stage: "implementation",
+    }))) {
+      if (checkpoint?.supported && this.checkpointEngine) this.checkpointEngine.cleanupCheckpoint(checkpoint);
+      this.appendSystem("복구 저널을 저장하지 못해 전문 실행을 시작할 수 없습니다.");
+      return {
+        ok: false,
+        stage: "implementation",
+        needsUserDecision: true,
+        stopReason: "RECOVERY_JOURNAL_WRITE_FAILED",
+      };
+    }
 
     // 화면에 "어떤 Task revision 기준으로 일하는 중인지" 칩으로 보여주기 위한 값.
     // TASK-003.md → "TASK-003" 형태의 표시용 id를 만듭니다.
@@ -1549,13 +2191,33 @@ class ChatRoom extends EventEmitter {
     const checkpointSupported = Boolean(checkpoint && checkpoint.supported === true);
     const restoreCheckpoint = async () => {
       if (!checkpointSupported || !this.checkpointEngine) return;
-      await this.checkpointEngine.restoreCheckpoint(this.meta.workspace, checkpoint);
-      this.checkpointEngine.cleanupCheckpoint(checkpoint);
+      const result = await this.checkpointEngine.restoreCheckpoint(this.meta.workspace, checkpoint, {
+        preservePaths: runGeneratedPaths(workspace, runInfo),
+      });
+      if (result?.ok) {
+        this.checkpointEngine.cleanupCheckpoint(checkpoint);
+        this.clearRecoveryState();
+        return result;
+      }
+      this.appendSystem("작업 전 상태로 되돌리지 못했습니다. 변경과 복구 저널을 그대로 유지합니다.");
+      return result || { ok: false, reason: "restore-failed" };
     };
     const cleanupCheckpoint = () => {
       if (checkpointSupported && this.checkpointEngine) {
         this.checkpointEngine.cleanupCheckpoint(checkpoint);
       }
+    };
+    const validateForStage = (stage, currentRound) => {
+      const frozenCheck = this.validateFrozenTask(runInfo);
+      if (frozenCheck.ok) return null;
+      return this.holdForFrozenTaskCorruption({
+        runInfo,
+        taskInfo,
+        checkpoint,
+        stage,
+        round: currentRound,
+        error: frozenCheck.error,
+      });
     };
 
     // BLOCKED(A안): 즉시 되돌리지 않고 Builder 작업물을 그대로 둔 채 멈춥니다.
@@ -1574,6 +2236,13 @@ class ChatRoom extends EventEmitter {
         stage: "implementation",
         blockReason: stopReason,
       };
+      this.persistRecoveryState(this.recoveryFor(checkpoint, {
+        status: "blocked",
+        runId: runInfo?.runId || null,
+        taskPath: taskInfo?.relativePath || null,
+        stage: "implementation",
+        blockReason: stopReason,
+      }));
       this.specialistActive = false;
       this.emitSpecialistState();
       this.appendSystem(
@@ -1597,6 +2266,8 @@ class ChatRoom extends EventEmitter {
       };
     };
 
+    const frozenBeforeBuilder = validateForStage("implementation", round);
+    if (frozenBeforeBuilder) return frozenBeforeBuilder;
     let builderResult = await this.scheduleResponse(implementation.agent, {
       specialist: {
         stage: "implementation",
@@ -1609,22 +2280,73 @@ class ChatRoom extends EventEmitter {
       },
       agentConfig: implementation.agentConfig,
     });
+    const frozenAfterBuilder = validateForStage("implementation", round);
+    if (frozenAfterBuilder) return frozenAfterBuilder;
     // Builder 실행이 끝난 뒤 실제 변경분을 수집합니다. (git 아니면 빈 값)
-    builderChanges = (await describeWorkspaceChanges(workspace)).text;
+    changeSnapshot = await describeWorkspaceChanges(workspace, {
+      checkpoint,
+      excludePaths: runGeneratedPaths(workspace, runInfo),
+    });
+    builderChanges = changeSnapshot.text;
+    if (changeSnapshot.diff.status === "FAILED") {
+      return this.holdForRecovery({
+        runInfo,
+        taskInfo,
+        checkpoint,
+        stage: "review",
+        round,
+        stopReason: "DIFF_COLLECTION_FAILED",
+        result: { changes: changeSnapshot.diff },
+        message: "변경(Diff)을 수집하지 못해 검수를 시작할 수 없습니다. 변경은 그대로 남아 있습니다. 아래에서 다음 처리를 선택해 주세요.",
+      });
+    }
     if (requestedGeneration !== this.generation) {
       cleanupCheckpoint();
       return { ok: false, cancelled: true };
     }
     if (!builderResult?.ok) {
+      if (builderResult.stopReason === "PROMPT_BUDGET_EXCEEDED") {
+        return this.holdForRecovery({
+          runInfo,
+          taskInfo,
+          checkpoint,
+          stage: "implementation",
+          round,
+          stopReason: builderResult.stopReason,
+          result: builderResult,
+          message: "구현 프롬프트가 허용된 크기를 넘어 시작하지 못했습니다. 변경은 그대로 남아 있습니다. 아래에서 다음 처리를 선택해 주세요.",
+        });
+      }
       await restoreCheckpoint();
       return this.specialistFail(implementation, "implementation", round, builderResult);
     }
     if (builderResult.builderStatus !== "DONE") {
       return holdForBlocked(round, builderResult, builderResult.builderStatus);
     }
+    reviewEvidence = this.prepareReviewEvidence({
+      runInfo,
+      builderResult,
+      diff: changeSnapshot.diff,
+      round,
+      provider: implementation.agent.id,
+    });
+    if (!reviewEvidence.ok) {
+      return this.holdForRecovery({
+        runInfo,
+        taskInfo,
+        checkpoint,
+        stage: "review",
+        round,
+        stopReason: "EVIDENCE_WRITE_FAILED",
+        result: { evidence: reviewEvidence.payload },
+        message: "실행 근거를 저장하지 못해 검수를 시작할 수 없습니다. 변경은 그대로 남아 있습니다. 아래에서 다음 처리를 선택해 주세요.",
+      });
+    }
 
     // 검토 → (자동 보완) 루프.
     while (true) {
+      const frozenBeforeReview = validateForStage("review", round);
+      if (frozenBeforeReview) return frozenBeforeReview;
       const reviewResult = await this.scheduleResponse(review.agent, {
         specialist: {
           stage: "review",
@@ -1634,6 +2356,11 @@ class ChatRoom extends EventEmitter {
           frozenTask: frozenTaskMeta(),
           // TASK-008: Builder가 실제로 만든 변경(Diff)을 주입합니다.
           reviewDiff: builderChanges,
+          changes: changeSnapshot.diff?.status || "UNSUPPORTED",
+          axes: {
+            ...this.executionAxes({ builderResult, diff: changeSnapshot.diff }),
+          },
+          evidence: reviewEvidence.payload,
         },
         agentConfig: review.agentConfig,
       });
@@ -1642,12 +2369,39 @@ class ChatRoom extends EventEmitter {
         return { ok: false, cancelled: true };
       }
       if (!reviewResult?.ok) {
+        if (reviewResult.stopReason === "PROMPT_BUDGET_EXCEEDED") {
+          return this.holdForRecovery({
+            runInfo,
+            taskInfo,
+            checkpoint,
+            stage: "review",
+            round,
+            stopReason: reviewResult.stopReason,
+            result: reviewResult,
+            message: "검수 프롬프트가 허용된 크기를 넘어 검수를 시작하지 못했습니다. 변경은 그대로 남아 있습니다. 아래에서 다음 처리를 선택해 주세요.",
+          });
+        }
         await restoreCheckpoint();
         return this.specialistFail(review, "review", round, reviewResult);
       }
+      const frozenAfterReview = validateForStage("review", round);
+      if (frozenAfterReview) return frozenAfterReview;
 
       const contract = this.parseReviewContract(reviewResult.text || "", reviewResult.specialistSignal);
-      if (contract.verdict === "PASS") break;
+      if (contract.verdict === "PASS") {
+        if (this.strictReviewDiff && changeSnapshot.diff.status === "UNSUPPORTED") {
+          return this.holdForDegradedReview({
+            runInfo,
+            taskInfo,
+            checkpoint,
+            stage: "review",
+            round,
+            changes: changeSnapshot.diff,
+            review: reviewResult,
+          });
+        }
+        break;
+      }
       if (contract.verdict === "UNKNOWN") {
         await restoreCheckpoint();
         this.appendSystem(
@@ -1699,6 +2453,8 @@ class ChatRoom extends EventEmitter {
       round += 1;
       feedback = reviewResult.text || "검토자가 수정이 필요하다고 판단했습니다.";
       this.appendSystem(`검토 결과 수정 필요 · 자동 보완 ${autoRevisionCount}/${maxAutoRevisions}회`);
+      const frozenBeforeRevision = validateForStage("implementation", round + 1);
+      if (frozenBeforeRevision) return frozenBeforeRevision;
       builderResult = await this.scheduleResponse(implementation.agent, {
         specialist: {
           stage: "implementation",
@@ -1711,18 +2467,76 @@ class ChatRoom extends EventEmitter {
         },
         agentConfig: implementation.agentConfig,
       });
+      const frozenAfterRevision = this.validateFrozenTask(runInfo);
+      if (!frozenAfterRevision.ok) {
+        return this.holdForFrozenTaskCorruption({
+          runInfo,
+          taskInfo,
+          checkpoint,
+          stage: "implementation",
+          round,
+          error: frozenAfterRevision.error,
+        });
+      }
       // 자동 보완 후에도 diff를 다시 수집해 최신 변경분을 검토에 반영합니다.
-      builderChanges = (await describeWorkspaceChanges(workspace)).text;
+      changeSnapshot = await describeWorkspaceChanges(workspace, {
+        checkpoint,
+        excludePaths: runGeneratedPaths(workspace, runInfo),
+      });
+      builderChanges = changeSnapshot.text;
+      if (changeSnapshot.diff.status === "FAILED") {
+        return this.holdForRecovery({
+          runInfo,
+          taskInfo,
+          checkpoint,
+          stage: "review",
+          round,
+          stopReason: "DIFF_COLLECTION_FAILED",
+          result: { changes: changeSnapshot.diff },
+          message: "보완 후 변경(Diff)을 수집하지 못해 검수를 시작할 수 없습니다. 변경은 그대로 남아 있습니다. 아래에서 다음 처리를 선택해 주세요.",
+        });
+      }
       if (requestedGeneration !== this.generation) {
         cleanupCheckpoint();
         return { ok: false, cancelled: true };
       }
       if (!builderResult?.ok) {
+        if (builderResult.stopReason === "PROMPT_BUDGET_EXCEEDED") {
+          return this.holdForRecovery({
+            runInfo,
+            taskInfo,
+            checkpoint,
+            stage: "implementation",
+            round,
+            stopReason: builderResult.stopReason,
+            result: builderResult,
+            message: "구현 프롬프트가 허용된 크기를 넘어 보완을 시작하지 못했습니다. 기존 변경은 그대로 남아 있습니다. 아래에서 다음 처리를 선택해 주세요.",
+          });
+        }
         await restoreCheckpoint();
         return this.specialistFail(implementation, "implementation", round, builderResult);
       }
       if (builderResult.builderStatus !== "DONE") {
         return holdForBlocked(round, builderResult, builderResult.builderStatus);
+      }
+      reviewEvidence = this.prepareReviewEvidence({
+        runInfo,
+        builderResult,
+        diff: changeSnapshot.diff,
+        round,
+        provider: implementation.agent.id,
+      });
+      if (!reviewEvidence.ok) {
+        return this.holdForRecovery({
+          runInfo,
+          taskInfo,
+          checkpoint,
+          stage: "review",
+          round,
+          stopReason: "EVIDENCE_WRITE_FAILED",
+          result: { evidence: reviewEvidence.payload },
+          message: "보완 후 실행 근거를 저장하지 못해 검수를 시작할 수 없습니다. 변경은 그대로 남아 있습니다. 아래에서 다음 처리를 선택해 주세요.",
+        });
       }
     }
 
@@ -1730,9 +2544,12 @@ class ChatRoom extends EventEmitter {
     if (checkpointSupported && this.checkpointEngine) {
       this.checkpointEngine.cleanupCheckpoint(checkpoint);
     }
+    this.clearRecoveryState();
 
     // PASS 후 기록관(선택) 실행 — 실행 블록의 마지막 단계로 블록을 마무리합니다.
     if (recordAfter && recorder?.agent) {
+      const frozenBeforeRecorder = validateForStage("recorder", round);
+      if (frozenBeforeRecorder) return frozenBeforeRecorder;
       recorderResult = await this.scheduleResponse(recorder.agent, {
         specialist: { stage: "recorder", round, maxRounds: 1 },
         agentConfig: recorder.agentConfig,
@@ -1826,7 +2643,10 @@ class ChatRoom extends EventEmitter {
       role: stage,
       agentId: stageAgent?.agent?.id || null,
       model: stageAgent?.agentConfig?.model || stageAgent?.agent?.modelId || "기본",
-      error: result?.error || `${stage} 단계에서 에이전트 실행에 실패했습니다.`
+      error: result?.error || `${stage} 단계에서 에이전트 실행에 실패했습니다.`,
+      ...(result?.stopReason ? { stopReason: result.stopReason } : {}),
+      ...(result?.evidence ? { evidence: result.evidence } : {}),
+      ...(result?.transport ? { transport: result.transport } : {}),
     };
   }
 
@@ -1847,14 +2667,29 @@ class ChatRoom extends EventEmitter {
       return { ok: false, error: "git workspace가 아니어서 자동 복원을 할 수 없습니다." };
     }
 
+    const pendingRunInfo = pending.runId && this.taskManager?.runInfoForId
+      ? this.taskManager.runInfoForId(pending.runId, this.meta.workspace)
+      : null;
+    const preservePaths = pendingRunInfo
+      ? runGeneratedPaths(this.meta.workspace, pendingRunInfo)
+      : [];
     let restored = false;
     if (action === "restore" || action === "discard") {
       if (this.checkpointEngine && pending.checkpoint) {
-        const result = await this.checkpointEngine.restoreCheckpoint(this.meta.workspace, pending.checkpoint);
+        const result = await this.checkpointEngine.restoreCheckpoint(this.meta.workspace, pending.checkpoint, {
+          preservePaths,
+        });
         restored = Boolean(result?.ok);
         if (!restored) {
           return { ok: false, error: "작업 전 상태로 되돌리지 못했습니다. 변경은 그대로 두었습니다." };
         }
+      }
+    }
+    if (pending.blockReason === "FROZEN_TASK_CORRUPTED" && pendingRunInfo && this.taskManager?.markRunInvalid) {
+      // restore가 checkpoint 이후의 invalid marker를 제거할 수 있으므로,
+      // 저널을 해제하기 직전에 단조 invalid 상태를 다시 기록합니다.
+      if (!this.taskManager.markRunInvalid(pendingRunInfo, pending.blockReason)) {
+        return { ok: false, error: "손상된 Run의 무효 상태를 다시 기록하지 못했습니다. 복구 저널을 유지합니다." };
       }
     }
     if (this.checkpointEngine && pending.checkpoint) {
@@ -1862,6 +2697,7 @@ class ChatRoom extends EventEmitter {
     }
 
     this.specialistBlocked = null;
+    this.clearRecoveryState();
     this.emitSpecialistState();
     this.appendSystem(
       action === "keep"

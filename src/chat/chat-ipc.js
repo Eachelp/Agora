@@ -26,6 +26,7 @@ const {
 const { toDiagnostics } = require("../providers/provider-diagnostics");
 const { roomAgentsFromCapabilities } = require("./chat-agents");
 const { ChatRoom, DEFAULT_DISCUSSION_RUN_BUDGET } = require("./chat-room");
+const { MAX_SPECIALIST_PROMPT_CHARS } = require("./chat-prompt");
 const {
   buildAgentInvocation,
   PERMISSION_MODES,
@@ -105,30 +106,67 @@ function createRunLogWriter(store, sessionId, runId) {
   };
 }
 
+function writeBoundedEvidence(store, sessionId, runId, provider, evidence) {
+  if (!store || !sessionId || !runId || !evidence) return true;
+  try {
+    const dir = store.runLogsDir(sessionId);
+    fs.mkdirSync(dir, { recursive: true });
+    const safeId = String(runId).replace(/[^\w.-]/g, "_");
+    const file = path.join(dir, `${safeId}.evidence.json`);
+    const commands = Array.isArray(evidence.commands)
+      ? evidence.commands
+        .filter((entry) => entry?.kind === "command-finished" || Number.isInteger(entry?.exitCode))
+        .slice(0, 20)
+        .map((entry) => ({
+          kind: entry.kind || "command-finished",
+          command: entry.command || null,
+          exitCode: Number.isInteger(entry.exitCode) ? entry.exitCode : null,
+          stdoutTail: String(entry.stdoutTail || "").slice(-2 * 1024),
+          stderrTail: String(entry.stderrTail || "").slice(-2 * 1024),
+          startedAt: Number.isFinite(entry.startedAt) ? entry.startedAt : null,
+          finishedAt: Number.isFinite(entry.finishedAt) ? entry.finishedAt : null,
+          truncated: Boolean(entry.truncated),
+          source: { kind: "provider-event", provider },
+        }))
+      : [];
+    const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify({ schemaVersion: 1, invocationId: runId, provider, commands }, null, 2), "utf8");
+    fs.renameSync(tmp, file);
+    pruneRunLogs(store, sessionId, file);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // 오래된 실행 로그를 정리합니다. 실패해도 실행에는 영향을 주지 않습니다.
 // keepPath로 지정한 파일(방금 기록한 로그)은 항상 보존합니다.
 function pruneRunLogs(store, sessionId, keepPath = null) {
   try {
     const dir = store.runLogsDir(sessionId);
-    const entries = fs
-      .readdirSync(dir)
-      .filter((name) => name.endsWith(".log"))
-      .map((name) => {
-        const full = path.join(dir, name);
-        let mtimeMs = 0;
+    for (const suffix of [".log", ".evidence.json"]) {
+      const entries = fs
+        .readdirSync(dir)
+        .filter((name) => name.endsWith(suffix))
+        .map((name) => {
+          const full = path.join(dir, name);
+          let mtimeMs = 0;
+          try {
+            mtimeMs = fs.statSync(full).mtimeMs;
+          } catch {}
+          return { full, mtimeMs };
+        })
+        .filter((entry) => entry.full !== keepPath)
+        .sort((a, b) => b.mtimeMs - a.mtimeMs);
+      // keepPath가 이미 한 자리를 차지하므로 남길 개수에서 제외합니다.
+      const keepCount = keepPath && keepPath.endsWith(suffix)
+        ? Math.max(0, MAX_RUN_LOG_FILES - 1)
+        : MAX_RUN_LOG_FILES;
+      for (const entry of entries.slice(keepCount)) {
         try {
-          mtimeMs = fs.statSync(full).mtimeMs;
+          fs.rmSync(entry.full, { force: true });
         } catch {}
-        return { full, mtimeMs };
-      })
-      .filter((entry) => entry.full !== keepPath)
-      .sort((a, b) => b.mtimeMs - a.mtimeMs);
-    // keepPath가 이미 한 자리를 차지하므로 남길 개수에서 제외합니다.
-    const keepCount = keepPath ? Math.max(0, MAX_RUN_LOG_FILES - 1) : MAX_RUN_LOG_FILES;
-    for (const entry of entries.slice(keepCount)) {
-      try {
-        fs.rmSync(entry.full, { force: true });
-      } catch {}
+      }
     }
   } catch {}
 }
@@ -499,6 +537,14 @@ function createChatFeature(options) {
         attachmentsDir,
       });
       if (extraLines.length > 0) fullPrompt = `${prompt}\n${extraLines.join("\n")}`;
+      if (specialistStage && fullPrompt.length > MAX_SPECIALIST_PROMPT_CHARS) {
+        const error = new Error(`전문 실행 프롬프트 예산을 초과했습니다 (${fullPrompt.length}/${MAX_SPECIALIST_PROMPT_CHARS}자).`);
+        error.code = "PROMPT_BUDGET_EXCEEDED";
+        return {
+          promise: Promise.resolve({ ok: false, error: error.message, stopReason: error.code }),
+          cancel: () => {},
+        };
+      }
 
       // 원본 출력은 필요할 때만 파일로 흘려보냅니다. 메모리에 전체를 들고 있지 않으므로
       // 아주 긴 실행에서도 진단 정보를 잃지 않습니다.
@@ -538,9 +584,18 @@ function createChatFeature(options) {
                 }
               : null;
           const enrichedResult = diagnostics ? { ...result, output: diagnostics } : result;
+          const persistedEvidence = specialistStage
+            ? writeBoundedEvidence(
+                store,
+                sessionId,
+                runId,
+                agent.id,
+                enrichedResult.evidence || { commands: [] }
+              )
+            : true;
           return enrichedResult.ok
-            ? { ...enrichedResult, deliveries: invocation.deliveries }
-            : enrichedResult;
+            ? { ...enrichedResult, deliveries: invocation.deliveries, evidencePersisted: persistedEvidence }
+            : { ...enrichedResult, evidencePersisted: persistedEvidence };
         }),
         cancel: run.cancel,
       };
@@ -681,6 +736,13 @@ function roomMeta(meta) {
       prepareAgent: options.prepareAgent,
       meta: roomMeta(session.meta),
       checkpoint: options.checkpoint || turnCheckpoint,
+      checkpointRoot: store.checkpointsDir(sessionId),
+      strictReviewDiff: true,
+      initialRecovery: session.meta.pendingRecovery || null,
+      persistRecovery: (pendingRecovery) => {
+        const updated = store.updateMeta(sessionId, { pendingRecovery: pendingRecovery || null });
+        return Boolean(updated);
+      },
       taskManager: options.taskManager || new TaskManager(),
       // TASK-007: Planner가 TASK.md를 만들면 workflow.json에 metadata를 등록합니다.
       // 조기 등록 → 사용자가 승인 전에도 작업 목록에서 확인 가능 (status: todo)

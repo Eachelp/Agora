@@ -1,4 +1,28 @@
 const DEFAULT_MAX_MESSAGES = 40;
+const MAX_SPECIALIST_PROMPT_CHARS = 24 * 1024;
+const MAX_MESSAGE_CHARS = 4 * 1024;
+const MAX_REVIEW_DIFF_CHARS = 12 * 1024;
+const MAX_REVIEW_EVIDENCE_CHARS = 4 * 1024;
+
+function boundedText(value, limit, label) {
+  const text = String(value || "");
+  if (text.length <= limit) return { text, truncated: false, omitted: 0 };
+  const notice = `\n[${label} 일부 생략: 원본 ${text.length}자, 포함 ${Math.max(0, limit - 80)}자]\n`;
+  const budget = Math.max(0, limit - notice.length);
+  const head = Math.ceil(budget * 0.25);
+  const tail = budget - head;
+  return {
+    text: `${text.slice(0, head)}${notice}${text.slice(-tail)}`,
+    truncated: true,
+    omitted: text.length - budget,
+  };
+}
+
+function promptBudgetError(message) {
+  const error = new Error(message);
+  error.code = "PROMPT_BUDGET_EXCEEDED";
+  return error;
+}
 
 function speakerLabel(message, agentsById) {
   if (message.authorType === "user") return message.authorName || "User";
@@ -40,15 +64,20 @@ function buildAgentPrompt({
   extraLines = [],
 }) {
   const isBuilder = specialist?.stage === "implementation";
+  const isCleanReviewer = specialist?.stage === "review";
+  const isSpecialist = Boolean(specialist);
   const agentsById = new Map(agents.map((entry) => [entry.id, entry]));
   const others = agents.filter((entry) => entry.id !== agent.id);
-  const recent = isBuilder ? [] : messages.slice(-maxMessages);
+  const recent = isBuilder || isCleanReviewer ? [] : messages.slice(-maxMessages);
   const omitted = messages.length - recent.length;
 
   const lines = [];
   if (isBuilder) {
     lines.push("당신은 Agora 전문 실행의 Builder입니다. 이 호출에서 실제 구현을 수행하세요.");
-    lines.push("그룹 채팅 참가자처럼 말하거나 다른 에이전트를 호출하지 말고, 아래 실행 계약과 현재 단계 지침만 따르세요.");
+    lines.push("아래 실행 계약과 현재 단계 지침만 따르세요. 다른 에이전트에게 구현을 위임하거나 호출하지 마세요.");
+  } else if (isCleanReviewer) {
+    lines.push("당신은 Agora 전문 실행의 clean-room 구현 Reviewer입니다.");
+    lines.push("대화 transcript, 참가자 목록, Builder의 자기보고는 보지 않습니다. Project Rules, Frozen Task, checkpoint 이후 변경, 구조화된 실행 상태와 evidence만 근거로 판정하세요.");
   } else {
     lines.push(
       `당신은 여러 AI 코딩 에이전트가 사용자와 함께 있는 그룹 채팅의 참가자 "@${agent.id}"(${agent.name})입니다.`
@@ -84,21 +113,21 @@ function buildAgentPrompt({
     lines.push("=== 프로젝트 현재 규칙 끝 ===");
     lines.push("- 이 규칙은 반드시 지키세요.");
   }
-  const context = isBuilder ? "" : String(projectContext || "").trim();
+  const context = isBuilder || isCleanReviewer ? "" : String(projectContext || "").trim();
   if (context) {
     lines.push("");
     lines.push("=== 프로젝트 공통 맥락 ===");
     lines.push(context);
     lines.push("=== 프로젝트 공통 맥락 끝 ===");
   }
-  const workflow = isBuilder ? "" : String(workflowContext || "").trim();
+  const workflow = isBuilder || isCleanReviewer ? "" : String(workflowContext || "").trim();
   if (workflow) {
     lines.push("");
     lines.push("=== 확정된 결정과 진행 중 작업 ===");
     lines.push(workflow);
     lines.push("=== 확정된 결정과 진행 중 작업 끝 ===");
   }
-  const memoryFull = isBuilder ? "" : String(memoryContext || "").trim();
+  const memoryFull = isBuilder || isCleanReviewer ? "" : String(memoryContext || "").trim();
   if (memoryFull) {
     const usedSoFar = rules.length + context.length + workflow.length;
     const budget = Math.max(0, MAX_CONTEXT_CHARS - usedSoFar);
@@ -144,7 +173,7 @@ function buildAgentPrompt({
     lines.push(`현재 단계: ${stageLabels[specialist.stage] || specialist.stage} · 반복 ${specialist.round || 1}/${specialist.maxRounds || 3}`);
     if (specialist.feedback) {
       lines.push("이전 단계에서 전달된 내용:");
-      lines.push(specialist.feedback);
+      lines.push(boundedText(specialist.feedback, MAX_REVIEW_EVIDENCE_CHARS, "이전 피드백").text);
     }
     // TASK-007: Builder/Reviewer는 실행 계약(Task Contract)을 Frozen Task로 받습니다.
     // 이 계약은 실행 시점에 동결된 불변 요구사항이며, 수정·삭제·이동할 수 없습니다.
@@ -153,7 +182,7 @@ function buildAgentPrompt({
       lines.push("=== 실행 계약 (Frozen Task) ===");
       lines.push(`Run: ${specialist.frozenTask.runId || "(unknown)"}`);
       lines.push("이 계약은 현재 실행의 유일한 요구사항 기준입니다. 아래 내용이 현재 Task의 기준입니다.");
-      lines.push(specialist.frozenTask.content);
+      lines.push(String(specialist.frozenTask.content || ""));
       lines.push("=== 실행 계약 끝 ===");
     }
     if (specialist.stage === "planner") {
@@ -181,14 +210,34 @@ function buildAgentPrompt({
       lines.push("- 계약(Task) 변경이 필요하면 직접 수정하지 말고 `STATUS: BLOCKED`로 반환하세요.");
       lines.push("- 완료하면 `STATUS: DONE`, 막혀서 진행할 수 없으면 `STATUS: BLOCKED`를 응답 안에 넣으세요.");
     } else if (specialist.stage === "review") {
-      lines.push("- 구현 결과를 요구사항·현재 작업공간·대화 맥락과 대조하세요.");
+      lines.push("- 대화 transcript와 Builder의 자기보고는 검수 근거로 제공되지 않습니다. 아래 구조화된 사실과 현재 작업공간만 사용하세요.");
+      lines.push("- 먼저 회귀·안전성을 검토하고, 두 번째로 계약 충족 여부를 검토하세요.");
       lines.push("- 검수 기준은 현재 TASK.md가 아니라 위 '실행 계약 (Frozen Task)'입니다. 이 계약과 실제 변경(Diff)·테스트 결과를 대조하세요.");
-      // TASK-008: Builder가 실제로 만든 변경(Diff)을 주입합니다.
-      if (specialist.reviewDiff) {
+      if (specialist.axes) {
         lines.push("");
-        lines.push("=== 실제 변경 (Builder Diff) ===");
-        lines.push(specialist.reviewDiff);
+        lines.push("=== 실행 상태 축 ===");
+        for (const key of ["transport", "declaration", "changes", "execution"]) {
+          lines.push(`${key}: ${specialist.axes[key] || "UNAVAILABLE"}`);
+        }
+        lines.push("=== 실행 상태 축 끝 ===");
+      }
+      // TASK-008: Builder가 실제로 만든 변경(Diff)을 주입합니다.
+      if (Object.prototype.hasOwnProperty.call(specialist, "reviewDiff")) {
+        lines.push("");
+        lines.push("=== 실제 변경 (Builder Diff) · checkpoint 이후 Git-visible ===");
+        lines.push(boundedText(specialist.reviewDiff, MAX_REVIEW_DIFF_CHARS, "Diff").text);
         lines.push("=== 실제 변경 끝 ===");
+      }
+      if (specialist.evidence) {
+        lines.push("");
+        lines.push("=== 실행 근거 (Evidence) ===");
+        const evidence = boundedText(
+          typeof specialist.evidence === "string" ? specialist.evidence : JSON.stringify(specialist.evidence),
+          MAX_REVIEW_EVIDENCE_CHARS,
+          "Evidence"
+        );
+        lines.push(evidence.text);
+        lines.push("=== 실행 근거 끝 ===");
       }
       lines.push("- 수정이 필요하면 구체적인 파일·문제·수정 방향을 적으세요.");
       lines.push("- 구현자가 작업을 다른 에이전트에게 넘기려 하거나 권한이 없어 실제 변경을 못 했다면, 통과시키지 말고 구현 단계로 되돌리세요.");
@@ -219,19 +268,37 @@ function buildAgentPrompt({
       lines.push("- 전달받은 메시지를 출발점으로 후속 작업을 이어가세요.");
     }
   }
-  if (!isBuilder) {
+  if (!isBuilder && !isCleanReviewer) {
     lines.push("");
     lines.push("=== 대화 ===");
     if (omitted > 0) lines.push(`(이전 메시지 ${omitted}개 생략)`);
     for (const message of recent) {
-      lines.push(`[${speakerLabel(message, agentsById)}] ${message.text}${attachmentSuffix(message)}`);
+      // Professional payload만 개별 메시지 예산을 적용한다. 일반 채팅·토론은
+      // 기존과 동일하게 원문 transcript를 provider에 전달한다.
+      const bounded = isSpecialist
+        ? boundedText(message.text, MAX_MESSAGE_CHARS, "메시지")
+        : { text: String(message.text || "") };
+      lines.push(`[${speakerLabel(message, agentsById)}] ${bounded.text}${attachmentSuffix(message)}`);
     }
     lines.push("=== 대화 끝 ===");
   }
   for (const line of extraLines) lines.push(line);
   lines.push("");
   lines.push(isBuilder ? "현재 단계의 구현 결과와 선언을 반환하세요." : `지금 "@${agent.id}"로서 답할 차례입니다.`);
-  return lines.join("\n");
+  const prompt = lines.join("\n");
+  if (isSpecialist && prompt.length > MAX_SPECIALIST_PROMPT_CHARS) {
+    throw promptBudgetError(
+      `전문 실행 프롬프트 예산을 초과했습니다 (${prompt.length}/${MAX_SPECIALIST_PROMPT_CHARS}자).`
+    );
+  }
+  return prompt;
 }
 
-module.exports = { buildAgentPrompt, DEFAULT_MAX_MESSAGES };
+module.exports = {
+  buildAgentPrompt,
+  DEFAULT_MAX_MESSAGES,
+  MAX_SPECIALIST_PROMPT_CHARS,
+  MAX_MESSAGE_CHARS,
+  MAX_REVIEW_DIFF_CHARS,
+  MAX_REVIEW_EVIDENCE_CHARS,
+};

@@ -579,6 +579,30 @@ test("전문 모드 실행 중에는 @멘션 호출이 꺼진다", async () => {
   assert.match(implementationPrompt, /위임하지 마세요/);
 });
 
+test("Professional Mode 변경 후에도 일반 채팅은 기존 권한·transcript·호출 경계를 유지한다", async () => {
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { permissionMode: "workspace-write" },
+    runAgent: ({ agent, prompt, permissionMode, specialistStage, autoApprove }) => {
+      calls.push({ agentId: agent.id, prompt, permissionMode, specialistStage, autoApprove });
+      return { promise: Promise.resolve({ ok: true, text: "일반 답변" }), cancel: () => {} };
+    },
+  });
+
+  room.sendUserMessage("@codex 일반 채팅으로 답해줘");
+  await settle(room);
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].permissionMode, "workspace-write");
+  assert.equal(calls[0].specialistStage, null);
+  assert.equal(calls[0].autoApprove, false);
+  assert.match(calls[0].prompt, /=== 대화 ===/);
+  assert.match(calls[0].prompt, /\[User\] @codex 일반 채팅으로 답해줘/);
+  assert.match(calls[0].prompt, /그룹 채팅의 참가자/);
+  assert.doesNotMatch(calls[0].prompt, /clean-room/);
+});
+
 test("Builder STATUS가 누락되면 DONE이 아니라 사용자 결정으로 멈춘다", async () => {
   const calls = [];
   const room = new ChatRoom({
@@ -927,6 +951,34 @@ test("자율 토론은 차례로 말하고 결론 신호에서 즉시 끝난다"
   const notices = room.messages.filter((message) => message.authorType === "system");
   assert.match(notices[0].text, /토론 시작/);
   assert.match(notices.at(-1).text, /합의하거나 결론/);
+});
+
+test("Professional Mode 변경 후에도 자율 토론은 기존 권한과 앞선 transcript를 전달한다", async () => {
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { permissionMode: "workspace-read" },
+    runAgent: ({ agent, prompt, permissionMode, specialistStage }) => {
+      calls.push({ agentId: agent.id, prompt, permissionMode, specialistStage });
+      const text = agent.id === "claude"
+        ? "첫 토론 의견\n[[CODEPET_DISCUSSION:CONTINUE]]"
+        : "두 번째 토론 의견\n[[CODEPET_DISCUSSION:CONCLUDE]]";
+      return { promise: Promise.resolve({ ok: true, text }), cancel: () => {} };
+    },
+  });
+
+  const result = await room.startDiscussion({ rounds: 1 });
+  await settle(room);
+
+  assert.equal(result.ok, true);
+  assert.equal(calls.length, 2);
+  for (const call of calls) {
+    assert.equal(call.permissionMode, "workspace-read");
+    assert.equal(call.specialistStage, null);
+    assert.match(call.prompt, /=== 대화 ===/);
+    assert.doesNotMatch(call.prompt, /clean-room/);
+  }
+  assert.match(calls[1].prompt, /첫 토론 의견/);
 });
 
 test("모든 참가자가 새 내용 없이 동의/패스하면 토론을 끝낸다", async () => {

@@ -101,15 +101,17 @@ test("토론 컨텍스트가 자율 종료 신호와 함께 들어간다", () =>
   assert.match(prompt, /CODEPET_DISCUSSION:CONCLUDE/);
 });
 
-test("전문 모드 구현·검토·기록 지침과 누적 요약이 프롬프트에 들어간다", () => {
+test("전문 모드 검토는 clean-room 지침과 계약 검수 지침을 포함한다", () => {
   const prompt = buildAgentPrompt({
     agent: AGENTS[1],
     agents: AGENTS,
     messages: [message("user", "확정된 작업", "user")],
-    memoryContext: "사람이 정한 규칙",
+    memoryContext: "Builder transcript와 무관한 메모리",
     specialist: { stage: "review", round: 2, maxRounds: 3, feedback: "테스트 결과를 확인하세요." },
   });
-  assert.match(prompt, /프로젝트 누적 요약/);
+  assert.match(prompt, /clean-room/);
+  assert.doesNotMatch(prompt, /프로젝트 누적 요약/);
+  assert.doesNotMatch(prompt, /Builder transcript와 무관한 메모리/);
   assert.match(prompt, /현재 단계: 검토 · 반복 2\/3/);
   assert.match(prompt, /테스트 결과를 확인하세요/);
   assert.match(prompt, /VERDICT: PASS/);

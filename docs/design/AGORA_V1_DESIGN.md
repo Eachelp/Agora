@@ -1,7 +1,7 @@
 # Ἀγορά (Agora) — V1 Multi-Agent & Professional Execution Design
 
 > 상태: **확정안 (v1 기준)**
-> 기준 커밋: `61d3c33` (이후 미커밋 변경 포함: 독립 발언 구현)
+> 기준 커밋: `28e4764` (전문 실행 신뢰성 강화는 이후 Release 1·2 변경으로 반영)
 > 작성일: 2026-08-10
 > 이 문서는 Agora의 **Multi-Agent 대화, Handoff, Professional Execution 모드 설계의 단일 기준**이다. (메인 윈도우 UI, 런타임/프로바이더 연동 등 제품 전반 명세는 별도 Baseline 문서와 함께 작동한다.)
 
@@ -19,6 +19,16 @@ v1에서 확정된 사용자 흐름은 네 가지 실행 방식으로 나뉜다.
 - 전문 실행 (Professional Mode) — Planner / Builder / Reviewer / Recorder
 
 본 문서는 Role Contract(a.i.)와 Execution Control(프로그램)이라는 두 계층을 분리해 설계한다.
+
+### 현재 구현 기준
+
+전문 실행의 현재 구현은 이 문서의 계약을 다음처럼 fail-closed로 강제한다.
+
+- 일반 채팅·토론은 기존 세션 권한, transcript 전달, provider invocation 경계를 그대로 사용한다. 전문 단계의 cap은 `context.specialist.stage`가 있을 때만 적용한다.
+- Planner/기획 검수는 `workspace-read`, Builder만 `workspace-write`, 구현 Reviewer는 `workspace-read`, Recorder는 `chat`으로 제한한다. 실제 CLI 인자와 IPC 경계에서 같은 cap을 다시 적용한다.
+- Builder의 `STATUS` 누락·모호성은 성공으로 승격하지 않고 사용자 결정으로 보낸다. Frozen Task, checkpoint 이후 변경, 실행 evidence가 없거나 손상되면 자동 PASS를 금지한다.
+- Reviewer는 대화 transcript와 Builder 자기보고 없이 Frozen Task·변경·구조화된 실행 상태·bounded evidence를 먼저 보고 `회귀·안전성` 다음 `계약 충족` 순서로 판정한다.
+- checkpoint와 복구 저널은 세션 저장소 아래에 두고, 재시작 시 자동 재개하지 않고 keep/restore/discard를 제공한다.
 
 ---
 
@@ -54,7 +64,7 @@ v1에서 확정된 사용자 흐름은 네 가지 실행 방식으로 나뉜다.
 
 - 전문 실행은 `실행 중 / 승인 대기 / BLOCKED`를 대화별 상태로 공개한다. 창을 다시 열거나 다른 대화로 이동해도 현재 대화의 상태만 복원한다.
 - 이 세 상태에서는 일반 채팅과 Handoff를 renderer와 backend 양쪽에서 차단한다. 따라서 일반 응답이 Reviewer·Recorder 맥락에 섞이지 않는다.
-- 승인 대기 단계에서는 **전문 실행 취소**를 제공한다. 이미 만들어진 Builder 변경은 유지하고, 임시 Checkpoint만 정리한다.
+- 승인 대기 단계에서는 **전문 실행 취소**를 제공한다. 이미 만들어진 Builder 변경은 유지하고, 해당 실행의 checkpoint만 정리한다.
 - 빠른 실행과 제한 자동 실행은 모두 `FIX_REQUIRED + Scope: IN + 남은 횟수`일 때만 자동 보완한다. 자동 보완 Builder는 같은 Frozen Task와 Reviewer 피드백을 함께 받는다.
 
 ### 2.1 단계별 실행 (Step-by-step)
@@ -380,9 +390,9 @@ Builder가 `BLOCKED` 상태로 STOP했을 때, 프로그램은 사용자에게 �
 
 `@all` 요청 시 **같은 턴의 다른 AI 답변(형제 메시지)을 서로 전달하지 않고**, 동일한 전(前) 턴 맥락 스냅샷만 보고 각각 독립 응답한다.
 
-- **구현 지점**: [chat-room.js](../../src/chat/chat-room.js#L141) `independent` 플래그, [chat-room.js](../../src/chat/chat-room.js#L379) `promptMessages(promptLimit, independent)`, [chat-prompt.js](../../src/chat/chat-prompt.js#L113) broadcast 분기.
+- **구현 지점**: [chat-room.js](../../src/chat/chat-room.js) `independent` 플래그와 `promptMessages(promptLimit, independent)`, [chat-prompt.js](../../src/chat/chat-prompt.js) broadcast 분기.
 - **UI**: [chat.html](../../src/chat.html#L118) `@all 응답 방식` 토글 (이어 발언 / 독립 발언).
-- **상태**: 현재 미커밋 작업으로 구현되어 있으며, 커밋 예정.
+- **상태**: 구현 완료. 일반 채팅·토론의 순차 transcript 전달은 그대로 유지한다.
 
 ---
 
@@ -434,14 +444,15 @@ Retry 또는 Restore 시:
 **v1 구현 (`src/agora/turn-checkpoint.js`)**
 
 - workspace가 **git 저장소일 때만** 동작한다. git이 아니거나 경로가 없으면 안전하게 건너뛴다(`supported: false`).
-- checkpoint 생성: Builder 실행 직전에 `git diff --binary HEAD`(tracked 변경분)와 실행 전부터 있던 untracked 파일 목록·내용을 임시 폴더에 보존한다.
-- 복원: tracked 파일을 `git checkout -- .`로 HEAD에 되돌린 뒤 checkpoint 시점 diff를 재적용해 **사용자 사전 변경은 보존**한다. Builder가 새로 만든 untracked 파일만 제거하고, 실행 전부터 있던 untracked 파일은 checkpoint 내용으로 되살린다.
+- checkpoint 생성: Builder 실행 직전에 세션 저장소 `.agora/sessions/<sessionId>/checkpoints/<checkpointId>/`에 manifest, `git stash create` baseline SHA, `tracked.patch`, untracked 파일 목록·내용을 원자적으로 보존한다. checkpoint ID는 내부 생성 opaque ID이며 절대 경로를 저널에 저장하지 않는다.
+- 복원: tracked 파일을 `git checkout -- .`로 HEAD에 되돌린 뒤 checkpoint 시점 diff를 재적용해 **사용자 사전 변경은 보존**한다. Builder가 새로 만든 untracked 파일만 제거하고, 실행 전부터 있던 untracked 파일은 checkpoint 내용으로 되살린다. Run의 `task.md`, `task-hash`, `evidence.json`, `invalid.json`은 복원 시 보존한다.
 - 전체 reset(작업 영역 전체를 HEAD로 되돌리기)은 사용하지 않는다.
-- git 저장소 판별은 `.git` 항목 존재 여부로 동기 확인하여, 일반(비-git) workspace에서는 git 프로세스를 실행하지 않는다.
+- restore와 cleanup은 동일한 안전 경로 해석기를 사용하며 manifest/session/run/workspace 일치와 `..` 탈출을 검증한다. 복구 저널은 세션 meta v2의 `pendingRecovery`에 두고 앱 재시작 후 자동 재개하지 않는다.
+- git 저장소 판별은 `.git` 항목 존재 여부로 동기 확인하여, 일반(비-git) workspace에서는 git 프로세스를 실행하지 않는다. non-Git 검수는 현재 파일을 읽을 수 있지만 PASS를 자동 완료하지 않고 `DIFF_UNAVAILABLE` 사용자 확인으로 보낸다.
 
 ---
 
-## 9. Capability 분리 (장기, v1에서는 축소)
+## 9. Capability 분리 (현재 permission cap)
 
 Agora 에이전트는 실행 가능 능력이 서로 다르다(CLI 워크스페이스 vs 채팅 응답). 모델 유형(CLI/Chat)으로 고정하지 않고 **Capability**로 분리한다.
 
@@ -459,7 +470,17 @@ runTests           : true/false
 selfExploreWorkspace : true/false
 ```
 
-> **v1 범위**: 세분 capability 체계를 지금 과하게 만들지 않는다. 다만 설계 문서에 "미래에 Capability로 분리할 지점"만 표시해두고, 현재는 permission 모드(chat/workspace-read/workspace-write)와 CLI/API 전송 방식을 그대로 사용한다.
+현재는 다음 stage cap을 사용한다. 일반 채팅·토론에는 적용하지 않는다.
+
+```text
+planner         → workspace-read
+plan_review     → workspace-read
+implementation  → workspace-write
+review          → workspace-read
+recorder        → chat
+```
+
+세분 capability(예: 테스트 실행 가능 여부)는 향후 provider smoke 검증과 함께 확장한다.
 
 ---
 
@@ -509,10 +530,11 @@ TASK-011  v1 패키징·릴리스 검증 — Windows portable build 검증 완�
 
 ## 13. 테스트 기준
 
-- 전체 `npm test` 통과 (기준: 423 pass / 0 fail)
+- 전체 `npm test` 통과 (현재 기준: 448 pass / 0 fail)
 - 독립 발언 테스트 추가
 - 전문 모드 시그널 파싱 테스트 (PASS/FIX_REQUIRED/UNKNOWN, scope, stopReason)
 - 순차 모드·토론 회귀 테스트 통과
+- Professional Mode 변경 후 일반 채팅·토론의 권한, transcript, provider invocation 회귀 테스트 통과
 - 데이터 손실 방지: 읽기 전용 강제, 저장 실패 롤백 유지
 
 ---
@@ -520,7 +542,7 @@ TASK-011  v1 패키징·릴리스 검증 — Windows portable build 검증 완�
 ## 14. v1 범위 밖 (보류)
 
 - 브로드캐스트 응답 순서 무작위화
-- "채팅에 어울리게 간결히 답하세요" 프롬프트 변경
+- Builder의 그룹채팅 프레이밍·transcript·간결 지시 제거는 현재 구현에 반영됨. 일반 채팅 프롬프트는 변경하지 않는다.
 - 총괄 PM 에이전트, 작업 목록 전체 UI 개편, 자동 연속 실행
 - 세분 Capability 시스템 (v1에서는 기본 permission 모드 사용)
 - Handoff 전체 Intent 집합 (v1은 검토 요청/이어서 작업만)

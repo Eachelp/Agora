@@ -5,7 +5,7 @@ const { defaultAgoraHome } = require("../app-paths");
 
 // .agora 저장소 스키마 버전. 더 새로운 버전이 만든 데이터를 만나면
 // 데이터를 깨뜨리지 않도록 읽기 전용으로 동작합니다.
-const STORE_SCHEMA_VERSION = 1;
+const STORE_SCHEMA_VERSION = 2;
 const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const AUTO_TITLE_MAX_LENGTH = 30;
 const DEFAULT_SESSION_TITLE = "새 채팅";
@@ -113,6 +113,10 @@ class ChatStore {
   // transcript와 분리해 두어야 대화 기록 형식을 건드리지 않고 큰 로그를 보관할 수 있습니다.
   runLogsDir(id) {
     return path.join(this.sessionDir(id), "run-logs");
+  }
+
+  checkpointsDir(id) {
+    return path.join(this.sessionDir(id), "checkpoints");
   }
 
   transcriptPath(id) {
@@ -257,6 +261,7 @@ class ChatStore {
       permissionMode: input.permissionMode || "chat",
       agents: input.agents || {},
       discussion: { maxTurns: 9, ...(input.discussion || {}) },
+      pendingRecovery: input.pendingRecovery || null,
       status: "idle",
     };
     fs.mkdirSync(this.attachmentsDir(id), { recursive: true });
@@ -272,14 +277,28 @@ class ChatStore {
     if (Number(meta.schemaVersion) > STORE_SCHEMA_VERSION) {
       return { ...meta, readOnly: true };
     }
-    return meta;
+    // v1 세션은 읽을 때만 v2 필드를 보강합니다. 원본을 즉시 덮어쓰지 않아
+    // 구버전 앱이 읽을 수 있는 저장소를 유지합니다.
+    return {
+      ...meta,
+      pendingRecovery: meta.pendingRecovery || null,
+    };
   }
 
   updateMeta(id, patch) {
     const meta = this.readMeta(id);
     if (!meta) return null;
     if (this.readOnly || meta.readOnly) return meta;
-    const next = { ...meta, ...patch, id, updatedAt: this.now() };
+    const next = {
+      ...meta,
+      ...patch,
+      id,
+      schemaVersion: STORE_SCHEMA_VERSION,
+      pendingRecovery: Object.prototype.hasOwnProperty.call(patch, "pendingRecovery")
+        ? patch.pendingRecovery
+        : (meta.pendingRecovery || null),
+      updatedAt: this.now(),
+    };
     writeJsonAtomic(this.metaPath(id), next);
     const entryIndex = this.index.sessions.findIndex((entry) => entry.id === id);
     if (entryIndex >= 0) this.index.sessions[entryIndex] = this.indexEntryFrom(next);

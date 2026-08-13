@@ -1,23 +1,16 @@
-// TASK-006 Turn Checkpoint — 전문 모드 Builder 실행 직전 상태를 보존하고
-// 실패/중단 시 그 상태로 안전하게 복원합니다.
-//
-// 설계 원칙 (AGORA_V1_DESIGN.md §8.3):
-// - workspace가 git 저장소일 때만 동작합니다. git이 아니거나 경로가 없으면
-//   안전하게 건너뛰고 { supported: false }를 반환합니다.
-// - workspace 전체를 HEAD로 되돌리는 destructive reset은 사용하지 않습니다.
-//   대신 checkpoint 시점의 diff와 untracked 파일을 보존해 두고,
-//   복원 시 그 시점(사용자 사전 변경 포함)으로 정확히 되돌립니다.
-// - Builder가 새로 만든 untracked 파일은 제거하고, 실행 전부터 있던
-//   untracked 파일은 보존합니다.
+// 전문 실행 직전의 workspace 상태를 보존하고, 중단 시 안전하게 되돌립니다.
+// checkpoint의 영속 위치와 경로 해석은 이 모듈이 단일 책임으로 맡습니다.
 "use strict";
 
 const { execFile } = require("node:child_process");
 const { promisify } = require("node:util");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
+const crypto = require("node:crypto");
 
 const execFileAsync = promisify(execFile);
+const CHECKPOINT_SCHEMA_VERSION = 1;
+const CHECKPOINT_ID_PATTERN = /^cp-[a-z0-9-]{8,80}$/;
 
 async function git(root, args) {
   const { stdout } = await execFileAsync("git", args, {
@@ -38,109 +31,237 @@ function resolveWorkspace(root) {
   }
 }
 
-// workspace가 git 저장소인지 프로세스 spawn 없이 판별합니다.
-// .git 항목(디렉터리 또는 worktree 파일)이 있으면 git 저장소로 봅니다.
-// v1의 "가장 단순하고 안전한 방법"에 따라, .git이 없으면 git이 아니므로
-// git 명령을 실행하지 않고 안전하게 건너뜁니다.
 function isGitRepo(root) {
-  return fs.existsSync(path.join(root, ".git"));
+  return Boolean(root && fs.existsSync(path.join(root, ".git")));
 }
 
-// Builder 실행 직전 workspace 상태를 임시 폴더에 보존합니다.
-async function createCheckpoint(workspaceRoot) {
-  const repo = resolveWorkspace(workspaceRoot);
-  if (!repo || !isGitRepo(repo)) {
-    return { supported: false };
-  }
+function pathKey(value) {
+  return String(value || "").replace(/[\\/]+/g, path.sep);
+}
 
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agora-checkpoint-"));
+function isWithin(root, target) {
+  const normalize = (value) => process.platform === "win32" ? value.toLowerCase() : value;
+  const base = normalize(path.resolve(root));
+  const candidate = normalize(path.resolve(target));
+  return candidate === base || candidate.startsWith(`${base}${path.sep}`);
+}
+
+// git path 목록은 workspace 기준의 상대 경로만 허용합니다. 절대 경로와
+// .. 탈출을 거부해야 restore/cleanup의 입력이 불신 상태에서도 안전합니다.
+function safeRelativePath(value) {
+  const raw = String(value || "");
+  if (!raw || raw.includes("\0") || path.isAbsolute(raw) || /^[A-Za-z]:[\\/]/.test(raw)) return null;
+  const normalized = path.normalize(raw);
+  if (!normalized || normalized === "." || normalized === ".." || normalized.startsWith(`..${path.sep}`)) {
+    return null;
+  }
+  return normalized;
+}
+
+function parseRelativeList(raw) {
+  const values = String(raw || "").split(/\r?\n/).filter(Boolean);
+  const result = [];
+  for (const value of values) {
+    const safe = safeRelativePath(value);
+    if (!safe) return null;
+    result.push(safe);
+  }
+  return result;
+}
+
+function atomicJson(file, value) {
+  const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(value, null, 2), "utf8");
+  fs.renameSync(tmp, file);
+}
+
+function checkpointId() {
+  return `cp-${crypto.randomBytes(12).toString("hex")}`;
+}
+
+function defaultStorageRoot(repo) {
+  // Product 호출은 항상 ChatStore의 session checkpoint root를 전달합니다.
+  // 직접 호출하는 legacy/test API도 OS 임시 폴더를 사용하지 않고 workspace의
+  // gitignore 대상 .agora 아래에 둡니다. 실제 제품 경로는 sessionId별 root입니다.
+  return path.join(repo, ".agora", "checkpoints");
+}
+
+function descriptorRoot(checkpoint, options = {}) {
+  return options.storageRoot || checkpoint?.storageRoot || checkpoint?.checkpointRoot || null;
+}
+
+function readManifest(dir) {
   try {
-    // tracked 파일의 변경분(사용자 사전 변경 포함)을 diff로 보존.
+    const manifest = JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8"));
+    return manifest && typeof manifest === "object" ? manifest : null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveCheckpoint(checkpoint, options = {}) {
+  if (!checkpoint || checkpoint.supported !== true) return { ok: false, reason: "unsupported" };
+  const id = String(checkpoint.checkpointId || "");
+  if (!CHECKPOINT_ID_PATTERN.test(id)) return { ok: false, reason: "invalid-checkpoint-id" };
+  const root = descriptorRoot(checkpoint, options);
+  if (!root) return { ok: false, reason: "missing-checkpoint-root" };
+  const checkpointRoot = path.resolve(root);
+  const dir = path.resolve(checkpointRoot, id);
+  if (!isWithin(checkpointRoot, dir) || path.basename(dir) !== id || !fs.existsSync(dir)) {
+    return { ok: false, reason: "checkpoint-outside-root" };
+  }
+  const manifest = readManifest(dir);
+  if (!manifest || manifest.schemaVersion !== CHECKPOINT_SCHEMA_VERSION || manifest.checkpointId !== id) {
+    return { ok: false, reason: "manifest-invalid" };
+  }
+  if (checkpoint.sessionId != null && manifest.sessionId !== checkpoint.sessionId) {
+    return { ok: false, reason: "session-mismatch" };
+  }
+  if (checkpoint.runId != null && manifest.runId !== checkpoint.runId) {
+    return { ok: false, reason: "run-mismatch" };
+  }
+  if (!manifest.workspace || !path.isAbsolute(manifest.workspace)) {
+    return { ok: false, reason: "workspace-invalid" };
+  }
+  return { ok: true, dir, manifest, checkpointRoot };
+}
+
+async function createCheckpoint(workspaceRoot, options = {}) {
+  const repo = resolveWorkspace(workspaceRoot);
+  if (!repo || !isGitRepo(repo)) return { supported: false };
+
+  const storageRoot = path.resolve(options.storageRoot || defaultStorageRoot(repo));
+  const id = checkpointId();
+  const dir = path.join(storageRoot, id);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const stashOutput = await git(repo, ["stash", "create"]);
+    let baselineSha = String(stashOutput || "").trim();
+    if (!baselineSha) baselineSha = String(await git(repo, ["rev-parse", "HEAD"])).trim();
     const diffOut = await git(repo, ["diff", "--binary", "HEAD"]);
     fs.writeFileSync(path.join(dir, "tracked.patch"), diffOut, "utf8");
 
-    // 실행 전부터 존재하던 untracked 파일을 원본 내용 그대로 보존.
     const untrackedOut = await git(repo, ["ls-files", "--others", "--exclude-standard", "-z"]);
     const untrackedPaths = String(untrackedOut || "").split("\0").filter(Boolean);
+    const safePaths = [];
     for (const rel of untrackedPaths) {
-      const src = path.join(repo, rel);
-      const dest = path.join(dir, "untracked", rel);
+      const safe = safeRelativePath(rel);
+      if (!safe || !isWithin(repo, path.resolve(repo, safe))) throw new Error("checkpoint untracked 경로가 올바르지 않습니다.");
+      const src = path.resolve(repo, safe);
+      // 저장소가 자체 checkpoint 디렉터리를 ignore하지 않는 환경에서도
+      // checkpoint가 자기 자신의 patch/manifest를 baseline으로 복사하지 않게 한다.
+      if (isWithin(storageRoot, src)) continue;
+      const dest = path.resolve(dir, "untracked", safe);
+      if (!isWithin(path.join(dir, "untracked"), dest)) throw new Error("checkpoint 사본 경로가 올바르지 않습니다.");
+      safePaths.push(safe);
       if (fs.existsSync(src)) {
         fs.mkdirSync(path.dirname(dest), { recursive: true });
         fs.copyFileSync(src, dest);
       }
     }
-    fs.writeFileSync(path.join(dir, "untracked-list.txt"), untrackedPaths.join("\n"), "utf8");
-
-    return { supported: true, dir, workspace: repo };
-  } catch (error) {
-    cleanupCheckpoint(dir);
+    fs.writeFileSync(path.join(dir, "untracked-list.txt"), safePaths.join("\n"), "utf8");
+    const manifest = {
+      schemaVersion: CHECKPOINT_SCHEMA_VERSION,
+      checkpointId: id,
+      sessionId: options.sessionId || null,
+      runId: options.runId || null,
+      workspace: repo,
+      baselineSha,
+      createdAt: Number.isFinite(options.createdAt) ? options.createdAt : Date.now(),
+    };
+    atomicJson(path.join(dir, "manifest.json"), manifest);
+    return {
+      supported: true,
+      checkpointId: id,
+      sessionId: manifest.sessionId,
+      runId: manifest.runId,
+      workspace: repo,
+      storageRoot,
+      baselineSha,
+    };
+  } catch {
+    try {
+      if (isWithin(storageRoot, dir)) fs.rmSync(dir, { recursive: true, force: true });
+    } catch {}
     return { supported: false };
   }
 }
 
-// checkpoint 시점 상태로 복원합니다. 지원되지 않는 경우는 아무것도 하지 않습니다.
-async function restoreCheckpoint(workspaceRoot, checkpoint) {
-  if (!checkpoint || checkpoint.supported !== true || !checkpoint.dir) {
-    return { ok: false, reason: "unsupported" };
-  }
-  const repo = resolveWorkspace(workspaceRoot);
-  if (!repo) {
-    return { ok: false, reason: "workspace-missing" };
-  }
+function inspectCheckpoint(checkpoint, options = {}) {
+  const resolved = resolveCheckpoint(checkpoint, options);
+  return { ok: resolved.ok, reason: resolved.reason || null, manifest: resolved.manifest || null };
+}
 
+async function restoreCheckpoint(workspaceRoot, checkpoint, options = {}) {
+  const resolved = resolveCheckpoint(checkpoint, options);
+  if (!resolved.ok) return { ok: false, reason: resolved.reason };
+  const repo = resolveWorkspace(workspaceRoot);
+  if (!repo || repo !== resolved.manifest.workspace) return { ok: false, reason: "workspace-mismatch" };
   try {
-    // tracked 파일을 HEAD로 되돌린 뒤, checkpoint 시점의 diff(사용자 사전 변경)를
-    // 다시 적용해 Builder 변경만 제거하고 사용자 변경은 보존합니다.
+    const listPath = path.join(resolved.dir, "untracked-list.txt");
+    const checkpointList = parseRelativeList(fs.existsSync(listPath) ? fs.readFileSync(listPath, "utf8") : "");
+    if (!checkpointList) return { ok: false, reason: "untracked-list-invalid" };
+    const checkpointSet = new Set(checkpointList.map(pathKey));
+    const preserveSet = new Set(
+      (Array.isArray(options.preservePaths) ? options.preservePaths : [])
+        .map(safeRelativePath)
+        .filter(Boolean)
+        .map(pathKey)
+    );
     await git(repo, ["checkout", "--", "."]);
-    const patchPath = path.join(checkpoint.dir, "tracked.patch");
-    const patch = fs.existsSync(patchPath) ? fs.readFileSync(patchPath, "utf8") : "";
-    if (patch.trim().length > 0) {
+    const patchPath = path.join(resolved.dir, "tracked.patch");
+    if (fs.existsSync(patchPath) && fs.readFileSync(patchPath, "utf8").trim()) {
       await git(repo, ["apply", "--binary", patchPath]);
     }
-
-    // untracked 파일: Builder가 새로 만든 파일은 제거하고,
-    // 실행 전부터 있던 파일은 checkpoint 내용으로 되살립니다.
-    const listPath = path.join(checkpoint.dir, "untracked-list.txt");
-    const checkpointList = fs.existsSync(listPath)
-      ? fs.readFileSync(listPath, "utf8").split("\n").filter(Boolean).map((p) => path.normalize(p))
-      : [];
-    const checkpointSet = new Set(checkpointList);
 
     const currentOut = await git(repo, ["ls-files", "--others", "--exclude-standard", "-z"]);
     const currentPaths = String(currentOut || "").split("\0").filter(Boolean);
     for (const rel of currentPaths) {
-      if (!checkpointSet.has(path.normalize(rel))) {
-        const target = path.join(repo, rel);
-        if (fs.existsSync(target)) fs.rmSync(target, { force: true });
+      const safe = safeRelativePath(rel);
+      if (!safe) return { ok: false, reason: "current-untracked-invalid" };
+      const target = path.resolve(repo, safe);
+      if (!isWithin(repo, target)) return { ok: false, reason: "current-untracked-outside-workspace" };
+      // 테스트/구형 저장소가 .agora를 ignore하지 않아도 현재 checkpoint
+      // 자체를 Builder 산출물로 오인해 삭제하지 않는다.
+      if (isWithin(resolved.checkpointRoot, target)) continue;
+      if (!checkpointSet.has(pathKey(safe)) && !preserveSet.has(pathKey(safe)) && fs.existsSync(target)) {
+        fs.rmSync(target, { recursive: true, force: true });
       }
     }
-    for (const rel of checkpointList) {
-      const src = path.join(checkpoint.dir, "untracked", rel);
-      const dest = path.join(repo, rel);
+    const baselineRoot = path.join(resolved.dir, "untracked");
+    for (const safe of checkpointList) {
+      const src = path.resolve(baselineRoot, safe);
+      const dest = path.resolve(repo, safe);
+      if (!isWithin(baselineRoot, src) || !isWithin(repo, dest)) return { ok: false, reason: "untracked-copy-outside-root" };
       if (fs.existsSync(src)) {
         fs.mkdirSync(path.dirname(dest), { recursive: true });
         fs.copyFileSync(src, dest);
       }
     }
-
     return { ok: true };
-  } catch (error) {
+  } catch {
     return { ok: false, reason: "restore-failed" };
   }
 }
 
-function cleanupCheckpoint(checkpoint) {
-  if (!checkpoint || !checkpoint.dir) return;
+function cleanupCheckpoint(checkpoint, options = {}) {
+  const resolved = resolveCheckpoint(checkpoint, options);
+  if (!resolved.ok) return { ok: false, reason: resolved.reason };
   try {
-    fs.rmSync(checkpoint.dir, { recursive: true, force: true });
+    fs.rmSync(resolved.dir, { recursive: true, force: true });
+    return { ok: true };
   } catch {
-    // 임시 폴더 정리 실패는 치명적이지 않습니다.
+    return { ok: false, reason: "cleanup-failed" };
   }
 }
 
 module.exports = {
+  CHECKPOINT_SCHEMA_VERSION,
+  CHECKPOINT_ID_PATTERN,
   createCheckpoint,
+  inspectCheckpoint,
+  resolveCheckpoint,
   restoreCheckpoint,
   cleanupCheckpoint,
+  safeRelativePath,
 };

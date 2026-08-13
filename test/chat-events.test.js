@@ -41,12 +41,15 @@ test("codex: 신형 item.completed agent_message는 final", () => {
   assert.deepEqual(parseCodexLine(line), { kind: "final", text: "코덱스 답변" });
 });
 
-test("codex: 명령 실행 시작은 status", () => {
+test("codex: 명령 실행 시작은 공통 command-started 이벤트", () => {
   const line = JSON.stringify({
     type: "item.started",
     item: { type: "command_execution", command: "ls -al" },
   });
-  assert.deepEqual(parseCodexLine(line), { kind: "status", label: "실행: ls -al" });
+  const parsed = parseCodexLine(line);
+  assert.equal(parsed.kind, "command-started");
+  assert.equal(parsed.command, "ls -al");
+  assert.ok(Number.isFinite(parsed.startedAt));
 });
 
 test("codex: turn.failed의 중첩 오류 원인을 표시한다", () => {
@@ -65,7 +68,9 @@ test("codex: 구형 msg 스키마도 처리한다", () => {
   assert.deepEqual(parseCodexLine(finalLine), { kind: "final", text: "구형 답변" });
 
   const execLine = JSON.stringify({ id: "2", msg: { type: "exec_command_begin", command: ["git", "status"] } });
-  assert.deepEqual(parseCodexLine(execLine), { kind: "status", label: "실행: git status" });
+  const started = parseCodexLine(execLine);
+  assert.equal(started.kind, "command-started");
+  assert.equal(started.command, "git status");
 
   const errorLine = JSON.stringify({ id: "3", msg: { type: "error", message: "문제 발생" } });
   assert.equal(parseCodexLine(errorLine).kind, "error");

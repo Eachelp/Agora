@@ -20,6 +20,46 @@ function truncateLabel(text, limit = 80) {
   return compact.length > limit ? `${compact.slice(0, limit)}…` : compact;
 }
 
+const COMMAND_TAIL_CHARS = 2 * 1024;
+
+function tailOutput(value, limit = COMMAND_TAIL_CHARS) {
+  if (value == null) return { text: "", truncated: false };
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  if (text.length <= limit) return { text, truncated: false };
+  return { text: text.slice(-limit), truncated: true };
+}
+
+function commandValue(value) {
+  if (Array.isArray(value)) return value.map((part) => String(part)).join(" ");
+  if (typeof value === "string" && value.trim()) return value.trim();
+  return null;
+}
+
+function commandStarted(command) {
+  const value = commandValue(command);
+  return {
+    kind: "command-started",
+    command: value,
+    startedAt: Date.now(),
+  };
+}
+
+function commandFinished({ command = null, exitCode = null, stdout = null, stderr = null, startedAt = null } = {}) {
+  const out = tailOutput(stdout);
+  const err = tailOutput(stderr);
+  return {
+    kind: "command-finished",
+    command: commandValue(command),
+    exitCode: Number.isInteger(exitCode) ? exitCode : null,
+    stdoutTail: out.text,
+    stderrTail: err.text,
+    startedAt: Number.isFinite(startedAt) ? startedAt : null,
+    finishedAt: Date.now(),
+    truncated: Boolean(out.truncated || err.truncated),
+    executionStatus: Number.isInteger(exitCode) ? "OBSERVED" : "PARTIAL",
+  };
+}
+
 // claude -p --output-format stream-json --include-partial-messages --verbose
 function parseClaudeLine(line) {
   const event = parseJsonLine(line);
@@ -39,6 +79,7 @@ function parseClaudeLine(line) {
   if (event.type === "assistant" && Array.isArray(event.message?.content)) {
     for (const block of event.message.content) {
       if (block?.type === "tool_use" && block.name) {
+        if (/^bash$/i.test(block.name) && block.input?.command) return commandStarted(block.input.command);
         return { kind: "status", label: `도구: ${truncateLabel(block.name)}` };
       }
     }
@@ -55,6 +96,16 @@ function parseClaudeLine(line) {
     return null;
   }
 
+  if (event.type === "user" && Array.isArray(event.message?.content)) {
+    const result = event.message.content.find((block) => block?.type === "tool_result");
+    if (result) {
+      return commandFinished({
+        stdout: typeof result.content === "string" ? result.content : result.content,
+        exitCode: Number.isInteger(result.exit_code) ? result.exit_code : null,
+      });
+    }
+  }
+
   return null;
 }
 
@@ -69,10 +120,17 @@ function parseCodexLine(line) {
     if (event.type.startsWith("item.") && item.type === "agent_message" && item.text) {
       return event.type === "item.completed" ? { kind: "final", text: String(item.text) } : null;
     }
-    if (item.type === "command_execution" && item.command) {
-      return event.type === "item.started"
-        ? { kind: "status", label: `실행: ${truncateLabel(item.command)}` }
-        : null;
+    if (item.type === "command_execution") {
+      if (event.type === "item.started") return commandStarted(item.command);
+      if (event.type === "item.completed") {
+        return commandFinished({
+          command: item.command,
+          exitCode: item.exit_code ?? item.exitCode,
+          stdout: item.aggregated_output ?? item.output ?? item.stdout,
+          stderr: item.stderr,
+        });
+      }
+      return null;
     }
     if (item.type === "reasoning") {
       return event.type === "item.started" ? { kind: "status", label: "생각 중" } : null;
@@ -99,7 +157,15 @@ function parseCodexLine(line) {
     }
     if (msg.type === "agent_reasoning") return { kind: "status", label: "생각 중" };
     if (msg.type === "exec_command_begin" && Array.isArray(msg.command)) {
-      return { kind: "status", label: `실행: ${truncateLabel(msg.command.join(" "))}` };
+      return commandStarted(msg.command);
+    }
+    if (msg.type === "exec_command_end" || msg.type === "exec_command_complete") {
+      return commandFinished({
+        command: msg.command,
+        exitCode: msg.exit_code ?? msg.exitCode,
+        stdout: msg.stdout ?? msg.output,
+        stderr: msg.stderr,
+      });
     }
     if (msg.type === "error" && msg.message) {
       return { kind: "error", message: truncateLabel(msg.message, 200) };
@@ -123,6 +189,17 @@ function parseAgyLine(line) {
         summary: tool ? `도구 권한: ${tool}` : "도구 실행 권한",
         detail: String(error),
       };
+    }
+    if (tool && /^(START|STARTED|RUNNING|PENDING)$/i.test(String(step.state || ""))) {
+      return commandStarted(step.command || tool);
+    }
+    if (tool && /^(DONE|COMPLETED|SUCCESS|ERROR|FAILED)$/i.test(String(step.state || ""))) {
+      return commandFinished({
+        command: step.command || tool,
+        exitCode: step.exit_code ?? step.exitCode ?? (String(step.state).toUpperCase() === "SUCCESS" ? 0 : null),
+        stdout: step.stdout ?? step.output ?? step.tool_info?.output,
+        stderr: step.stderr ?? error,
+      });
     }
     if (tool) return { kind: "status", label: `도구: ${truncateLabel(tool)}` };
   }

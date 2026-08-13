@@ -40,6 +40,12 @@ function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
+function writeJsonAtomic(file, value) {
+  const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(value, null, 2), "utf8");
+  fs.renameSync(tmp, file);
+}
+
 function readText(file) {
   try {
     const raw = fs.readFileSync(file, "utf8");
@@ -211,7 +217,7 @@ class TaskManager {
   }
 
   // 기존 Run의 Frozen Task를 읽습니다. 누락/손상 시 throw (fallback 금지).
-  readFrozenTask(runDir) {
+  readFrozenTask(runDir, expectedHash = null) {
     if (!runDir) throw new Error("Frozen Task 경로가 없습니다.");
     const taskPath = path.join(runDir, "task.md");
     const hashPath = path.join(runDir, "task-hash");
@@ -220,11 +226,92 @@ class TaskManager {
       throw new Error(`Frozen Task(task.md)가 누락되었습니다: ${runDir}`);
     }
     const savedHash = readText(hashPath);
+    if (savedHash == null || !savedHash.trim()) {
+      throw new Error(`Frozen Task 해시가 누락되었습니다: ${runDir}`);
+    }
     const currentHash = hashText(content);
-    if (savedHash != null && savedHash.trim() !== currentHash) {
+    const normalizedSavedHash = savedHash.trim();
+    if (normalizedSavedHash !== currentHash) {
       throw new Error(`Frozen Task가 손상되었습니다(해시 불일치): ${runDir}`);
     }
-    return { content, taskHash: currentHash };
+    if (expectedHash != null && String(expectedHash).trim() !== normalizedSavedHash) {
+      throw new Error(`Frozen Task가 원래 Run 해시와 다릅니다: ${runDir}`);
+    }
+    return { content, taskHash: normalizedSavedHash };
+  }
+
+  markRunInvalid(runInfo, reason = "FROZEN_TASK_CORRUPTED") {
+    if (!runInfo?.runDir || !runInfo?.runId) return false;
+    try {
+      ensureDir(runInfo.runDir);
+      writeJsonAtomic(path.join(runInfo.runDir, "invalid.json"), {
+        schemaVersion: 1,
+        runId: runInfo.runId,
+        reason,
+        invalidAt: this.now(),
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  isRunInvalid(runInfo) {
+    if (!runInfo?.runDir) return false;
+    return readText(path.join(runInfo.runDir, "invalid.json")) != null;
+  }
+
+  writeRunEvidence(runInfo, evidence = {}) {
+    if (!runInfo?.runDir) return false;
+    try {
+      ensureDir(runInfo.runDir);
+      const commands = Array.isArray(evidence.commands)
+        ? evidence.commands.slice(0, 20).map((entry) => ({
+            commandHash: hashText(entry.command || ""),
+            exitCode: Number.isInteger(entry.exitCode) ? entry.exitCode : null,
+            stdoutHash: entry.stdoutHash || (entry.stdoutTail != null ? hashText(entry.stdoutTail) : entry.stdout != null ? hashText(entry.stdout) : null),
+            stderrHash: entry.stderrHash || (entry.stderrTail != null ? hashText(entry.stderrTail) : entry.stderr != null ? hashText(entry.stderr) : null),
+            stdoutBytes: Number.isFinite(entry.stdoutBytes) ? entry.stdoutBytes : String(entry.stdoutTail ?? entry.stdout ?? "").length,
+            stderrBytes: Number.isFinite(entry.stderrBytes) ? entry.stderrBytes : String(entry.stderrTail ?? entry.stderr ?? "").length,
+            truncated: Boolean(entry.truncated),
+          }))
+        : [];
+      writeJsonAtomic(path.join(runInfo.runDir, "evidence.json"), {
+        schemaVersion: 1,
+        round: evidence.round || 1,
+        invocationId: evidence.invocationId || null,
+        transport: evidence.transport || "COMPLETED",
+        declaration: evidence.declaration || "MISSING",
+        changes: evidence.changes || "NO_CHANGES",
+        execution: evidence.execution || "UNAVAILABLE",
+        sessionPersisted: evidence.sessionPersisted !== false,
+        source: { kind: evidence.source?.kind || "provider-event", provider: evidence.source?.provider || null },
+        provider: evidence.provider || evidence.source?.provider || null,
+        commands,
+        persistedAt: this.now(),
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  runInfoForId(runId, workspace) {
+    const id = String(runId || "");
+    if (!/^RUN-\d+$/i.test(id)) return null;
+    const memoryRoot = this.memoryRootFor(workspace);
+    if (!memoryRoot) return null;
+    const runDir = path.join(memoryRoot, RUNS_DIR, id);
+    if (!fs.existsSync(runDir)) return null;
+    const content = readText(path.join(runDir, "task.md"));
+    const taskHash = readText(path.join(runDir, "task-hash"));
+    return {
+      runId: id,
+      runDir,
+      taskPath: path.join(runDir, "task.md"),
+      content,
+      taskHash: taskHash == null ? null : taskHash.trim(),
+    };
   }
 }
 

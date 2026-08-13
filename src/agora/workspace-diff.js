@@ -1,24 +1,16 @@
+// Checkpoint 이후 Git-visible 변경을 수집해 Reviewer payload로 변환합니다.
 "use strict";
-
-// TASK-008 — Builder가 만든 실제 변경(Diff)을 수집해 Reviewer에게 전달합니다.
-//
-// 설계 원칙 (AGORA_V1_DESIGN.md §3.3 / §8):
-// - Reviewer는 "실제 변경(Diff)·테스트 결과"를 기준으로 검수해야 하므로,
-//   Frozen Task만 전달하는 것으로는 부족하고, Builder가 실제로 만든 diff를
-//   함께 주입해야 합니다.
-// - git 저장소일 때는 `git diff HEAD`(tracked)와 untracked 파일 목록을
-//   수집합니다. diff가 없으면 빈 결과를 반환합니다.
-// - git이 아니거나 workspace가 없으면 안전하게 빈 결과를 반환합니다.
-//   (checkpoint 지원 여부와 무관하게 동작)
-// - checkpoint(workspace 복원용)와는 별개로, diff는 "읽기 전용 스냅샷"이며
-//   workspace를 변경하지 않습니다.
 
 const { execFile } = require("node:child_process");
 const { promisify } = require("node:util");
 const fs = require("node:fs");
 const path = require("node:path");
+const crypto = require("node:crypto");
+const turnCheckpoint = require("./turn-checkpoint");
 
 const execFileAsync = promisify(execFile);
+const DIFF_STATUSES = Object.freeze(["CHANGED", "NO_CHANGES", "UNSUPPORTED", "FAILED"]);
+const MAX_INLINE_FILE_BYTES = 64 * 1024;
 
 async function git(root, args) {
   const { stdout } = await execFileAsync("git", args, {
@@ -40,79 +32,221 @@ function resolveWorkspace(root) {
 }
 
 function isGitRepo(root) {
-  return fs.existsSync(path.join(root, ".git"));
+  return Boolean(root && fs.existsSync(path.join(root, ".git")));
 }
 
-// Builder 실행 직후의 실제 변경분을 수집합니다.
-// 반환: { supported, trackedDiff, untracked: string[], hasChanges, summary }
-async function collectBuilderDiff(workspaceRoot) {
+function safeRelative(value) {
+  const raw = String(value || "");
+  if (!raw || raw.includes("\0") || path.isAbsolute(raw) || /^[A-Za-z]:[\\/]/.test(raw)) return null;
+  const normalized = path.normalize(raw);
+  if (normalized === "." || normalized === ".." || normalized.startsWith(`..${path.sep}`)) return null;
+  return normalized;
+}
+
+function hashFile(file) {
+  const hash = crypto.createHash("sha256");
+  const data = fs.readFileSync(file);
+  hash.update(data);
+  return hash.digest("hex");
+}
+
+function fileInfo(root, rel, { includeContent = true } = {}) {
+  const safe = safeRelative(rel);
+  if (!safe) throw new Error("untracked 경로가 올바르지 않습니다.");
+  const file = path.resolve(root, safe);
+  const rootPath = path.resolve(root);
+  const normalizedRoot = process.platform === "win32" ? rootPath.toLowerCase() : rootPath;
+  const normalizedFile = process.platform === "win32" ? file.toLowerCase() : file;
+  if (normalizedFile !== normalizedRoot && !normalizedFile.startsWith(`${normalizedRoot}${path.sep}`)) {
+    throw new Error("untracked 경로가 workspace 밖입니다.");
+  }
+  if (!fs.existsSync(file)) return { path: safe, status: "DELETED" };
+  const stat = fs.statSync(file);
+  if (!stat.isFile()) return { path: safe, status: "CHANGED", size: stat.size, hash: null, binary: true };
+  const data = fs.readFileSync(file);
+  const binary = data.includes(0);
+  const info = {
+    path: safe,
+    status: "ADDED",
+    size: stat.size,
+    hash: hashFile(file),
+    binary,
+  };
+  if (includeContent && !binary && stat.size <= MAX_INLINE_FILE_BYTES) {
+    info.content = data.toString("utf8");
+  }
+  return info;
+}
+
+function checkpointBaseline(checkpoint) {
+  if (!checkpoint?.supported || !checkpoint.checkpointId) return null;
+  const resolved = typeof turnCheckpoint.resolveCheckpoint === "function"
+    ? turnCheckpoint.resolveCheckpoint(checkpoint)
+    : null;
+  if (!resolved?.ok) return null;
+  const listPath = path.join(resolved.dir, "untracked-list.txt");
+  let list = [];
+  try {
+    list = fs.readFileSync(listPath, "utf8")
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map(safeRelative);
+  } catch {
+    list = [];
+  }
+  if (list.some((entry) => !entry)) throw new Error("checkpoint untracked 목록이 손상되었습니다.");
+  const files = new Map();
+  for (const rel of list) {
+    const source = path.resolve(resolved.dir, "untracked", rel);
+    if (!fs.existsSync(source)) {
+      files.set(rel, { path: rel, status: "DELETED" });
+      continue;
+    }
+    const stat = fs.statSync(source);
+    const data = fs.readFileSync(source);
+    const binary = data.includes(0);
+    files.set(rel, {
+      path: rel,
+      status: "BASELINE",
+      size: stat.size,
+      hash: hashFile(source),
+      binary,
+      ...(binary || stat.size > MAX_INLINE_FILE_BYTES ? {} : { content: data.toString("utf8") }),
+    });
+  }
+  return { baselineSha: resolved.manifest.baselineSha || checkpoint.baselineSha || null, files };
+}
+
+function normalizeExcludes(excludePaths = []) {
+  return new Set((Array.isArray(excludePaths) ? excludePaths : []).map(safeRelative).filter(Boolean));
+}
+
+function statusForFile(before, after) {
+  if (!before && after) return "ADDED";
+  if (before && !after) return "DELETED";
+  if (!before || !after) return "CHANGED";
+  return before.hash === after.hash && before.size === after.size ? null : "MODIFIED";
+}
+
+function summarize(diff) {
+  const parts = [];
+  const trackedCount = diff.trackedDiff ? diff.trackedDiff.split(/^diff --git /m).filter(Boolean).length : 0;
+  if (trackedCount) parts.push(`tracked 파일 ${trackedCount}개`);
+  if (diff.untrackedFiles.length) parts.push(`untracked 변경 ${diff.untrackedFiles.length}개`);
+  return parts.length ? parts.join(" · ") : "작업공간 변경 없음";
+}
+
+// 반환 status는 CHANGED/NO_CHANGES/UNSUPPORTED/FAILED로 고정합니다.
+async function collectBuilderDiff(workspaceRoot, options = {}) {
   const repo = resolveWorkspace(workspaceRoot);
   if (!repo || !isGitRepo(repo)) {
-    return { supported: false, trackedDiff: "", untracked: [], hasChanges: false, summary: "" };
-  }
-
-  try {
-    const trackedDiff = await git(repo, ["diff", "HEAD"]);
-    const untrackedOut = await git(repo, ["ls-files", "--others", "--exclude-standard", "-z"]);
-    const untracked = String(untrackedOut || "").split("\0").filter(Boolean);
-    const hasChanges = trackedDiff.trim().length > 0 || untracked.length > 0;
-
-    const summary = [];
-    if (trackedDiff.trim().length > 0) {
-      const files = trackedDiff
-        .split("\ndiff --git ")
-        .map((chunk) => chunk.split("\n")[0].trim())
-        .filter(Boolean);
-      summary.push(`수정/추가된 tracked 파일 ${files.length}개`);
-    }
-    if (untracked.length > 0) {
-      summary.push(`새로 만들어진 untracked 파일 ${untracked.length}개`);
-    }
-    if (summary.length === 0) summary.push("작업공간 변경 없음");
-
     return {
-      supported: true,
-      trackedDiff,
-      untracked,
-      hasChanges,
-      summary: summary.join(" · "),
+      status: "UNSUPPORTED",
+      supported: false,
+      trackedDiff: "",
+      untracked: [],
+      untrackedFiles: [],
+      hasChanges: false,
+      summary: "",
     };
-  } catch {
-    return { supported: false, trackedDiff: "", untracked: [], hasChanges: false, summary: "" };
+  }
+  const excludes = normalizeExcludes(options.excludePaths);
+  try {
+    if (options.checkpoint?.supported && options.checkpoint.checkpointId) {
+      const resolvedCheckpoint = typeof turnCheckpoint.resolveCheckpoint === "function"
+        ? turnCheckpoint.resolveCheckpoint(options.checkpoint)
+        : null;
+      if (!resolvedCheckpoint?.ok) throw new Error(`checkpoint 검증 실패: ${resolvedCheckpoint?.reason || "invalid"}`);
+    }
+    const baseline = checkpointBaseline(options.checkpoint);
+    const baselineSha = options.checkpoint?.baselineSha || baseline?.baselineSha || "HEAD";
+    const trackedDiff = await git(repo, ["diff", "--binary", baselineSha]);
+    const untrackedOut = await git(repo, ["ls-files", "--others", "--exclude-standard", "-z"]);
+    const currentPaths = String(untrackedOut || "").split("\0").filter(Boolean).map(safeRelative);
+    if (currentPaths.some((entry) => !entry)) throw new Error("현재 untracked 경로가 올바르지 않습니다.");
+    const current = new Map();
+    for (const rel of currentPaths) {
+      if (excludes.has(rel)) continue;
+      current.set(rel, fileInfo(repo, rel));
+    }
+    const before = baseline?.files || new Map();
+    const untrackedFiles = [];
+    const allPaths = new Set([...before.keys(), ...current.keys()]);
+    for (const rel of allPaths) {
+      if (excludes.has(rel)) continue;
+      const info = current.get(rel);
+      const prior = before.get(rel);
+      const status = statusForFile(prior, info);
+      if (!status) continue;
+      untrackedFiles.push({
+        ...(info || prior),
+        status,
+        ...(status === "MODIFIED" && info?.content != null ? { content: info.content } : {}),
+      });
+    }
+    const hasChanges = trackedDiff.trim().length > 0 || untrackedFiles.length > 0;
+    const result = {
+      status: hasChanges ? "CHANGED" : "NO_CHANGES",
+      supported: true,
+      baselineSha,
+      trackedDiff,
+      untracked: untrackedFiles.map((entry) => entry.path),
+      untrackedFiles,
+      hasChanges,
+      summary: "",
+    };
+    result.summary = summarize(result);
+    return result;
+  } catch (error) {
+    return {
+      status: "FAILED",
+      supported: false,
+      trackedDiff: "",
+      untracked: [],
+      untrackedFiles: [],
+      hasChanges: false,
+      summary: "",
+      error: error?.message || "diff 수집 실패",
+    };
   }
 }
 
-// 수집한 diff를 Reviewer용 프롬프트 텍스트로 포매팅합니다.
-function formatBuilderDiff(diff) {
-  if (!diff || !diff.hasChanges) {
-    return "작업공간에 실제 변경(Diff)이 없습니다.";
-  }
-  const lines = [];
-  lines.push(`변경 요약: ${diff.summary || "변경 있음"}`);
-  if (diff.trackedDiff && diff.trackedDiff.trim().length > 0) {
-    lines.push("--- 실제 변경 (Diff) 시작 ---");
-    lines.push(diff.trackedDiff.trim());
-    lines.push("--- 실제 변경 (Diff) 끝 ---");
-  }
-  if (diff.untracked && diff.untracked.length > 0) {
-    lines.push("새로 만들어진 파일(untracked):");
-    for (const rel of diff.untracked) {
-      lines.push(`- ${rel}`);
-    }
+function formatFileInfo(entry) {
+  const meta = `${entry.status} · ${entry.size == null ? "size unavailable" : `${entry.size} bytes`}${entry.hash ? ` · sha256 ${entry.hash}` : ""}`;
+  const lines = [`- ${entry.path} (${meta})`];
+  if (entry.content != null) {
+    lines.push("```text");
+    lines.push(entry.content);
+    lines.push("```");
   }
   return lines.join("\n");
 }
 
-// Builder 실행 직후의 diff를 수집하고 프롬프트 텍스트로 변환합니다.
-async function describeWorkspaceChanges(workspaceRoot) {
-  const diff = await collectBuilderDiff(workspaceRoot);
-  return {
-    diff,
-    text: formatBuilderDiff(diff),
-  };
+function formatBuilderDiff(diff) {
+  if (!diff || diff.status === "UNSUPPORTED") return "작업공간 변경(Diff)을 사용할 수 없습니다. 현재 파일을 읽어 검수하되 자동 PASS는 금지됩니다.";
+  if (diff.status === "FAILED") return `변경(Diff) 수집에 실패했습니다. 자동 검수를 중단합니다. (${diff.error || "알 수 없는 오류"})`;
+  if (diff.status === "NO_CHANGES") return "checkpoint 이후 작업공간에 실제 변경(Diff)이 없습니다.";
+  const lines = [`변경 상태: ${diff.status}`, `변경 요약: ${diff.summary || "변경 있음"}`];
+  if (diff.trackedDiff?.trim()) {
+    lines.push("--- 실제 변경 (Diff) 시작 ---");
+    lines.push(diff.trackedDiff.trim());
+    lines.push("--- 실제 변경 (Diff) 끝 ---");
+  }
+  if (diff.untrackedFiles?.length) {
+    lines.push("checkpoint 이후 untracked 변경:");
+    for (const entry of diff.untrackedFiles) lines.push(formatFileInfo(entry));
+  }
+  return lines.join("\n");
+}
+
+async function describeWorkspaceChanges(workspaceRoot, options = {}) {
+  const diff = await collectBuilderDiff(workspaceRoot, options);
+  return { diff, text: formatBuilderDiff(diff) };
 }
 
 module.exports = {
+  DIFF_STATUSES,
+  MAX_INLINE_FILE_BYTES,
   collectBuilderDiff,
   formatBuilderDiff,
   describeWorkspaceChanges,
