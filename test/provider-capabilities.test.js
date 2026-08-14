@@ -235,6 +235,56 @@ test("claude 검증된 모델/노력 옵션이 노출된다", async () => {
   );
 });
 
+test("agy models가 \"이름 + 설명\" 두 열로 출력되어도 모델 이름만 뽑아낸다", async () => {
+  // 실제 agy CLI는 `gemini-3.7-flash-high     Gemini 3.7 Flash (High)`처럼
+  // 이름 뒤에 공백으로 구분된 설명을 붙여 출력합니다. 줄 전체를 모델 이름으로
+  // 취급하면 이런 줄이 통째로 걸러져 새 모델이 목록에서 빠지게 됩니다.
+  const agyPath = winPath.join(WIN_ENV.LOCALAPPDATA, "agy", "bin", "agy.exe");
+  const files = new Set([agyPath]);
+  const cacheStore = {};
+  const service = createCapabilityService({
+    platform: "win32",
+    env: WIN_ENV,
+    home: "C:\\Users\\u",
+    fs: {
+      existsSync: (file) => files.has(file),
+      statSync: () => ({ mtimeMs: 5, size: 6 }),
+    },
+    runCommand: async (file, args) => {
+      if (file === agyPath && args[0] === "--version") {
+        return { ok: true, stdout: "agy 1.1.10\n", stderr: "" };
+      }
+      if (file === agyPath && args[0] === "models") {
+        return {
+          ok: true,
+          stdout: [
+            "gemini-3.7-flash-high     Gemini 3.7 Flash (High)",
+            "gemini-3.7-flash-medium   Gemini 3.7 Flash (Medium)",
+            "claude-sonnet-4-6         Claude Sonnet 4.6 (Thinking)",
+            "",
+          ].join("\n"),
+          stderr: "",
+        };
+      }
+      return { ok: false, stdout: "", stderr: "" };
+    },
+    cache: {
+      get: () => cacheStore.value || null,
+      set: (value) => {
+        cacheStore.value = value;
+      },
+    },
+  });
+  const records = await service.discover();
+  const agy = records.find((record) => record.id === "agy");
+  assert.deepEqual(agy.models, [
+    "default",
+    "gemini-3.7-flash-high",
+    "gemini-3.7-flash-medium",
+    "claude-sonnet-4-6",
+  ]);
+});
+
 test("Codex app-server 카탈로그를 공개 모델과 모델별 노력 목록으로 변환한다", async () => {
   const codexPath = "C:\\tools\\codex.cmd";
   const { service } = makeService({
@@ -309,7 +359,7 @@ test("agy 모델 목록은 `agy models` 프로브로 갱신된다", async () => 
   // 캐시에도 모델 목록이 함께 저장된다.
   const cached = cacheStore.value[`agy:${agyPath}`];
   assert.ok(Array.isArray(cached.models));
-  assert.equal(cached.modelOptionsVersion, 2);
+  assert.equal(cached.modelOptionsVersion, 3);
   assert.deepEqual(
     agy.modelOptions.find((option) => option.id === "gemini-3.6-flash-high").efforts,
     ["high"]

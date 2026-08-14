@@ -84,10 +84,15 @@ function probeAgyModelCatalog(commandPath, needsShell, timeoutMs = MODEL_PROBE_T
       clearTimeout(hardTimer);
       if (quietTimer) clearTimeout(quietTimer);
       try { child?.kill(); } catch {}
+      // agy models는 "모델이름   설명" 두 열로 출력됩니다. 줄 전체가 아니라
+      // 앞쪽 첫 토큰(모델 이름)만 뽑아 검증해야, 뒤에 붙는 설명 때문에
+      // 정상 모델 줄이 통째로 걸러지지 않습니다.
       const models = output
         .split(/\r?\n/)
         .map((line) => line.trim())
-        .filter((line) => /^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/.test(line));
+        .filter(Boolean)
+        .map((line) => line.split(/\s+/)[0])
+        .filter((token) => /^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/.test(token));
       resolve(models.length > 0 ? ["default", ...models] : null);
     };
     const hardTimer = setTimeout(finish, timeoutMs);
@@ -119,16 +124,22 @@ function probeAgyModelCatalog(commandPath, needsShell, timeoutMs = MODEL_PROBE_T
 // 모델 자체가 고정 변형이라 --effort를 추가하면 CLI가 거부할 수 있습니다.
 const AGY_MODEL_OPTIONS = Object.freeze([
   Object.freeze({ id: "default", label: "AGY 기본값", efforts: Object.freeze([]) }),
+  Object.freeze({ id: "gemini-3.7-flash-high", label: "Gemini 3.7 Flash (높음)", efforts: Object.freeze(["high"]) }),
+  Object.freeze({ id: "gemini-3.7-flash-medium", label: "Gemini 3.7 Flash (중간)", efforts: Object.freeze(["medium"]) }),
+  Object.freeze({ id: "gemini-3.7-flash-low", label: "Gemini 3.7 Flash (낮음)", efforts: Object.freeze(["low"]) }),
   Object.freeze({ id: "gemini-3.6-flash-high", label: "Gemini 3.6 Flash (높음)", efforts: Object.freeze(["high"]) }),
   Object.freeze({ id: "gemini-3.6-flash-medium", label: "Gemini 3.6 Flash (중간)", efforts: Object.freeze(["medium"]) }),
   Object.freeze({ id: "gemini-3.6-flash-low", label: "Gemini 3.6 Flash (낮음)", efforts: Object.freeze(["low"]) }),
+  Object.freeze({ id: "gemini-3.5-flash-high", label: "Gemini 3.5 Flash (높음)", efforts: Object.freeze(["high"]) }),
+  Object.freeze({ id: "gemini-3.5-flash-medium", label: "Gemini 3.5 Flash (중간)", efforts: Object.freeze(["medium"]) }),
+  Object.freeze({ id: "gemini-3.5-flash-low", label: "Gemini 3.5 Flash (낮음)", efforts: Object.freeze(["low"]) }),
   Object.freeze({ id: "gemini-3.1-pro-high", label: "Gemini 3.1 Pro (높음)", efforts: Object.freeze(["high"]) }),
   Object.freeze({ id: "gemini-3.1-pro-low", label: "Gemini 3.1 Pro (낮음)", efforts: Object.freeze(["low"]) }),
   Object.freeze({ id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 (Thinking)", efforts: Object.freeze([]) }),
   Object.freeze({ id: "claude-opus-4-6-thinking", label: "Claude Opus 4.6 (Thinking)", efforts: Object.freeze([]) }),
   Object.freeze({ id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (중간)", efforts: Object.freeze([]) }),
 ]);
-const AGY_MODEL_OPTIONS_VERSION = 2;
+const AGY_MODEL_OPTIONS_VERSION = 3;
 
 function modelOptionsFor(def, models) {
   return (models || []).map((id) => {
@@ -395,10 +406,14 @@ function createCapabilityService(options = {}) {
       shell: needsShell,
     });
     if (!result.ok) return null;
+    // agy models처럼 "이름   설명" 두 열로 나오는 CLI도 있어, 줄 전체가 아니라
+    // 앞쪽 첫 토큰만 모델 이름으로 취급합니다.
     const models = String(result.stdout || "")
       .split(/\r?\n/)
       .map((line) => line.trim())
-      .filter((line) => /^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/.test(line));
+      .filter(Boolean)
+      .map((line) => line.split(/\s+/)[0])
+      .filter((token) => /^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/.test(token));
     return models.length > 0 ? ["default", ...models] : null;
   }
 
