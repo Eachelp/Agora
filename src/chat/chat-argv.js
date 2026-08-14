@@ -66,6 +66,23 @@ function canInline(attachment) {
   return attachmentKind(attachment) === "text" && Number(attachment.size) <= INLINE_TEXT_LIMIT;
 }
 
+// 화면에서는 노력 단계를 접어 모델 한 줄로 보여 주므로, 실제 호출 때 CLI가 아는
+// 변형 id로 되돌립니다. (gemini-3.7-flash + high → gemini-3.7-flash-high)
+// 접히지 않은 모델은 그대로 통과합니다.
+function agyModelForEffort(provider, model, effort) {
+  if (!model) return model;
+  const option = (provider?.modelOptions || []).find((entry) => entry?.id === model);
+  const variants = option?.effortModels;
+  if (!variants) return model;
+  // 접힌 모델은 반드시 변형 id로 되돌려야 합니다. 접힌 id(gemini-3.1-pro)는 CLI가 모릅니다.
+  // 요청한 단계가 그 모델에 없으면(3.1 Pro에는 medium이 없음) 실제 있는 단계로 떨어집니다.
+  return variants[effort]
+    || variants.medium
+    || variants[(option.efforts || [])[0]]
+    || Object.values(variants)[0]
+    || model;
+}
+
 function agyEffortForModel(provider, model, effort) {
   if (!model || !effort) return effort;
   // AGY의 Claude Thinking/GPT-OSS 고정 변형은 오래된 capability cache가
@@ -235,6 +252,9 @@ function buildAgentInvocation(input = {}) {
   const invocationEffort = provider.id === "agy"
     ? agyEffortForModel(provider, normalizedModel, normalizedEffort)
     : normalizedEffort;
+  const invocationModel = provider.id === "agy"
+    ? agyModelForEffort(provider, normalizedModel, normalizedEffort)
+    : normalizedModel;
 
   const deliveries = buildDeliveries({
     providerId: provider.id,
@@ -272,7 +292,7 @@ function buildAgentInvocation(input = {}) {
     argv = agyArgv({
       permissionMode,
       workspace,
-      model: normalizedModel,
+      model: invocationModel,
       effort: invocationEffort,
       attachmentsDir,
       hasPathDeliveries,
@@ -298,6 +318,7 @@ module.exports = {
   PERMISSION_MODES,
   PERMISSION_RANK,
   SPECIALIST_STAGE_CAPS,
+  agyModelForEffort,
   INLINE_TEXT_LIMIT,
   buildAgentInvocation,
   assertSafeArgv,

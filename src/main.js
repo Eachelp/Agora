@@ -2390,8 +2390,15 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.on("chat:open-settings", () => {
-    openSettingsWindow();
+  ipcMain.handle("chat:usage", async (_event, input) => ({
+    ok: true,
+    data: await getUsageData({ forceUsage: input?.force === true }),
+  }));
+
+  // section을 그대로 넘겨 설정 창이 사용량 탭에서 바로 열리게 합니다.
+  // openSettingsWindow가 허용 목록을 검증하므로 잘못된 값은 general로 떨어집니다.
+  ipcMain.on("chat:open-settings", (_event, section) => {
+    openSettingsWindow(section);
   });
 
   chatFeature.registerIpcHandlers();
@@ -2581,14 +2588,27 @@ async function loadClaudeProvider(forceUsage) {
   return { accounts: claudeAccountSwitcher.listProfiles(), usage };
 }
 
-async function getSettingsData({ forceUsage = false } = {}) {
-  const settings = readSettings();
-  const pets = listAvailablePets();
+// 세 공급자의 계정·한도를 한 번에 읽습니다. 설정 창과 채팅 사이드바가 같은 경로를 씁니다.
+async function loadProviderSnapshots(forceUsage) {
   const [codexUsage, agy, claude] = await Promise.all([
     loadCodexUsage(forceUsage),
     loadAntigravityProvider(forceUsage),
     loadClaudeProvider(forceUsage),
   ]);
+  return { codexUsage, agy, claude };
+}
+
+// 한도 게이지만 필요한 호출자(채팅 사이드바)를 위한 가벼운 형태입니다.
+// provider-usage.js의 60초 캐시가 그대로 작동하므로 force가 아니면 재조회하지 않습니다.
+async function getUsageData({ forceUsage = false } = {}) {
+  const { codexUsage, agy, claude } = await loadProviderSnapshots(forceUsage);
+  return [codexUsage, agy.usage, claude.usage];
+}
+
+async function getSettingsData({ forceUsage = false } = {}) {
+  const settings = readSettings();
+  const pets = listAvailablePets();
+  const { codexUsage, agy, claude } = await loadProviderSnapshots(forceUsage);
   const codexAccounts = codexAccountRows();
 
   return {

@@ -5,8 +5,40 @@
 (function attachChatMarkdown(global) {
   const FENCE_OPEN = /^```([A-Za-z0-9_+-]*)\s*$/;
   const LIST_ITEM = /^(\s*)([-*]|\d+[.)])\s+(.*)$/;
+  // URL 본문: 공백과 따옴표류는 제외하되, 파일 이름에 흔한 괄호쌍은 짝이 맞을 때만 허용합니다.
+  // (예: .../기업용 인성검사(BFI)_20260812.xlsx)
   const INLINE_PATTERN =
-    /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(https?:\/\/[^\s<>"'`)\]]+)|(@[\p{L}\p{N}_-]+)/gu;
+    /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(\[[^\]\n]*\]\((?:https?|file):\/\/(?:[^\s<>"'`\[\]()]|\([^\s()]*\))+\))|((?:https?|file):\/\/(?:[^\s<>"'`\[\]()]|\([^\s()]*\))+)|(@[\p{L}\p{N}_-]+)/gu;
+
+  // 퍼센트 인코딩된 한글 경로(%EB%82%B4…)를 그대로 두면 사람이 읽을 수 없습니다.
+  function decodeUrlText(value) {
+    const text = String(value || "");
+    try {
+      return decodeURIComponent(text);
+    } catch {
+      // 잘린 URL 등 디코딩할 수 없는 입력은 원문을 지킵니다.
+    }
+    try {
+      return decodeURI(text);
+    } catch {
+      return text;
+    }
+  }
+
+  function fileNameFromPath(path) {
+    const parts = String(path).split(/[\\/]/).filter(Boolean);
+    return parts[parts.length - 1] || String(path);
+  }
+
+  // file://은 링크(이동 가능)로 만들지 않습니다. 별도 토큰으로 넘겨 renderer가
+  // 이동하지 않는 칩으로만 그리게 합니다. http(s)만 link 토큰이 됩니다.
+  function makeUrlToken(href, label) {
+    if (/^file:\/\//i.test(href)) {
+      const path = decodeUrlText(href.replace(/^file:\/{2,3}/i, ""));
+      return { type: "file", href, path, text: label || fileNameFromPath(path) };
+    }
+    return { type: "link", href, text: label || href };
+  }
 
   function tokenizeInline(text) {
     const source = String(text || "");
@@ -16,10 +48,18 @@
       if (match.index > lastIndex) {
         tokens.push({ type: "text", text: source.slice(lastIndex, match.index) });
       }
-      const [full, code, bold, link, mention] = match;
+      const [full, code, bold, markdownLink, link, mention] = match;
       if (code) tokens.push({ type: "code", text: code.slice(1, -1) });
       else if (bold) tokens.push({ type: "bold", text: bold.slice(2, -2) });
-      else if (link) tokens.push({ type: "link", href: link, text: link });
+      else if (markdownLink) {
+        // [제목](주소) — 에이전트가 습관적으로 쓰는 문법인데 지금까지는 원문 그대로 보였습니다.
+        const split = markdownLink.lastIndexOf("](");
+        tokens.push(makeUrlToken(
+          markdownLink.slice(split + 2, -1),
+          markdownLink.slice(1, split)
+        ));
+      }
+      else if (link) tokens.push(makeUrlToken(link, ""));
       else if (mention) tokens.push({ type: "mention", text: mention });
       lastIndex = match.index + full.length;
     }

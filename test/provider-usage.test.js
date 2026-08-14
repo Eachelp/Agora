@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const {
+  classifyWindow,
   clearUsageCache,
   fetchAntigravityUsage,
   fetchClaudeUsage,
@@ -20,7 +21,47 @@ function jsonResponse(value, status = 200) {
   };
 }
 
-test("AGY 한도는 남은 비율을 사용률로 바꾸고 잘못된 bucket은 제외한다", () => {
+test("창 이름은 표기가 달라도 5시간대와 주간대로만 분류한다", () => {
+  for (const text of ["5시간", "5h", "5 Hours", "five_hour", "FIVE_HOURS"]) {
+    assert.equal(classifyWindow(text), "5시간", text);
+  }
+  for (const text of ["주간", "일주일", "7일", "seven_day", "Weekly"]) {
+    assert.equal(classifyWindow(text), "주간", text);
+  }
+  // 5가 다른 수의 일부이거나 다른 구간이면 잘못 분류하지 않습니다.
+  for (const text of ["15시간", "24h", "월간", "1개월", ""]) {
+    assert.equal(classifyWindow(text), null, text);
+  }
+});
+
+test("AGY 한도는 gemini 계열만 5시간·주간 두 개로 줄이고 잘못된 bucket은 제외한다", () => {
+  const gauges = normalizeAgyQuota({
+    groups: [
+      {
+        displayName: "Gemini 3 Pro",
+        buckets: [
+          { displayName: "5시간", remainingFraction: 0.62, resetTime: "soon" },
+          { displayName: "일주일", remainingFraction: 0.3 },
+          { displayName: "누락" },
+        ],
+      },
+      // 같은 구간이 여러 gemini 그룹에 있으면 가장 많이 쓴 쪽을 대표로 씁니다.
+      {
+        displayName: "Gemini 3 Flash",
+        buckets: [{ displayName: "5시간", remainingFraction: 0.9 }],
+      },
+      // Agora가 AGY로 호출하지 않는 그룹은 화면에서 제외합니다.
+      { displayName: "Claude Sonnet 4.6", buckets: [{ displayName: "일주일", remainingFraction: 0.1 }] },
+      { displayName: "GPT-OSS 120B", buckets: [{ displayName: "5시간", remainingFraction: 0.05 }] },
+    ],
+  });
+  assert.deepEqual(gauges, [
+    { label: "5시간", usedPercent: 38, resetText: "soon" },
+    { label: "주간", usedPercent: 70, resetText: "" },
+  ]);
+});
+
+test("AGY 그룹 이름이 바뀌어 gemini를 못 찾으면 전체를 그대로 쓴다", () => {
   assert.deepEqual(
     normalizeAgyQuota({
       groups: [
@@ -33,18 +74,29 @@ test("AGY 한도는 남은 비율을 사용률로 바꾸고 잘못된 bucket은 
         },
       ],
     }),
-    [{ label: "모델 · 주간", usedPercent: 75, resetText: "soon" }]
+    [{ label: "주간", usedPercent: 75, resetText: "soon" }]
   );
 });
 
-test("Claude 한도는 전체 및 모델별 창을 표시하고 범위를 보정한다", () => {
+test("구간을 하나도 분류하지 못하면 원래 목록을 잃지 않는다", () => {
+  assert.deepEqual(
+    normalizeAgyQuota({
+      groups: [{ displayName: "Gemini", buckets: [{ displayName: "특수 구간", remainingFraction: 0.4 }] }],
+    }),
+    [{ label: "Gemini · 특수 구간", usedPercent: 60, resetText: "" }]
+  );
+});
+
+test("Claude 한도는 5시간과 전체 주간 두 개만 쓰고 범위를 보정한다", () => {
   const gauges = normalizeClaudeUsage({
     five_hour: { utilization: 50.4, resets_at: "a" },
     seven_day: { utilization: 120, resets_at: "b" },
+    // 모델별 7일 창은 화면에 넣지 않습니다.
     seven_day_sonnet: { utilization: 25, resets_at: "c" },
+    seven_day_opus: { utilization: 88, resets_at: "d" },
   });
-  assert.deepEqual(gauges.map((item) => item.label), ["5시간", "7일", "7일 · Sonnet"]);
-  assert.deepEqual(gauges.map((item) => item.usedPercent), [50, 100, 25]);
+  assert.deepEqual(gauges.map((item) => item.label), ["5시간", "주간"]);
+  assert.deepEqual(gauges.map((item) => item.usedPercent), [50, 100]);
 });
 
 test("AGY 응답에서 계정, 플랜, 한도만 정규화한다", async (t) => {
@@ -62,7 +114,7 @@ test("AGY 응답에서 계정, 플랜, 한도만 정규화한다", async (t) => 
     }
     if (String(url).includes("userinfo")) return jsonResponse({ email: "agy@example.com" });
     return jsonResponse({
-      groups: [{ displayName: "모델", buckets: [{ displayName: "5시간", remainingFraction: 0.8 }] }],
+      groups: [{ displayName: "Gemini 3 Pro", buckets: [{ displayName: "5시간", remainingFraction: 0.8 }] }],
     });
   };
 

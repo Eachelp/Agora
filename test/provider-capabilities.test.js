@@ -5,8 +5,10 @@ const winPath = path.win32;
 
 const {
   cliCandidates,
+  collapseEffortVariants,
   guiEvidencePaths,
   createCapabilityService,
+  resolveEffortVariant,
   toPublicProviders,
 } = require("../src/providers/provider-capabilities");
 
@@ -225,10 +227,12 @@ test("claude 검증된 모델/노력 옵션이 노출된다", async () => {
   assert.equal(agy.permissions["workspace-write"].supported, true);
   assert.equal(agy.permissions.chat.enforcement, "sandbox");
   assert.ok(agy.efforts.includes("high"));
-  assert.deepEqual(
-    agy.modelOptions.find((option) => option.id === "gemini-3.6-flash-high").efforts,
-    ["high"]
-  );
+  // 같은 모델의 노력 변형(high/medium/low)은 한 줄로 접히고 단계는 노력 선택이 맡습니다.
+  const geminiFlash = agy.modelOptions.find((option) => option.id === "gemini-3.6-flash");
+  assert.deepEqual(geminiFlash.efforts, ["low", "medium", "high"]);
+  assert.equal(geminiFlash.label, "Gemini 3.6 Flash");
+  assert.equal(geminiFlash.effortModels.high, "gemini-3.6-flash-high");
+  assert.equal(agy.modelOptions.some((option) => option.id === "gemini-3.6-flash-high"), false);
   assert.deepEqual(
     agy.modelOptions.find((option) => option.id === "claude-sonnet-4-6").efforts,
     []
@@ -277,12 +281,12 @@ test("agy models가 \"이름 + 설명\" 두 열로 출력되어도 모델 이름
   });
   const records = await service.discover();
   const agy = records.find((record) => record.id === "agy");
-  assert.deepEqual(agy.models, [
-    "default",
-    "gemini-3.7-flash-high",
-    "gemini-3.7-flash-medium",
-    "claude-sonnet-4-6",
-  ]);
+  // 두 열 출력에서 모델 이름만 뽑은 뒤 노력 변형끼리 접힙니다.
+  assert.deepEqual(agy.models, ["default", "gemini-3.7-flash", "claude-sonnet-4-6"]);
+  assert.deepEqual(
+    agy.modelOptions.find((option) => option.id === "gemini-3.7-flash").effortModels,
+    { high: "gemini-3.7-flash-high", medium: "gemini-3.7-flash-medium" }
+  );
 });
 
 test("Codex app-server 카탈로그를 공개 모델과 모델별 노력 목록으로 변환한다", async () => {
@@ -350,22 +354,69 @@ test("agy 모델 목록은 `agy models` 프로브로 갱신된다", async () => 
   });
   const records = await service.discover();
   const agy = records.find((record) => record.id === "agy");
+  // 목록에는 접힌 모델만 남습니다.
   assert.deepEqual(agy.models, [
     "default",
-    "gemini-3.6-flash-high",
-    "gemini-3.1-pro-low",
+    "gemini-3.6-flash",
+    "gemini-3.1-pro",
     "claude-sonnet-4-6",
   ]);
   // 캐시에도 모델 목록이 함께 저장된다.
   const cached = cacheStore.value[`agy:${agyPath}`];
   assert.ok(Array.isArray(cached.models));
-  assert.equal(cached.modelOptionsVersion, 3);
+  assert.equal(cached.modelOptionsVersion, 4);
+  // CLI에 넘길 변형 id는 effortModels에 보존됩니다.
   assert.deepEqual(
-    agy.modelOptions.find((option) => option.id === "gemini-3.6-flash-high").efforts,
-    ["high"]
+    agy.modelOptions.find((option) => option.id === "gemini-3.6-flash").effortModels,
+    { high: "gemini-3.6-flash-high" }
   );
   assert.deepEqual(
     agy.modelOptions.find((option) => option.id === "claude-sonnet-4-6").efforts,
     []
   );
+});
+
+test("AGY 노력 변형은 한 줄로 접히고 고정 변형 모델은 그대로 남는다", () => {
+  const collapsed = collapseEffortVariants([
+    { id: "default", label: "AGY 기본값", efforts: [] },
+    { id: "gemini-9-flash-high", label: "Gemini 9 Flash (높음)", efforts: ["high"] },
+    { id: "gemini-9-flash-low", label: "Gemini 9 Flash (낮음)", efforts: ["low"] },
+    { id: "gemini-9-flash-medium", label: "Gemini 9 Flash (중간)", efforts: ["medium"] },
+    { id: "claude-opus-4-6-thinking", label: "Claude Opus 4.6 (Thinking)", efforts: [] },
+    // 아직 규칙을 모르는 새 모델은 추측하지 않고 그대로 둡니다.
+    { id: "gemini-99-pro-high", label: "gemini-99-pro-high", efforts: [] },
+  ]);
+
+  assert.deepEqual(collapsed.map((option) => option.id), [
+    "default",
+    "gemini-9-flash",
+    "claude-opus-4-6-thinking",
+    "gemini-99-pro-high",
+  ]);
+  const flash = collapsed[1];
+  assert.equal(flash.label, "Gemini 9 Flash");
+  // 노력은 낮음 → 중간 → 높음 순으로 정렬됩니다.
+  assert.deepEqual(flash.efforts, ["low", "medium", "high"]);
+  assert.deepEqual(flash.effortModels, {
+    low: "gemini-9-flash-low",
+    medium: "gemini-9-flash-medium",
+    high: "gemini-9-flash-high",
+  });
+});
+
+test("예전 세션이 저장한 변형 id는 모델과 노력 쌍으로 옮겨진다", () => {
+  const modelOptions = collapseEffortVariants([
+    { id: "gemini-9-flash-high", label: "Gemini 9 Flash (높음)", efforts: ["high"] },
+    { id: "gemini-9-flash-low", label: "Gemini 9 Flash (낮음)", efforts: ["low"] },
+    { id: "claude-opus-4-6-thinking", label: "Claude Opus 4.6 (Thinking)", efforts: [] },
+  ]);
+
+  assert.deepEqual(resolveEffortVariant(modelOptions, "gemini-9-flash-low"), {
+    model: "gemini-9-flash",
+    effort: "low",
+  });
+  // 이미 목록에 있는 id는 옮길 것이 없습니다.
+  assert.equal(resolveEffortVariant(modelOptions, "gemini-9-flash"), null);
+  assert.equal(resolveEffortVariant(modelOptions, "claude-opus-4-6-thinking"), null);
+  assert.equal(resolveEffortVariant(modelOptions, ""), null);
 });

@@ -1,3 +1,4 @@
+/* global usageView */
 const api = window.settingsApi;
 const rootElement = document.documentElement;
 const toastElement = document.querySelector("#toast");
@@ -337,38 +338,24 @@ function renderAccounts() {
   }
 }
 
-function clampPercent(value) {
-  return Math.min(100, Math.max(0, Number(value) || 0));
-}
-
-function resetLabel(value) {
-  if (!value) return "—";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime()) || !/^\d{4}-\d{2}-\d{2}T/.test(String(value))) {
-    return String(value);
-  }
-  return `${new Intl.DateTimeFormat("ko-KR", {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(date)} 초기화`;
-}
-
+// 게이지 계산 규칙(남은 %, 경고 임계값, 초기화 시각)은 채팅 화면과 공유합니다. → src/usage-view.js
 function createUsageGauge(gauge) {
-  const used = clampPercent(gauge.usedPercent);
-  const remaining = Math.round(100 - used);
+  const remaining = usageView.remainingPercent(gauge);
   const container = createElement("div", "usage-gauge");
   const row = createElement("div", "usage-row");
   row.append(
     createElement("span", "", gauge.label),
     createElement("strong", "", `${remaining}%`)
   );
+  // 숫자와 막대가 모두 "남은 양"을 가리킵니다. 색만 사용량 기준으로 경고/위험을 표시합니다.
   const track = createElement("div", "usage-track");
-  const fill = createElement("i", used >= 90 ? "is-danger" : used >= 70 ? "is-warn" : "");
-  fill.style.width = `${used}%`;
+  const fill = createElement("i", usageView.usageTone(gauge.usedPercent));
+  fill.style.width = `${remaining}%`;
   track.appendChild(fill);
-  container.append(row, track, createElement("small", "", resetLabel(gauge.resetText)));
+  container.append(row, track);
+  if (gauge.resetText) {
+    container.append(createElement("small", "", usageView.resetLabel(gauge.resetText)));
+  }
   return container;
 }
 

@@ -40,28 +40,66 @@ function clearUsageCache(provider = null) {
   }
 }
 
+// 화면에 쓰는 두 구간입니다. 공급자가 몇 개를 주든 여기로 줄여서 보여 줍니다.
+const WINDOW_5H = "5시간";
+const WINDOW_WEEK = "주간";
+
+// 공급자마다 창 이름 표기가 제각각이라(5시간 / 5h / five_hour / 일주일 / seven_day …)
+// 넓게 받아들여 두 구간으로만 분류합니다. 어디에도 해당하지 않으면 null입니다.
+function classifyWindow(text) {
+  const value = String(text || "").trim().toLowerCase();
+  if (!value) return null;
+  if (/(?:^|[^0-9])5\s*(?:시간|h(?![a-z])|hours?)|five[_\s-]?hours?/.test(value)) return WINDOW_5H;
+  if (/주간|일주일|주\s*단위|1\s*주|7\s*일|weekly|week|seven[_\s-]?days?/.test(value)) return WINDOW_WEEK;
+  return null;
+}
+
+// 5시간대 1개 + 주간대 1개만 남깁니다. 같은 구간이 여러 개면 가장 빡빡한(많이 쓴) 것을 씁니다.
+// 어느 쪽도 분류되지 않으면 공급자가 이름을 바꾼 경우이므로 원래 목록을 그대로 돌려줍니다.
+function pickPrimaryWindows(gauges) {
+  const strip = ({ window, ...rest }) => rest;
+  const tightest = (target) =>
+    gauges
+      .filter((gauge) => gauge.window === target)
+      .sort((a, b) => b.usedPercent - a.usedPercent)[0] || null;
+
+  const picked = [tightest(WINDOW_5H), tightest(WINDOW_WEEK)].filter(Boolean);
+  if (picked.length === 0) return gauges.map(strip);
+  return picked.map((gauge) => ({ ...strip(gauge), label: gauge.window }));
+}
+
 function normalizeAgyQuota(data) {
-  return (data?.groups || []).flatMap((group) =>
+  const groups = data?.groups || [];
+  // AGY는 gemini 계열 · Claude · GPT-OSS 그룹을 한꺼번에 내려줍니다.
+  // Agora가 AGY로 실제 호출하는 건 gemini 계열이라 그 그룹만 남깁니다.
+  // (Google이 그룹 이름을 바꿔 하나도 못 찾으면 전체를 그대로 씁니다)
+  const gemini = groups.filter((group) =>
+    /gemini/i.test(String(group?.displayName || group?.name || ""))
+  );
+  const selected = gemini.length > 0 ? gemini : groups;
+
+  const gauges = selected.flatMap((group) =>
     (group.buckets || []).flatMap((bucket) => {
       const remaining = Number(bucket.remainingFraction ?? bucket.remaining_fraction);
       if (!Number.isFinite(remaining)) return [];
+      const bucketName = bucket.displayName || bucket.window || "";
       return [{
-        label: [group.displayName || group.name, bucket.displayName || bucket.window]
-          .filter(Boolean)
-          .join(" · "),
+        label: [group.displayName || group.name, bucketName].filter(Boolean).join(" · "),
+        window: classifyWindow(bucketName),
         usedPercent: clampPercent((1 - remaining) * 100),
         resetText: bucket.resetTime || bucket.reset_time || "",
       }];
     })
   );
+
+  return pickPrimaryWindows(gauges);
 }
 
 function normalizeClaudeUsage(data) {
+  // Claude는 7일 창을 전체 / Sonnet / Opus로 쪼개 주지만 화면에는 전체 하나만 씁니다.
   const windows = [
-    ["5시간", data?.five_hour],
-    ["7일", data?.seven_day],
-    ["7일 · Sonnet", data?.seven_day_sonnet],
-    ["7일 · Opus", data?.seven_day_opus],
+    [WINDOW_5H, data?.five_hour],
+    [WINDOW_WEEK, data?.seven_day],
   ];
   return windows.flatMap(([label, value]) => {
     const utilization = Number(value?.utilization);
@@ -207,11 +245,13 @@ async function fetchAntigravityIdentity({ credential, force = false } = {}) {
 }
 
 module.exports = {
+  classifyWindow,
   clearUsageCache,
   fetchAntigravityIdentity,
   fetchAntigravityUsage,
   fetchClaudeUsage,
   normalizeAgyQuota,
   normalizeClaudeUsage,
+  pickPrimaryWindows,
   tierLabel,
 };

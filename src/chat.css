@@ -15,6 +15,12 @@
   --danger: #ef4444;
   --danger-soft: #fef2f2;
   --shadow: 0 1px 3px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.02);
+  /* 화면 전체가 같은 리듬을 갖도록 컨트롤 높이와 모서리를 한곳에서 정합니다. */
+  --control-h: 32px;
+  --control-h-sm: 26px;
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-pill: 999px;
   --font-body: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
   --font-display: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
 }
@@ -45,6 +51,12 @@ textarea {
 button {
   -webkit-app-region: no-drag;
   cursor: pointer;
+}
+
+/* hidden 속성은 어떤 컴포넌트 규칙보다 우선합니다.
+   (display를 지정한 클래스가 브라우저 기본 [hidden] 규칙을 이겨 버리는 것을 막습니다) */
+[hidden] {
+  display: none !important;
 }
 
 button:focus-visible,
@@ -169,10 +181,53 @@ textarea:focus-visible {
   min-width: 0;
 }
 
-.room-info strong {
+.room-title-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  padding: 2px 8px 2px 6px;
+  margin-left: -6px;
   font-family: var(--font-display);
   font-size: 14px;
+  font-weight: 700;
   letter-spacing: -0.02em;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background 120ms ease-out;
+}
+
+/* 이름을 바꿀 수 있다는 신호. 평소엔 숨어 있다가 hover·포커스에서 드러납니다. */
+.room-title-button::after {
+  content: "✎";
+  flex: none;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+
+.room-title-button:hover {
+  background: var(--accent-soft);
+}
+
+.room-title-button:hover::after,
+.room-title-button:focus-visible::after {
+  opacity: 1;
+}
+
+/* 제목을 편집할 때는 버튼 자리에 input이 들어옵니다. */
+.room-info .session-rename-input {
+  font-size: 17px;
+  font-weight: 700;
+  padding: 3px 8px;
 }
 
 .room-hint {
@@ -662,6 +717,78 @@ textarea:focus-visible {
   justify-content: center;
 }
 
+/* 알림이 몰릴 때 대화가 밀려나지 않도록 간격을 좁힙니다. */
+.message.is-system + .message.is-system {
+  margin-top: -8px;
+}
+
+/* 접힌 알림은 "이전 알림 N개 보기"를 누르면 다시 펼쳐집니다. */
+.message.is-collapsed {
+  display: none;
+}
+
+.message-list.show-system-history .message.is-collapsed {
+  display: flex;
+}
+
+.system-toggle-button {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11px;
+  padding: 1px 10px;
+}
+
+.system-toggle-button:hover {
+  border-color: var(--accent);
+  color: var(--ink);
+}
+
+/* 파일 경로 칩: 이동하지 않고, 읽을 수 있는 이름만 보여 주고 클릭하면 경로를 복사합니다. */
+.file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  vertical-align: baseline;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface-muted);
+  color: var(--ink-soft);
+  font-size: 0.92em;
+  padding: 0 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-chip::before {
+  content: "";
+  flex: none;
+  width: 9px;
+  height: 11px;
+  border: 1px solid currentColor;
+  border-radius: 1px;
+  opacity: 0.55;
+}
+
+.file-chip:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+.system-count {
+  margin-left: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 0 5px;
+}
+
 .message.is-system .bubble {
   background: transparent;
   border: none;
@@ -773,9 +900,13 @@ textarea:focus-visible {
 }
 
 .button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--control-h);
   border: 1px solid var(--line-strong);
-  border-radius: 10px;
-  padding: 7px 16px;
+  border-radius: var(--radius-md);
+  padding: 5px 16px;
   font-weight: 600;
   background: var(--surface);
 }
@@ -985,18 +1116,21 @@ textarea:focus-visible {
   flex: none;
   padding: 8px 12px;
   border-top: 1px solid var(--line);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  display: grid;
+  gap: 6px;
 }
 
 .button-small {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--control-h-sm);
   border: 1px solid var(--line-strong);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: var(--surface);
   font-size: 11.5px;
   font-weight: 600;
-  padding: 4px 10px;
+  padding: 3px 10px;
 }
 
 .button-small:hover {
@@ -1017,7 +1151,10 @@ textarea:focus-visible {
 
 .session-item {
   position: relative;
-  border-radius: 10px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  border-radius: var(--radius-md);
 }
 
 .session-item.is-active {
@@ -1029,11 +1166,12 @@ textarea:focus-visible {
   display: grid;
   gap: 2px;
   width: 100%;
+  min-width: 0;
   text-align: left;
   border: none;
   background: transparent;
   padding: 8px 10px;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
 }
 
 .session-item:not(.is-active) .session-select:hover {
@@ -1087,39 +1225,44 @@ textarea:focus-visible {
   text-overflow: ellipsis;
 }
 
-.session-actions {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  display: none;
-  gap: 2px;
-}
-
-.session-item:hover .session-actions {
-  display: inline-flex;
-}
-
-.session-item.is-active .session-actions {
-  display: inline-flex;
-}
-
+/* 제목 위에 겹쳐 두지 않고 항상 자리를 차지합니다.
+   hover 전에도 보이므로 "나타날 때까지 기다렸다 조준"할 필요가 없습니다. */
 .session-action {
+  flex: none;
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
+  margin-right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: none;
-  background: var(--surface);
-  border-radius: 6px;
-  font-size: 11px;
-  padding: 2px 5px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font-size: 14px;
+  line-height: 1;
   color: var(--muted);
-  box-shadow: var(--shadow);
+  opacity: 0.45;
+  transition: opacity 120ms ease-out, background 120ms ease-out, color 120ms ease-out;
+}
+
+.session-item:hover .session-action,
+.session-item.is-active .session-action,
+.session-action:focus-visible {
+  opacity: 1;
 }
 
 .session-action:hover {
   color: var(--ink);
+  background: var(--accent-soft);
 }
 
 .session-rename-input {
   width: 100%;
+  min-width: 0;
+  font: inherit;
   font-size: 12.5px;
+  background: var(--surface);
+  color: var(--ink);
   border: 1px solid var(--accent);
   border-radius: 6px;
   padding: 2px 6px;
@@ -1128,11 +1271,19 @@ textarea:focus-visible {
 
 /* --- 헤더 컨트롤 --- */
 .room-controls {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
   margin-top: 3px;
+}
+
+/* 왼쪽: 이 세션이 무엇을 보고 있는지 (폴더·권한). 길어지면 폴더 이름만 줄입니다. */
+.room-controls-context {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
 }
 
 .chip-button {
@@ -1381,10 +1532,13 @@ textarea:focus-visible {
 /* --- 첨부 --- */
 .icon-button {
   flex: none;
-  width: 30px;
-  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--control-h);
+  height: var(--control-h);
   border: 1px solid var(--line-strong);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--surface);
   font-size: 15px;
   line-height: 1;
@@ -1833,15 +1987,8 @@ textarea:focus-visible {
   border-top-color: var(--line);
 }
 
-.sidebar-foot-actions {
-  display: flex;
-  justify-content: space-between;
+.sidebar-foot {
   gap: 6px;
-}
-
-.sidebar-foot .text-button {
-  padding: 2px 0;
-  font-size: 11px;
 }
 
 .room-bar {
@@ -1862,7 +2009,7 @@ textarea:focus-visible {
   gap: 3px;
 }
 
-.room-info strong {
+.room-title-button {
   color: var(--ink);
   font-size: 20px;
   line-height: 1.25;
@@ -2074,8 +2221,8 @@ textarea:focus-visible {
 
 .chip-button,
 #permission-select {
-  min-height: 32px;
-  border-radius: 8px;
+  min-height: var(--control-h);
+  border-radius: var(--radius-sm);
   border-color: var(--line);
   background: var(--surface);
   color: var(--ink-soft);
@@ -2092,7 +2239,6 @@ textarea:focus-visible {
 }
 
 .discussion-button {
-  margin-left: auto;
   border-color: var(--accent);
   background: var(--accent);
   color: var(--surface);
@@ -2108,9 +2254,9 @@ textarea:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  min-height: 32px;
+  min-height: var(--control-h);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--muted);
   padding: 5px 8px;
@@ -2221,11 +2367,11 @@ textarea:focus-visible {
     justify-content: flex-start;
   }
 
-  .discussion-button {
-    margin-left: 0;
+  /* 좁은 화면에서는 두 묶음을 위아래로 쌓고 오른쪽 고정을 풉니다. */
+  .room-controls {
+    grid-template-columns: minmax(0, 1fr);
   }
 
-  /* 좁은 화면에서는 오른쪽 고정을 풀고 자연스럽게 줄바꿈되게 합니다. */
   .room-controls-actions {
     margin-left: 0;
     flex-wrap: wrap;
@@ -2280,14 +2426,9 @@ textarea:focus-visible {
 }
 
 .sidebar-foot {
-  display: flex;
-  justify-content: flex-end;
+  display: grid;
+  gap: 6px;
   padding: 10px 14px 12px;
-}
-
-.sidebar-foot-actions {
-  width: 100%;
-  justify-content: flex-end;
 }
 
 .room-bar {
@@ -2295,7 +2436,7 @@ textarea:focus-visible {
   padding: 16px 24px 12px;
 }
 
-.room-info strong {
+.room-title-button {
   font-size: 18px;
 }
 
@@ -2408,26 +2549,29 @@ textarea:focus-visible {
 
 .project-actions {
   position: absolute;
-  top: 5px;
+  top: 50%;
   right: 5px;
-  display: none;
+  transform: translateY(-50%);
+  display: inline-flex;
+  opacity: 0.4;
+  transition: opacity 120ms ease-out;
 }
 
 .project-item:hover .project-actions,
-.project-item.is-active .project-actions {
-  display: inline-flex;
+.project-item.is-active .project-actions,
+.project-actions:focus-within {
+  opacity: 1;
 }
 
 .project-action {
-  min-width: 22px;
-  height: 22px;
+  min-width: var(--control-h-sm);
+  height: var(--control-h-sm);
   border: none;
-  border-radius: 5px;
-  background: var(--surface);
+  border-radius: var(--radius-sm);
+  background: transparent;
   color: var(--muted);
   font-weight: 700;
   line-height: 1;
-  box-shadow: var(--shadow);
 }
 
 .project-action:hover {
@@ -2685,4 +2829,307 @@ textarea:focus-visible {
 
 .project-move-apply-workspace input {
   margin: 0;
+}
+
+
+/* --- 사이드바 사용량 스트립 --- */
+.usage-strip {
+  display: grid;
+  gap: 5px;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  padding: 7px 9px;
+  text-align: left;
+  transition: border-color 120ms ease-out;
+}
+
+.usage-strip:hover {
+  border-color: var(--accent);
+}
+
+.usage-strip-head {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  text-align: center;
+  white-space: nowrap;
+}
+
+.usage-strip-head:first-child {
+  text-align: left;
+}
+
+/* 이름 | 5시간 | 주간 세 열. 공급자끼리 같은 열에 놓여 눈으로 비교하기 쉽습니다. */
+.usage-strip-items {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 3px 4px;
+}
+
+.usage-strip-empty {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.usage-row-name {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--muted);
+  white-space: nowrap;
+  padding-right: 2px;
+}
+
+/* 칸 자체가 막대입니다. --fill(남은 %)만큼 채워지므로 숫자와 길이가 같은 뜻을 가집니다. */
+.usage-mini {
+  --fill: 100%;
+  min-width: 0;
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 3px;
+  border-radius: var(--radius-sm);
+  padding: 2px 5px;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+  /* 좁은 사이드바에서 "5시간"이 글자 단위로 쪼개지지 않게 합니다. */
+  white-space: nowrap;
+  overflow: hidden;
+  background:
+    linear-gradient(
+      to right,
+      color-mix(in srgb, var(--accent) 22%, var(--surface)) var(--fill),
+      transparent var(--fill)
+    ),
+    var(--surface-muted);
+}
+
+.usage-mini strong {
+  flex: none;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-mini.is-warn {
+  color: #92400e;
+  background: linear-gradient(to right, #fde68a var(--fill), transparent var(--fill)), var(--surface-muted);
+}
+
+.usage-mini.is-danger {
+  color: #b91c1c;
+  background: linear-gradient(to right, #fecaca var(--fill), transparent var(--fill)), var(--surface-muted);
+}
+
+.usage-mini.is-unknown {
+  grid-column: span 2;
+  justify-content: flex-start;
+  background: var(--surface-muted);
+  color: var(--muted);
+}
+
+/* 창이 하나뿐인 공급자가 있어도 열이 어긋나지 않게 자리만 채웁니다. */
+.usage-mini-empty {
+  min-width: 0;
+}
+
+.usage-strip-empty {
+  grid-column: span 3;
+}
+
+.sidebar-foot-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sidebar-foot-actions .foot-button {
+  flex: 1 1 auto;
+  width: auto;
+  padding: 4px 6px;
+  white-space: nowrap;
+}
+
+/* 확인이 필요한 에이전트가 있으면 진단 버튼에 점을 붙여 사이드바에서 바로 눈에 띄게 합니다. */
+.foot-button.has-issue {
+  color: #b91c1c;
+  font-weight: 700;
+}
+
+.foot-button.has-issue::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--danger);
+}
+
+.foot-button.has-issue:hover {
+  color: #b91c1c;
+  background: var(--danger-soft);
+}
+
+.foot-button-icon {
+  flex: none !important;
+  width: var(--control-h-sm) !important;
+  padding: 0 !important;
+}
+
+.usage-diagnose {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.usage-diagnose:hover {
+  color: var(--accent-strong);
+}
+
+.foot-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  min-height: var(--control-h-sm);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 4px 8px;
+  transition: background 120ms ease-out, color 120ms ease-out;
+}
+
+.foot-button:hover {
+  color: var(--ink);
+  background: var(--accent-soft);
+}
+
+/* --- 팝오버 메뉴 (세션 우클릭 · ⋯) --- */
+.popover.is-menu {
+  width: auto;
+  min-width: 192px;
+  padding: 6px;
+  gap: 2px;
+}
+
+.popover-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: var(--control-h-sm);
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 12.5px;
+  text-align: left;
+  padding: 5px 8px;
+}
+
+.popover-menu-item:hover {
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+.popover-menu-item.is-danger:hover {
+  background: var(--danger-soft);
+  color: #b91c1c;
+}
+
+.popover-menu-hint {
+  font-family: Consolas, monospace;
+  font-size: 10px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+/* --- 사용량 팝오버 --- */
+.popover.is-usage {
+  width: 290px;
+}
+
+.popover.is-usage .usage-card {
+  display: grid;
+  gap: 7px;
+  border-top: 1px solid var(--line);
+  padding-top: 9px;
+}
+
+.popover.is-usage .usage-card h3 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.usage-gauge {
+  display: grid;
+  gap: 3px;
+}
+
+.usage-gauge-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--ink-soft);
+}
+
+.usage-gauge-head strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-track {
+  height: 5px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-muted);
+  overflow: hidden;
+}
+
+.usage-track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+
+.usage-track i.is-warn {
+  background: #f59e0b;
+}
+
+.usage-track i.is-danger {
+  background: var(--danger);
+}
+
+.usage-gauge small {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.usage-empty {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.usage-popover-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  border-top: 1px solid var(--line);
+  padding-top: 9px;
 }

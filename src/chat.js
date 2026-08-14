@@ -1,4 +1,4 @@
-/* global chatMarkdown */
+/* global chatMarkdown, usageView */
 const chatScroll = document.getElementById("chat-scroll");
 const messageList = document.getElementById("message-list");
 const typingRow = document.getElementById("typing-row");
@@ -47,6 +47,8 @@ const discussionButton = document.getElementById("btn-discussion");
 const workflowButton = document.getElementById("btn-workflow");
 const specialistButton = document.getElementById("btn-specialist");
 const roomControlsActions = document.querySelector(".room-controls-actions");
+const usageButton = document.getElementById("btn-usage");
+const usageStripItems = document.getElementById("usage-strip-items");
 const professionalActions = document.getElementById("professional-actions");
 const professionalPlanButton = document.getElementById("btn-professional-plan");
 const professionalImplementationButton = document.getElementById("btn-professional-implementation");
@@ -87,6 +89,15 @@ let activeProjectId = null;
 let sessions = [];
 let activeSessionId = null;
 let sessionMeta = null;
+// 이름 편집 중인 대화 id. 값이 있으면 목록을 다시 그리지 않습니다.
+let renamingSessionId = null;
+// 편집 중에 들어온 갱신이 있었는지. 편집이 끝나면 그때 한 번만 다시 그립니다.
+let renderSessionsPending = false;
+// 사이드바 사용량 스트립 상태
+let usageItems = [];
+let usageLoadedAt = 0;
+let usageLoading = false;
+let usagePopoverOpen = false;
 let agents = [];
 let workflow = { decisions: [], tasks: [], roles: [], statuses: [] };
 let chatMessages = [];
@@ -385,6 +396,17 @@ function doctorStatus(diagnostic) {
     return { tone: "warning", label: "CLI 확인됨", detail: diagnostic.message || "로그인 상태는 자동 확인할 수 없습니다." };
   }
   return { tone: "ready", label: "준비됨", detail: diagnostic.version || "CLI와 로그인을 확인했습니다." };
+}
+
+// 사이드바 하단 "환경 진단" 버튼에 확인이 필요한 에이전트 수를 표시합니다.
+// AGY가 로그인 풀렸을 때처럼, 문제를 알아채는 곳과 고치는 버튼을 같은 자리에 둡니다.
+function renderProviderHealth() {
+  const attention = diagnostics.filter((diagnostic) => doctorStatus(diagnostic).tone === "error");
+  doctorButton.classList.toggle("has-issue", attention.length > 0);
+  doctorButton.dataset.issueCount = attention.length > 0 ? String(attention.length) : "";
+  doctorButton.title = attention.length > 0
+    ? `${attention.map((diagnostic) => diagnostic.name).join(", ")} 확인 필요 · 클릭해 진단`
+    : "설치와 로그인 상태를 확인합니다";
 }
 
 function renderDoctor() {
@@ -1012,10 +1034,18 @@ function openSessionMovePopover(anchor, session) {
 }
 
 function renderSessions() {
+  // 이름을 고치는 중에는 다시 그리지 않습니다. 다른 창에서 온 갱신 때문에
+  // 입력창이 통째로 사라져 편집이 날아가는 사고를 막습니다. (commit이 끝나면 직접 호출합니다)
+  if (renamingSessionId) {
+    renderSessionsPending = true;
+    return;
+  }
+  renderSessionsPending = false;
   sessionListEl.textContent = "";
   for (const entry of sessions) {
     const item = document.createElement("li");
     item.className = "session-item";
+    item.dataset.sessionId = entry.id;
     if (entry.id === activeSessionId) item.classList.add("is-active");
 
     const main = document.createElement("button");
@@ -1037,6 +1067,7 @@ function renderSessions() {
     }
     const titleText = document.createElement("span");
     titleText.className = "session-name";
+    titleText.dataset.sessionName = entry.id;
     titleText.textContent = entry.title;
     titleLine.append(titleText);
 
@@ -1054,54 +1085,109 @@ function renderSessions() {
     }
     main.append(titleLine, metaLine);
     main.addEventListener("click", () => selectSession(entry.id));
-    main.addEventListener("dblclick", () => startInlineRename(titleText, entry.id));
+    main.addEventListener("dblclick", () => startSessionRename(entry.id));
 
-    const actions = document.createElement("span");
-    actions.className = "session-actions";
-    const moveBtn = document.createElement("button");
-    moveBtn.type = "button";
-    moveBtn.className = "session-action";
-    moveBtn.title = "다른 프로젝트로 이동";
-    moveBtn.textContent = "↗";
-    moveBtn.addEventListener("click", (event) => {
+    // 아이콘 3개를 제목 위에 겹쳐 두는 대신 ⋯ 하나로 모았습니다.
+    // 항상 자리를 차지하므로 제목을 가리지 않고, hover 전에도 조준할 수 있습니다.
+    const moreBtn = document.createElement("button");
+    moreBtn.type = "button";
+    moreBtn.className = "session-action";
+    moreBtn.dataset.sessionMore = entry.id;
+    moreBtn.title = "이름 바꾸기 · 이동 · 삭제";
+    moreBtn.setAttribute("aria-label", `${entry.title} 메뉴 열기`);
+    moreBtn.setAttribute("aria-haspopup", "true");
+    moreBtn.textContent = "⋯";
+    moreBtn.addEventListener("click", (event) => {
       event.stopPropagation();
-      openSessionMovePopover(moveBtn, entry);
+      // 이름 편집 중이었다면 blur → commit → 재렌더로 이 버튼이 교체됐을 수 있습니다.
+      // 그때는 새로 그려진 같은 세션의 버튼을 기준점으로 씁니다.
+      const anchor = sessionMoreAnchor(entry.id) || moreBtn;
+      openSessionMenu(anchor.getBoundingClientRect(), entry);
     });
-    const renameBtn = document.createElement("button");
-    renameBtn.type = "button";
-    renameBtn.className = "session-action";
-    renameBtn.title = "이름 바꾸기";
-    renameBtn.textContent = "✎";
-    renameBtn.addEventListener("click", (event) => {
-      event.stopPropagation();
-      startInlineRename(titleText, entry.id);
-    });
-    const deleteBtn = document.createElement("button");
-    deleteBtn.type = "button";
-    deleteBtn.className = "session-action";
-    deleteBtn.title = "휴지통으로 이동 (30일 후 정리)";
-    deleteBtn.textContent = "🗑";
-    deleteBtn.addEventListener("click", async (event) => {
-      event.stopPropagation();
-      const yes = window.confirm(
-        `"${entry.title}" 세션을 휴지통으로 옮길까요?\n첨부 사본도 함께 이동하며 30일 후 정리됩니다.`
-      );
-      if (!yes) return;
-      const result = await call(window.chatApi.sessionsDelete(entry.id));
-      if (result) applyFullState(result);
-    });
-    actions.append(moveBtn, renameBtn, deleteBtn);
 
-    item.append(main, actions);
+    // 목록 어디를 우클릭해도 같은 메뉴가 커서 위치에 열립니다.
+    item.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      openSessionMenu(pointRect(event), entry);
+    });
+
+    item.append(main, moreBtn);
     sessionListEl.append(item);
   }
 }
 
+function sessionMoreAnchor(sessionId) {
+  return sessionListEl.querySelector(`[data-session-more="${CSS.escape(sessionId)}"]`);
+}
+
+// 사이드바 목록에서 해당 대화의 제목을 인라인 편집으로 바꿉니다.
+function startSessionRename(sessionId) {
+  const titleEl = sessionListEl.querySelector(`[data-session-name="${CSS.escape(sessionId)}"]`);
+  if (!titleEl) return;
+  titleEl.scrollIntoView({ block: "nearest" });
+  startInlineRename(titleEl, sessionId);
+}
+
+// 상단 제목에서 바로 편집합니다. (사이드바가 접혀 있을 때의 F2 경로이기도 합니다)
+// 버튼 안에 input을 넣으면 포커스가 먹지 않으므로 버튼 자체를 input으로 갈아 끼웁니다.
+// startInlineRename이 commit에서 원래 요소를 되돌려 놓습니다.
+function startHeaderRename() {
+  const entry = activeSessionEntry();
+  if (!entry || renamingSessionId) return;
+  startInlineRename(sessionTitleEl, entry.id);
+}
+
+async function deleteSession(entry) {
+  const yes = window.confirm(
+    `"${entry.title}" 세션을 휴지통으로 옮길까요?\n첨부 사본도 함께 이동하며 30일 후 정리됩니다.`
+  );
+  if (!yes) return;
+  const result = await call(window.chatApi.sessionsDelete(entry.id));
+  if (result) applyFullState(result);
+}
+
+function openSessionMenu(rect, entry) {
+  openPopoverAt(rect, (target) => {
+    buildPopoverMenu(target, [
+      {
+        label: "이름 바꾸기",
+        hint: "F2",
+        run: () => {
+          closePopover();
+          startSessionRename(entry.id);
+        },
+      },
+      {
+        label: "다른 프로젝트로 이동",
+        run: () => {
+          closePopover();
+          // 팝오버 요소는 하나뿐이라, 닫고 다음 프레임에 이동 팝오버를 다시 엽니다.
+          requestAnimationFrame(() => {
+            const anchor = sessionMoreAnchor(entry.id);
+            if (anchor) openSessionMovePopover(anchor, entry);
+          });
+        },
+      },
+      {
+        label: "휴지통으로 이동",
+        danger: true,
+        run: () => {
+          closePopover();
+          void deleteSession(entry);
+        },
+      },
+    ]);
+  });
+}
+
 function startInlineRename(titleTextEl, sessionId) {
+  if (renamingSessionId) return;
+  renamingSessionId = sessionId;
   const current = titleTextEl.textContent;
   const input = document.createElement("input");
   input.type = "text";
   input.className = "session-rename-input";
+  input.setAttribute("aria-label", "대화 이름");
   input.value = current;
   input.maxLength = 80;
   titleTextEl.replaceWith(input);
@@ -1112,19 +1198,23 @@ function startInlineRename(titleTextEl, sessionId) {
   const commit = async (save) => {
     if (done) return;
     done = true;
+    renamingSessionId = null;
     const next = input.value.trim();
     input.replaceWith(titleTextEl);
-    if (save && next && next !== current) {
+    const changed = Boolean(save && next && next !== current);
+    if (changed) {
       const result = await call(window.chatApi.sessionsRename(sessionId, next));
       if (result) {
         sessions = result.sessions || sessions;
         if (sessionMeta && sessionMeta.id === sessionId) {
           sessionMeta = { ...sessionMeta, title: next };
         }
-        renderSessions();
-        renderHeader();
       }
     }
+    // 바뀐 게 없으면 목록을 건드리지 않습니다. blur 직후 목록을 통째로 새로 그리면
+    // 그 blur를 일으킨 클릭(다른 항목의 ⋯ 등)이 사라진 요소 위에서 삼켜집니다.
+    if (changed || renderSessionsPending) renderSessions();
+    renderHeader();
   };
   input.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.isComposing) commit(true);
@@ -1181,14 +1271,23 @@ function renderHeader() {
   }
 
   const hints = [];
+  const enforcementKinds = new Set();
   for (const provider of providers) {
     if (provider.status !== "cli") continue;
     const info = provider.permissions?.[mode];
-    if (info) {
-      hints.push(`${provider.name}: ${ENFORCEMENT_LABEL[info.enforcement] || info.enforcement}`);
-    }
+    if (!info) continue;
+    const label = ENFORCEMENT_LABEL[info.enforcement] || info.enforcement;
+    hints.push(`${provider.name}: ${label}`);
+    enforcementKinds.add(label);
   }
-  enforcementHint.textContent = hints.length > 0 ? `적용 방식 — ${hints.join(" · ")}` : "";
+  // 좁은 상단 바에서 "적용 방식 — AGY: 샌드박스"가 "적…"으로 잘려 정보가 0이 되던 자리입니다.
+  // 화면에는 적용 방식 종류만 짧게 남기고, 공급자별 상세는 툴팁으로 넘깁니다.
+  const enforcementDetail = hints.length > 0 ? `적용 방식 — ${hints.join(" · ")}` : "";
+  enforcementHint.textContent = [...enforcementKinds].join(" · ");
+  enforcementHint.title = enforcementDetail;
+  permissionSelect.title = enforcementDetail || "이 채팅에서 도구에 허용할 범위입니다";
+
+  renderProviderHealth();
 
   const discussable = agents.filter((agent) => agent.available && agent.enabled).length >= 2;
   discussionButton.disabled = !discussable;
@@ -1215,7 +1314,8 @@ function renderHeader() {
   );
   professionalActions.hidden = !professionalModeEnabled;
   roomControlsActions.classList.toggle("is-professional-mode", professionalModeEnabled);
-  responseModeBar.hidden = professionalModeEnabled;
+  // discussable = 사용 가능하고 참여 중인 에이전트가 둘 이상.
+  responseModeBar.hidden = professionalModeEnabled || !discussable;
   const blockedOrBusy = specialistRunning || specialistActive || specialistBlockedAvailable || specialistResumeAvailable;
   professionalPlanButton.disabled = !configured || blockedOrBusy;
   professionalImplementationButton.disabled = !configured || blockedOrBusy || !specialistPlanReady;
@@ -1265,16 +1365,21 @@ function renderAgents() {
   }
 }
 
+const POPOVER_VARIANTS = ["is-project-settings", "is-workflow", "plan-preview-popover", "is-menu", "is-usage"];
+
 function closePopover() {
   popover.hidden = true;
   popover.textContent = "";
-  popover.classList.remove("is-project-settings", "is-workflow", "plan-preview-popover");
+  popover.classList.remove(...POPOVER_VARIANTS);
   popoverBackdrop.hidden = true;
+  usagePopoverOpen = false;
 }
 
-function openPopover(anchor, build) {
+// 버튼 대신 커서 좌표에도 띄울 수 있도록 위치 계산을 rect 기준으로 분리했습니다.
+// (세션 우클릭 메뉴가 이 형태를 씁니다.)
+function openPopoverAt(rect, build) {
   popover.textContent = "";
-  popover.classList.remove("is-project-settings", "is-workflow", "plan-preview-popover");
+  popover.classList.remove(...POPOVER_VARIANTS);
   build(popover);
   popover.hidden = false;
   popoverBackdrop.hidden = false;
@@ -1283,7 +1388,6 @@ function openPopover(anchor, build) {
   popover.style.left = "0px";
 
   const margin = 8;
-  const rect = anchor.getBoundingClientRect();
   const popRect = popover.getBoundingClientRect();
   const viewportWidth = window.innerWidth;
   const viewportHeight = window.innerHeight;
@@ -1312,9 +1416,50 @@ function openPopover(anchor, build) {
   popover.style.top = `${top}px`;
 }
 
+function openPopover(anchor, build) {
+  openPopoverAt(anchor.getBoundingClientRect(), build);
+}
+
+// 커서 좌표를 rect처럼 다룹니다. 폭·높이가 0이라 팝오버가 클릭 지점에 딱 붙습니다.
+function pointRect(event) {
+  return {
+    left: event.clientX,
+    right: event.clientX,
+    top: event.clientY,
+    bottom: event.clientY,
+  };
+}
+
+// 팝오버를 단순 메뉴로 채웁니다. items: { label, hint?, danger?, run }
+function buildPopoverMenu(target, items) {
+  target.classList.add("is-menu");
+  for (const item of items) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = item.danger ? "popover-menu-item is-danger" : "popover-menu-item";
+    const label = document.createElement("span");
+    label.textContent = item.label;
+    button.append(label);
+    if (item.hint) {
+      const hint = document.createElement("kbd");
+      hint.className = "popover-menu-hint";
+      hint.textContent = item.hint;
+      button.append(hint);
+    }
+    button.addEventListener("click", () => item.run());
+    target.append(button);
+  }
+}
+
 popoverBackdrop.addEventListener("click", closePopover);
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !popover.hidden) closePopover();
+  // F2로 현재 대화 이름을 바로 고칩니다. 사이드바가 접혀 있으면 상단 제목에서 편집합니다.
+  if (event.key === "F2" && activeSessionId && !renamingSessionId) {
+    event.preventDefault();
+    if (appEl.classList.contains("is-sidebar-collapsed")) startHeaderRename();
+    else startSessionRename(activeSessionId);
+  }
 });
 
 // 창 크기가 바뀌면 기준 버튼과 어긋나므로 닫습니다.
@@ -1456,9 +1601,10 @@ function openAgentPopover(anchor, agentId) {
     modelSelect.disabled = !provider.available;
     modelSelect.addEventListener("change", () => {
       const availableEfforts = effortOptionsForModel(provider, modelSelect.value);
-      const suffixEffort = modelSelect.value.match(/-(low|medium|high)$/i)?.[1]?.toLowerCase();
-      const nextEffort = availableEfforts.includes(suffixEffort)
-        ? suffixEffort
+      // 모델을 바꿔도 쓰던 노력 단계를 유지합니다. 그 모델에 없는 단계면 중간 → 첫 번째 순.
+      const currentEffort = effortSelect.value;
+      const nextEffort = availableEfforts.includes(currentEffort)
+        ? currentEffort
         : availableEfforts.includes("medium") ? "medium" : availableEfforts[0] || "default";
       populateEfforts(modelSelect.value, nextEffort);
       configureAgent(agentId, { model: modelSelect.value, effort: nextEffort });
@@ -2625,6 +2771,27 @@ function renderInlineTokens(container, tokens) {
       const strong = document.createElement("strong");
       strong.textContent = token.text;
       container.append(strong);
+    } else if (token.type === "file") {
+      // 임의 경로 열기는 막혀 있습니다(chat:task:open-file은 워크스페이스 안만 허용).
+      // 그래서 이동시키지 않고, 읽을 수 있는 파일 이름 + 전체 경로 툴팁 + 경로 복사만 제공합니다.
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "file-chip";
+      chip.textContent = token.text;
+      chip.title = `${token.path}\n클릭하면 경로를 복사합니다`;
+      chip.addEventListener("click", async () => {
+        const original = chip.textContent;
+        try {
+          await navigator.clipboard.writeText(token.path);
+          chip.textContent = "경로 복사됨";
+        } catch {
+          chip.textContent = "복사 실패";
+        }
+        setTimeout(() => {
+          chip.textContent = original;
+        }, 1200);
+      });
+      container.append(chip);
     } else if (token.type === "link") {
       const anchor = document.createElement("a");
       anchor.href = token.href;
@@ -2865,6 +3032,8 @@ function renderMessage(message) {
   if (message.authorType === "system") {
     item.classList.add("is-system");
     if (message.error) item.classList.add("is-error");
+    // 바로 앞 알림과 같은지 비교하는 열쇠입니다. 오류 여부가 다르면 다른 알림으로 봅니다.
+    item.dataset.systemKey = `${message.error ? "!" : ""}${message.text}`;
     const bubble = document.createElement("div");
     bubble.className = "bubble";
     bubble.textContent = message.text;
@@ -3029,6 +3198,89 @@ function renderMessage(message) {
   return item;
 }
 
+// 같은 시스템 알림이 연달아 오면 줄을 늘리지 않고 횟수만 올립니다.
+// (전문 실행을 여러 번 취소하면 똑같은 문장이 화면을 채웁니다)
+function mergeIntoPreviousSystem(item) {
+  if (!item.classList.contains("is-system")) return false;
+  const last = messageList.lastElementChild;
+  if (!last || !last.classList.contains("is-system")) return false;
+  if (last.dataset.systemKey !== item.dataset.systemKey) return false;
+
+  const count = Number(last.dataset.systemCount || "1") + 1;
+  last.dataset.systemCount = String(count);
+  let badge = last.querySelector(".system-count");
+  if (!badge) {
+    badge = document.createElement("span");
+    badge.className = "system-count";
+    last.querySelector(".bubble").append(badge);
+  }
+  badge.textContent = `×${count}`;
+  return true;
+}
+
+// 연달아 붙은 시스템 알림 묶음에서 최근 몇 개만 남기고 접습니다.
+// 스크린샷처럼 "시작 → 취소"가 번갈아 반복되면 같은 문장이 아니라서 위의 ×N 병합으로는
+// 줄지 않고, 정작 대화가 화면 밖으로 밀려납니다.
+const SYSTEM_RUN_VISIBLE = 3;
+let systemToggle = null;
+
+function trailingSystemRun() {
+  const run = [];
+  let cursor = messageList.lastElementChild;
+  while (cursor && cursor.classList.contains("is-system")) {
+    if (cursor !== systemToggle) run.unshift(cursor);
+    cursor = cursor.previousElementSibling;
+  }
+  return run;
+}
+
+function updateSystemToggleLabel() {
+  if (!systemToggle) return;
+  const expanded = messageList.classList.contains("show-system-history");
+  systemToggle.querySelector(".system-toggle-button").textContent = expanded
+    ? "이전 알림 접기"
+    : `이전 알림 ${systemToggle.dataset.hiddenCount}개 보기`;
+}
+
+function syncSystemRun() {
+  if (systemToggle && !systemToggle.isConnected) systemToggle = null;
+
+  const run = trailingSystemRun();
+  const hiddenCount = Math.max(0, run.length - SYSTEM_RUN_VISIBLE);
+  run.forEach((item, index) => item.classList.toggle("is-collapsed", index < hiddenCount));
+
+  if (hiddenCount === 0) {
+    if (systemToggle) systemToggle.remove();
+    systemToggle = null;
+    return;
+  }
+
+  if (!systemToggle) {
+    systemToggle = document.createElement("li");
+    systemToggle.className = "message is-system system-toggle";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "system-toggle-button";
+    button.addEventListener("click", () => {
+      messageList.classList.toggle("show-system-history");
+      updateSystemToggleLabel();
+    });
+    systemToggle.append(button);
+  }
+  systemToggle.dataset.hiddenCount = String(hiddenCount);
+  run[0].before(systemToggle);
+  updateSystemToggleLabel();
+}
+
+function appendMessageItem(item) {
+  if (mergeIntoPreviousSystem(item)) {
+    syncSystemRun();
+    return;
+  }
+  messageList.append(item);
+  syncSystemRun();
+}
+
 function appendMessage(message) {
   const stick = isNearBottom();
   // 같은 runId의 라이브 초안이 있으면 정식 메시지로 대체합니다.
@@ -3038,7 +3290,7 @@ function appendMessage(message) {
     liveRuns.delete(message.runId);
   }
   chatMessages.push(message);
-  messageList.append(renderMessage(message));
+  appendMessageItem(renderMessage(message));
   scrollToBottom(stick || message.authorType === "user");
 }
 
@@ -3046,8 +3298,10 @@ function renderAllMessages(messages) {
   messageList.textContent = "";
   liveRuns.clear();
   chatMessages = [...(messages || [])];
+  systemToggle = null;
+  messageList.classList.remove("show-system-history");
   for (const message of chatMessages) {
-    messageList.append(renderMessage(message));
+    appendMessageItem(renderMessage(message));
   }
 }
 
@@ -3490,15 +3744,7 @@ doctorRefresh.addEventListener("click", async () => {
   doctorRefresh.textContent = "다시 진단";
 });
 
-sessionTitleEl.addEventListener("dblclick", () => {
-  const entry = activeSessionEntry();
-  if (!entry) return;
-  const span = document.createElement("span");
-  span.textContent = sessionTitleEl.textContent;
-  sessionTitleEl.textContent = "";
-  sessionTitleEl.append(span);
-  startInlineRename(span, entry.id);
-});
+sessionTitleEl.addEventListener("click", startHeaderRename);
 
 // --- 타이틀바 ---
 document.getElementById("btn-settings").addEventListener("click", () => window.chatApi.openSettings());
@@ -3649,8 +3895,215 @@ window.chatApi.onApprovalRequest((payload) => {
 });
 window.chatApi.onAppearance(applyAppearance);
 
+// --- 사용량 (사이드바 스트립 + 팝오버) ---
+const USAGE_STALE_MS = 60000;
+
+async function loadUsage({ force = false } = {}) {
+  if (usageLoading) return;
+  usageLoading = true;
+  renderUsageStrip();
+  try {
+    const response = await window.chatApi.usage(force);
+    if (response?.ok && Array.isArray(response.data)) {
+      usageItems = response.data;
+      usageLoadedAt = Date.now();
+    }
+  } catch {
+    // 사용량 조회 실패는 대화를 막지 않습니다. 스트립에 "—"로만 남깁니다.
+  } finally {
+    usageLoading = false;
+    renderUsageStrip();
+    if (usagePopoverOpen) openUsagePopover();
+  }
+}
+
+function refreshUsageIfStale() {
+  if (usageLoading) return Promise.resolve();
+  if (Date.now() - usageLoadedAt < USAGE_STALE_MS) return Promise.resolve();
+  return loadUsage();
+}
+
+function makeStripHead(text) {
+  const cell = document.createElement("span");
+  cell.className = "usage-strip-head";
+  cell.textContent = text;
+  return cell;
+}
+
+function renderUsageStrip() {
+  usageStripItems.textContent = "";
+  if (usageItems.length === 0) {
+    const empty = document.createElement("span");
+    empty.className = "usage-strip-empty";
+    empty.textContent = usageLoading ? "사용량 확인 중…" : "사용량 정보 없음";
+    usageStripItems.append(empty);
+    return;
+  }
+
+  const summaries = usageItems.map((item) => usageView.summarizeWindows(item)).filter(Boolean);
+  // 창 이름은 머리글에 한 번만 적고 아래 칸에는 숫자만 남깁니다. 좁은 사이드바에서
+  // 같은 라벨을 공급자마다 반복하면 정작 숫자가 들어갈 자리가 없습니다.
+  const headers = summaries.find((summary) => summary.windows.length === 2)
+    ?.windows.map((window) => window.label) || ["5시간", "주간"];
+  usageStripItems.append(makeStripHead("사용량"), ...headers.map(makeStripHead));
+
+  for (const summary of summaries) {
+    const name = document.createElement("span");
+    name.className = "usage-row-name";
+    name.textContent = summary.label;
+    usageStripItems.append(name);
+
+    if (summary.error) {
+      const unknown = document.createElement("span");
+      unknown.className = "usage-mini is-unknown";
+      unknown.textContent = summary.error;
+      usageStripItems.append(unknown);
+      continue;
+    }
+
+    // 칸 자체가 막대입니다. 남은 양만큼 채워지므로 숫자와 길이가 같은 뜻을 가집니다.
+    for (const window of summary.windows) {
+      const cell = document.createElement("span");
+      cell.className = window.tone ? `usage-mini ${window.tone}` : "usage-mini";
+      cell.style.setProperty("--fill", `${window.remaining}%`);
+      const value = document.createElement("strong");
+      value.textContent = `${window.remaining}%`;
+      cell.append(value);
+      cell.title = window.resetText
+        ? `${summary.label} ${window.label} · 남음 ${window.remaining}% · ${usageView.resetLabel(window.resetText)}`
+        : `${summary.label} ${window.label} · 남음 ${window.remaining}%`;
+      usageStripItems.append(cell);
+    }
+    // 창이 하나뿐이면 빈 칸으로 열을 맞춥니다.
+    if (summary.windows.length === 1) {
+      const filler = document.createElement("span");
+      filler.className = "usage-mini-empty";
+      usageStripItems.append(filler);
+    }
+  }
+}
+
+function createUsageGaugeRow(gauge) {
+  const remaining = usageView.remainingPercent(gauge);
+  const row = document.createElement("div");
+  row.className = "usage-gauge";
+
+  const head = document.createElement("div");
+  head.className = "usage-gauge-head";
+  const label = document.createElement("span");
+  label.textContent = gauge.label;
+  const value = document.createElement("strong");
+  value.textContent = `${remaining}%`;
+  head.append(label, value);
+
+  // 막대도 "남은 양"으로 채웁니다. 숫자와 막대가 같은 방향을 가리켜야 한눈에 읽힙니다.
+  const track = document.createElement("div");
+  track.className = "usage-track";
+  const fill = document.createElement("i");
+  fill.className = usageView.usageTone(gauge.usedPercent);
+  fill.style.width = `${remaining}%`;
+  track.append(fill);
+  row.append(head, track);
+
+  // 초기화 시각을 모르면 줄을 아예 만들지 않습니다. (빈 "—"가 줄줄이 남지 않도록)
+  if (gauge.resetText) {
+    const reset = document.createElement("small");
+    reset.textContent = usageView.resetLabel(gauge.resetText);
+    row.append(reset);
+  }
+  return row;
+}
+
+function openUsagePopover() {
+  usagePopoverOpen = true;
+  openPopover(usageButton, (target) => {
+    target.classList.add("is-usage");
+
+    const title = document.createElement("strong");
+    title.className = "project-popover-title";
+    title.textContent = "남은 사용량";
+    target.append(title);
+
+    if (usageItems.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "usage-empty";
+      empty.textContent = usageLoading ? "확인 중…" : "사용량을 불러오지 못했습니다.";
+      target.append(empty);
+    }
+
+    for (const item of usageItems) {
+      const card = document.createElement("section");
+      card.className = "usage-card";
+      const heading = document.createElement("h3");
+      heading.textContent = item.label;
+      card.append(heading);
+
+      if (item.error) {
+        const error = document.createElement("p");
+        error.className = "usage-empty";
+        error.textContent = item.error;
+        const diagnose = document.createElement("button");
+        diagnose.type = "button";
+        diagnose.className = "usage-diagnose";
+        diagnose.textContent = "환경 진단";
+        diagnose.addEventListener("click", () => {
+          closePopover();
+          openDoctor();
+        });
+        error.append(" ", diagnose);
+        card.append(error);
+      } else if (!item.gauges?.length) {
+        const error = document.createElement("p");
+        error.className = "usage-empty";
+        error.textContent = "한도 정보 없음";
+        card.append(error);
+      } else {
+        for (const gauge of item.gauges) card.append(createUsageGaugeRow(gauge));
+      }
+      target.append(card);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "usage-popover-actions";
+    const refresh = document.createElement("button");
+    refresh.type = "button";
+    refresh.className = "button button-small";
+    refresh.textContent = usageLoading ? "확인 중…" : "새로고침";
+    refresh.disabled = usageLoading;
+    refresh.addEventListener("click", () => {
+      // 완료되면 loadUsage가 열려 있는 팝오버를 그대로 다시 그립니다.
+      void loadUsage({ force: true });
+    });
+    const detail = document.createElement("button");
+    detail.type = "button";
+    detail.className = "button button-small";
+    detail.textContent = "설정에서 보기";
+    detail.addEventListener("click", () => {
+      closePopover();
+      window.chatApi.openSettings("usage");
+    });
+    actions.append(refresh, detail);
+    target.append(actions);
+  });
+}
+
+usageButton.addEventListener("click", () => {
+  if (usagePopoverOpen) {
+    closePopover();
+    return;
+  }
+  openUsagePopover();
+  void refreshUsageIfStale();
+});
+
+// 다른 창에서 사용량을 쓰고 돌아왔을 수 있으므로 포커스 복귀 때 한 번 확인합니다. (60초 스로틀)
+window.addEventListener("focus", () => {
+  void refreshUsageIfStale();
+});
+
 // --- 초기화 ---
 (async () => {
+  void loadUsage();
   const full = await call(window.chatApi.state());
   if (full) {
     applyFullState(full);

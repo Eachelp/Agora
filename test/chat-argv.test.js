@@ -319,3 +319,49 @@ test("인라인 한도보다 큰 텍스트는 인라인되지 않는다", () => 
   const result = build("claude", { attachments: [bigText] });
   assert.equal(result.deliveries[0].method, "unsupported");
 });
+
+// AGY는 gemini 모델을 노력 단계마다 다른 id로 받습니다. 화면에서는 한 줄로 접어
+// 보여 주므로, 실제 호출 때 CLI가 아는 변형 id로 되돌아가는지 확인합니다.
+test("AGY 접힌 gemini 모델은 노력에 맞는 변형 id로 호출된다", () => {
+  const modelOptions = [
+    {
+      id: "gemini-3.7-flash",
+      label: "Gemini 3.7 Flash",
+      efforts: ["low", "medium", "high"],
+      effortModels: {
+        low: "gemini-3.7-flash-low",
+        medium: "gemini-3.7-flash-medium",
+        high: "gemini-3.7-flash-high",
+      },
+    },
+    { id: "gemini-3.1-pro", label: "Gemini 3.1 Pro", efforts: ["low", "high"],
+      effortModels: { low: "gemini-3.1-pro-low", high: "gemini-3.1-pro-high" } },
+    { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 (Thinking)", efforts: [] },
+  ];
+
+  const call = (model, effort) => buildAgentInvocation({
+    provider: { ...provider("agy"), modelOptions },
+    chatCwd: CHAT_CWD,
+    permissionMode: "chat",
+    model,
+    effort,
+  });
+
+  const high = call("gemini-3.7-flash", "high");
+  assert.equal(high.ok, true);
+  assert.equal(high.argv[high.argv.indexOf("--model") + 1], "gemini-3.7-flash-high");
+  assert.equal(high.argv[high.argv.indexOf("--effort") + 1], "high");
+
+  const low = call("gemini-3.7-flash", "low");
+  assert.equal(low.argv[low.argv.indexOf("--model") + 1], "gemini-3.7-flash-low");
+  assert.equal(low.argv[low.argv.indexOf("--effort") + 1], "low");
+
+  // 그 모델에 없는 단계를 받아도 CLI가 모르는 접힌 id를 넘기지 않습니다.
+  const noMedium = call("gemini-3.1-pro", "medium");
+  assert.match(noMedium.argv[noMedium.argv.indexOf("--model") + 1], /^gemini-3\.1-pro-(low|high)$/);
+
+  // 고정 변형 모델은 접히지 않고 --effort도 붙지 않습니다.
+  const fixed = call("claude-sonnet-4-6", "high");
+  assert.equal(fixed.argv[fixed.argv.indexOf("--model") + 1], "claude-sonnet-4-6");
+  assert.equal(fixed.argv.includes("--effort"), false);
+});

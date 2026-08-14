@@ -21,7 +21,7 @@ test("채팅 화면의 설정 버튼이 기존 설정 창을 연다", () => {
   const chatWindow = read("src/chat/chat-window.js");
   assert.match(html, /id="btn-settings"/);
   assert.match(preload, /OPEN_SETTINGS: "chat:open-settings"/);
-  assert.match(preload, /openSettings: \(\) => ipcRenderer\.send\(INVOKE\.OPEN_SETTINGS\)/);
+  assert.match(preload, /openSettings: \(section\) => ipcRenderer\.send\(INVOKE\.OPEN_SETTINGS, section\)/);
   assert.match(renderer, /btn-settings[\s\S]*?chatApi\.openSettings/);
   assert.match(main, /ipcMain\.on\("chat:open-settings"[\s\S]*?openSettingsWindow/);
   assert.match(chatWindow, /icon: path\.join\(__dirname, "\.\.", "\.\.", "build", "icon\.ico"\)/);
@@ -191,4 +191,129 @@ test("KaTeX 수식 렌더러가 오프라인 자산으로 채팅 화면에 포�
   const renderer = read("src/chat.js");
   assert.match(renderer, /function renderMathIfAvailable\(container\)/);
   assert.match(renderer, /renderMathInElement/);
+});
+
+test("대화 이름 바꾸기는 우클릭 메뉴·⋯ 버튼·F2·제목 클릭으로 열린다", () => {
+  const html = read("src/chat.html");
+  const renderer = read("src/chat.js");
+  const css = read("src/chat.css");
+
+  // 제목은 클릭 가능한 버튼이라 한 번 클릭으로 편집에 들어갑니다.
+  assert.match(html, /<button class="room-title-button" id="session-title"/);
+  assert.match(renderer, /sessionTitleEl\.addEventListener\("click", startHeaderRename\)/);
+
+  // 좌표 기준 팝오버 + 우클릭 메뉴
+  assert.match(renderer, /function openPopoverAt\(rect, build\)/);
+  assert.match(renderer, /function openPopover\(anchor, build\)/);
+  assert.match(renderer, /function pointRect\(event\)/);
+  assert.match(renderer, /function openSessionMenu\(rect, entry\)/);
+  assert.match(renderer, /item\.addEventListener\("contextmenu"/);
+
+  // F2 단축키와 편집 중 리렌더 가드
+  assert.match(renderer, /event\.key === "F2"/);
+  assert.match(renderer, /function startSessionRename\(sessionId\)/);
+  assert.match(renderer, /if \(renamingSessionId\) return;/);
+
+  // 아이콘 3개를 겹쳐 두던 hover 전용 오버레이는 사라졌습니다.
+  assert.doesNotMatch(renderer, /session-actions/);
+  assert.doesNotMatch(css, /\.session-actions/);
+  assert.match(css, /\.session-item \{[^}]*grid-template-columns: minmax\(0, 1fr\) auto/s);
+});
+
+test("사용량은 채팅 사이드바에서 바로 보이고 설정은 사용량 탭으로 열린다", () => {
+  const html = read("src/chat.html");
+  const renderer = read("src/chat.js");
+  const preload = read("src/chat-preload.js");
+  const main = read("src/main.js");
+  const css = read("src/chat.css");
+
+  assert.match(html, /id="btn-usage"/);
+  assert.match(html, /id="usage-strip-items"/);
+  assert.match(html, /<script src="\.\/usage-view\.js"><\/script>/);
+  assert.match(read("src/settings.html"), /<script src="\.\/usage-view\.js"><\/script>/);
+
+  assert.match(preload, /USAGE: "chat:usage"/);
+  assert.match(preload, /usage: \(force = false\) => ipcRenderer\.invoke\(INVOKE\.USAGE, \{ force \}\)/);
+  assert.match(main, /ipcMain\.handle\("chat:usage"/);
+  assert.match(main, /async function loadProviderSnapshots\(forceUsage\)/);
+  assert.match(main, /async function getUsageData\(\{ forceUsage = false \} = \{\}\)/);
+  assert.match(main, /ipcMain\.on\("chat:open-settings", \(_event, section\) => \{\s*\n\s*openSettingsWindow\(section\);/);
+
+  assert.match(renderer, /function renderUsageStrip\(\)/);
+  assert.match(renderer, /function openUsagePopover\(\)/);
+  assert.match(renderer, /chatApi\.openSettings\("usage"\)/);
+  // 좌하단 스트립은 "사용량 | 5시간 | 주간" 격자로 두 칸을 다 보여 줍니다.
+  assert.match(renderer, /usageView\.summarizeWindows\(item\)/);
+  assert.match(renderer, /for \(const window of summary\.windows\)/);
+  assert.match(renderer, /function makeStripHead\(text\)/);
+  assert.match(renderer, /makeStripHead\("사용량"\)/);
+  assert.match(css, /\.usage-strip-items \{[^}]*grid-template-columns: auto minmax\(0, 1fr\) minmax\(0, 1fr\)/s);
+  // 연결이 끊긴 공급자는 진단 버튼에 표시가 붙습니다.
+  assert.match(renderer, /function renderProviderHealth\(\)/);
+  assert.match(renderer, /doctorButton\.classList\.toggle\("has-issue"/);
+  assert.match(read("src/settings.js"), /usageView\.remainingPercent\(gauge\)/);
+  assert.ok(fs.existsSync(path.join(ROOT, "src/usage-view.js")));
+});
+
+test("채팅 화면 컨트롤은 인라인 스타일 없이 공통 크기 토큰을 쓴다", () => {
+  const html = read("src/chat.html");
+  const css = read("src/chat.css");
+
+  // 설정 버튼에 박혀 있던 인라인 style·onmouseover 핸들러 제거
+  assert.doesNotMatch(html, /onmouseover=/);
+  assert.doesNotMatch(html, /onmouseout=/);
+  assert.doesNotMatch(html, /<button[^>]*id="btn-settings"[^>]*style=/);
+  assert.match(html, /class="foot-button foot-button-icon" id="btn-settings"/);
+
+  // 진단·재탐지는 문제가 생겼을 때 찾는 버튼이라 사이드바 하단에 그대로 둡니다.
+  // (메뉴 안에 숨기면 연결이 끊겼을 때 복구 경로가 멀어집니다)
+  const foot = html.slice(html.indexOf('class="sidebar-foot"'), html.indexOf("</aside>"));
+  for (const id of ["btn-usage", "btn-doctor", "btn-refresh-providers", "btn-settings"]) {
+    assert.match(foot, new RegExp(`id="${id}"`));
+  }
+  assert.doesNotMatch(html, /room-more/);
+  assert.match(html, /id="btn-workflow"[^>]*>프로젝트 기록/);
+
+  // 공통 컨트롤 토큰
+  assert.match(css, /--control-h: 32px/);
+  assert.match(css, /--control-h-sm: 26px/);
+  assert.match(css, /\.room-controls \{[^}]*grid-template-columns: minmax\(0, 1fr\) auto/s);
+  assert.doesNotMatch(css, /\.discussion-button \{\s*\n\s*margin-left: auto;/);
+});
+
+test("에이전트가 낸 파일 경로와 링크가 읽을 수 있는 형태로 나온다", () => {
+  const renderer = read("src/chat.js");
+  const markdown = read("src/chat-markdown.js");
+  const css = read("src/chat.css");
+
+  // file://은 이동 가능한 link가 아니라 별도 file 토큰입니다. (임의 경로 열기 차단 유지)
+  assert.match(markdown, /type: "file", href, path, text/);
+  assert.match(markdown, /function decodeUrlText\(value\)/);
+  assert.match(markdown, /function makeUrlToken\(href, label\)/);
+  // [제목](주소) 문법도 인식합니다.
+  assert.match(markdown, /markdownLink\.lastIndexOf\("\]\("\)/);
+
+  assert.match(renderer, /token\.type === "file"/);
+  assert.match(renderer, /clipboard\.writeText\(token\.path\)/);
+  assert.match(css, /\.file-chip \{/);
+});
+
+test("상단 적용 방식은 짧은 라벨로 두고 상세는 툴팁으로 넘긴다", () => {
+  const renderer = read("src/chat.js");
+  assert.match(renderer, /enforcementHint\.textContent = \[\.\.\.enforcementKinds\]\.join/);
+  assert.match(renderer, /enforcementHint\.title = enforcementDetail/);
+  assert.match(renderer, /permissionSelect\.title = enforcementDetail/);
+  // 참여 에이전트가 둘 미만이면 @all 응답 방식은 숨깁니다.
+  assert.match(renderer, /responseModeBar\.hidden = professionalModeEnabled \|\| !discussable/);
+});
+
+test("연속된 시스템 알림은 접히고 다시 펼칠 수 있다", () => {
+  const renderer = read("src/chat.js");
+  const css = read("src/chat.css");
+  assert.match(renderer, /const SYSTEM_RUN_VISIBLE = 3/);
+  assert.match(renderer, /function trailingSystemRun\(\)/);
+  assert.match(renderer, /function syncSystemRun\(\)/);
+  // 같은 문장이 연달아 오면 x N으로 묶습니다.
+  assert.match(renderer, /function mergeIntoPreviousSystem\(item\)/);
+  assert.match(css, /\.message-list\.show-system-history \.message\.is-collapsed/);
 });

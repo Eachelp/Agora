@@ -58,3 +58,37 @@ test("빈 입력은 빈 블록 배열", () => {
   assert.deepEqual(tokenizeBlocks(""), []);
   assert.deepEqual(tokenizeInline(""), []);
 });
+
+test("마크다운 링크 문법을 원문 그대로 두지 않는다", () => {
+  const tokens = tokenizeInline("자세히는 [문서](https://example.com/a(b)c) 참고");
+  const link = tokens.find((token) => token.type === "link");
+  assert.equal(link.text, "문서");
+  // 파일 이름에 흔한 괄호쌍은 주소 안에 그대로 남습니다.
+  assert.equal(link.href, "https://example.com/a(b)c");
+  assert.ok(tokens.every((token) => !String(token.text).includes("](")));
+});
+
+test("file 경로는 링크가 아니라 읽을 수 있는 file 토큰이 된다", () => {
+  const tokens = tokenizeInline(
+    "[보고서](file:///l:/%EB%82%B4%20%EB%AC%B8%EC%84%9C/%EA%B2%80%EC%82%AC(BFI).xlsx) 확인"
+  );
+  const file = tokens.find((token) => token.type === "file");
+  // 이동 가능한 link 토큰으로는 절대 나오지 않습니다.
+  assert.ok(tokens.every((token) => token.type !== "link"));
+  assert.equal(file.text, "보고서");
+  // 퍼센트 인코딩된 한글 경로를 사람이 읽는 형태로 되돌립니다.
+  assert.equal(file.path, "l:/내 문서/검사(BFI).xlsx");
+});
+
+test("라벨이 없는 file 주소는 파일 이름만 남긴다", () => {
+  const [token] = tokenizeInline("file:///C:/work/%EA%B2%B0%EA%B3%BC.xlsx");
+  assert.equal(token.type, "file");
+  assert.equal(token.text, "결과.xlsx");
+  assert.equal(token.path, "C:/work/결과.xlsx");
+});
+
+test("디코딩할 수 없는 주소도 원문을 잃지 않는다", () => {
+  const [token] = tokenizeInline("file:///c:/%E0%A4%A.txt");
+  assert.equal(token.type, "file");
+  assert.ok(token.path.includes("%E0%A4%A"));
+});

@@ -2,6 +2,8 @@
 // CLI 탐지/검증은 src/providers/provider-capabilities.js 한 곳에서만 수행하고,
 // 이 모듈은 탐지 결과(capability record)와 세션별 설정을 방 참가자로 합칩니다.
 
+const { resolveEffortVariant } = require("../providers/provider-capabilities");
+
 const GROUP_ALIASES = Object.freeze(["all", "everyone", "모두", "전원", "얘들아"]);
 
 function concreteModelOptions(record) {
@@ -42,10 +44,23 @@ function resolvedEffort(record, model, configured) {
   return efforts[0] || "default";
 }
 
+// 예전 세션은 노력이 붙은 변형 id(gemini-3.7-flash-high)를 모델로 저장해 두었습니다.
+// 지금 목록은 모델과 노력을 나눠 두므로 저장값을 (모델, 노력) 쌍으로 옮겨 읽습니다.
+// 그대로 두면 목록에 없는 모델이라 엉뚱한 기본 모델로 떨어집니다.
+function migrateEffortVariant(record, config) {
+  const variant = resolveEffortVariant(record.modelOptions, config.model);
+  if (!variant) return { model: config.model, effort: config.effort };
+  return {
+    model: variant.model,
+    effort: config.effort && config.effort !== "default" ? config.effort : variant.effort,
+  };
+}
+
 // capability record + 세션 설정 → 채팅방 참가자.
 // commandPath/needsShell 같은 실행 정보는 여기서 제거되어 방/renderer로 가지 않습니다.
 function roomAgentFromCapability(record, config = {}) {
-  const model = resolvedModel(record, config.model);
+  const migrated = migrateEffortVariant(record, config);
+  const model = resolvedModel(record, migrated.model);
   return {
     id: record.id,
     name: record.name,
@@ -56,7 +71,7 @@ function roomAgentFromCapability(record, config = {}) {
     reason: record.reason || "",
     version: record.version || "",
     model,
-    effort: resolvedEffort(record, model, config.effort),
+    effort: resolvedEffort(record, model, migrated.effort),
     autoApprove: Boolean(config.autoApprove),
   };
 }
@@ -70,6 +85,7 @@ function roomAgentsFromCapabilities(records, sessionAgents = {}) {
 module.exports = {
   GROUP_ALIASES,
   concreteModelOptions,
+  migrateEffortVariant,
   resolvedModel,
   resolvedEffort,
   roomAgentFromCapability,

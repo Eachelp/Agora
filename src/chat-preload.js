@@ -6,6 +6,7 @@ const INVOKE = Object.freeze({
   PROVIDERS_REFRESH: "chat:providers:refresh",
   OPEN_EXTERNAL: "chat:open-external",
   OPEN_SETTINGS: "chat:open-settings",
+  USAGE: "chat:usage",
   PROJECTS_CREATE: "chat:projects:create",
   PROJECTS_SELECT: "chat:projects:select",
   PROJECTS_UPDATE: "chat:projects:update",
@@ -65,7 +66,8 @@ contextBridge.exposeInMainWorld("chatApi", {
   state: (input) => ipcRenderer.invoke(INVOKE.STATE, input),
   providersRefresh: () => ipcRenderer.invoke(INVOKE.PROVIDERS_REFRESH),
   openExternal: (url) => ipcRenderer.invoke(INVOKE.OPEN_EXTERNAL, { url }),
-  openSettings: () => ipcRenderer.send(INVOKE.OPEN_SETTINGS),
+  openSettings: (section) => ipcRenderer.send(INVOKE.OPEN_SETTINGS, section),
+  usage: (force = false) => ipcRenderer.invoke(INVOKE.USAGE, { force }),
 
   projectsCreate: (name, workspace) => ipcRenderer.invoke(INVOKE.PROJECTS_CREATE, { name, workspace }),
   projectsSelect: (projectId) => ipcRenderer.invoke(INVOKE.PROJECTS_SELECT, { projectId }),

@@ -66,3 +66,43 @@ test("AGY 고정 모델은 예전에 저장된 effort를 실행 전에 제거한
   assert.equal(gpt.effort, "default");
   assert.equal(opus.effort, "default");
 });
+
+test("예전에 저장한 gemini 변형 id는 접힌 모델과 노력으로 이관된다", () => {
+  const modelOptions = [
+    { id: "default", efforts: [] },
+    {
+      id: "gemini-3.7-flash",
+      efforts: ["low", "medium", "high"],
+      effortModels: {
+        low: "gemini-3.7-flash-low",
+        medium: "gemini-3.7-flash-medium",
+        high: "gemini-3.7-flash-high",
+      },
+    },
+    { id: "claude-sonnet-4-6", efforts: [] },
+  ];
+
+  // 이관이 없으면 목록에 없는 모델이라 엉뚱한 기본 모델로 떨어집니다.
+  const migrated = roomAgentFromCapability(record("agy", modelOptions), {
+    model: "gemini-3.7-flash-low",
+    effort: "default",
+  });
+  assert.equal(migrated.model, "gemini-3.7-flash");
+  assert.equal(migrated.effort, "low");
+
+  // 사용자가 노력을 따로 골라 뒀다면 그 선택을 유지합니다.
+  const kept = roomAgentFromCapability(record("agy", modelOptions), {
+    model: "gemini-3.7-flash-low",
+    effort: "high",
+  });
+  assert.equal(kept.model, "gemini-3.7-flash");
+  assert.equal(kept.effort, "high");
+
+  // 이미 접힌 id로 저장된 설정은 그대로 둡니다.
+  const current = roomAgentFromCapability(record("agy", modelOptions), {
+    model: "gemini-3.7-flash",
+    effort: "medium",
+  });
+  assert.equal(current.model, "gemini-3.7-flash");
+  assert.equal(current.effort, "medium");
+});

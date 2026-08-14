@@ -50,16 +50,21 @@
         </div>
         <ul class="session-list" id="session-list" aria-label="채팅 목록"></ul>
         <div class="sidebar-foot">
-          <span class="sidebar-foot-actions">
-            <button class="icon-button" id="btn-settings" type="button" aria-label="앱 설정" title="앱 설정" style="padding: 2px 4px; display: inline-flex; align-items: center; justify-content: center; opacity: 0.6; transition: opacity 0.2s; cursor: pointer; background: transparent; border: none; color: inherit; border-radius: 4px;" onmouseover="this.style.opacity='1'; this.style.backgroundColor='rgba(0,0,0,0.05)'" onmouseout="this.style.opacity='0.6'; this.style.backgroundColor='transparent'">
+          <button class="usage-strip" id="btn-usage" type="button" title="남은 사용량 보기" aria-label="남은 사용량 보기">
+            <span class="usage-strip-items" id="usage-strip-items">
+              <span class="usage-strip-empty">사용량 확인 중…</span>
+            </span>
+          </button>
+          <div class="sidebar-foot-actions">
+            <button class="foot-button" id="btn-doctor" type="button" title="설치와 로그인 상태를 확인합니다">환경 진단</button>
+            <button class="foot-button" id="btn-refresh-providers" type="button" title="설치된 CLI를 다시 탐지합니다">CLI 다시 탐지</button>
+            <button class="foot-button foot-button-icon" id="btn-settings" type="button" title="앱 설정" aria-label="앱 설정">
               <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                 <circle cx="8" cy="8" r="2.2" />
                 <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4" />
               </svg>
             </button>
-            <button class="text-button" id="btn-doctor" type="button">환경 진단</button>
-            <button class="text-button" id="btn-refresh-providers" type="button" title="설치된 CLI를 다시 탐지합니다">CLI 다시 탐지</button>
-          </span>
+          </div>
         </div>
       </aside>
       <div
@@ -83,25 +88,27 @@
       <div class="chat-main">
         <header class="room-bar">
           <div class="room-info">
-            <strong id="session-title" title="더블클릭하면 이름을 바꿀 수 있어요">세션</strong>
+            <button class="room-title-button" id="session-title" type="button" title="클릭해서 이름 바꾸기 (F2)">세션</button>
           </div>
           <div class="room-actions">
             <div class="agent-chips" id="agent-chips" aria-label="참여 에이전트"></div>
           </div>
           <div class="room-controls">
-            <button class="chip-button workspace-button" id="btn-workspace" type="button" title="세션 워크스페이스 폴더">
-              <svg class="workspace-icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M1.8 12.6V3.9c0-.5.4-.9.9-.9h3.1l1.4 1.6h6.1c.5 0 .9.4.9.9v7.1c0 .5-.4.9-.9.9H2.7a.9.9 0 0 1-.9-.9Z" />
-              </svg>
-              <span id="workspace-label">워크스페이스 없음</span>
-            </button>
-            <select id="permission-select" aria-label="권한 모드">
-              <option value="chat">대화만 (도구 없음)</option>
-              <option value="workspace-read">워크스페이스 읽기</option>
-              <option value="workspace-write">워크스페이스 쓰기</option>
-            </select>
-            <span class="enforcement-hint" id="enforcement-hint"></span>
-            <button class="chip-button permission-warning" id="permission-warning" type="button" hidden></button>
+            <div class="room-controls-context">
+              <button class="chip-button workspace-button" id="btn-workspace" type="button" title="세션 워크스페이스 폴더">
+                <svg class="workspace-icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M1.8 12.6V3.9c0-.5.4-.9.9-.9h3.1l1.4 1.6h6.1c.5 0 .9.4.9.9v7.1c0 .5-.4.9-.9.9H2.7a.9.9 0 0 1-.9-.9Z" />
+                </svg>
+                <span id="workspace-label">워크스페이스 없음</span>
+              </button>
+              <select id="permission-select" aria-label="권한 모드">
+                <option value="chat">대화만 (도구 없음)</option>
+                <option value="workspace-read">워크스페이스 읽기</option>
+                <option value="workspace-write">워크스페이스 쓰기</option>
+              </select>
+              <span class="enforcement-hint" id="enforcement-hint"></span>
+              <button class="chip-button permission-warning" id="permission-warning" type="button" hidden></button>
+            </div>
             <div class="room-controls-actions">
               <button class="chip-button workflow-button" id="btn-workflow" type="button" title="이 프로젝트의 메모리·결정·작업 기록">프로젝트 기록</button>
               <button class="chip-button discussion-button" id="btn-discussion" type="button" title="에이전트 토론 시작">토론 시작</button>
@@ -221,6 +228,7 @@
     <script src="./vendor/katex/katex.min.js"></script>
     <script src="./vendor/katex/auto-render.min.js"></script>
     <script src="./chat-markdown.js"></script>
+    <script src="./usage-view.js"></script>
     <script src="./chat.js"></script>
   </body>
 </html>

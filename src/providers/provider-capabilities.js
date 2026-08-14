@@ -139,16 +139,83 @@ const AGY_MODEL_OPTIONS = Object.freeze([
   Object.freeze({ id: "claude-opus-4-6-thinking", label: "Claude Opus 4.6 (Thinking)", efforts: Object.freeze([]) }),
   Object.freeze({ id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (중간)", efforts: Object.freeze([]) }),
 ]);
-const AGY_MODEL_OPTIONS_VERSION = 3;
+// 노력 변형을 접는 규칙이 바뀌면 올려서 저장된 capability 캐시를 무효화합니다.
+const AGY_MODEL_OPTIONS_VERSION = 4;
+
+const EFFORT_VARIANT_ID = /^(.+)-(low|medium|high)$/;
+const EFFORT_ORDER = Object.freeze(["low", "medium", "high"]);
+
+// "Gemini 3.7 Flash (높음)" → "Gemini 3.7 Flash".
+function baseModelLabel(label, baseId) {
+  const stripped = String(label || "")
+    .replace(/\s*[(（]\s*(?:높음|중간|낮음|high|medium|low)\s*[)）]\s*$/i, "")
+    .trim();
+  return stripped || baseId;
+}
+
+// `agy models`는 같은 모델을 gemini-3.7-flash-high / -medium / -low 처럼
+// 노력 단계마다 따로 보고합니다. 목록에 세 줄씩 늘어놓으면 옆의 "노력" 선택이
+// 늘 비활성이 되고 같은 선택을 두 곳에서 하게 됩니다. 모델 한 줄로 접고 단계는
+// 노력 선택이 맡되, CLI에 넘길 실제 id는 effortModels에 남겨 둡니다.
+function collapseEffortVariants(options) {
+  const collapsed = [];
+  const byBase = new Map();
+
+  for (const option of options) {
+    const match = EFFORT_VARIANT_ID.exec(option.id || "");
+    // 모델 자체가 고정 변형인 항목(Claude Thinking·GPT-OSS Medium)과 아직 규칙을
+    // 모르는 새 모델(efforts 없음)은 접지 않고 그대로 둡니다.
+    if (!match || (option.efforts || []).length === 0) {
+      collapsed.push(option);
+      continue;
+    }
+    const [, baseId, effort] = match;
+    let entry = byBase.get(baseId);
+    if (!entry) {
+      entry = {
+        ...option,
+        id: baseId,
+        label: baseModelLabel(option.label, baseId),
+        efforts: [],
+        effortModels: {},
+      };
+      byBase.set(baseId, entry);
+      collapsed.push(entry);
+    }
+    if (!entry.efforts.includes(effort)) entry.efforts.push(effort);
+    entry.effortModels[effort] = option.id;
+    if (option.isDefault) entry.isDefault = true;
+  }
+
+  for (const entry of byBase.values()) {
+    entry.efforts.sort((a, b) => EFFORT_ORDER.indexOf(a) - EFFORT_ORDER.indexOf(b));
+  }
+  return collapsed;
+}
+
+// 예전 세션이 저장해 둔 변형 id(gemini-3.7-flash-high)를 지금 목록의
+// (모델, 노력) 쌍으로 옮깁니다. 이미 목록에 있는 id면 옮길 것이 없어 null입니다.
+function resolveEffortVariant(modelOptions, model) {
+  if (!model) return null;
+  const options = modelOptions || [];
+  if (options.some((option) => option.id === model)) return null;
+  for (const option of options) {
+    const found = Object.entries(option.effortModels || {})
+      .find(([, variantId]) => variantId === model);
+    if (found) return { model: option.id, effort: found[0] };
+  }
+  return null;
+}
 
 function modelOptionsFor(def, models) {
-  return (models || []).map((id) => {
+  const mapped = (models || []).map((id) => {
     const known = (def.modelOptions || []).find((option) => option.id === id);
     if (known) return { ...known, efforts: [...(known.efforts || [])] };
     // `agy models`가 새 모델을 먼저 알려도 지원 여부를 추측해 잘못된
     // --effort를 붙이지 않습니다. 다음 앱 업데이트에서 규칙을 추가하면 됩니다.
     return { id, label: id, efforts: def.id === "agy" ? [] : [...def.efforts] };
   });
+  return def.id === "agy" ? collapseEffortVariants(mapped) : mapped;
 }
 
 // 모델/노력 옵션은 설치된 CLI --help에서 검증된 플래그에만 연결됩니다.
@@ -423,7 +490,10 @@ function createCapabilityService(options = {}) {
       commandPath: null,
       needsShell: false,
       version: null,
-      models: [...def.models],
+      // AGY는 노력 변형을 접어 보여주므로 models 목록도 접힌 id와 맞춥니다.
+      models: def.id === "agy"
+        ? modelOptionsFor(def, def.models).map((option) => option.id)
+        : [...def.models],
       modelOptions: modelOptionsFor(def, def.models),
       efforts: [...def.efforts],
       allowCustomModel: def.allowCustomModel,
@@ -509,6 +579,7 @@ function createCapabilityService(options = {}) {
       }
     } else if (probedModels) {
       record.modelOptions = modelOptionsFor(def, probedModels);
+      if (def.id === "agy") record.models = record.modelOptions.map((option) => option.id);
     }
     if (stat) {
       record.cachePatch = {
@@ -600,6 +671,8 @@ module.exports = {
   PROVIDER_DEFS,
   PROBE_TIMEOUT_MS,
   MODEL_PROBE_TIMEOUT_MS,
+  collapseEffortVariants,
+  resolveEffortVariant,
   probeCodexModelCatalog,
   probeAgyModelCatalog,
   cliCandidates,

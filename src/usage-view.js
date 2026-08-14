@@ -1,0 +1,102 @@
+// 사용량 게이지 표시 규칙을 채팅 화면과 설정 화면이 공유하기 위한 순수 헬퍼입니다.
+// DOM을 만들지 않고 값만 계산하므로 Node에서 그대로 단위 테스트할 수 있습니다.
+(function attachUsageView(global) {
+  const WARN_THRESHOLD = 70;
+  const DANGER_THRESHOLD = 90;
+
+  function clampPercent(value) {
+    return Math.min(100, Math.max(0, Number(value) || 0));
+  }
+
+  // 사용자에게는 "얼마나 썼는지"보다 "얼마나 남았는지"가 바로 읽힙니다.
+  function remainingPercent(gauge) {
+    return Math.round(100 - clampPercent(gauge?.usedPercent));
+  }
+
+  function usageTone(usedPercent) {
+    const used = clampPercent(usedPercent);
+    if (used >= DANGER_THRESHOLD) return "is-danger";
+    if (used >= WARN_THRESHOLD) return "is-warn";
+    return "";
+  }
+
+  function resetLabel(value) {
+    if (!value) return "—";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime()) || !/^\d{4}-\d{2}-\d{2}T/.test(String(value))) {
+      return String(value);
+    }
+    return `${new Intl.DateTimeFormat("ko-KR", {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(date)} 초기화`;
+  }
+
+  // 한 공급자에 여러 창(5시간·주간 등)이 있을 때 가장 먼저 바닥나는 창을 고릅니다.
+  function tightestGauge(gauges) {
+    if (!Array.isArray(gauges) || gauges.length === 0) return null;
+    return gauges.reduce((worst, gauge) =>
+      clampPercent(gauge?.usedPercent) > clampPercent(worst?.usedPercent) ? gauge : worst
+    );
+  }
+
+  // 공급자마다 창 이름 표기가 조금씩 달라(5시간 한도 / 5시간 / Five Hour) 좁은
+  // 사이드바에서는 짧은 이름으로 통일해 보여 줍니다.
+  function shortWindowLabel(label) {
+    const value = String(label || "").trim();
+    if (/5\s*시간|5\s*h(?![a-z])|five[_\s-]?hour/i.test(value)) return "5시간";
+    if (/주간|일주일|7\s*일|week|seven[_\s-]?day/i.test(value)) return "주간";
+    return value;
+  }
+
+  // 5시간을 먼저, 주간을 다음에 놓아 공급자끼리 같은 순서로 읽히게 합니다.
+  function windowRank(label) {
+    const short = shortWindowLabel(label);
+    if (short === "5시간") return 0;
+    if (short === "주간") return 1;
+    return 2;
+  }
+
+  // 사이드바 스트립용: 공급자 하나를 5시간·주간 두 칸으로 정리합니다.
+  // 조회에 실패한 공급자도 자리를 지켜 무엇이 빠졌는지 드러나게 합니다.
+  function summarizeWindows(item) {
+    if (!item) return null;
+    const base = { id: item.id, label: item.label, windows: [] };
+    if (item.error) return { ...base, error: item.error };
+
+    const gauges = Array.isArray(item.gauges) ? item.gauges : [];
+    if (gauges.length === 0) return { ...base, error: "한도 정보 없음" };
+
+    return {
+      ...base,
+      windows: [...gauges]
+        .sort((a, b) => windowRank(a.label) - windowRank(b.label))
+        .slice(0, 2)
+        .map((gauge) => ({
+          label: shortWindowLabel(gauge.label),
+          remaining: remainingPercent(gauge),
+          tone: usageTone(gauge.usedPercent),
+          resetText: gauge.resetText || "",
+        })),
+    };
+  }
+
+  const api = {
+    WARN_THRESHOLD,
+    DANGER_THRESHOLD,
+    clampPercent,
+    remainingPercent,
+    usageTone,
+    resetLabel,
+    shortWindowLabel,
+    tightestGauge,
+    summarizeWindows,
+  };
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = api;
+  } else {
+    global.usageView = api;
+  }
+})(typeof window !== "undefined" ? window : globalThis);
