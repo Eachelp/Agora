@@ -1101,15 +1101,20 @@ textarea:focus-visible {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 12px;
+  gap: 8px;
+  padding: 12px 14px 8px;
   border-bottom: 1px solid var(--line);
 }
 
 .sidebar-title {
-  font-family: var(--font-display);
-  font-size: 12px;
+  color: var(--ink);
+  font-size: 13.5px;
   font-weight: 700;
-  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+  min-width: 0;
 }
 
 .sidebar-foot {
@@ -1124,6 +1129,8 @@ textarea:focus-visible {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
+  white-space: nowrap;
   min-height: var(--control-h-sm);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-sm);
@@ -1697,6 +1704,10 @@ textarea:focus-visible {
   overscroll-behavior: contain;
 }
 
+.popover.is-new-project {
+  width: min(380px, calc(100vw - 24px));
+}
+
 .popover.is-project-settings,
 .popover.is-workflow {
   width: min(430px, calc(100vw - 24px));
@@ -1740,6 +1751,11 @@ textarea:focus-visible {
   justify-content: space-between;
   gap: 10px;
   font-size: 12px;
+}
+
+.popover-field > span {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .popover-field select,
@@ -1927,8 +1943,10 @@ textarea:focus-visible {
 }
 
 .sidebar-heading {
-  display: grid;
-  gap: 2px;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  flex: 1;
 }
 
 .sidebar-title {
@@ -2043,7 +2061,11 @@ textarea:focus-visible {
 .room-controls {
   grid-area: controls;
   margin-top: 0;
-  gap: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 /* 실행 버튼 묶음은 항상 오른쪽 끝에 고정합니다.
@@ -2642,9 +2664,16 @@ textarea:focus-visible {
 .project-workspace-field {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 6px;
   flex: 1;
   min-width: 0;
+}
+
+.project-workspace-field button {
+  flex-shrink: 0;
+  white-space: nowrap;
+  min-width: max-content;
 }
 
 .project-workspace-value {

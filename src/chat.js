@@ -560,7 +560,9 @@ function activeProjectEntry() {
 function renderProjects() {
   projectListEl.textContent = "";
   const activeProject = activeProjectEntry();
-  chatsHeading.textContent = activeProject ? `${activeProject.name}의 대화` : "대화";
+  const headingText = activeProject ? `${activeProject.name}의 대화` : "대화";
+  chatsHeading.textContent = headingText;
+  chatsHeading.title = headingText;
 
   for (const project of projects) {
     const item = document.createElement("li");
@@ -926,6 +928,7 @@ async function selectProject(projectId) {
 
 function openNewProjectPopover(anchor) {
   openPopover(anchor, (target) => {
+    target.classList.add("is-new-project");
     const title = document.createElement("strong");
     title.className = "project-popover-title";
     title.textContent = "새 프로젝트";
@@ -1397,7 +1400,7 @@ function renderAgents() {
   }
 }
 
-const POPOVER_VARIANTS = ["is-project-settings", "is-workflow", "plan-preview-popover", "is-menu", "is-usage"];
+const POPOVER_VARIANTS = ["is-project-settings", "is-new-project", "is-workflow", "plan-preview-popover", "is-menu", "is-usage"];
 
 function closePopover() {
   popover.hidden = true;
