@@ -64,6 +64,13 @@ const storeWarning = document.getElementById("store-warning");
 const popover = document.getElementById("popover");
 const popoverBackdrop = document.getElementById("popover-backdrop");
 const appEl = document.querySelector(".app");
+const railAgoraButton = document.getElementById("rail-agora");
+const railAgentButtons = new Map([
+  ["claude", document.getElementById("rail-claude")],
+  ["codex", document.getElementById("rail-codex")],
+  ["agy", document.getElementById("rail-agy")],
+]);
+const railSettingsButton = document.getElementById("rail-settings");
 const sidebarEl = document.getElementById("sidebar");
 const sidebarResizer = document.getElementById("sidebar-resizer");
 const sidebarToggle = document.getElementById("sidebar-toggle");
@@ -1313,15 +1320,20 @@ function renderHeader() {
   const planner = roleConfigFromProject(project, "planning");
   const implementation = roleConfigFromProject(project, "implementation");
   const review = roleConfigFromProject(project, "review");
-  const configured = Boolean(planner.agentId && implementation.agentId && review.agentId);
+  // 단계별 IPC 요구 조건과 버튼 활성 조건을 맞춥니다.
+  // PLAN은 기획자와 기획 검수(비어 있으면 검토 담당자 재사용)만 필요하고,
+  // 구현은 구현자·검토자, 전체 실행만 세 역할을 모두 필요로 합니다.
+  const planConfigured = Boolean(planner.agentId && review.agentId);
+  const implementationConfigured = Boolean(implementation.agentId && review.agentId);
+  const fullConfigured = Boolean(planner.agentId && implementation.agentId && review.agentId);
   specialistButton.disabled = !activeSessionId || specialistRunning || specialistActive;
   specialistButton.setAttribute("aria-checked", String(professionalModeEnabled));
   specialistButton.title = specialistBlockedAvailable
-    ? "구현이 막혔습니다. 다음 처리 방법을 선택하세요"
-    : professionalModeEnabled
-      ? "일반 대화 화면으로 돌아갑니다"
-      : configured
-        ? "PLAN, 실행, 전체 실행 버튼을 표시합니다"
+      ? "구현이 막혔습니다. 다음 처리 방법을 선택하세요"
+      : professionalModeEnabled
+        ? "일반 대화 화면으로 돌아갑니다"
+        : planConfigured
+          ? "PLAN, 실행, 전체 실행 버튼을 표시합니다"
         : "프로젝트 설정에서 기획·구현·검토 담당자를 지정하면 사용할 수 있습니다";
   specialistButton.setAttribute(
     "aria-label",
@@ -1333,13 +1345,13 @@ function renderHeader() {
   responseModeBar.hidden = professionalModeEnabled || !discussable;
   const blockedOrBusy = specialistRunning || specialistActive || specialistBlockedAvailable || specialistResumeAvailable;
   const planStartable = !specialistNode || specialistNode === "COMPLETED" || specialistStatus === "INTERRUPTED" || specialistNeedsInput;
-  professionalPlanButton.disabled = !configured || blockedOrBusy || !planStartable;
-  professionalImplementationButton.disabled = !configured || blockedOrBusy || !specialistPlanReady;
+  professionalPlanButton.disabled = !planConfigured || blockedOrBusy || !planStartable;
+  professionalImplementationButton.disabled = !implementationConfigured || blockedOrBusy || !specialistPlanReady;
   const canRegenerateRecord = specialistNode === "COMPLETED" || (specialistNode === "RECORDING" && specialistStatus === "WAITING");
   professionalRecordButton.hidden = !canRegenerateRecord;
   professionalRecordButton.disabled = !review.agentId || blockedOrBusy;
   professionalRecordButton.title = "완료된 실행의 기록을 다시 만듭니다";
-  professionalFullButton.disabled = !configured || blockedOrBusy || !planStartable;
+  professionalFullButton.disabled = !fullConfigured || blockedOrBusy || !planStartable;
   // 저장된 기획안이 있으면(승인 대기 중이거나 통과한 경우) 열람 버튼을 노출합니다.
   const hasPlanTask = Boolean(specialistPlanTaskPath);
   professionalPlanViewButton.hidden = !hasPlanTask;
@@ -1351,8 +1363,8 @@ function renderHeader() {
     ? "기획 검수를 통과한 작업을 구현·검수·기록까지 실행합니다"
     : "먼저 기획·검수를 통과시켜 주세요";
   // 다음에 실행할 단계를 강조합니다: 기획 통과 전이면 1단계, 통과 후면 2단계.
-  const nextIsImplementation = configured && specialistPlanReady && !blockedOrBusy;
-  const nextIsPlan = configured && !specialistPlanReady && !blockedOrBusy;
+  const nextIsImplementation = implementationConfigured && specialistPlanReady && !blockedOrBusy;
+  const nextIsPlan = planConfigured && !specialistPlanReady && !blockedOrBusy;
   professionalPlanButton.classList.toggle("is-next-step", nextIsPlan);
   professionalImplementationButton.classList.toggle("is-next-step", nextIsImplementation);
   if (professionalProgress) {
@@ -1399,6 +1411,32 @@ function renderAgents() {
     agentChips.append(chip);
   }
 }
+
+function setRailActive(button) {
+  document.querySelectorAll(".app-rail-button").forEach((item) => item.classList.remove("is-active"));
+  button?.classList.add("is-active");
+}
+
+function openRailAgentSettings(agentId, button) {
+  const chip = [...agentChips.querySelectorAll(".agent-chip")].find((item) => item.dataset.agentId === agentId);
+  if (!chip) {
+    flashNotice(`@${agentId} 담당 설정을 찾지 못했습니다.`);
+    return;
+  }
+  setRailActive(button);
+  chip.click();
+}
+
+railAgoraButton?.addEventListener("click", () => {
+  setRailActive(railAgoraButton);
+  sessionTitleEl?.focus();
+});
+
+for (const [agentId, button] of railAgentButtons) {
+  button?.addEventListener("click", () => openRailAgentSettings(agentId, button));
+}
+
+railSettingsButton?.addEventListener("click", () => document.getElementById("btn-settings")?.click());
 
 const POPOVER_VARIANTS = ["is-project-settings", "is-new-project", "is-workflow", "plan-preview-popover", "is-menu", "is-usage"];
 

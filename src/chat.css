@@ -3346,6 +3346,122 @@ textarea:focus-visible {
   border-radius: 14px 8px 14px 14px;
 }
 
+/* --- Showcase shell: functional quick rail + existing workspace --- */
+.app-rail {
+  width: 58px;
+  flex: none;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 6px 9px;
+  background: var(--accent);
+  color: #ffffff;
+  border-right: 1px solid color-mix(in srgb, var(--accent-strong) 55%, transparent);
+}
+
+.app-rail-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  margin-bottom: 6px;
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.14);
+}
+
+.app-rail-brand img {
+  width: 29px;
+  height: 29px;
+  object-fit: contain;
+}
+
+.app-rail-button {
+  width: 46px;
+  min-height: 45px;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.74);
+  font-size: 9px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background-color 120ms ease-out, color 120ms ease-out;
+}
+
+.app-rail-button:hover,
+.app-rail-button:focus-visible,
+.app-rail-button.is-active {
+  background: rgba(255, 255, 255, 0.18);
+  color: #ffffff;
+}
+
+.app-rail-button:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.82);
+  outline-offset: 1px;
+}
+
+.app-rail-button img,
+.app-rail-glyph {
+  width: 23px;
+  height: 23px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  background: #ffffff;
+  color: var(--accent);
+  object-fit: contain;
+  padding: 3px;
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.app-rail-divider {
+  width: 30px;
+  height: 1px;
+  margin: 2px 0;
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.app-rail-spacer { flex: 1; }
+
+.app-rail-settings {
+  min-height: 42px;
+}
+
+.app-rail-settings svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* 설정의 실제 DOM/이벤트는 기존 위치에 보존하고, 화면에는 레일의 단일 진입점만 노출합니다. */
+.sidebar-foot .foot-button-icon {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .app-rail {
+    width: 48px;
+    padding-left: 4px;
+    padding-right: 4px;
+  }
+
+  .app-rail-button {
+    width: 40px;
+  }
+
+  .app-rail-label { display: none; }
+}
+
 .foot-button {
   display: inline-flex;
   align-items: center;

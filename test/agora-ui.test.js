@@ -62,6 +62,17 @@ test("Agora 화면 재배치는 기존 채팅 제어 연결을 유지한다", ()
   assert.match(html, /Ἀγορά/);
 });
 
+test("Showcase 레일은 기존 에이전트 설정과 설정 창으로 연결된다", () => {
+  const html = read("src/chat.html");
+  const renderer = read("src/chat.js");
+  for (const id of ["app-rail", "rail-agora", "rail-claude", "rail-codex", "rail-agy", "rail-settings"]) {
+    assert.match(html, new RegExp(`id="${id}"`));
+  }
+  assert.match(renderer, /openRailAgentSettings\(agentId, button\)/);
+  assert.match(renderer, /chip\.click\(\)/);
+  assert.match(renderer, /railSettingsButton[\s\S]*?btn-settings[\s\S]*?click\(\)/);
+});
+
 test("Agora 채팅 화면은 기능 라벨을 간결하게 유지한다", () => {
   const html = read("src/chat.html");
   const css = read("src/chat.css");
