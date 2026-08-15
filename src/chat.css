@@ -3116,6 +3116,11 @@ textarea:focus-visible {
   border-bottom-color: var(--accent);
 }
 
+/* 브랜드는 타이틀바와 레일의 아고라 항목만 사용합니다. */
+.sidebar-brand {
+  display: none;
+}
+
 .sidebar-brand strong,
 .sidebar-brand > span {
   color: #ffffff;
@@ -3355,14 +3360,14 @@ textarea:focus-visible {
   flex-direction: column;
   align-items: center;
   gap: 7px;
-  padding: 10px 6px 9px;
+  padding: 8px 6px 9px;
   background: var(--accent);
   color: #ffffff;
   border-right: 1px solid color-mix(in srgb, var(--accent-strong) 55%, transparent);
 }
 
 .app-rail-brand {
-  display: flex;
+  display: none;
   align-items: center;
   justify-content: center;
   width: 38px;
