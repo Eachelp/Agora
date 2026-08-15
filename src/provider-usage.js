@@ -70,29 +70,78 @@ function pickPrimaryWindows(gauges) {
 
 function normalizeAgyQuota(data) {
   const groups = data?.groups || [];
-  // AGY는 gemini 계열 · Claude · GPT-OSS 그룹을 한꺼번에 내려줍니다.
-  // Agora가 AGY로 실제 호출하는 건 gemini 계열이라 그 그룹만 남깁니다.
-  // (Google이 그룹 이름을 바꿔 하나도 못 찾으면 전체를 그대로 씁니다)
-  const gemini = groups.filter((group) =>
-    /gemini/i.test(String(group?.displayName || group?.name || ""))
-  );
-  const selected = gemini.length > 0 ? gemini : groups;
+  if (groups.length === 0) return [];
 
-  const gauges = selected.flatMap((group) =>
+  const parseBucket = (group, bucket) => {
+    const remaining = Number(bucket.remainingFraction ?? bucket.remaining_fraction);
+    if (!Number.isFinite(remaining)) return null;
+    const bucketName = bucket.displayName || bucket.window || "";
+    return {
+      groupName: group.displayName || group.name || "",
+      bucketName,
+      window: classifyWindow(bucketName),
+      usedPercent: clampPercent((1 - remaining) * 100),
+      resetText: bucket.resetTime || bucket.reset_time || "",
+    };
+  };
+
+  const geminiGroups = [];
+  const otherGroups = [];
+
+  for (const group of groups) {
+    const name = String(group?.displayName || group?.name || "");
+    if (/gemini/i.test(name)) {
+      geminiGroups.push(group);
+    } else {
+      otherGroups.push(group);
+    }
+  }
+
+  // Gemini 계열 그룹(또는 Gemini가 없을 땐 첫 번째 그룹)에서 5시간·주간 대표 창을 추출합니다.
+  const primaryGroups = geminiGroups.length > 0 ? geminiGroups : [groups[0]];
+  const secondaryGroups = geminiGroups.length > 0 ? otherGroups : groups.slice(1);
+
+  const primaryBuckets = primaryGroups.flatMap((group) =>
+    (group.buckets || []).map((b) => parseBucket(group, b)).filter(Boolean)
+  );
+  const primaryGauges = pickPrimaryWindows(
+    primaryBuckets.map((b) => ({
+      label: [b.groupName, b.bucketName].filter(Boolean).join(" · "),
+      window: b.window,
+      usedPercent: b.usedPercent,
+      resetText: b.resetText,
+    }))
+  );
+
+  // 비 Gemini 그룹(Claude, GPT-OSS 등 AGY 별도 할당량 모델)도 상세 보기에서 확인할 수 있게 보존합니다.
+  const otherGauges = secondaryGroups.flatMap((group) =>
     (group.buckets || []).flatMap((bucket) => {
-      const remaining = Number(bucket.remainingFraction ?? bucket.remaining_fraction);
-      if (!Number.isFinite(remaining)) return [];
-      const bucketName = bucket.displayName || bucket.window || "";
+      const parsed = parseBucket(group, bucket);
+      if (!parsed) return [];
+      const label = [parsed.groupName, parsed.bucketName].filter(Boolean).join(" · ");
       return [{
-        label: [group.displayName || group.name, bucketName].filter(Boolean).join(" · "),
-        window: classifyWindow(bucketName),
-        usedPercent: clampPercent((1 - remaining) * 100),
-        resetText: bucket.resetTime || bucket.reset_time || "",
+        label,
+        usedPercent: parsed.usedPercent,
+        resetText: parsed.resetText,
       }];
     })
   );
 
-  return pickPrimaryWindows(gauges);
+  if (primaryGauges.length === 0 && otherGauges.length === 0) {
+    return groups.flatMap((group) =>
+      (group.buckets || []).flatMap((bucket) => {
+        const parsed = parseBucket(group, bucket);
+        if (!parsed) return [];
+        return [{
+          label: [parsed.groupName, parsed.bucketName].filter(Boolean).join(" · "),
+          usedPercent: parsed.usedPercent,
+          resetText: parsed.resetText,
+        }];
+      })
+    );
+  }
+
+  return [...primaryGauges, ...otherGauges];
 }
 
 function normalizeClaudeUsage(data) {

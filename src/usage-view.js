@@ -69,17 +69,25 @@
     const gauges = Array.isArray(item.gauges) ? item.gauges : [];
     if (gauges.length === 0) return { ...base, error: "한도 정보 없음" };
 
+    // 정확히 "5시간", "주간"인 기본 게이지를 우선 선택합니다.
+    const exact5h = gauges.find((g) => g.label === "5시간");
+    const exactWeek = gauges.find((g) => g.label === "주간");
+    const match5h = exact5h || gauges.find((g) => shortWindowLabel(g.label) === "5시간") || null;
+    const matchWeek = exactWeek || gauges.find((g) => shortWindowLabel(g.label) === "주간") || null;
+
+    const selected = [match5h, matchWeek].filter(Boolean);
+    const fallback = selected.length > 0
+      ? selected
+      : [...gauges].sort((a, b) => windowRank(a.label) - windowRank(b.label)).slice(0, 2);
+
     return {
       ...base,
-      windows: [...gauges]
-        .sort((a, b) => windowRank(a.label) - windowRank(b.label))
-        .slice(0, 2)
-        .map((gauge) => ({
-          label: shortWindowLabel(gauge.label),
-          remaining: remainingPercent(gauge),
-          tone: usageTone(gauge.usedPercent),
-          resetText: gauge.resetText || "",
-        })),
+      windows: fallback.map((gauge) => ({
+        label: shortWindowLabel(gauge.label),
+        remaining: remainingPercent(gauge),
+        tone: usageTone(gauge.usedPercent),
+        resetText: gauge.resetText || "",
+      })),
     };
   }
 

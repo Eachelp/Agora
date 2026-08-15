@@ -34,7 +34,7 @@ test("창 이름은 표기가 달라도 5시간대와 주간대로만 분류한�
   }
 });
 
-test("AGY 한도는 gemini 계열만 5시간·주간 두 개로 줄이고 잘못된 bucket은 제외한다", () => {
+test("AGY 한도는 gemini 계열 기본 5시간·주간과 함께 Claude/GPT-OSS 할당량도 포함한다", () => {
   const gauges = normalizeAgyQuota({
     groups: [
       {
@@ -50,7 +50,7 @@ test("AGY 한도는 gemini 계열만 5시간·주간 두 개로 줄이고 잘못
         displayName: "Gemini 3 Flash",
         buckets: [{ displayName: "5시간", remainingFraction: 0.9 }],
       },
-      // Agora가 AGY로 호출하지 않는 그룹은 화면에서 제외합니다.
+      // AGY의 별도 할당량 모델(Claude, GPT-OSS)도 게이지 목록에 포함됩니다.
       { displayName: "Claude Sonnet 4.6", buckets: [{ displayName: "일주일", remainingFraction: 0.1 }] },
       { displayName: "GPT-OSS 120B", buckets: [{ displayName: "5시간", remainingFraction: 0.05 }] },
     ],
@@ -58,6 +58,8 @@ test("AGY 한도는 gemini 계열만 5시간·주간 두 개로 줄이고 잘못
   assert.deepEqual(gauges, [
     { label: "5시간", usedPercent: 38, resetText: "soon" },
     { label: "주간", usedPercent: 70, resetText: "" },
+    { label: "Claude Sonnet 4.6 · 일주일", usedPercent: 90, resetText: "" },
+    { label: "GPT-OSS 120B · 5시간", usedPercent: 95, resetText: "" },
   ]);
 });
 
