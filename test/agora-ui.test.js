@@ -82,6 +82,25 @@ test("Agora 채팅 화면은 기능 라벨을 간결하게 유지한다", () => 
   assert.match(css, /\.titlebar-btn\.btn-settings svg[\s\S]*?width: 16px/);
 });
 
+test("사이드바 2열부터 메인 대화까지 얇은 색 테두리의 둥근 패널로 이어진다", () => {
+  const html = read("src/chat.html");
+  const css = read("src/chat.css");
+  assert.match(html, /class="workspace-shell"[^>]*>[\s\S]*id="sidebar"[\s\S]*id="chat-scroll"/);
+  assert.match(css, /\.workspace-shell \{[^}]*margin: 4px 4px 4px 0/);
+  assert.match(css, /\.workspace-shell \{[^}]*border: 1px solid color-mix/);
+  assert.match(css, /\.workspace-shell \{[^}]*border-left: 0/);
+  assert.match(css, /\.workspace-shell \{[^}]*border-radius: 14px/);
+  assert.match(css, /\.app \{\s*background: var\(--accent\)/);
+  assert.match(css, /\.chat-main \{[^}]*margin: 0/);
+  assert.match(css, /\.app-rail \{[^}]*border-right: 0/);
+  assert.match(css, /\.app-rail \{[^}]*width: 68px/);
+  assert.match(css, /\.app-rail-button \{[^}]*font-size: 10\.5px/);
+  assert.match(css, /\.app-rail-button img,[\s\S]*?\.app-rail-glyph \{[^}]*width: 28px/);
+  assert.match(css, /\.app-rail-settings svg \{[^}]*width: 24px/);
+  assert.match(css, /\.chat-scroll \{\s*background: var\(--surface\)/);
+  assert.match(css, /\.composer \{\s*background: var\(--surface\)/);
+});
+
 test("저장된 UI 테마가 채팅 화면의 색상 변수에 적용된다", () => {
   const renderer = read("src/chat.js");
   assert.match(renderer, /appearance\?\.uiTheme/);
@@ -104,8 +123,11 @@ test("에이전트 아바타는 애니메이션 캐릭터 대신 공급자 로�
   assert.doesNotMatch(renderer, /agent-glyph/);
 });
 
-test("Agora 아이콘은 파란 배경과 흰색 Ἀ를 사용한다", () => {
-  assert.match(read("src/chat.html"), /src="\.\.\/build\/icon\.png"/);
+test("Agora 채팅 브랜드는 고정 이미지를 반복하지 않고 그리스 문자 표식을 사용한다", () => {
+  const chat = read("src/chat.html");
+  assert.match(chat, /<span class="titlebar-logo"[^>]*>Ἀ<\/span>/);
+  assert.doesNotMatch(chat, /class="app-rail-brand"/);
+  assert.doesNotMatch(chat, /src="\.\.\/build\/icon\.png"/);
   assert.match(read("src/settings.html"), /src="\.\.\/build\/icon\.png"/);
   for (const file of ["build/icon.png", "build/icon-mac.png", "build/icon.ico"]) {
     assert.ok(fs.statSync(path.join(ROOT, file)).size > 0, `${file}이 비어 있지 않아야 합니다`);

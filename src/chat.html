@@ -10,7 +10,7 @@
   <body>
     <div class="titlebar">
       <div class="titlebar-drag">
-        <img class="titlebar-logo" src="../build/icon.png" alt="Ἀγορά" />
+        <span class="titlebar-logo" aria-hidden="true">Ἀ</span>
         <span class="titlebar-title">Ἀγορά · 채팅</span>
       </div>
       <div class="titlebar-controls">
@@ -29,9 +29,6 @@
 
     <div class="app">
       <nav class="app-rail" id="app-rail" aria-label="Agora 빠른 이동">
-        <div class="app-rail-brand" aria-label="Agora">
-          <img src="../build/icon.png" alt="" aria-hidden="true" />
-        </div>
         <button class="app-rail-button is-active" id="rail-agora" type="button" title="현재 Agora 대화" aria-label="현재 Agora 대화">
           <span class="app-rail-glyph">A</span>
           <span class="app-rail-label">아고라</span>
@@ -58,13 +55,8 @@
           <span class="app-rail-label">설정</span>
         </button>
       </nav>
-      <aside class="sidebar" id="sidebar">
-        <div class="sidebar-brand">
-          <img class="sidebar-brand-icon" src="../build/icon.png" alt="" aria-hidden="true" />
-          <span>
-            <strong>Ἀγορά</strong>
-          </span>
-        </div>
+      <div class="workspace-shell" id="workspace-shell">
+        <aside class="sidebar" id="sidebar">
         <div class="sidebar-head project-head">
           <span class="sidebar-heading">
             <span class="sidebar-title">프로젝트</span>
@@ -96,24 +88,24 @@
             </button>
           </div>
         </div>
-      </aside>
-      <div
-        class="sidebar-resizer"
-        id="sidebar-resizer"
-        role="separator"
-        aria-label="대화 사이드바 너비 조절"
-        aria-orientation="vertical"
-        tabindex="0"
-      >
-        <button
-          class="sidebar-toggle"
-          id="sidebar-toggle"
-          type="button"
-          aria-label="대화 사이드바 접기"
-          aria-expanded="true"
-          title="사이드바 접기"
-        >‹</button>
-      </div>
+        </aside>
+        <div
+          class="sidebar-resizer"
+          id="sidebar-resizer"
+          role="separator"
+          aria-label="대화 사이드바 너비 조절"
+          aria-orientation="vertical"
+          tabindex="0"
+        >
+          <button
+            class="sidebar-toggle"
+            id="sidebar-toggle"
+            type="button"
+            aria-label="대화 사이드바 접기"
+            aria-expanded="true"
+            title="사이드바 접기"
+          >‹</button>
+        </div>
 
       <div class="chat-main">
         <header class="room-bar">
@@ -216,6 +208,7 @@
             <button class="button button-primary" id="btn-send" type="button">전송</button>
           </div>
         </footer>
+        </div>
       </div>
     </div>
 

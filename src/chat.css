@@ -91,28 +91,13 @@ textarea:focus-visible {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  position: relative;
-  width: 18px;
-  height: 18px;
-  object-fit: contain;
-}
-.titlebar-logo i {
-  position: absolute;
-  display: block;
-  width: 8px;
-  height: 8px;
-  border: 1px solid var(--accent);
-  border-radius: 2px;
-}
-.titlebar-logo i:first-child {
-  top: 0;
-  left: 0;
-  background: var(--accent-soft);
-}
-.titlebar-logo i:last-child {
-  right: 0;
-  bottom: 0;
-  background: var(--surface);
+  width: 20px;
+  height: 20px;
+  color: var(--surface);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .titlebar-title {
@@ -996,6 +981,25 @@ textarea:focus-visible {
   min-height: 0;
   display: flex;
   --sidebar-width: 220px;
+}
+
+.workspace-shell {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+  margin: 4px 4px 4px 0;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line));
+  border-left: 0;
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: 0 2px 8px rgba(16, 42, 67, 0.08);
+}
+
+/* 둥근 작업공간 바깥은 상단바·레일과 같은 Agora 프레임 색으로 채웁니다. */
+.app {
+  background: var(--accent);
 }
 
 .chat-main {
@@ -1894,47 +1898,14 @@ textarea:focus-visible {
   background: rgba(255, 255, 255, 0.12);
 }
 
-.titlebar-logo {
-  width: 20px;
-  height: 20px;
-}
-
 .app {
   --sidebar-width: 252px;
-  background: var(--page);
+  background: var(--accent);
 }
 
 .sidebar {
   background: var(--sidebar);
   border-right-color: var(--line);
-}
-
-.sidebar-brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 18px 16px 16px;
-  border-bottom: 1px solid var(--line);
-}
-
-.sidebar-brand-icon {
-  width: 34px;
-  height: 34px;
-  object-fit: contain;
-  flex: none;
-}
-
-.sidebar-brand > span {
-  display: grid;
-  gap: 1px;
-  min-width: 0;
-}
-
-.sidebar-brand strong {
-  color: var(--ink);
-  font-family: Georgia, "Times New Roman", serif;
-  font-size: 19px;
-  letter-spacing: -0.03em;
 }
 
 .sidebar-head {
@@ -2462,20 +2433,6 @@ textarea:focus-visible {
 
 .titlebar-btn.btn-settings:hover {
   background: rgba(255, 255, 255, 0.18);
-}
-
-.sidebar-brand {
-  padding: 15px 16px;
-}
-
-.sidebar-brand > span {
-  display: block;
-}
-
-.sidebar-brand strong {
-  font-family: var(--font-display);
-  font-size: 17px;
-  font-weight: 700;
 }
 
 .sidebar-head {
@@ -3106,16 +3063,6 @@ textarea:focus-visible {
   border-right-color: var(--line);
 }
 
-.sidebar-brand {
-  background: var(--accent);
-  border-bottom-color: var(--accent);
-}
-
-/* 브랜드는 타이틀바와 레일의 아고라 항목만 사용합니다. */
-.sidebar-brand {
-  display: none;
-}
-
 /* 브랜드를 뺀 만큼 프로젝트 목록이 위로 붙지 않게 상단 여백을 살립니다. */
 .sidebar .project-head {
   padding-top: 14px;
@@ -3127,17 +3074,6 @@ textarea:focus-visible {
 .professional-actions .chip-button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
-}
-
-.sidebar-brand strong,
-.sidebar-brand > span {
-  color: #ffffff;
-}
-
-.sidebar-brand-icon {
-  border-radius: 8px;
-  background: #ffffff;
-  padding: 3px;
 }
 
 .sidebar-head {
@@ -3214,7 +3150,7 @@ textarea:focus-visible {
 }
 
 .chat-scroll {
-  background: var(--page);
+  background: var(--surface);
 }
 
 .message .bubble {
@@ -3222,12 +3158,21 @@ textarea:focus-visible {
 }
 
 .composer {
-  background: linear-gradient(180deg, rgba(244, 247, 251, 0) 0%, var(--page) 32%);
+  background: var(--surface);
 }
 
 .composer-box {
   border-radius: 10px;
   box-shadow: 0 3px 12px rgba(16, 42, 67, 0.07);
+}
+
+/* 사이드바 2열부터 채팅까지 하나의 Slack식 작업 패널로 이어집니다. */
+.chat-main {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  overflow: hidden;
+  background: var(--surface);
 }
 
 /* --- Professional mode visual pass --- */
@@ -3361,50 +3306,32 @@ textarea:focus-visible {
 
 /* --- Showcase shell: functional quick rail + existing workspace --- */
 .app-rail {
-  width: 58px;
+  width: 68px;
   flex: none;
   min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 7px;
-  padding: 8px 6px 9px;
+  gap: 8px;
+  padding: 10px 7px 11px;
   background: var(--accent);
   color: #ffffff;
-  border-right: 1px solid color-mix(in srgb, var(--accent-strong) 55%, transparent);
-}
-
-.app-rail-brand {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  margin-bottom: 4px;
-  border-radius: 11px;
-  background: #ffffff;
-  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.18);
-}
-
-.app-rail-brand img {
-  width: 30px;
-  height: 30px;
-  object-fit: contain;
+  border-right: 0;
 }
 
 .app-rail-button {
-  width: 46px;
-  min-height: 45px;
+  width: 54px;
+  min-height: 54px;
   display: inline-flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 3px;
+  gap: 4px;
   border: 1px solid transparent;
   border-radius: 9px;
   background: transparent;
   color: rgba(255, 255, 255, 0.74);
-  font-size: 9px;
+  font-size: 10.5px;
   font-weight: 700;
   cursor: pointer;
   transition: background-color 120ms ease-out, color 120ms ease-out;
@@ -3424,22 +3351,22 @@ textarea:focus-visible {
 
 .app-rail-button img,
 .app-rail-glyph {
-  width: 23px;
-  height: 23px;
+  width: 28px;
+  height: 28px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 7px;
+  border-radius: 8px;
   background: #ffffff;
   color: var(--accent);
   object-fit: contain;
-  padding: 3px;
-  font-size: 15px;
+  padding: 4px;
+  font-size: 18px;
   font-weight: 800;
 }
 
 .app-rail-divider {
-  width: 30px;
+  width: 38px;
   height: 1px;
   margin: 2px 0;
   background: rgba(255, 255, 255, 0.24);
@@ -3448,12 +3375,12 @@ textarea:focus-visible {
 .app-rail-spacer { flex: 1; }
 
 .app-rail-settings {
-  min-height: 42px;
+  min-height: 50px;
 }
 
 .app-rail-settings svg {
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
 }
 
 /* 설정의 실제 DOM/이벤트는 기존 위치에 보존하고, 화면에는 레일의 단일 진입점만 노출합니다. */
@@ -3463,13 +3390,21 @@ textarea:focus-visible {
 
 @media (max-width: 760px) {
   .app-rail {
-    width: 48px;
+    width: 56px;
     padding-left: 4px;
     padding-right: 4px;
   }
 
   .app-rail-button {
-    width: 40px;
+    width: 48px;
+    min-height: 48px;
+  }
+
+  .app-rail-button img,
+  .app-rail-glyph {
+    width: 25px;
+    height: 25px;
+    font-size: 16px;
   }
 
   .app-rail-label { display: none; }
