@@ -3078,14 +3078,9 @@ textarea:focus-visible {
   --sidebar: #eaf2f9;
   --surface: #ffffff;
   --ink: #102a43;
-  --ink-soft: #28455f;
   --muted: #657d94;
   --line: #d5e1ec;
-  --line-strong: #b9cad9;
   --accent: #0b67a1;
-  --accent-soft: #e5f2fb;
-  --accent-strong: #084d7b;
-  --surface-muted: #f1f6fa;
 }
 
 .titlebar {
@@ -3620,4 +3615,58 @@ textarea:focus-visible {
   gap: 6px;
   border-top: 1px solid var(--line);
   padding-top: 9px;
+}
+
+/* --- Showcase finish pass: messages, composer, sidebar --- */
+
+/* 메시지 아바타는 시안처럼 흰 박스에 공식 로고를 담습니다. */
+.message .avatar {
+  background: #ffffff;
+  border: 1px solid var(--line);
+  padding: 4px;
+  box-shadow: 0 1px 3px rgba(16, 42, 67, 0.08);
+}
+.message .avatar::before {
+  background: #ffffff;
+}
+.message .avatar .agent-logo {
+  width: 100%;
+  height: 100%;
+}
+
+/* AI 말풍선은 연한 표면색, 사용자 말풍선은 강조색 그대로 유지합니다. */
+.message:not(.is-user):not(.is-system) .bubble {
+  background: var(--surface-muted);
+}
+
+.message .meta .name {
+  font-weight: 700;
+}
+
+/* 입력창은 시안의 떠 있는 카드 느낌으로 다듬습니다. */
+.composer-box {
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  box-shadow: 0 4px 14px rgba(16, 42, 67, 0.08);
+}
+.composer-box:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft), 0 6px 18px rgba(16, 42, 67, 0.1);
+}
+
+/* 사이드바 프로젝트/채팅 활성 강조를 강조색 계열로 통일합니다. */
+.project-item.is-active,
+.session-item.is-active {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
+}
+.project-item.is-active .project-name,
+.session-item.is-active .session-name {
+  color: var(--accent);
+}
+
+/* 레일 활성 항목에 스크린리더용 현재 위치 표시가 붙었을 때도 대비를 유지합니다. */
+.app-rail-button[aria-current="page"] {
+  background: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
 }

@@ -1423,8 +1423,14 @@ function renderAgents() {
 }
 
 function setRailActive(button) {
-  document.querySelectorAll(".app-rail-button").forEach((item) => item.classList.remove("is-active"));
-  button?.classList.add("is-active");
+  document.querySelectorAll(".app-rail-button").forEach((item) => {
+    item.classList.remove("is-active");
+    item.removeAttribute("aria-current");
+  });
+  if (button) {
+    button.classList.add("is-active");
+    button.setAttribute("aria-current", "page");
+  }
 }
 
 function openRailAgentSettings(agentId, button) {

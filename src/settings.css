@@ -1451,6 +1451,39 @@ input[type="search"]::placeholder {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.theme-preset-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0 12px;
+}
+
+.theme-preset-label {
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 700;
+  margin-right: 2px;
+}
+
+.theme-preset {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm, 8px);
+  background: var(--surface);
+  color: var(--ink-soft);
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: border-color 120ms ease-out, background 120ms ease-out, color 120ms ease-out;
+}
+
+.theme-preset:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 .color-field {
   display: grid;
   gap: 6px;

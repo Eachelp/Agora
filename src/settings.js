@@ -624,6 +624,45 @@ function registerColorPickerControls() {
     }
   }
 
+  // 빠른 테마 프리셋: 7개 색 입력 필드를 한 번에 채우고 라이브 반영합니다.
+  // 저장은 기존 저장 버튼이 담당하므로 별도 저장 로직을 두지 않습니다.
+  const THEME_PRESETS = {
+    "agora-blue": {
+      page: "#f4f7fb", sidebar: "#eaf2f9", surface: "#ffffff",
+      ink: "#102a43", muted: "#657d94", accent: "#0b67a1", line: "#d5e1ec",
+    },
+    "deep-navy": {
+      page: "#f5f7fb", sidebar: "#e9edf5", surface: "#ffffff",
+      ink: "#0f172a", muted: "#64748b", accent: "#1e3a8a", line: "#dbe2ee",
+    },
+    "aubergine": {
+      page: "#faf6fb", sidebar: "#f1e8f2", surface: "#ffffff",
+      ink: "#2a1730", muted: "#7c6a80", accent: "#7c3aed", line: "#e8dcec",
+    },
+    "emerald": {
+      page: "#f3faf6", sidebar: "#e6f3ec", surface: "#ffffff",
+      ink: "#0f2a1f", muted: "#5c7d6c", accent: "#059669", line: "#d3e7db",
+    },
+    "charcoal": {
+      page: "#f6f6f7", sidebar: "#ececee", surface: "#ffffff",
+      ink: "#1f2124", muted: "#6b6f76", accent: "#27272a", line: "#dcdde0",
+    },
+  };
+
+  for (const presetButton of document.querySelectorAll(".theme-preset")) {
+    presetButton.addEventListener("click", () => {
+      const preset = THEME_PRESETS[presetButton.dataset.preset];
+      if (!preset) return;
+      for (const field of UI_THEME_FIELDS) {
+        const value = preset[field.key];
+        if (!value) continue;
+        $(`#ui-${field.key}-color`).value = value;
+        $(`#ui-${field.key}-picker`).value = value;
+      }
+      updateLiveUiTheme();
+    });
+  }
+
   function updateLiveColors() {
     const bgVal = bgInput.value.trim();
     const textVal = textInput.value.trim();
