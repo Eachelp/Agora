@@ -239,6 +239,13 @@ function transitionProfessionalRun(current, event = {}) {
       next.stopReason = null;
       break;
     }
+    case "RECORDER_FAILED": {
+      if (current.node !== "RECORDING") return { ok: false, reason: `잘못된 전이: ${current.node} -> RECORDER_FAILED` };
+      next.node = "RECORDING";
+      next.status = "WAITING";
+      next.stopReason = event.stopReason || "RECORDER_FAILED";
+      break;
+    }
     case "INTERRUPT": {
       next.status = "INTERRUPTED";
       next.stopReason = event.stopReason || "USER_INTERRUPTED";

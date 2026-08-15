@@ -185,11 +185,38 @@ class ChatRoom extends EventEmitter {
 
 
   setProfessionalRun(run) {
-    this.professionalRun = run;
     if (this.persistProfessionalRun) {
-      this.persistProfessionalRun(run);
+      try {
+        if (this.persistProfessionalRun(run) === false) return false;
+      } catch {
+        return false;
+      }
     }
+    this.professionalRun = run;
     this.emitSpecialistState();
+    return true;
+  }
+
+  transitionProfessional(event) {
+    if (!this.professionalRun) return { ok: true, state: null };
+    const transition = transitionProfessionalRun(this.professionalRun, event);
+    if (!transition.ok) return transition;
+    if (!this.setProfessionalRun(transition.state)) {
+      return { ok: false, reason: "전문 실행 상태를 저장하지 못했습니다." };
+    }
+    return transition;
+  }
+
+  professionalTransitionFailure(stage, transition) {
+    const error = transition?.reason || "전문 실행 상태를 저장하지 못했습니다.";
+    this.appendSystem(`전문 실행 상태를 저장하지 못해 다음 단계를 시작하지 않았습니다. (${error})`);
+    return {
+      ok: false,
+      stage,
+      needsUserDecision: true,
+      stopReason: "PROFESSIONAL_RUN_WRITE_FAILED",
+      error,
+    };
   }
 
   stagesForSpecialist() {
@@ -306,6 +333,7 @@ class ChatRoom extends EventEmitter {
 
   holdForFrozenTaskCorruption({ runInfo, taskInfo, checkpoint, stage = "implementation", round = 1, error = "" } = {}) {
     const reason = "FROZEN_TASK_CORRUPTED";
+    this.transitionProfessional({ type: "INVALIDATE", stopReason: reason });
     if (runInfo && this.taskManager?.markRunInvalid) {
       this.taskManager.markRunInvalid(runInfo, reason);
     }
@@ -341,6 +369,7 @@ class ChatRoom extends EventEmitter {
 
   holdForDegradedReview({ runInfo, taskInfo, checkpoint, stage = "review", round = 1, changes = null, review = null } = {}) {
     const reason = "DIFF_UNAVAILABLE";
+    this.transitionProfessional({ type: "HOLD_BLOCKED", stopReason: reason, blockReason: reason });
     const canRestore = Boolean(checkpoint?.supported === true);
     this.specialistBlocked = {
       checkpoint: canRestore ? checkpoint : null,
@@ -388,6 +417,11 @@ class ChatRoom extends EventEmitter {
     message = "전문 실행을 안전하게 중단했습니다. 변경은 그대로 남아 있습니다. 아래에서 다음 처리를 선택해 주세요.",
   } = {}) {
     const canRestore = Boolean(checkpoint?.supported === true);
+    this.transitionProfessional({
+      type: "HOLD_BLOCKED",
+      stopReason,
+      blockReason: safeBlockReason(stopReason),
+    });
     this.specialistBlocked = {
       checkpoint: canRestore ? checkpoint : null,
       canRestore,
@@ -498,33 +532,45 @@ class ChatRoom extends EventEmitter {
   // 전문 실행 상태는 renderer 재연결·대화 전환에도 대화별로 복원할 수 있어야 합니다.
   // 실행 중(active), 사람 승인 대기(available), BLOCKED는 서로 다른 상태입니다.
   specialistState() {
+    const professional = this.professionalRun
+      ? publicProfessionalState(this.professionalRun, {
+          canRestore: Boolean(this.specialistBlocked?.canRestore),
+        })
+      : null;
+    const legacyTaskPath =
+      this.professionalPlan?.taskInfo?.relativePath ||
+      this.specialistResume?.taskInfo?.relativePath ||
+      null;
+    const taskPath = professional?.taskPath || legacyTaskPath;
+    const taskId =
+      professional?.taskId ||
+      this.professionalPlan?.taskInfo?.filename?.replace(/\.md$/i, "") ||
+      this.specialistResume?.taskInfo?.filename?.replace(/\.md$/i, "") ||
+      null;
     return {
-      active: Boolean(this.specialistActive),
+      active: professional ? professional.active || Boolean(this.specialistActive) : Boolean(this.specialistActive),
       available: Boolean(this.specialistResume),
       mode: this.specialistResume?.mode || null,
-      phase: this.specialistResume?.phase || null,
-      needsInput: ["needs_decision", "plan_review_fix_required"].includes(
-        this.specialistResume?.phase
-      ),
-      planReady: Boolean(this.professionalPlan),
+      phase: professional?.phase || this.specialistResume?.phase || null,
+      node: professional?.node || null,
+      status: professional?.status || null,
+      needsInput: professional
+        ? professional.needsInput
+        : ["needs_decision", "plan_review_fix_required"].includes(this.specialistResume?.phase),
+      planReady: professional ? professional.planReady : Boolean(this.professionalPlan),
       // 승인된 기획안(Frozen Task 원본)을 채팅에서 열어볼 수 있게 경로/제목을 노출합니다.
-      planTaskPath:
-        this.professionalPlan?.taskInfo?.relativePath ||
-        this.specialistResume?.taskInfo?.relativePath ||
-        null,
-      planTaskId: (() => {
-        const filename =
-          this.professionalPlan?.taskInfo?.filename ||
-          this.specialistResume?.taskInfo?.filename ||
-          null;
-        return filename ? String(filename).replace(/\.md$/i, "") : null;
-      })(),
-      blocked: Boolean(this.specialistBlocked),
-      blockReason: this.specialistBlocked ? safeBlockReason(this.specialistBlocked.blockReason) : null,
-      canRestore: Boolean(this.specialistBlocked?.canRestore),
-      hasTask: Boolean(
+      planTaskPath: taskPath,
+      planTaskId: taskId,
+      blocked: professional ? professional.blocked : Boolean(this.specialistBlocked),
+      blockReason: professional?.blockReason ||
+        (this.specialistBlocked ? safeBlockReason(this.specialistBlocked.blockReason) : null),
+      canRestore: professional?.canRestore || Boolean(this.specialistBlocked?.canRestore),
+      hasTask: professional?.hasTask || Boolean(
         this.specialistBlocked?.taskPath || this.specialistResume?.taskInfo?.relativePath
       ),
+      frozenRunId: professional?.frozenRunId || null,
+      planRound: professional?.planRound || 1,
+      implementationRound: professional?.implementationRound || 0,
     };
   }
 
@@ -1141,10 +1187,19 @@ class ChatRoom extends EventEmitter {
         });
         if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
         if (!plannerResult?.ok) {
+          this.transitionProfessional({
+            type: "INTERRUPT",
+            stopReason: plannerResult?.stopReason || "PLANNER_FAILED",
+          });
           return this.specialistFail(planner, "planner", planRevisionCount, plannerResult);
         }
 
         if (plannerResult.plannerStatus === "NEEDS_DECISION" || hasOpenQuestions(plannerResult.text)) {
+          const transition = this.transitionProfessional({
+            type: "PLANNER_NEEDS_DECISION",
+            stopReason: "NEEDS_DECISION",
+          });
+          if (!transition.ok) return this.professionalTransitionFailure("planner", transition);
           this.specialistResume = {
             stages,
             mode,
@@ -1195,6 +1250,17 @@ class ChatRoom extends EventEmitter {
           }
         }
 
+        const reviewTransition = this.transitionProfessional({
+          type: "PLANNER_PLAN_READY",
+          taskPath: nextTaskInfo?.relativePath || null,
+          taskId: nextTaskInfo?.filename
+            ? String(nextTaskInfo.filename).replace(/\.md$/i, "")
+            : null,
+        });
+        if (!reviewTransition.ok) {
+          return this.professionalTransitionFailure("plan_review", reviewTransition);
+        }
+
         const planText = nextTaskInfo?.content || plannerResult.text || "";
         const planReview = await this.scheduleResponse(review.agent, {
           specialist: {
@@ -1207,10 +1273,20 @@ class ChatRoom extends EventEmitter {
         });
         if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
         if (!planReview?.ok) {
+          this.transitionProfessional({
+            type: "INTERRUPT",
+            stopReason: planReview?.stopReason || "PLAN_REVIEW_FAILED",
+          });
           return this.specialistFail(review, "plan_review", planRevisionCount, planReview);
         }
         const contract = this.parseReviewContract(planReview.text || "", planReview.specialistSignal);
         if (contract.verdict === "PASS") {
+          const transition = this.transitionProfessional({
+            type: "PLAN_REVIEW_PASS",
+            approvedTaskHash: nextTaskInfo?.hash || null,
+            taskPath: nextTaskInfo?.relativePath || null,
+          });
+          if (!transition.ok) return this.professionalTransitionFailure("plan_review", transition);
           this.professionalPlan = {
             stages,
             mode,
@@ -1232,6 +1308,11 @@ class ChatRoom extends EventEmitter {
           contract.canAutoRevise &&
           planRevisionCount < planRevisionLimit
         ) {
+          const transition = this.transitionProfessional({
+            type: "PLAN_REVIEW_FIX",
+            canAutoRevise: true,
+          });
+          if (!transition.ok) return this.professionalTransitionFailure("plan_review", transition);
           planRevisionCount += 1;
           nextFeedback = planReview.text || planText;
           this.appendSystem(
@@ -1240,6 +1321,12 @@ class ChatRoom extends EventEmitter {
           continue;
         }
 
+        const transition = this.transitionProfessional({
+          type: contract.verdict === "UNKNOWN" ? "PLAN_REVIEW_UNKNOWN" : "PLAN_REVIEW_FIX",
+          canAutoRevise: false,
+          stopReason: contract.stopReason || contract.verdict,
+        });
+        if (!transition.ok) return this.professionalTransitionFailure("plan_review", transition);
         this.specialistResume = {
           stages,
           mode,
@@ -1302,6 +1389,8 @@ class ChatRoom extends EventEmitter {
     }
     const text = String(answer || "").trim();
     if (!text) return { ok: false, error: "기획자에게 보낼 답변을 입력해 주세요." };
+    const transition = this.transitionProfessional({ type: "USER_ANSWER_PLAN" });
+    if (!transition.ok) return this.professionalTransitionFailure("planner", transition);
     this.specialistResume = null;
     this.appendMessage({ authorType: "user", author: "user", text: `[기획 답변] ${text}` });
     const feedback = `${resume.feedback || ""}\n\n=== 사용자 답변 ===\n${text}\n=== 사용자 답변 끝 ===`;
@@ -1392,6 +1481,21 @@ class ChatRoom extends EventEmitter {
     }
 
     if (action === "plan" || action === "full") {
+      const run = createProfessionalRun({
+        stages,
+        policy: {
+          autoContinueReady: action === "full",
+          pauseBeforeReview: false,
+          pauseBeforeRecord: false,
+          planAutoRevisions,
+          implementationAutoRevisions,
+        },
+      });
+      if (!this.setProfessionalRun(run)) {
+        return this.professionalTransitionFailure("planner", {
+          reason: "전문 실행 시작 상태를 저장하지 못했습니다.",
+        });
+      }
       this.professionalPlan = null;
       const planResult = await this.runPlanBlock({
         stages,
@@ -1409,6 +1513,25 @@ class ChatRoom extends EventEmitter {
       });
     }
 
+    if (this.professionalRun) {
+      if (this.professionalRun.node !== "READY") {
+        return { ok: false, error: "구현을 시작할 수 있는 READY 상태가 아닙니다." };
+      }
+      const updatedRun = {
+        ...this.professionalRun,
+        stages: { ...(this.professionalRun.stages || {}), ...stages },
+        policy: {
+          ...(this.professionalRun.policy || {}),
+          implementationAutoRevisions,
+        },
+        updatedAt: Date.now(),
+      };
+      if (!this.setProfessionalRun(updatedRun)) {
+        return this.professionalTransitionFailure("implementation", {
+          reason: "구현 실행 정책을 저장하지 못했습니다.",
+        });
+      }
+    }
     return this.runProfessionalImplementation({
       stages,
       mode,
@@ -2252,6 +2375,18 @@ class ChatRoom extends EventEmitter {
         stopReason: "RECOVERY_JOURNAL_WRITE_FAILED",
       };
     }
+    const executeTransition = this.transitionProfessional({
+      type: "USER_EXECUTE",
+      frozenRunId: runInfo?.runId || null,
+      checkpointId: checkpoint?.checkpointId || null,
+    });
+    if (!executeTransition.ok) {
+      if (checkpoint?.supported && this.checkpointEngine) {
+        this.checkpointEngine.cleanupCheckpoint(checkpoint);
+      }
+      this.clearRecoveryState();
+      return this.professionalTransitionFailure("implementation", executeTransition);
+    }
 
     // 화면에 "어떤 Task revision 기준으로 일하는 중인지" 칩으로 보여주기 위한 값.
     // TASK-003.md → "TASK-003" 형태의 표시용 id를 만듭니다.
@@ -2307,6 +2442,10 @@ class ChatRoom extends EventEmitter {
         : declaration === "AMBIGUOUS"
           ? "BUILDER_STATUS_AMBIGUOUS"
           : "BLOCKED";
+      this.transitionProfessional({
+        type: "BUILDER_BLOCKED",
+        blockReason: stopReason,
+      });
       this.specialistBlocked = {
         checkpoint: checkpointSupported ? checkpoint : null,
         canRestore: checkpointSupported,
@@ -2402,6 +2541,19 @@ class ChatRoom extends EventEmitter {
     if (builderResult.builderStatus !== "DONE") {
       return holdForBlocked(round, builderResult, builderResult.builderStatus);
     }
+    const builderTransition = this.transitionProfessional({ type: "BUILDER_DONE" });
+    if (!builderTransition.ok) {
+      return this.holdForRecovery({
+        runInfo,
+        taskInfo,
+        checkpoint,
+        stage: "implementation",
+        round,
+        stopReason: "PROFESSIONAL_RUN_WRITE_FAILED",
+        result: builderTransition,
+        message: "구현은 끝났지만 실행 상태를 저장하지 못해 검수를 시작하지 않았습니다. 변경은 그대로 남아 있습니다.",
+      });
+    }
     reviewEvidence = this.prepareReviewEvidence({
       runInfo,
       builderResult,
@@ -2479,9 +2631,37 @@ class ChatRoom extends EventEmitter {
             review: reviewResult,
           });
         }
+        const transition = this.transitionProfessional({ type: "REVIEW_PASS" });
+        if (!transition.ok) {
+          return this.holdForRecovery({
+            runInfo,
+            taskInfo,
+            checkpoint,
+            stage: "review",
+            round,
+            stopReason: "PROFESSIONAL_RUN_WRITE_FAILED",
+            result: transition,
+            message: "검수는 통과했지만 실행 상태를 저장하지 못해 기록 단계로 진행하지 않았습니다. 변경은 그대로 남아 있습니다.",
+          });
+        }
         break;
       }
       if (contract.verdict === "UNKNOWN") {
+        const transition = this.transitionProfessional({
+          type: "REVIEW_UNKNOWN",
+          stopReason: contract.stopReason || "INSUFFICIENT_EVIDENCE",
+        });
+        if (!transition.ok) {
+          return this.holdForRecovery({
+            runInfo,
+            taskInfo,
+            checkpoint,
+            stage: "review",
+            round,
+            stopReason: "PROFESSIONAL_RUN_WRITE_FAILED",
+            result: transition,
+          });
+        }
         await restoreCheckpoint();
         this.appendSystem(
           contract.stopReason === "AMBIGUOUS_VERDICT"
@@ -2501,6 +2681,22 @@ class ChatRoom extends EventEmitter {
 
       // FIX_REQUIRED: 자동 보완 가능하면 보완, 아니면 STOP → 사용자.
       if (!contract.canAutoRevise) {
+        const transition = this.transitionProfessional({
+          type: "REVIEW_FIX",
+          canAutoRevise: false,
+          stopReason: contract.stopReason || "FIX_REQUIRED",
+        });
+        if (!transition.ok) {
+          return this.holdForRecovery({
+            runInfo,
+            taskInfo,
+            checkpoint,
+            stage: "review",
+            round,
+            stopReason: "PROFESSIONAL_RUN_WRITE_FAILED",
+            result: transition,
+          });
+        }
         await restoreCheckpoint();
         return {
           ok: false,
@@ -2513,6 +2709,22 @@ class ChatRoom extends EventEmitter {
         };
       }
       if (!canAutoRevise || autoRevisionCount >= maxAutoRevisions) {
+        const transition = this.transitionProfessional({
+          type: "REVIEW_FIX",
+          canAutoRevise: false,
+          stopReason: !canAutoRevise ? "FIX_REQUIRED" : "LIMIT_EXCEEDED",
+        });
+        if (!transition.ok) {
+          return this.holdForRecovery({
+            runInfo,
+            taskInfo,
+            checkpoint,
+            stage: "review",
+            round,
+            stopReason: "PROFESSIONAL_RUN_WRITE_FAILED",
+            result: transition,
+          });
+        }
         await restoreCheckpoint();
         return {
           ok: false,
@@ -2528,6 +2740,21 @@ class ChatRoom extends EventEmitter {
       }
 
       // 자동 보완.
+      const revisionTransition = this.transitionProfessional({
+        type: "REVIEW_FIX",
+        canAutoRevise: true,
+      });
+      if (!revisionTransition.ok) {
+        return this.holdForRecovery({
+          runInfo,
+          taskInfo,
+          checkpoint,
+          stage: "review",
+          round,
+          stopReason: "PROFESSIONAL_RUN_WRITE_FAILED",
+          result: revisionTransition,
+        });
+      }
       autoRevisionCount += 1;
       round += 1;
       feedback = reviewResult.text || "검토자가 수정이 필요하다고 판단했습니다.";
@@ -2598,6 +2825,18 @@ class ChatRoom extends EventEmitter {
       if (builderResult.builderStatus !== "DONE") {
         return holdForBlocked(round, builderResult, builderResult.builderStatus);
       }
+      const revisedBuilderTransition = this.transitionProfessional({ type: "BUILDER_DONE" });
+      if (!revisedBuilderTransition.ok) {
+        return this.holdForRecovery({
+          runInfo,
+          taskInfo,
+          checkpoint,
+          stage: "implementation",
+          round,
+          stopReason: "PROFESSIONAL_RUN_WRITE_FAILED",
+          result: revisedBuilderTransition,
+        });
+      }
       reviewEvidence = this.prepareReviewEvidence({
         runInfo,
         builderResult,
@@ -2632,9 +2871,24 @@ class ChatRoom extends EventEmitter {
       if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
       if (!recorderResult?.ok) {
         const recordError = recorderResult?.error || "기록관 실행이 실패했습니다.";
+        this.transitionProfessional({ type: "RECORDER_FAILED", stopReason: "RECORDER_FAILED" });
         this.appendSystem(`전문 모드 구현·검토는 통과했지만 기록관이 결과를 정리하지 못했습니다. (${recordError})`);
         return { ok: true, completedIterations: round, recorded: false, recording: recorderResult?.text || "", recordError };
       }
+    }
+
+    const completedTransition = this.transitionProfessional({ type: "RECORDER_DONE" });
+    if (!completedTransition.ok) {
+      return this.holdForRecovery({
+        runInfo,
+        taskInfo,
+        checkpoint,
+        stage: "recorder",
+        round,
+        stopReason: "PROFESSIONAL_RUN_WRITE_FAILED",
+        result: completedTransition,
+        message: "작업은 끝났지만 완료 상태를 저장하지 못해 복구 정보를 유지합니다.",
+      });
     }
 
     // 성공(구현·검수 + 기록 완료) 후에만 checkpoint 리소스를 정리합니다.

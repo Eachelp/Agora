@@ -118,3 +118,16 @@ test("publicProfessionalState projects safe UI view", () => {
   assert.equal(view.canRestore, true);
   assert.equal(view.active, false);
 });
+
+test("recorder failure waits at RECORDING for an explicit retry", () => {
+  const run = createProfessionalRun({ node: "RECORDING", status: "RUNNING" });
+  const result = transitionProfessionalRun(run, {
+    type: "RECORDER_FAILED",
+    stopReason: "RECORDER_FAILED",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.state.node, "RECORDING");
+  assert.equal(result.state.status, "WAITING");
+  assert.equal(result.state.stopReason, "RECORDER_FAILED");
+});

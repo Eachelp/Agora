@@ -2021,6 +2021,8 @@ test("버튼형 기획·검수는 Planner와 Reviewer를 차례로 호출하고 
   const state = room.specialistState();
   assert.match(state.planTaskPath, /TASK-001\.md$/);
   assert.equal(state.planTaskId, "TASK-001");
+  assert.equal(state.node, "READY");
+  assert.equal(state.status, "WAITING");
 });
 
 test("기획 자동 보완은 범위 안의 검수 지적만 제한 횟수 안에서 다시 기획한다", async (t) => {
@@ -2212,6 +2214,32 @@ test("전체 실행은 기획 검수 통과 뒤 구현·검수·기록까지 같
   assert.equal(result.ok, true);
   assert.equal(result.recorded, true);
   assert.deepEqual(calls.map((call) => call.agentId), ["claude", "codex", "claude", "codex", "codex"]);
+  assert.equal(room.specialistState().node, "COMPLETED");
+  assert.equal(room.specialistState().status, "COMPLETED");
+});
+
+test("Professional Run 시작 상태 저장에 실패하면 Planner를 호출하지 않는다", async () => {
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    persistProfessionalRun: () => false,
+    runAgent: fakeRunner({
+      claude: [{ ok: true, text: "STATUS: PLAN_READY" }],
+      codex: [{ ok: true, text: "VERDICT: PASS" }],
+    }, calls),
+  });
+
+  const result = await room.startSpecialist({
+    action: "plan",
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.stopReason, "PROFESSIONAL_RUN_WRITE_FAILED");
+  assert.equal(calls.length, 0);
 });
 
 test("전체 실행의 기획·검수 통과 사이에는 일반 응답을 끼워 넣지 않는다", async (t) => {
