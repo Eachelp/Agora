@@ -34,7 +34,7 @@ test("창 이름은 표기가 달라도 5시간대와 주간대로만 분류한�
   }
 });
 
-test("AGY 한도는 gemini 계열 기본 5시간·주간과 함께 Claude/GPT-OSS 할당량도 포함한다", () => {
+test("AGY 한도는 gemini 계열 기본 5시간·주간과 함께 Claude/GPT-OSS 할당량을 간결한 라벨로 정규화한다", () => {
   const gauges = normalizeAgyQuota({
     groups: [
       {
@@ -50,16 +50,18 @@ test("AGY 한도는 gemini 계열 기본 5시간·주간과 함께 Claude/GPT-OS
         displayName: "Gemini 3 Flash",
         buckets: [{ displayName: "5시간", remainingFraction: 0.9 }],
       },
-      // AGY의 별도 할당량 모델(Claude, GPT-OSS)도 게이지 목록에 포함됩니다.
-      { displayName: "Claude Sonnet 4.6", buckets: [{ displayName: "일주일", remainingFraction: 0.1 }] },
-      { displayName: "GPT-OSS 120B", buckets: [{ displayName: "5시간", remainingFraction: 0.05 }] },
+      // 풀텍스트(예: "Claude and GPT models · Weekly Limit Remaining")를 간결하게 축약합니다.
+      { displayName: "Claude and GPT models", buckets: [{ displayName: "Weekly Limit Remaining", remainingFraction: 0.1 }] },
+      { displayName: "Claude and GPT models", buckets: [{ displayName: "Five Hour Limit Remaining", remainingFraction: 0.05 }] },
+      { displayName: "GPT-OSS 120B models", buckets: [{ displayName: "5시간", remainingFraction: 0.2 }] },
     ],
   });
   assert.deepEqual(gauges, [
     { label: "5시간", usedPercent: 38, resetText: "soon" },
     { label: "주간", usedPercent: 70, resetText: "" },
-    { label: "Claude Sonnet 4.6 · 일주일", usedPercent: 90, resetText: "" },
-    { label: "GPT-OSS 120B · 5시간", usedPercent: 95, resetText: "" },
+    { label: "Claude / GPT · 주간", usedPercent: 90, resetText: "" },
+    { label: "Claude / GPT · 5시간", usedPercent: 95, resetText: "" },
+    { label: "GPT-OSS 120B · 5시간", usedPercent: 80, resetText: "" },
   ]);
 });
 

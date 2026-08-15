@@ -46,6 +46,22 @@ const WINDOW_WEEK = "주간";
 
 // 공급자마다 창 이름 표기가 제각각이라(5시간 / 5h / five_hour / 일주일 / seven_day …)
 // 넓게 받아들여 두 구간으로만 분류합니다. 어디에도 해당하지 않으면 null입니다.
+function formatAgyGroupLabel(name) {
+  let text = String(name || "").trim();
+  if (/claude\s*(?:and|&)\s*gpt(?:\s*models)?/i.test(text)) {
+    return "Claude / GPT";
+  }
+  return text.replace(/\s+models$/i, "").trim();
+}
+
+function formatAgyBucketLabel(bucketName) {
+  const classified = classifyWindow(bucketName);
+  if (classified) return classified;
+  let text = String(bucketName || "").trim();
+  text = text.replace(/\s*(?:limit|remaining|한도|남음)\b/gi, "").trim();
+  return text || "기타";
+}
+
 function classifyWindow(text) {
   const value = String(text || "").trim().toLowerCase();
   if (!value) return null;
@@ -118,7 +134,9 @@ function normalizeAgyQuota(data) {
     (group.buckets || []).flatMap((bucket) => {
       const parsed = parseBucket(group, bucket);
       if (!parsed) return [];
-      const label = [parsed.groupName, parsed.bucketName].filter(Boolean).join(" · ");
+      const groupLabel = formatAgyGroupLabel(parsed.groupName);
+      const bucketLabel = formatAgyBucketLabel(parsed.bucketName);
+      const label = [groupLabel, bucketLabel].filter(Boolean).join(" · ");
       return [{
         label,
         usedPercent: parsed.usedPercent,
