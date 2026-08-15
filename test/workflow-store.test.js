@@ -109,3 +109,30 @@ test("contentSource가 없는 기존 Task는 legacy inline으로 취급된다", 
   assert.equal(task.taskHash, null);
   assert.equal(task.description, "본문 내용");
 });
+
+test("reconcileProjectTasks는 디스크 상의 TASK 파일과 workflow 상태를 동기화하고 누락/손상을 감지한다", () => {
+  const root = makeRoot();
+  const wsRoot = makeRoot();
+  const tasksDir = path.join(wsRoot, ".project-memory", "tasks");
+  fs.mkdirSync(tasksDir, { recursive: true });
+
+  const file1 = path.join(tasksDir, "TASK-001.md");
+  fs.writeFileSync(file1, "Task 1 content", "utf8");
+
+  const store = new WorkflowStore({ root }).init();
+
+  const res1 = store.reconcileProjectTasks("project-a", wsRoot);
+  assert.equal(res1.ok, true);
+  assert.equal(res1.tasks.length, 1);
+  assert.equal(res1.tasks[0].title, "TASK-001.md");
+  assert.equal(res1.tasks[0].origin, "planner");
+  assert.equal(res1.tasks[0].syncState, "ok");
+
+  fs.rmSync(file1);
+  const res2 = store.reconcileProjectTasks("project-a", wsRoot);
+  assert.equal(res2.tasks[0].syncState, "missing_file");
+
+  fs.writeFileSync(file1, "Modified Task 1 content", "utf8");
+  const res3 = store.reconcileProjectTasks("project-a", wsRoot);
+  assert.equal(res3.tasks[0].syncState, "hash_mismatch");
+});

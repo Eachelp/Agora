@@ -110,11 +110,11 @@ test("워크스페이스가 없으면 전문 모드 시작을 거부한다", asy
 
   const denied = await feature.invoke("chat:specialist:start", { sessionId, mode: "quick" });
   assert.equal(denied.ok, false);
-  assert.match(denied.error, /쓰기 권한/);
+  assert.match(denied.error, /워크스페이스/);
   assert.equal(calls.length, 0);
 });
 
-test("워크스페이스가 있으면 전문 모드가 쓰기 권한으로 자동 승격된다", async () => {
+test("워크스페이스가 있으면 전문 모드가 실행되되 세션 권한은 chat 그대로 유지된다", async () => {
   const calls = [];
   const feature = makeFeature(makeRoot(), makeRoot(), calls);
   const { sessionId } = await setup(feature, calls);
@@ -125,7 +125,8 @@ test("워크스페이스가 있으면 전문 모드가 쓰기 권한으로 자�
 
   const started = await feature.invoke("chat:specialist:start", { sessionId, mode: "quick" });
   assert.equal(started.ok, true);
-  assert.equal(started.meta.permissionMode, "workspace-write");
+  // 전문 실행은 run-scoped 권한만 쓰고 세션 권한은 영구히 바꾸지 않는다.
+  assert.equal(started.meta.permissionMode, "chat");
 
   // 백그라운드 실행이 끝나기를 잠시 기다립니다.
   await new Promise((resolve) => setTimeout(resolve, 50));

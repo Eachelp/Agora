@@ -2272,3 +2272,162 @@ test("구현·검수는 기획 검수 통과 전에는 시작하지 않는다", 
   assert.equal(result.ok, false);
   assert.match(result.error, /기획 검수/);
 });
+
+test("replanBlocked는 keep 선택 시 부분 변경을 유지하고 기획자에게 막힘 사유를 전달해 재기획을 시작한다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-replan-keep-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    checkpoint: turnCheckpoint,
+    taskManager: new TaskManager(),
+    runAgent: ({ agent, prompt }) => {
+      calls.push({ agentId: agent.id, prompt });
+      if (/전문 모드: 기획 ===/.test(prompt)) {
+        if (/이전 구현.*막혔습니다/.test(prompt)) {
+          return { promise: Promise.resolve({ ok: true, text: "## 수정 목표\n재기획 완료\nSTATUS: PLAN_READY" }), cancel: () => {} };
+        }
+        return { promise: Promise.resolve({ ok: true, text: "## 초기 목표\n초기 기획\nSTATUS: PLAN_READY" }), cancel: () => {} };
+      }
+      if (/전문 모드: 기획 검수/.test(prompt)) {
+        return { promise: Promise.resolve({ ok: true, text: "기획 통과\nVERDICT: PASS" }), cancel: () => {} };
+      }
+      if (/전문 모드: 구현/.test(prompt)) {
+        return { promise: Promise.resolve({ ok: true, text: "사유: DB 접근 불가\nSTATUS: BLOCKED" }), cancel: () => {} };
+      }
+      return { promise: Promise.resolve({ ok: true, text: "기타" }), cancel: () => {} };
+    },
+  });
+
+  const started = await room.startSpecialist({
+    action: "full",
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      implementation: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+      recorder: { agent: room.findAgent("codex") },
+    },
+  });
+  assert.equal(started.stopReason, "BLOCKED");
+
+  const details = room.specialistBlockDetails();
+  assert.ok(details);
+  assert.equal(details.blockReason, "BLOCKED");
+
+  const replan = await room.replanBlocked("keep");
+  assert.equal(replan.ok, true);
+  assert.equal(replan.planReady, true);
+  assert.match(calls[calls.length - 2].prompt, /이전 구현.*막혔습니다/);
+});
+
+test("replanBlocked는 restore 선택 시 작업 전으로 복원 후 재기획을 시작한다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-replan-restore-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    checkpoint: turnCheckpoint,
+    taskManager: new TaskManager(),
+    runAgent: ({ agent, prompt }) => {
+      calls.push({ agentId: agent.id, prompt });
+      if (/전문 모드: 기획 ===/.test(prompt)) {
+        return { promise: Promise.resolve({ ok: true, text: "## 목표\n기획\nSTATUS: PLAN_READY" }), cancel: () => {} };
+      }
+      if (/전문 모드: 기획 검수/.test(prompt)) {
+        return { promise: Promise.resolve({ ok: true, text: "기획 통과\nVERDICT: PASS" }), cancel: () => {} };
+      }
+      if (/전문 모드: 구현/.test(prompt)) {
+        return { promise: Promise.resolve({ ok: true, text: "STATUS: BLOCKED" }), cancel: () => {} };
+      }
+      return { promise: Promise.resolve({ ok: true, text: "기타" }), cancel: () => {} };
+    },
+  });
+
+  await room.startSpecialist({
+    action: "full",
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      implementation: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+      recorder: { agent: room.findAgent("codex") },
+    },
+  });
+
+  const replan = await room.replanBlocked("restore");
+  assert.equal(replan.ok, true);
+  assert.equal(replan.planReady, true);
+});
+
+test("전문 실행은 실행 동안만 run-scoped 권한을 켜고, 러너에는 workspace-write로 전달한 뒤 종료 시 해제한다", async () => {
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { permissionMode: "chat" },
+    runAgent: ({ agent, permissionMode, specialistStage }) => {
+      calls.push({ agentId: agent.id, permissionMode, specialistStage });
+      const text = specialistStage === "review" ? "통과\nVERDICT: PASS" : "구현 완료\nSTATUS: DONE";
+      return { promise: Promise.resolve({ ok: true, text }), cancel: () => {} };
+    },
+  });
+
+  // 실행 전에는 run 권한이 없다.
+  assert.equal(room.activeRunAuthorization, null);
+
+  const result = await room.startSpecialist({
+    stages: {
+      implementation: { agent: room.findAgent("codex") },
+      review: { agent: room.findAgent("claude") },
+    },
+  });
+  assert.equal(result.ok, true);
+
+  const builderCall = calls.find((call) => call.specialistStage === "implementation");
+  assert.ok(builderCall, "구현 단계가 실행되어야 한다");
+  assert.equal(builderCall.permissionMode, "workspace-write");
+
+  // 실행이 끝나면 run 권한은 다시 꺼지고, 세션 권한(meta)은 chat 그대로다.
+  assert.equal(room.activeRunAuthorization, null);
+  assert.equal(room.meta.permissionMode, "chat");
+});
+
+test("Git 저장소인데 checkpoint 생성이 실패하면 Builder를 시작하지 않고 CHECKPOINT_FAILED로 멈춘다", async (t) => {
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "agora-room-cpfail-"));
+  t.after(() => fs.rmSync(ws, { recursive: true, force: true }));
+  const run = (args) => require("node:child_process").execFileSync("git", args, { cwd: ws, encoding: "utf8" });
+  run(["init"]);
+  run(["config", "user.email", "t@example.com"]);
+  run(["config", "user.name", "tester"]);
+  fs.writeFileSync(path.join(ws, "a.txt"), "hello\n", "utf8");
+  run(["add", "."]);
+  run(["commit", "-m", "init"]);
+
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace: ws },
+    // non-Git과 구분되는 Git 백업 실패를 흉내낸다.
+    checkpoint: {
+      createCheckpoint: async () => ({ supported: false, failed: true }),
+      restoreCheckpoint: async () => ({ ok: true }),
+      cleanupCheckpoint: () => {},
+      inspectCheckpoint: () => ({ ok: false }),
+    },
+    runAgent: ({ agent }) => {
+      calls.push(agent.id);
+      return { promise: Promise.resolve({ ok: true, text: "구현 완료\nSTATUS: DONE" }), cancel: () => {} };
+    },
+  });
+
+  const result = await room.startSpecialist({
+    stages: {
+      implementation: { agent: room.findAgent("codex") },
+      review: { agent: room.findAgent("claude") },
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.stopReason, "CHECKPOINT_FAILED");
+  assert.equal(calls.length, 0, "백업 실패 시 Builder를 호출하지 않아야 한다");
+});

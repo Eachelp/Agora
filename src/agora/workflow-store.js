@@ -1,10 +1,12 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const { defaultAgoraHome } = require("../app-paths");
 const { writeJsonAtomic } = require("../chat/chat-store");
 const { ROLE_IDS } = require("./project-store");
 
-const WORKFLOW_SCHEMA_VERSION = 2;
+const WORKFLOW_SCHEMA_VERSION = 3;
+const SYNC_STATES = Object.freeze(["ok", "missing_file", "hash_mismatch", "duplicate_index"]);
 const TASK_STATUSES = Object.freeze([
   "todo",
   "in_progress",
@@ -96,11 +98,9 @@ function normalizeTask(input = {}, now = Date.now()) {
   if (!projectId || !title) return null;
   const role = ROLE_IDS.includes(input.role) ? input.role : "implementation";
   const status = TASK_STATUSES.includes(input.status) ? input.status : "todo";
-  // TASK-007: Task 본문 저장 방식
-  // - "inline" → description이 본문 (기존/수동 Task, contentSource 없음 = legacy inline)
-  // - "file"   → taskPath가 가리키는 TASK.md가 본문 (Planner Task)
-  // file 기반 Task의 본문은 workflow.json에 복제하지 않습니다.
   const contentSource = input.contentSource === "file" ? "file" : "inline";
+  const origin = ["manual", "planner", "recorder"].includes(input.origin) ? input.origin : (input.origin === "recorder" ? "recorder" : "manual");
+  const syncState = (typeof SYNC_STATES !== "undefined" && SYNC_STATES.includes(input.syncState)) ? input.syncState : "ok";
   return {
     id: cleanId(input.id, 160) || newId("t", now),
     projectId,
@@ -114,9 +114,12 @@ function normalizeTask(input = {}, now = Date.now()) {
     agentId: validAgentId(input.agentId),
     decisionId: cleanId(input.decisionId, 160),
     chatId: cleanId(input.chatId, 160),
-    origin: input.origin === "recorder" ? "recorder" : "manual",
+    origin,
     recorderAgentId: validAgentId(input.recorderAgentId),
     runId: cleanId(input.runId, 160),
+    activeRunId: cleanId(input.activeRunId, 160),
+    lastRunId: cleanId(input.lastRunId, 160),
+    syncState,
     createdAt: Number(input.createdAt) || now,
     updatedAt: Number(input.updatedAt) || now,
   };
@@ -329,6 +332,93 @@ class WorkflowStore {
       return changed;
     });
   }
+
+  reconcileProjectTasks(projectId, workspace) {
+    if (this.readOnly || !projectId || !workspace) return { ok: false };
+    try {
+      const resolvedRoot = fs.realpathSync(workspace);
+      const memoryTasksDir = path.join(resolvedRoot, ".project-memory", "tasks");
+      let taskFiles = [];
+      if (fs.existsSync(memoryTasksDir)) {
+        taskFiles = fs.readdirSync(memoryTasksDir).filter((name) => /^TASK-\d+\.md$/i.test(name));
+      }
+      const fileMap = new Map();
+      for (const filename of taskFiles) {
+        const absPath = path.join(memoryTasksDir, filename);
+        const content = fs.readFileSync(absPath, "utf8");
+        const hash = crypto.createHash("sha256").update(content, "utf8").digest("hex");
+        const relPath = path.join(".project-memory", "tasks", filename);
+        fileMap.set(relPath, { filename, hash, content });
+      }
+
+      this.mutateAndPersist(() => {
+        let changed = false;
+        const seenPaths = new Set();
+        for (const task of this.data.tasks) {
+          if (task.projectId !== projectId || task.contentSource !== "file" || !task.taskPath) continue;
+          const normPath = task.taskPath.replace(/[\\/]+/g, path.sep);
+          if (seenPaths.has(normPath)) {
+            if (task.syncState !== "duplicate_index") {
+              task.syncState = "duplicate_index";
+              task.updatedAt = this.now();
+              changed = true;
+            }
+            continue;
+          }
+          seenPaths.add(normPath);
+
+          const onDisk = fileMap.get(normPath);
+          if (!onDisk) {
+            if (task.syncState !== "missing_file") {
+              task.syncState = "missing_file";
+              task.updatedAt = this.now();
+              changed = true;
+            }
+          } else {
+            if (task.taskHash && task.taskHash !== onDisk.hash) {
+              if (task.syncState !== "hash_mismatch") {
+                task.syncState = "hash_mismatch";
+                task.updatedAt = this.now();
+                changed = true;
+              }
+            } else if (task.syncState !== "ok") {
+              task.syncState = "ok";
+              task.updatedAt = this.now();
+              changed = true;
+            }
+          }
+        }
+
+        for (const [relPath, info] of fileMap.entries()) {
+          const existing = this.data.tasks.find((t) => t.projectId === projectId && t.contentSource === "file" && t.taskPath && t.taskPath.replace(/[\\/]+/g, path.sep) === relPath);
+          if (!existing) {
+            const newTask = normalizeTask({
+              projectId,
+              title: info.filename,
+              description: "",
+              contentSource: "file",
+              taskPath: relPath,
+              taskHash: info.hash,
+              status: "todo",
+              role: "implementation",
+              origin: "planner",
+              syncState: "ok",
+            }, this.now());
+            if (newTask) {
+              this.data.tasks.push(newTask);
+              changed = true;
+            }
+          }
+        }
+
+        return changed;
+      });
+      return { ok: true, tasks: this.listTasks(projectId) };
+    } catch {
+      return { ok: false };
+    }
+  }
+
   forProject(projectId) {
     return {
       decisions: this.listDecisions(projectId),
@@ -341,6 +431,7 @@ class WorkflowStore {
 }
 
 module.exports = {
+  SYNC_STATES,
   WorkflowStore,
   WORKFLOW_SCHEMA_VERSION,
   TASK_STATUSES,

@@ -9,8 +9,21 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 
 const execFileAsync = promisify(execFile);
-const CHECKPOINT_SCHEMA_VERSION = 1;
+const CHECKPOINT_SCHEMA_VERSION = 2;
 const CHECKPOINT_ID_PATTERN = /^cp-[a-z0-9-]{8,80}$/;
+
+function sha256Buffer(buf) {
+  return crypto.createHash("sha256").update(buf).digest("hex");
+}
+
+function sha256File(filePath) {
+  try {
+    const buf = fs.readFileSync(filePath);
+    return { bytes: buf.length, sha256: sha256Buffer(buf) };
+  } catch {
+    return null;
+  }
+}
 
 async function git(root, args) {
   const { stdout } = await execFileAsync("git", args, {
@@ -123,6 +136,49 @@ function resolveCheckpoint(checkpoint, options = {}) {
   if (!manifest.workspace || !path.isAbsolute(manifest.workspace)) {
     return { ok: false, reason: "workspace-invalid" };
   }
+
+  const artifacts = manifest.artifacts;
+  if (!artifacts || typeof artifacts !== "object") {
+    return { ok: false, reason: "artifacts-missing" };
+  }
+
+  const patchPath = path.join(dir, "tracked.patch");
+  const patchMeta = sha256File(patchPath);
+  if (!patchMeta || patchMeta.bytes !== artifacts.trackedPatch?.bytes || patchMeta.sha256 !== artifacts.trackedPatch?.sha256) {
+    return { ok: false, reason: "tracked-patch-corrupt" };
+  }
+
+  const listPath = path.join(dir, "untracked-list.txt");
+  const listMeta = sha256File(listPath);
+  if (!listMeta || listMeta.bytes !== artifacts.untrackedList?.bytes || listMeta.sha256 !== artifacts.untrackedList?.sha256) {
+    return { ok: false, reason: "untracked-list-corrupt" };
+  }
+
+  const checkpointList = parseRelativeList(fs.readFileSync(listPath, "utf8"));
+  if (!checkpointList) return { ok: false, reason: "untracked-list-invalid" };
+
+  const manifestUntracked = Array.isArray(artifacts.untracked) ? artifacts.untracked : [];
+  if (manifestUntracked.length !== checkpointList.length) {
+    return { ok: false, reason: "untracked-count-mismatch" };
+  }
+
+  const baselineRoot = path.join(dir, "untracked");
+  for (let i = 0; i < manifestUntracked.length; i++) {
+    const entry = manifestUntracked[i];
+    const safe = safeRelativePath(entry.path);
+    if (!safe || safe !== checkpointList[i]) {
+      return { ok: false, reason: "untracked-entry-invalid" };
+    }
+    const itemPath = path.resolve(baselineRoot, safe);
+    if (!isWithin(baselineRoot, itemPath)) {
+      return { ok: false, reason: "untracked-entry-outside-root" };
+    }
+    const itemMeta = sha256File(itemPath);
+    if (!itemMeta || itemMeta.bytes !== entry.bytes || itemMeta.sha256 !== entry.sha256) {
+      return { ok: false, reason: "untracked-copy-corrupt" };
+    }
+  }
+
   return { ok: true, dir, manifest, checkpointRoot };
 }
 
@@ -144,6 +200,7 @@ async function createCheckpoint(workspaceRoot, options = {}) {
     const untrackedOut = await git(repo, ["ls-files", "--others", "--exclude-standard", "-z"]);
     const untrackedPaths = String(untrackedOut || "").split("\0").filter(Boolean);
     const safePaths = [];
+    const untrackedArtifacts = [];
     for (const rel of untrackedPaths) {
       const safe = safeRelativePath(rel);
       if (!safe || !isWithin(repo, path.resolve(repo, safe))) throw new Error("checkpoint untracked 경로가 올바르지 않습니다.");
@@ -153,13 +210,28 @@ async function createCheckpoint(workspaceRoot, options = {}) {
       if (isWithin(storageRoot, src)) continue;
       const dest = path.resolve(dir, "untracked", safe);
       if (!isWithin(path.join(dir, "untracked"), dest)) throw new Error("checkpoint 사본 경로가 올바르지 않습니다.");
+      // lstat으로 symlink를 따라가지 않고 판별한다. symlink/디렉터리/특수 파일은
+      // checkpoint 대상이 아니므로 생성을 실패시켜 Builder를 시작하지 않는다.
+      const stat = fs.lstatSync(src);
+      if (!stat.isFile()) throw new Error("checkpoint untracked 파일이 일반 파일이 아닙니다: " + safe);
       safePaths.push(safe);
       if (fs.existsSync(src)) {
         fs.mkdirSync(path.dirname(dest), { recursive: true });
         fs.copyFileSync(src, dest);
+        const copyMeta = sha256File(dest);
+        untrackedArtifacts.push({
+          path: safe,
+          bytes: copyMeta.bytes,
+          sha256: copyMeta.sha256,
+        });
       }
     }
-    fs.writeFileSync(path.join(dir, "untracked-list.txt"), safePaths.join("\n"), "utf8");
+    const patchPath = path.join(dir, "tracked.patch");
+    const trackedPatchMeta = sha256File(patchPath) || { bytes: 0, sha256: "" };
+    const listPath = path.join(dir, "untracked-list.txt");
+    fs.writeFileSync(listPath, safePaths.join("\n"), "utf8");
+    const untrackedListMeta = sha256File(listPath) || { bytes: 0, sha256: "" };
+
     const manifest = {
       schemaVersion: CHECKPOINT_SCHEMA_VERSION,
       checkpointId: id,
@@ -168,6 +240,19 @@ async function createCheckpoint(workspaceRoot, options = {}) {
       workspace: repo,
       baselineSha,
       createdAt: Number.isFinite(options.createdAt) ? options.createdAt : Date.now(),
+      artifacts: {
+        trackedPatch: {
+          path: "tracked.patch",
+          bytes: trackedPatchMeta.bytes,
+          sha256: trackedPatchMeta.sha256,
+        },
+        untrackedList: {
+          path: "untracked-list.txt",
+          bytes: untrackedListMeta.bytes,
+          sha256: untrackedListMeta.sha256,
+        },
+        untracked: untrackedArtifacts,
+      },
     };
     atomicJson(path.join(dir, "manifest.json"), manifest);
     return {
@@ -183,8 +268,15 @@ async function createCheckpoint(workspaceRoot, options = {}) {
     try {
       if (isWithin(storageRoot, dir)) fs.rmSync(dir, { recursive: true, force: true });
     } catch {}
-    return { supported: false };
+    // 여기 도달했다는 것은 Git 저장소인데 백업 생성에 실패했다는 뜻이다.
+    // non-Git(supported:false)과 구분해 호출자가 Builder를 무방비로 시작하지
+    // 않도록 failed 플래그를 남긴다.
+    return { supported: false, failed: true };
   }
+}
+
+function validateCheckpoint(checkpoint, options = {}) {
+  return inspectCheckpoint(checkpoint, options);
 }
 
 function inspectCheckpoint(checkpoint, options = {}) {
@@ -256,6 +348,7 @@ function cleanupCheckpoint(checkpoint, options = {}) {
 }
 
 module.exports = {
+  validateCheckpoint,
   CHECKPOINT_SCHEMA_VERSION,
   CHECKPOINT_ID_PATTERN,
   createCheckpoint,

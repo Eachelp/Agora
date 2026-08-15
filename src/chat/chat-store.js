@@ -5,7 +5,7 @@ const { defaultAgoraHome } = require("../app-paths");
 
 // .agora 저장소 스키마 버전. 더 새로운 버전이 만든 데이터를 만나면
 // 데이터를 깨뜨리지 않도록 읽기 전용으로 동작합니다.
-const STORE_SCHEMA_VERSION = 2;
+const STORE_SCHEMA_VERSION = 3;
 const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const AUTO_TITLE_MAX_LENGTH = 30;
 const DEFAULT_SESSION_TITLE = "새 채팅";
@@ -261,6 +261,7 @@ class ChatStore {
       permissionMode: input.permissionMode || "chat",
       agents: input.agents || {},
       discussion: { maxTurns: 9, ...(input.discussion || {}) },
+      professionalRun: input.professionalRun || null,
       pendingRecovery: input.pendingRecovery || null,
       status: "idle",
     };
@@ -277,10 +278,49 @@ class ChatStore {
     if (Number(meta.schemaVersion) > STORE_SCHEMA_VERSION) {
       return { ...meta, readOnly: true };
     }
-    // v1 세션은 읽을 때만 v2 필드를 보강합니다. 원본을 즉시 덮어쓰지 않아
-    // 구버전 앱이 읽을 수 있는 저장소를 유지합니다.
+    let professionalRun = meta.professionalRun || null;
+    if (!professionalRun && meta.pendingRecovery) {
+      const pr = meta.pendingRecovery;
+      const st = String(pr.stage || "implementation").toLowerCase();
+      const node = st === "planner" ? "PLANNING" :
+                   st === "review" ? "REVIEWING" :
+                   st === "plan_review" ? "PLAN_REVIEW" :
+                   st === "recorder" ? "RECORDING" : "IMPLEMENTING";
+      const status = pr.status === "invalid" ? "INVALID" : pr.status === "blocked" ? "BLOCKED" : "INTERRUPTED";
+      professionalRun = {
+        schemaVersion: 1,
+        professionalRunId: `pr-migrated-${meta.id}`,
+        taskId: null,
+        taskPath: pr.taskPath || null,
+        approvedTaskHash: null,
+        frozenRunId: pr.runId || null,
+        node,
+        status,
+        policy: {
+          autoContinueReady: false,
+          pauseBeforeReview: false,
+          pauseBeforeRecord: false,
+          planAutoRevisions: 0,
+          implementationAutoRevisions: 0,
+        },
+        stages: null,
+        checkpointId: pr.checkpointId || null,
+        carriedFromRunId: null,
+        planRound: 1,
+        implementationRound: 1,
+        planRevisionCount: 0,
+        implementationRevisionCount: 0,
+        feedbackMessageId: null,
+        lastVerdict: null,
+        stopReason: pr.blockReason || null,
+        blockReason: pr.blockReason || null,
+        createdAt: meta.createdAt || Date.now(),
+        updatedAt: meta.updatedAt || Date.now(),
+      };
+    }
     return {
       ...meta,
+      professionalRun,
       pendingRecovery: meta.pendingRecovery || null,
     };
   }
@@ -294,6 +334,9 @@ class ChatStore {
       ...patch,
       id,
       schemaVersion: STORE_SCHEMA_VERSION,
+      professionalRun: Object.prototype.hasOwnProperty.call(patch, "professionalRun")
+        ? patch.professionalRun
+        : (meta.professionalRun || null),
       pendingRecovery: Object.prototype.hasOwnProperty.call(patch, "pendingRecovery")
         ? patch.pendingRecovery
         : (meta.pendingRecovery || null),

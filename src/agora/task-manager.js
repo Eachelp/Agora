@@ -296,6 +296,73 @@ class TaskManager {
     }
   }
 
+  writeRunResult(runInfo, result = {}) {
+    if (!runInfo?.runDir) return false;
+    try {
+      ensureDir(runInfo.runDir);
+      writeJsonAtomic(path.join(runInfo.runDir, "result.json"), {
+        schemaVersion: 1,
+        runId: runInfo.runId,
+        status: result.status || "COMPLETED",
+        stopReason: result.stopReason || null,
+        finalVerdict: result.finalVerdict || null,
+        recorded: Boolean(result.recorded),
+        round: Number.isInteger(result.round) ? result.round : 1,
+        updatedAt: this.now(),
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  readRunResult(runInfo) {
+    if (!runInfo?.runDir) return null;
+    try {
+      const raw = readText(path.join(runInfo.runDir, "result.json"));
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  writeRunBlock(runInfo, block = {}) {
+    if (!runInfo?.runDir) return false;
+    try {
+      ensureDir(runInfo.runDir);
+      writeJsonAtomic(path.join(runInfo.runDir, "block.json"), {
+        schemaVersion: 1,
+        runId: runInfo.runId,
+        stage: block.stage || "implementation",
+        reason: block.reason || "BLOCKED",
+        builderStatus: block.builderStatus || "BLOCKED",
+        changes: block.changes && typeof block.changes === "object" ? block.changes : {
+          status: "CHANGED",
+          originalChars: 0,
+          includedChars: 0,
+          truncated: false,
+          text: String(block.changes || ""),
+        },
+        axes: block.axes || {},
+        evidenceRef: "evidence.json",
+        createdAt: this.now(),
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  readRunBlock(runInfo) {
+    if (!runInfo?.runDir) return null;
+    try {
+      const raw = readText(path.join(runInfo.runDir, "block.json"));
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  }
+
   runInfoForId(runId, workspace) {
     const id = String(runId || "");
     if (!/^RUN-\d+$/i.test(id)) return null;

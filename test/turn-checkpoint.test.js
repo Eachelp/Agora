@@ -93,3 +93,48 @@ test("Builder가 새로 만든 파일만 제거하고 checkpoint 시점 untracke
   assert.equal(fs.readFileSync(untrackedUser, "utf8").replace(/\r\n/g, "\n"), "keep me\n");
   cleanupCheckpoint(checkpoint);
 });
+
+test("checkpoint schema v2: 손상된 tracked.patch나 파일 사본은 검증에서 거부되고 복원을 시도하지 않는다", async (t) => {
+  const repo = makeTempRepo(t);
+  const trackedFile = path.join(repo, "src", "index.js");
+  fs.mkdirSync(path.dirname(trackedFile), { recursive: true });
+  fs.writeFileSync(trackedFile, "console.log(1);\n", "utf8");
+  git(repo, ["add", "."]);
+  git(repo, ["commit", "-qm", "init"]);
+  fs.writeFileSync(trackedFile, "console.log(2);\n", "utf8");
+
+  const checkpoint = await createCheckpoint(repo);
+  assert.equal(checkpoint.supported, true);
+
+  const checkpointDir = path.join(repo, ".agora", "checkpoints", checkpoint.checkpointId);
+  const patchPath = path.join(checkpointDir, "tracked.patch");
+  fs.writeFileSync(patchPath, "tampered content\n", "utf8");
+
+  const res = await restoreCheckpoint(repo, checkpoint);
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, "tracked-patch-corrupt");
+
+  assert.equal(fs.readFileSync(trackedFile, "utf8"), "console.log(2);\n");
+  cleanupCheckpoint(checkpoint);
+});
+
+test("checkpoint schema v2: untracked 사본이 변조되면 복원을 거부한다", async (t) => {
+  const repo = makeTempRepo(t);
+  git(repo, ["commit", "--allow-empty", "-qm", "init"]);
+  const userNote = path.join(repo, "notes.txt");
+  fs.writeFileSync(userNote, "original note\n", "utf8");
+
+  const checkpoint = await createCheckpoint(repo);
+  assert.equal(checkpoint.supported, true);
+
+  const checkpointDir = path.join(repo, ".agora", "checkpoints", checkpoint.checkpointId);
+  const copyPath = path.join(checkpointDir, "untracked", "notes.txt");
+  fs.writeFileSync(copyPath, "tampered note\n", "utf8");
+
+  const res = await restoreCheckpoint(repo, checkpoint);
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, "untracked-copy-corrupt");
+
+  assert.equal(fs.readFileSync(userNote, "utf8"), "original note\n");
+  cleanupCheckpoint(checkpoint);
+});

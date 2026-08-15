@@ -477,18 +477,30 @@ function createChatFeature(options) {
       }
       const config = meta.agents?.[agent.id] || {};
       const sessionPermission = meta.permissionMode || "chat";
-      const stagePermission = specialistStage
-        ? specialistPermissionMode(specialistStage, sessionPermission)
-        : sessionPermission;
+      const room = getRoom(sessionId);
+      const runAuth = room?.activeRunAuthorization || null;
+      let stagePermission = null;
+      if (specialistStage) {
+        if (!runAuth) {
+          return {
+            promise: Promise.resolve({ ok: false, error: "전문 실행 권한이 없어 실행할 수 없습니다." }),
+            cancel: () => {},
+          };
+        }
+        stagePermission = specialistPermissionMode(specialistStage, runAuth);
+      } else {
+        stagePermission = sessionPermission;
+      }
       if (!stagePermission) {
         return {
           promise: Promise.resolve({ ok: false, error: "알 수 없는 전문 실행 단계라 권한을 계산할 수 없습니다." }),
           cancel: () => {},
         };
       }
+      const authority = specialistStage ? (runAuth || "workspace-write") : sessionPermission;
       const permissionMode = minPermissionMode(
-        sessionPermission,
-        requestedPermission || sessionPermission,
+        authority,
+        requestedPermission || authority,
         stagePermission
       );
       if (!permissionMode) {
@@ -741,6 +753,11 @@ function roomMeta(meta) {
       initialRecovery: session.meta.pendingRecovery || null,
       persistRecovery: (pendingRecovery) => {
         const updated = store.updateMeta(sessionId, { pendingRecovery: pendingRecovery || null });
+        return Boolean(updated);
+      },
+      initialProfessionalRun: session.meta.professionalRun || null,
+      persistProfessionalRun: (professionalRun) => {
+        const updated = store.updateMeta(sessionId, { professionalRun: professionalRun || null });
         return Boolean(updated);
       },
       taskManager: options.taskManager || new TaskManager(),
@@ -1565,16 +1582,14 @@ function roomMeta(meta) {
           : null;
         const planned = specialistStagesFor(project, room, selectedAction || "full");
         if (!planned.ok) throw new Error(planned.error);
-        // 기획·기록도 Task/Memory를 프로젝트 폴더에 남기므로 전문 실행은 쓰기 권한을 사용합니다.
+        // 전문 실행은 워크스페이스가 있어야 하지만, 세션 권한(meta.permissionMode)은
+        // 영구히 바꾸지 않는다. 실행 동안만 유효한 run-scoped 권한은 ChatRoom이
+        // withProfessionalAuthorization로 관리하므로 일반 대화 권한은 그대로 유지된다.
         const meta = store.readMeta(sessionId);
-        if ((meta.permissionMode || "chat") !== "workspace-write") {
-          if (!meta.workspace) {
-            throw new Error(
-              "전문 모드는 워크스페이스 쓰기 권한이 필요합니다. 채팅 상단의 워크스페이스 버튼으로 폴더를 먼저 선택해 주세요."
-            );
-          }
-          store.updateMeta(sessionId, { permissionMode: "workspace-write" });
-          refreshRoomAgents(sessionId);
+        if (!meta.workspace) {
+          throw new Error(
+            "전문 모드는 워크스페이스가 필요합니다. 채팅 상단의 워크스페이스 버튼으로 폴더를 먼저 선택해 주세요."
+          );
         }
         const started = room.startSpecialist({
           stages: planned.stages,
@@ -1727,6 +1742,46 @@ function roomMeta(meta) {
           }
         }
         return { meta: publicMeta(store.readMeta(sessionId)) };
+      })
+    );
+
+    // BLOCKED 상세 조회: renderer가 막힘 사유와 부분 변경 요약을 안전하게 읽습니다.
+    ipcMain.handle(
+      "chat:specialist:block-details",
+      wrap(async ({ sessionId }) => {
+        requireSession(sessionId);
+        const room = getRoom(sessionId);
+        return { details: room.specialistBlockDetails() };
+      })
+    );
+
+    // BLOCKED 재기획: 현재 변경을 유지(keep)하거나 작업 전으로 복원(restore)한 뒤
+    // 막힌 사유를 기획자에게 전달해 재기획을 시작합니다.
+    ipcMain.handle(
+      "chat:specialist:replan-blocked",
+      wrap(async ({ sessionId, workspaceAction }) => {
+        requireSession(sessionId);
+        const room = getRoom(sessionId);
+        const project = projectForSession(store.readMeta(sessionId));
+        const started = room.replanBlocked(workspaceAction);
+        const result = await Promise.race([
+          started,
+          new Promise((resolve) => setImmediate(() => resolve({ ok: true, pending: true }))),
+        ]);
+        started
+          .then((completed) => {
+            if (completed?.ok && completed.recording) {
+              saveRecorderOutput(project.id, completed.recording, "전문 모드 실행 요약 초안", {
+                chatId: sessionId,
+                recorderAgentId: room.stagesForSpecialist()?.recorder?.agent?.id || null,
+              });
+            }
+          })
+          .catch(() => {});
+        if (result && result.ok === false && !result.needsUserDecision && !result.cancelled) {
+          throw new Error(result.error || "재기획을 시작하지 못했습니다.");
+        }
+        return { meta: publicMeta(store.readMeta(sessionId)), specialist: room.specialistState() };
       })
     );
 

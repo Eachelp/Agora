@@ -145,3 +145,42 @@ test("stripControlMarkers는 STATUS 마커를 제거한다", () => {
   assert.ok(out.includes("본문"));
   assert.ok(out.includes("뒷 내용"));
 });
+
+test("writeRunResult와 readRunResult는 실행 결과를 원자 저장하고 다시 읽는다", (t) => {
+  const ws = makeTempWorkspace(t);
+  const mgr = new TaskManager();
+  const run = mgr.freezeTask({ contentSource: "inline", description: "작업", taskPath: null }, ws);
+
+  const ok = mgr.writeRunResult(run, {
+    status: "COMPLETED",
+    finalVerdict: "PASS",
+    recorded: true,
+    round: 1,
+  });
+  assert.equal(ok, true);
+
+  const read = mgr.readRunResult(run);
+  assert.equal(read.status, "COMPLETED");
+  assert.equal(read.finalVerdict, "PASS");
+  assert.equal(read.recorded, true);
+});
+
+test("writeRunBlock과 readRunBlock은 막힘 정보를 저장하고 다시 읽는다", (t) => {
+  const ws = makeTempWorkspace(t);
+  const mgr = new TaskManager();
+  const run = mgr.freezeTask({ contentSource: "inline", description: "작업", taskPath: null }, ws);
+
+  const ok = mgr.writeRunBlock(run, {
+    stage: "implementation",
+    reason: "BLOCKED",
+    builderStatus: "BLOCKED",
+    changes: { status: "CHANGED", text: "diff content" },
+    axes: { transport: "COMPLETED", declaration: "BLOCKED" },
+  });
+  assert.equal(ok, true);
+
+  const block = mgr.readRunBlock(run);
+  assert.equal(block.reason, "BLOCKED");
+  assert.equal(block.builderStatus, "BLOCKED");
+  assert.equal(block.changes.text, "diff content");
+});

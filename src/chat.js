@@ -2560,16 +2560,27 @@ async function runProfessionalAction(action) {
 // 구현이 막혔을 때(BLOCKED) 고를 수 있는 후속 처리를 그립니다.
 // 주 액션 2개는 바로 노출하고, 되돌리기 계열은 접이식 메뉴로 묶습니다.
 function renderBlockedActions(root) {
-  const plannerBtn = document.createElement("button");
-  plannerBtn.type = "button";
-  plannerBtn.className = "button button-primary";
-  plannerBtn.textContent = "기획자에게 다시 맡기기";
-  plannerBtn.title = "막힌 사유를 기획자에게 전달해 작업 지시서를 다시 쓰게 합니다";
-  plannerBtn.addEventListener("click", () => {
+  const replanKeepBtn = document.createElement("button");
+  replanKeepBtn.type = "button";
+  replanKeepBtn.className = "button button-primary";
+  replanKeepBtn.textContent = "변경 유지 후 재기획";
+  replanKeepBtn.title = "구현 변경을 유지한 채 막힌 사유를 기획자에게 전달해 재기획합니다";
+  replanKeepBtn.addEventListener("click", () => {
     closeSpecialistDialog();
-    handoffBlockedToPlanner();
+    replanBlocked("keep");
   });
-  root.append(plannerBtn);
+  root.append(replanKeepBtn);
+
+  const replanRestoreBtn = document.createElement("button");
+  replanRestoreBtn.type = "button";
+  replanRestoreBtn.className = "button";
+  replanRestoreBtn.textContent = "작업 전 복원 후 재기획";
+  replanRestoreBtn.title = "작업 전 상태로 복원한 뒤 막힌 사유를 기획자에게 전달해 재기획합니다";
+  replanRestoreBtn.addEventListener("click", () => {
+    closeSpecialistDialog();
+    replanBlocked("restore");
+  });
+  root.append(replanRestoreBtn);
 
   const editBtn = document.createElement("button");
   editBtn.type = "button";
@@ -2590,8 +2601,8 @@ function renderBlockedActions(root) {
   const changeSelect = document.createElement("select");
   for (const option of [
     { value: "", label: "변경사항 처리…" },
-    { value: "keep", label: "현재 변경 유지" },
-    { value: "restore", label: "작업 전으로 복원" },
+    { value: "keep", label: "현재 변경만 유지 (종결)" },
+    { value: "restore", label: "작업 전으로 복원 (종결)" },
     { value: "discard", label: "작업 폐기 (복원 + 지시서 폐기)" },
   ]) {
     const el = document.createElement("option");
@@ -2607,6 +2618,22 @@ function renderBlockedActions(root) {
     resolveBlocked(action);
   });
   root.append(changeSelect);
+}
+
+async function replanBlocked(workspaceAction) {
+  if (workspaceAction === "restore") {
+    if (!window.confirm("작업 전 상태로 복원 후 재기획하시겠습니까? 구현자가 만든 변경은 사라집니다. (실행 전부터 있던 변경은 보존됩니다)")) {
+      return;
+    }
+  }
+  const result = await call(window.chatApi.specialistReplanBlocked(activeSessionId, workspaceAction));
+  if (result) {
+    flashNotice("막힌 사유를 전달하고 재기획을 시작했습니다.", false);
+    if (result.meta) sessionMeta = result.meta;
+    if (result.specialist) setSpecialistState(result.specialist);
+    specialistBlockedAvailable = false;
+    renderHeader();
+  }
 }
 
 // 선택한 후속 처리를 백엔드에 전달합니다.

@@ -1,7 +1,7 @@
 # Ἀγορά (Agora) — V1 Multi-Agent & Professional Execution Design
 
 > 상태: **확정안 (v1 기준)**
-> 기준 커밋: `28e4764` (전문 실행 신뢰성 강화는 이후 Release 1·2 변경으로 반영)
+> 기준 커밋: `be83bc0` (PLAN ⇄ ACT 전문 실행 및 신뢰성 FSM 통합 반영)
 > 작성일: 2026-08-10
 > 이 문서는 Agora의 **Multi-Agent 대화, Handoff, Professional Execution 모드 설계의 단일 기준**이다. (메인 윈도우 UI, 런타임/프로바이더 연동 등 제품 전반 명세는 별도 Baseline 문서와 함께 작동한다.)
 

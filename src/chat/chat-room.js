@@ -4,6 +4,12 @@ const { GROUP_ALIASES } = require("./chat-agents");
 const { parseMentions } = require("./chat-mention");
 const { buildAgentPrompt } = require("./chat-prompt");
 const { specialistPermissionMode } = require("./chat-argv");
+const {
+  createProfessionalRun,
+  transitionProfessionalRun,
+  publicProfessionalState,
+  phaseForNode,
+} = require("../agora/professional-run");
 const { TaskManager } = require("../agora/task-manager");
 const { describeWorkspaceChanges } = require("../agora/workspace-diff");
 
@@ -98,7 +104,7 @@ function runGeneratedPaths(workspace, runInfo) {
   if (!workspace || !runInfo?.runDir) return [];
   const relativeRun = path.relative(workspace, runInfo.runDir);
   if (!relativeRun || relativeRun.startsWith("..")) return [];
-  return ["task.md", "task-hash", "evidence.json", "invalid.json"]
+  return ["task.md", "task-hash", "evidence.json", "invalid.json", "result.json", "block.json"]
     .map((name) => path.join(relativeRun, name));
 }
 
@@ -163,12 +169,41 @@ class ChatRoom extends EventEmitter {
     this.professionalPlan = null;
     // BLOCKED로 멈췄을 때 사용자의 후속 선택(복원/유지/폐기)을 기다리는 상태.
     // A안: BLOCKED 시점에 즉시 되돌리지 않고, 사용자가 결정할 때까지 작업물을 보존합니다.
+    this.activeRunAuthorization = null;
+    this.specialistStages = null;
+    this.persistProfessionalRun = typeof options.persistProfessionalRun === "function"
+      ? options.persistProfessionalRun
+      : null;
+    this.professionalRun = options.initialProfessionalRun || (options.meta?.professionalRun ? createProfessionalRun(options.meta.professionalRun) : null);
     this.specialistBlocked = this.rehydrateRecovery(options.initialRecovery || null);
     this.cancels = new Set();
     this.typingCounts = new Map();
     this.activeRuns = 0;
     this.approvalSeq = 0;
     this.pendingApprovals = new Map();
+  }
+
+
+  setProfessionalRun(run) {
+    this.professionalRun = run;
+    if (this.persistProfessionalRun) {
+      this.persistProfessionalRun(run);
+    }
+    this.emitSpecialistState();
+  }
+
+  stagesForSpecialist() {
+    return this.specialistStages || this.professionalRun?.stages || this.specialistResume?.stages || null;
+  }
+
+  async withProfessionalAuthorization(authorization = "workspace-write", fn) {
+    const prev = this.activeRunAuthorization;
+    this.activeRunAuthorization = authorization || "workspace-write";
+    try {
+      return await fn();
+    } finally {
+      this.activeRunAuthorization = prev;
+    }
   }
 
   rehydrateRecovery(recovery) {
@@ -809,9 +844,13 @@ class ChatRoom extends EventEmitter {
     };
 
     const specialistStage = context.specialist?.stage || null;
-    const permissionMode = specialistStage
-      ? specialistPermissionMode(specialistStage, this.meta.permissionMode)
-      : this.meta.permissionMode;
+    let permissionMode;
+    if (specialistStage) {
+      const auth = this.activeRunAuthorization || "workspace-write";
+      permissionMode = specialistPermissionMode(specialistStage, auth);
+    } else {
+      permissionMode = this.meta.permissionMode;
+    }
     if (!permissionMode) {
       this.appendSystem("전문 실행 단계의 권한을 계산할 수 없어 실행을 중단했습니다.");
       return { ok: false, stopReason: "UNKNOWN_SPECIALIST_STAGE" };
@@ -1253,6 +1292,10 @@ class ChatRoom extends EventEmitter {
 
   // Open Question·기획 검수 피드백에 대한 사용자 답변을 Planner의 다음 입력으로 보관합니다.
   async answerPlanQuestion(answer) {
+    return this.withProfessionalAuthorization("workspace-write", () => this._answerPlanQuestion(answer));
+  }
+
+  async _answerPlanQuestion(answer) {
     const resume = this.specialistResume;
     if (!resume || !["needs_decision", "plan_review_fix_required"].includes(resume.phase)) {
       return { ok: false, error: "답변을 기다리는 기획 질문이 없습니다." };
@@ -1276,8 +1319,14 @@ class ChatRoom extends EventEmitter {
 
   // 기존 호출 경로는 유지합니다. action을 명시한 새 화면만 버튼형 전문 실행을 씁니다.
   async startSpecialist(options = {}) {
-    if (options.action) return this.startProfessionalAction(options);
-    return this.startLegacySpecialist(options);
+    if (options.stages) this.specialistStages = options.stages;
+    // 전문 실행은 세션 권한을 영구히 바꾸지 않고, 이 실행 동안만 유효한
+    // run-scoped 권한(workspace-write)을 켜 둔다. 단계별 상한은 그 아래에서
+    // 다시 좁혀진다(planner/plan_review=read, recorder=chat 등).
+    return this.withProfessionalAuthorization("workspace-write", async () => {
+      if (options.action) return this.startProfessionalAction(options);
+      return this.startLegacySpecialist(options);
+    });
   }
 
   // 전문 모드 진입점. 화면의 버튼은 action으로 구분합니다.
@@ -1295,6 +1344,7 @@ class ChatRoom extends EventEmitter {
       return { ok: false, error: "응답이 진행 중입니다. 응답이 끝난 뒤 다시 시작해 주세요." };
     }
     const stages = options.stages || {};
+    if (options.stages) this.specialistStages = options.stages;
     const action = ["plan", "implementation", "record", "full"].includes(options.action)
       ? options.action
       : "plan";
@@ -1428,6 +1478,10 @@ class ChatRoom extends EventEmitter {
 
   // 기획 승인 후 이어서 진행합니다. step/auto에서 PLAN_READY로 멈춘 상태만 재개합니다.
   async resumeSpecialist() {
+    return this.withProfessionalAuthorization("workspace-write", () => this._resumeSpecialist());
+  }
+
+  async _resumeSpecialist() {
     if (this.discussionRequested || this.discussionActive || this.specialistActive) {
       return { ok: false, error: "이미 다른 전문 작업이나 토론이 진행 중입니다." };
     }
@@ -1683,6 +1737,14 @@ class ChatRoom extends EventEmitter {
           runId: runInfo?.runId || null,
         });
       }
+      // Git 저장소인데 백업 생성에 실패하면(non-Git과 구분되는 failed) 복원
+      // 수단 없이 진행하지 않고 중단한다.
+      if (checkpoint?.failed === true) {
+        this.clearRecoveryState();
+        const error = new Error("작업 전 상태 백업(checkpoint)을 만들지 못했습니다.");
+        error.code = "CHECKPOINT_FAILED";
+        throw error;
+      }
       if (this.persistRecovery && !this.persistRecoveryState(this.recoveryFor(checkpoint, {
         ...recoveryContext,
         status: "running",
@@ -1745,6 +1807,10 @@ class ChatRoom extends EventEmitter {
               round: 0,
               error: error.message,
             });
+          }
+          if (error?.code === "CHECKPOINT_FAILED") {
+            this.appendSystem("작업 전 상태 백업(checkpoint)을 만들지 못해 전문 실행을 시작하지 않았습니다. 워크스페이스의 Git 상태를 확인해 주세요.");
+            return { ok: false, stage: "implementation", completedIterations: 0, needsUserDecision: true, stopReason: "CHECKPOINT_FAILED" };
           }
           this.appendSystem(`Frozen Task를 만들지 못해 실행을 중단합니다. (${error?.message || "알 수 없는 오류"})`);
           return { ok: false, stage: "planner", completedIterations: 0, needsUserDecision: true, stopReason: "FROZEN_TASK_MISSING", taskError: error?.message || "알 수 없는 오류" };
@@ -2158,6 +2224,19 @@ class ChatRoom extends EventEmitter {
           runId: runInfo?.runId || null,
         })
       : null;
+    // Git 저장소인데 백업 생성에 실패한 경우(failed)에는 non-Git처럼 그냥
+    // 진행하지 않는다. 복원 수단 없이 Builder가 파일을 바꾸는 것을 막고,
+    // 변경 없이 안전하게 멈춰 사용자에게 알린다.
+    if (checkpoint?.failed === true) {
+      this.clearRecoveryState();
+      this.appendSystem("작업 전 상태 백업(checkpoint)을 만들지 못해 전문 실행을 시작하지 않았습니다. 워크스페이스의 Git 상태를 확인해 주세요.");
+      return {
+        ok: false,
+        stage: "implementation",
+        needsUserDecision: true,
+        stopReason: "CHECKPOINT_FAILED",
+      };
+    }
     if (this.persistRecovery && !this.persistRecoveryState(this.recoveryFor(checkpoint, {
       status: "running",
       runId: runInfo?.runId || null,
@@ -2540,13 +2619,9 @@ class ChatRoom extends EventEmitter {
       }
     }
 
-    // 성공(PASS/기록 완료) 시 checkpoint 리소스를 정리합니다.
-    if (checkpointSupported && this.checkpointEngine) {
-      this.checkpointEngine.cleanupCheckpoint(checkpoint);
-    }
-    this.clearRecoveryState();
-
     // PASS 후 기록관(선택) 실행 — 실행 블록의 마지막 단계로 블록을 마무리합니다.
+    // checkpoint/복구 저널은 기록까지 성공한 뒤에만 정리한다. 기록이 실패하면
+    // 저널을 남겨 두어 사용자가 기록을 재시도하거나 변경을 복원할 수 있게 한다.
     if (recordAfter && recorder?.agent) {
       const frozenBeforeRecorder = validateForStage("recorder", round);
       if (frozenBeforeRecorder) return frozenBeforeRecorder;
@@ -2561,6 +2636,12 @@ class ChatRoom extends EventEmitter {
         return { ok: true, completedIterations: round, recorded: false, recording: recorderResult?.text || "", recordError };
       }
     }
+
+    // 성공(구현·검수 + 기록 완료) 후에만 checkpoint 리소스를 정리합니다.
+    if (checkpointSupported && this.checkpointEngine) {
+      this.checkpointEngine.cleanupCheckpoint(checkpoint);
+    }
+    this.clearRecoveryState();
 
     this.appendSystem("전문 모드 구현·검토가 통과했습니다.");
     return {
@@ -2655,6 +2736,109 @@ class ChatRoom extends EventEmitter {
   //   keep    — 현재 변경을 그대로 유지하고 보류 상태만 해제
   //   restore — checkpoint 시점(=Builder 실행 전)으로 되돌림. 사용자 사전 변경은 보존
   //   discard — 되돌린 뒤 Task까지 폐기 대상으로 표시
+
+  specialistBlockDetails() {
+    const pending = this.specialistBlocked;
+    if (!pending) return null;
+    const runInfo = pending.runId && this.taskManager?.runInfoForId
+      ? this.taskManager.runInfoForId(pending.runId, this.meta.workspace)
+      : null;
+    const block = runInfo && this.taskManager?.readRunBlock
+      ? this.taskManager.readRunBlock(runInfo)
+      : null;
+    return {
+      runId: pending.runId || null,
+      taskPath: pending.taskPath || null,
+      stage: pending.stage || "implementation",
+      blockReason: pending.blockReason || "BLOCKED",
+      canRestore: Boolean(pending.canRestore),
+      block,
+    };
+  }
+
+  async replanBlocked(workspaceAction = "keep") {
+    return this.withProfessionalAuthorization("workspace-write", async () => {
+      const pending = this.specialistBlocked;
+      if (!pending) {
+        return { ok: false, error: "처리할 막힘(BLOCKED) 상태가 없습니다." };
+      }
+      if (!["keep", "restore"].includes(workspaceAction)) {
+        return { ok: false, error: "올바르지 않은 재기획 동작입니다. (keep 또는 restore 선택)" };
+      }
+      // 담당자 확인을 먼저 한다. 복원/정리/저널 해제 같은 되돌릴 수 없는 처리
+      // 이전에 검증해야, 설정이 비어 있을 때 사용자가 checkpoint와 BLOCKED
+      // 상태를 잃고 막다른 길에 놓이지 않는다.
+      const stages = this.stagesForSpecialist();
+      if (!stages || !stages.planner?.agent || !stages.review?.agent) {
+        return { ok: false, error: "기획·검수 담당자를 프로젝트 설정에서 지정해 주세요." };
+      }
+      const runInfo = pending.runId && this.taskManager?.runInfoForId
+        ? this.taskManager.runInfoForId(pending.runId, this.meta.workspace)
+        : null;
+      const block = runInfo && this.taskManager?.readRunBlock
+        ? this.taskManager.readRunBlock(runInfo)
+        : null;
+
+      if (workspaceAction === "restore") {
+        if (this.checkpointEngine && pending.checkpoint) {
+          const preservePaths = runInfo ? runGeneratedPaths(this.meta.workspace, runInfo) : [];
+          const result = await this.checkpointEngine.restoreCheckpoint(this.meta.workspace, pending.checkpoint, {
+            preservePaths,
+          });
+          if (!result?.ok) {
+            return { ok: false, error: "작업 전 상태로 되돌리지 못했습니다. 변경과 복구 상태를 그대로 유지합니다." };
+          }
+        }
+      }
+
+      if (runInfo && this.taskManager?.writeRunResult) {
+        this.taskManager.writeRunResult(runInfo, {
+          status: "BLOCKED",
+          stopReason: pending.blockReason || "BLOCKED",
+        });
+      }
+
+      if (this.checkpointEngine && pending.checkpoint) {
+        this.checkpointEngine.cleanupCheckpoint(pending.checkpoint);
+      }
+
+      this.specialistBlocked = null;
+      this.clearRecoveryState();
+
+      let feedback = `이전 구현(${pending.runId || "RUN"})이 막혔습니다.\n사유: ${pending.blockReason || "BLOCKED"}`;
+      if (block?.changes?.text) {
+        feedback += `\n\n=== 이전 작업 부분 변경 ===\n${block.changes.text}\n=== 이전 작업 부분 변경 끝 ===`;
+      }
+
+      const taskInfo = pending.taskPath
+        ? { relativePath: pending.taskPath, filename: path.basename(pending.taskPath) }
+        : null;
+
+      if (this.professionalRun) {
+        const trans = transitionProfessionalRun(this.professionalRun, {
+          type: "REPLAN_RESET",
+          carriedFromRunId: pending.runId || null,
+        });
+        if (trans.ok) this.setProfessionalRun(trans.state);
+      }
+
+      this.appendSystem(
+        workspaceAction === "restore"
+          ? "작업 전 상태로 복원한 뒤, 막힌 사유를 기획자에게 전달하고 재기획을 시작합니다."
+          : "현재 변경을 유지한 채, 막힌 사유와 부분 변경을 기획자에게 전달하고 재기획을 시작합니다."
+      );
+
+      return this.runPlanBlock({
+        stages,
+        feedback,
+        taskInfo,
+        action: "plan",
+        planAutoRevisions: this.professionalRun?.policy?.planAutoRevisions || 0,
+        implementationAutoRevisions: this.professionalRun?.policy?.implementationAutoRevisions || 0,
+      });
+    });
+  }
+
   async resolveBlocked(action) {
     const pending = this.specialistBlocked;
     if (!pending) {
