@@ -3217,6 +3217,135 @@ textarea:focus-visible {
   box-shadow: 0 3px 12px rgba(16, 42, 67, 0.07);
 }
 
+/* --- Professional mode visual pass --- */
+.professional-actions-label {
+  min-width: 72px;
+  margin-right: 2px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.professional-progress {
+  gap: 4px;
+  font-size: 10.5px;
+}
+
+.professional-progress [data-professional-step] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 68px;
+  min-height: 24px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.professional-progress [data-professional-step].is-complete {
+  border-color: #b7e3cf;
+  background: #effaf4;
+  color: #18794e;
+}
+
+.professional-progress [data-professional-step].is-current {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.professional-progress > span[aria-hidden="true"] {
+  color: var(--line-strong);
+}
+
+.professional-actions .chip-button {
+  min-height: 28px;
+  padding: 4px 10px;
+}
+
+.professional-auto-options {
+  gap: 7px;
+}
+
+@media (max-width: 900px) {
+  .professional-progress {
+    order: 9;
+    flex: 0 0 100%;
+    margin-left: 0;
+    padding: 2px 0 0;
+    overflow-x: auto;
+  }
+}
+
+/* --- Shared control polish --- */
+.project-item,
+.session-item {
+  transition: background-color 120ms ease-out, border-color 120ms ease-out, box-shadow 120ms ease-out;
+}
+
+.project-item:hover,
+.session-item:not(.is-active):hover {
+  border-color: color-mix(in srgb, var(--accent) 20%, var(--line));
+}
+
+.project-item.is-active .project-name,
+.session-item.is-active .session-name {
+  color: var(--accent);
+}
+
+.project-item.is-active .project-meta,
+.session-item.is-active .session-meta {
+  color: var(--muted);
+}
+
+.button-small,
+.foot-button,
+.sidebar-toggle {
+  transition: background-color 120ms ease-out, border-color 120ms ease-out, color 120ms ease-out, box-shadow 120ms ease-out;
+}
+
+.foot-button:hover,
+.button-small:hover {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  color: var(--accent);
+}
+
+.sidebar-toggle {
+  border: 1px solid var(--line);
+  box-shadow: 0 1px 5px rgba(16, 42, 67, 0.09);
+}
+
+.room-controls-context,
+.room-controls-actions {
+  gap: 6px;
+}
+
+.room-controls-actions .chip-button,
+.room-controls-actions .work-mode-switch {
+  min-width: 82px;
+  justify-content: center;
+}
+
+.message .avatar {
+  width: 42px;
+  height: 42px;
+  border-radius: 11px;
+}
+
+.message .bubble {
+  border-radius: 8px 14px 14px 14px;
+  line-height: 1.58;
+}
+
+.message.is-user .bubble {
+  border-radius: 14px 8px 14px 14px;
+}
+
 .foot-button {
   display: inline-flex;
   align-items: center;
