@@ -3670,3 +3670,12 @@ textarea:focus-visible {
   background: rgba(255, 255, 255, 0.2);
   color: #ffffff;
 }
+
+/* 사이드바 섹션 제목을 시안처럼 작은 회색 라벨로 통일합니다.
+   (기존 15px·진한 잉크색이 본문보다 과하게 커 보이던 문제) */
+.sidebar .sidebar-title {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
