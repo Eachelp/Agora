@@ -159,6 +159,7 @@ test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있
   assert.match(renderer, /sessionsMove\(session\.id, project\.id, applyWorkspace\)/);
   assert.match(renderer, /project-move-apply-workspace/);
   assert.match(renderer, /전문 모드 역할 설정/);
+  assert.match(renderer, /기획 검수 \(선택\)/);
   assert.match(renderer, /runProfessionalAction\(action\)/);
   assert.match(renderer, /planAutoRevisions/);
   assert.match(renderer, /implementationAutoRevisions/);

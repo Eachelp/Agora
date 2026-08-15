@@ -377,8 +377,11 @@ test("Planner와 plan_review 프롬프트가 NEEDS_DECISION 및 repeat 규칙을
   });
   assert.match(planner, /TASK를 고친 것처럼 다시 쓰지 마세요/);
   assert.match(planner, /STATUS: NEEDS_DECISION/);
+  assert.match(planner, /관련된 파일·호출 경로·테스트를 필요한 범위에서 읽어/);
+  assert.match(planner, /Current State \/ Evidence/);
   assert.match(review, /repeat: YES\|NO/);
   assert.match(review, /BLOCKING 이슈가 아직 해소되지 않았다면 반드시/);
+  assert.match(review, /워크스페이스를 읽어 확인하세요/);
 });
 
 test("Handoff(검토 요청)은 전달 메시지를 검토 의도로 주입한다", () => {

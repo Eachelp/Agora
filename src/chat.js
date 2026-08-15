@@ -750,9 +750,9 @@ function openProjectSettings(anchor, project) {
     roleTitle.textContent = "전문 모드 역할 설정";
     const roleHint = document.createElement("p");
     roleHint.className = "popover-hint";
-    roleHint.textContent = "기본 모드는 현재 채팅 설정을 쓰고, 전문 모드는 여기 지정한 담당자·모델을 씁니다.";
+    roleHint.textContent = "기본 모드는 현재 채팅 설정을 쓰고, 전문 모드는 여기 지정한 담당자·모델을 씁니다. 기획 검수 담당자는 선택이며 비우면 검토 담당자를 사용합니다.";
     roleSection.append(roleTitle, roleHint);
-    const roleDefs = workflow.roles?.length
+    const workflowRoleDefs = workflow.roles?.length
       ? workflow.roles
       : [
           { id: "planning", label: "기획" },
@@ -760,6 +760,13 @@ function openProjectSettings(anchor, project) {
           { id: "review", label: "검토" },
           { id: "recorder", label: "기록" },
         ];
+    // workflow 작업 역할을 늘리지 않고, 전문 실행 설정에만 선택형 기획 검수자를
+    // 노출한다. 비워 두면 main 프로세스가 검토 담당자를 재사용한다.
+    const roleDefs = [
+      ...workflowRoleDefs.slice(0, 1),
+      { id: "plan_review", label: "기획 검수 (선택)" },
+      ...workflowRoleDefs.slice(1),
+    ];
     for (const role of roleDefs) {
       const savedRole = roleConfigFromProject(project, role.id);
       const select = document.createElement("select");

@@ -50,6 +50,7 @@ test("역할별 담당자·모델·추론 설정을 저장하고 기존 문자�
     name: "전문 실행",
     defaultRoles: {
       implementation: { agentId: "codex", model: "gpt-5", effort: "high" },
+      plan_review: { agentId: "agy", model: "gemini-3-flash", effort: "medium" },
       review: "claude",
       recorder: { agentId: "claude", model: "default", effort: "default" },
     },
@@ -65,6 +66,11 @@ test("역할별 담당자·모델·추론 설정을 저장하고 기존 문자�
     agentId: "claude",
     model: "",
     effort: "",
+  });
+  assert.deepEqual(roleConfigFor(reloaded, "plan_review"), {
+    agentId: "agy",
+    model: "gemini-3-flash",
+    effort: "medium",
   });
   assert.deepEqual(roleConfigFor(reloaded, "recorder"), {
     agentId: "claude",

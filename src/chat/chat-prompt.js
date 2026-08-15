@@ -213,13 +213,17 @@ function buildAgentPrompt({
     if (specialist.stage === "planner") {
       lines.push("- 사용자의 목표와 앞선 논의를 실행 가능한 작업 계약(Task)으로 정리하세요.");
       lines.push("- 확정된 결정은 요구사항·제약으로, 미확정 제안은 참고·Open Question으로 구분하세요.");
+      lines.push("- 워크스페이스 작업이면 PLAN_READY 전에 요청과 직접 관련된 파일·호출 경로·테스트를 필요한 범위에서 읽어 현재 상태와 근거를 확인하세요. 작은 작업을 위해 저장소 전체를 훑지는 마세요.");
+      lines.push("- 확인하지 못한 사실은 단정하지 말고 `Risks / Open Questions`에 남기세요.");
       lines.push("- 하나의 작업이 하나의 명확한 목표와 완료 조건을 갖도록 큰 작업을 분해하세요.");
+      lines.push("- TASK에는 가능하면 `Goal`, `Current State / Evidence`, `Requirements`, `Affected Modules`, `Invariants / Must Preserve`, `Implementation Approach`, `Acceptance Criteria`, `Verification`, `Risks / Open Questions`, `Out of Scope`를 포함하세요.");
       lines.push("- 코드를 수정하거나 구현을 시작하지 마세요. 구현 담당자를 자동으로 부르지 마세요.");
       lines.push("- BLOCKING 지적을 해결하지 못하거나 수용하지 않을 때는 TASK를 고친 것처럼 다시 쓰지 마세요. `STATUS: NEEDS_DECISION`과 그 이유·사용자에게 필요한 질문을 반환하고, 기존 TASK.md를 덮어쓰지 마세요.");
       lines.push("- 응답 안에 `STATUS: PLAN_READY` 또는 `STATUS: NEEDS_DECISION` 하나를 넣으세요.");
     } else if (specialist.stage === "plan_review") {
       lines.push("- 이것은 구현 검수가 아니라 기획 검수입니다. 코드를 수정하거나 구현을 시작하지 마세요.");
       lines.push("- 기획안이 사용자 목표·제약·완료 조건을 충족하는지, Open Question이 남았는지 검토하세요.");
+      lines.push("- TASK의 현재 상태·파일·테스트에 관한 주장은 필요할 때 워크스페이스를 읽어 확인하세요. 기획자 설명이나 자기보고만으로 사실을 확정하지 마세요.");
       lines.push("- 기획안이 충분하면 `VERDICT: PASS`를, 보완이 필요하면 `VERDICT: FIX_REQUIRED`를, 판단 근거가 부족하면 `VERDICT: UNKNOWN`을 넣으세요.");
       lines.push("- FIX_REQUIRED라면 `ISSUES:` 아래에 이슈별로 `scope: IN/OUT`, `severity: BLOCKING/NON_BLOCKING`, `problem`, `evidence`, `impact`를 적으세요.");
       lines.push("- 각 이슈에 `repeat: YES|NO`를 표시하세요. 이전 라운드에서 지적한 BLOCKING 이슈가 아직 해소되지 않았다면 반드시 `repeat: YES`로 기록하세요.");
@@ -232,7 +236,7 @@ function buildAgentPrompt({
       lines.push("- 구현은 당신의 몫입니다. 다른 에이전트에게 구현·스크립트 작성·실행을 넘기거나 위임하지 마세요.");
       lines.push("- 권한이나 도구가 부족하다고 판단되면, 다른 참가자에게 맡기지 말고 현재 단계의 결과물에 그 사유와 필요한 조치를 적으세요.");
       lines.push("- Task Contract 파일(.project-memory/tasks/ 및 현재 Run의 frozen task.md)은 실행 대상이 아닙니다. 읽기 전용 계약으로 취급하며 수정·삭제·이동하지 마세요.");
-      lines.push("- 계약(Task) 변경이 필요하면 직접 수정하지 말고 `STATUS: BLOCKED`로 반환하세요.");
+      lines.push("- 계약(Task)이 현재 작업공간의 사실이나 안전한 구현 조건과 충돌하면 범위를 조용히 재해석하지 마세요. 계약 변경이 필요하면 직접 수정하지 말고 `STATUS: BLOCKED`와 이유를 반환하세요.");
       lines.push("- 완료하면 `STATUS: DONE`, 막혀서 진행할 수 없으면 `STATUS: BLOCKED`를 응답 안에 넣으세요.");
     } else if (specialist.stage === "review") {
       lines.push("- 대화 transcript와 Builder의 자기보고는 검수 근거로 제공되지 않습니다. 아래 구조화된 사실과 현재 작업공간만 사용하세요.");

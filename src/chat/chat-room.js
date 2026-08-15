@@ -1361,8 +1361,10 @@ class ChatRoom extends EventEmitter {
     previousIssues = "",
   } = {}) {
     const planner = stages?.planner;
-    const review = stages?.review;
-    if (!planner?.agent || !review?.agent) {
+    // planReview는 선택 설정이며, 이전 세션과 기존 프로젝트는 review 담당자를
+    // 기획 검수에도 계속 사용한다.
+    const planReviewAgent = stages?.planReview || stages?.review;
+    if (!planner?.agent || !planReviewAgent?.agent) {
       return { ok: false, error: "기획·검수 담당자를 프로젝트 설정에서 지정해 주세요." };
     }
     const requestedGeneration = this.generation;
@@ -1471,7 +1473,7 @@ class ChatRoom extends EventEmitter {
         }
 
         const planText = nextTaskInfo?.content || plannerResult.text || "";
-        const planReview = await this.scheduleResponse(review.agent, {
+        const planReview = await this.scheduleResponse(planReviewAgent.agent, {
           specialist: {
             stage: "plan_review",
             round: planRound,
@@ -1479,7 +1481,7 @@ class ChatRoom extends EventEmitter {
             feedback: planText,
             previousIssues: previousPlanIssues,
           },
-          agentConfig: review.agentConfig,
+          agentConfig: planReviewAgent.agentConfig,
         });
         if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
         if (!planReview?.ok) {
@@ -1487,7 +1489,7 @@ class ChatRoom extends EventEmitter {
             type: "INTERRUPT",
             stopReason: planReview?.stopReason || "PLAN_REVIEW_FAILED",
           });
-          return this.specialistFail(review, "plan_review", planRevisionCount, planReview);
+          return this.specialistFail(planReviewAgent, "plan_review", planRevisionCount, planReview);
         }
         const contract = this.parseReviewContract(planReview.text || "", planReview.specialistSignal);
         previousPlanIssues = structuredIssuesFromReview(planReview.text || "");
@@ -1651,7 +1653,8 @@ class ChatRoom extends EventEmitter {
       : "plan";
     const implementation = stages.implementation;
     const review = stages.review;
-    if ((action === "plan" || action === "full") && (!stages.planner?.agent || !review?.agent)) {
+    const planReviewAgent = stages.planReview || review;
+    if ((action === "plan" || action === "full") && (!stages.planner?.agent || !planReviewAgent?.agent)) {
       return { ok: false, error: "전문 모드의 기획·검수 담당자를 프로젝트 설정에서 지정해 주세요." };
     }
     if ((action === "implementation" || action === "full") && (!implementation?.agent || !review?.agent)) {

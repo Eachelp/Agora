@@ -7,7 +7,9 @@ const PROJECT_SCHEMA_VERSION = 1;
 const UNCATEGORIZED_PROJECT_ID = "uncategorized";
 const DEFAULT_PROJECT_NAME = "분류되지 않음";
 const PERMISSION_MODES = new Set(["chat", "workspace-read", "workspace-write"]);
-const ROLE_IDS = Object.freeze(["planning", "implementation", "review", "recorder"]);
+// plan_review는 선택 역할이다. 비어 있으면 실행 시 review 담당자를 재사용하므로
+// 기존 프로젝트의 전문 실행 설정과 호환된다.
+const ROLE_IDS = Object.freeze(["planning", "plan_review", "implementation", "review", "recorder"]);
 
 let idSeq = 0;
 

@@ -487,6 +487,8 @@ review          → workspace-read
 recorder        → chat
 ```
 
+프로젝트 역할 설정에서 `plan_review`는 선택 사항이다. 따로 지정하면 기획 검수만 다른 모델·설정으로 실행하고, 비워 두면 기존 `review` 담당자를 재사용한다. 이 선택은 단계 권한 cap을 바꾸지 않으며, 구현 Reviewer 역할 슬롯을 필수로 늘리지 않는다.
+
 세분 capability(예: 테스트 실행 가능 여부)는 향후 provider smoke 검증과 함께 확장한다.
 
 ---

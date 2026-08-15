@@ -676,16 +676,25 @@ function roomMeta(meta) {
   }
 
   function specialistStageFor(project, room, roleId) {
+    const roleLabel = {
+      planning: "기획",
+      plan_review: "기획 검수",
+      implementation: "구현",
+      review: "검토",
+      recorder: "기록",
+    }[roleId] || roleId;
     let config = roleConfigFor(project, roleId);
-    // 기록 역할을 비워 둔 경우에는 검토 담당자를 기록관으로 재사용합니다.
-    // 모델을 따로 지정하고 싶을 때만 프로젝트 설정에서 기록 역할을 채웁니다.
-    if (!config.agentId && roleId === "recorder") config = roleConfigFor(project, "review");
+    // 기획 검수와 기록 역할은 선택 사항이다. 비워 둔 경우에는 기존 검토 담당자를
+    // 재사용하므로, 새 역할 슬롯을 추가해도 기존 프로젝트 설정은 그대로 동작한다.
+    if (!config.agentId && ["plan_review", "recorder"].includes(roleId)) {
+      config = roleConfigFor(project, "review");
+    }
     if (!config.agentId) {
-      return { ok: false, error: `전문 모드의 ${roleId} 담당자를 프로젝트 설정에서 지정해 주세요.` };
+      return { ok: false, error: `전문 모드의 ${roleLabel} 담당자를 프로젝트 설정에서 지정해 주세요.` };
     }
     const agent = room.findAgent(config.agentId);
     if (!agent || !agent.available || agent.enabled === false) {
-      return { ok: false, error: `전문 모드의 ${roleId} 담당 에이전트 @${config.agentId}를 사용할 수 없습니다.` };
+      return { ok: false, error: `전문 모드의 ${roleLabel} 담당 에이전트 @${config.agentId}를 사용할 수 없습니다.` };
     }
     const projectDefault = project.defaultAgents?.[config.agentId] || {};
     const agentConfig = {
@@ -704,14 +713,19 @@ function roomMeta(meta) {
     const requiredRoles = action === "record"
       ? ["recorder"]
       : action === "plan"
-        ? ["planning", "review"]
+        ? ["planning", "plan_review"]
         : action === "implementation"
           ? ["implementation", "review", "recorder"]
-          : ["planning", "implementation", "review", "recorder"];
+          : ["planning", "plan_review", "implementation", "review", "recorder"];
     for (const roleId of requiredRoles) {
       const stage = specialistStageFor(project, room, roleId);
       if (!stage.ok) return stage;
-      stages[roleId === "planning" ? "planner" : roleId] = stage;
+      const stageKey = roleId === "planning"
+        ? "planner"
+        : roleId === "plan_review"
+          ? "planReview"
+          : roleId;
+      stages[stageKey] = stage;
     }
     return { ok: true, stages };
   }

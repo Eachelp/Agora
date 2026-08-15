@@ -51,7 +51,8 @@ function fakeRunAgent(calls = []) {
   return ({ agent, prompt }) => {
     calls.push({ agentId: agent.id, prompt });
     let text = "응답 없음";
-    if (/전문 모드: 기획/.test(prompt)) text = "기획 완료\nSTATUS: PLAN_READY";
+    if (/전문 모드: 기획 검수/.test(prompt)) text = "기획 검수 통과\n[[CODEPET_REVIEW:PASS]]";
+    else if (/전문 모드: 기획/.test(prompt)) text = "기획 완료\nSTATUS: PLAN_READY";
     else if (/전문 모드: 구현/.test(prompt)) text = "구현 완료\nSTATUS: DONE";
     else if (/전문 모드: 검토/.test(prompt)) text = "검토 통과\n[[CODEPET_REVIEW:PASS]]";
     return { promise: Promise.resolve({ ok: true, text }), cancel: () => {} };
@@ -143,6 +144,49 @@ test("이미 쓰기 권한인 채팅은 그대로 전문 모드를 실행한다"
   const started = await feature.invoke("chat:specialist:start", { sessionId, mode: "quick" });
   assert.equal(started.ok, true);
   assert.equal(started.meta.permissionMode, "workspace-write");
+});
+
+test("선택한 기획 검수 담당자는 구현 검수 담당자와 독립적으로 호출된다", async () => {
+  const calls = [];
+  const feature = makeFeature(makeRoot(), makeRoot(), calls);
+  const { projectId, sessionId } = await setup(feature, calls);
+  await feature.invoke("chat:workspace:choose", { sessionId });
+  await feature.invoke("chat:projects:update", {
+    projectId,
+    patch: {
+      defaultRoles: {
+        planning: "codex",
+        plan_review: "claude",
+        implementation: "claude",
+        review: "codex",
+      },
+    },
+  });
+  calls.length = 0;
+
+  const started = await feature.invoke("chat:specialist:start", { sessionId, action: "plan" });
+  assert.equal(started.ok, true);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const plannerCall = calls.find((call) => /전문 모드: 기획 ===/.test(call.prompt));
+  const planReviewCall = calls.find((call) => /전문 모드: 기획 검수/.test(call.prompt));
+  assert.equal(plannerCall?.agentId, "codex");
+  assert.equal(planReviewCall?.agentId, "claude");
+});
+
+test("기획 검수 담당자를 비우면 기존 검토 담당자를 재사용한다", async () => {
+  const calls = [];
+  const feature = makeFeature(makeRoot(), makeRoot(), calls);
+  const { sessionId } = await setup(feature, calls);
+  await feature.invoke("chat:workspace:choose", { sessionId });
+  calls.length = 0;
+
+  const started = await feature.invoke("chat:specialist:start", { sessionId, action: "plan" });
+  assert.equal(started.ok, true);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const planReviewCall = calls.find((call) => /전문 모드: 기획 검수/.test(call.prompt));
+  assert.equal(planReviewCall?.agentId, "codex");
 });
 
 test("사용자 작업 요청이 없는 대화에서는 전문 실행을 시작하지 않는다", async () => {
