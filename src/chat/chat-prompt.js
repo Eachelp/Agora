@@ -65,11 +65,16 @@ function buildAgentPrompt({
 }) {
   const isBuilder = specialist?.stage === "implementation";
   const isCleanReviewer = specialist?.stage === "review";
+  const isPlanReviewer = specialist?.stage === "plan_review";
+  const isProfessionalRecorder = specialist?.stage === "recorder" && specialist?.professional === true;
   const isSpecialist = Boolean(specialist);
   const agentsById = new Map(agents.map((entry) => [entry.id, entry]));
   const others = agents.filter((entry) => entry.id !== agent.id);
-  const recent = isBuilder || isCleanReviewer ? [] : messages.slice(-maxMessages);
-  const omitted = messages.length - recent.length;
+  const sourceMessages = isPlanReviewer
+    ? messages.filter((message) => message?.authorType === "user")
+    : messages;
+  const recent = isBuilder || isCleanReviewer || isProfessionalRecorder ? [] : sourceMessages.slice(-maxMessages);
+  const omitted = sourceMessages.length - recent.length;
 
   const lines = [];
   if (isBuilder) {
@@ -78,6 +83,12 @@ function buildAgentPrompt({
   } else if (isCleanReviewer) {
     lines.push("당신은 Agora 전문 실행의 clean-room 구현 Reviewer입니다.");
     lines.push("대화 transcript, 참가자 목록, Builder의 자기보고는 보지 않습니다. Project Rules, Frozen Task, checkpoint 이후 변경, 구조화된 실행 상태와 evidence만 근거로 판정하세요.");
+  } else if (isPlanReviewer) {
+    lines.push("당신은 Agora 전문 실행의 Plan Reviewer입니다.");
+    lines.push("사용자 요청·확정된 결정·현재 TASK와 이전 구조화 이슈만 근거로 기획을 검수하세요. 다른 에이전트의 자유 대화나 설명은 근거로 사용하지 마세요.");
+  } else if (isProfessionalRecorder) {
+    lines.push("당신은 Agora 전문 실행의 Recorder입니다.");
+    lines.push("대화 transcript나 다른 에이전트의 자유 설명은 보지 않습니다. Frozen Task, 최종 변경 요약, 검수 판정과 실행 근거만 기록하세요.");
   } else {
     lines.push(
       `당신은 여러 AI 코딩 에이전트가 사용자와 함께 있는 그룹 채팅의 참가자 "@${agent.id}"(${agent.name})입니다.`
@@ -113,21 +124,21 @@ function buildAgentPrompt({
     lines.push("=== 프로젝트 현재 규칙 끝 ===");
     lines.push("- 이 규칙은 반드시 지키세요.");
   }
-  const context = isBuilder || isCleanReviewer ? "" : String(projectContext || "").trim();
+  const context = isBuilder || isCleanReviewer || isProfessionalRecorder ? "" : String(projectContext || "").trim();
   if (context) {
     lines.push("");
     lines.push("=== 프로젝트 공통 맥락 ===");
     lines.push(context);
     lines.push("=== 프로젝트 공통 맥락 끝 ===");
   }
-  const workflow = isBuilder || isCleanReviewer ? "" : String(workflowContext || "").trim();
+  const workflow = isBuilder || isCleanReviewer || isProfessionalRecorder ? "" : String(workflowContext || "").trim();
   if (workflow) {
     lines.push("");
     lines.push("=== 확정된 결정과 진행 중 작업 ===");
     lines.push(workflow);
     lines.push("=== 확정된 결정과 진행 중 작업 끝 ===");
   }
-  const memoryFull = isBuilder || isCleanReviewer ? "" : String(memoryContext || "").trim();
+  const memoryFull = isBuilder || isCleanReviewer || isPlanReviewer || isProfessionalRecorder ? "" : String(memoryContext || "").trim();
   if (memoryFull) {
     const usedSoFar = rules.length + context.length + workflow.length;
     const budget = Math.max(0, MAX_CONTEXT_CHARS - usedSoFar);
@@ -172,8 +183,22 @@ function buildAgentPrompt({
     lines.push(`=== 전문 모드: ${stageLabels[specialist.stage] || specialist.stage} ===`);
     lines.push(`현재 단계: ${stageLabels[specialist.stage] || specialist.stage} · 반복 ${specialist.round || 1}/${specialist.maxRounds || 3}`);
     if (specialist.feedback) {
-      lines.push("이전 단계에서 전달된 내용:");
-      lines.push(boundedText(specialist.feedback, MAX_REVIEW_EVIDENCE_CHARS, "이전 피드백").text);
+      if (specialist.stage === "plan_review") {
+        lines.push("=== 현재 TASK ===");
+        // 현재 TASK는 기획 검수의 계약 본문이다. 부분만 보여 주고 PASS시키지
+        // 않도록 자르지 않으며, 전체 prompt 예산을 넘으면 호출 자체를 막는다.
+        lines.push(String(specialist.feedback || ""));
+        lines.push("=== 현재 TASK 끝 ===");
+      } else {
+        lines.push("이전 단계에서 전달된 내용:");
+        lines.push(boundedText(specialist.feedback, MAX_REVIEW_EVIDENCE_CHARS, "이전 피드백").text);
+      }
+    }
+    if (specialist.stage === "plan_review" && specialist.previousIssues) {
+      lines.push("");
+      lines.push("=== 이전 구조화 이슈 ===");
+      lines.push(boundedText(specialist.previousIssues, MAX_REVIEW_EVIDENCE_CHARS, "이전 이슈").text);
+      lines.push("=== 이전 구조화 이슈 끝 ===");
     }
     // TASK-007: Builder/Reviewer는 실행 계약(Task Contract)을 Frozen Task로 받습니다.
     // 이 계약은 실행 시점에 동결된 불변 요구사항이며, 수정·삭제·이동할 수 없습니다.
@@ -244,6 +269,19 @@ function buildAgentPrompt({
       lines.push("- 응답 안에 `VERDICT: PASS` 또는 `VERDICT: FIX_REQUIRED` 또는 `VERDICT: UNKNOWN` 하나를 넣으세요.");
       lines.push("- FIX_REQUIRED라면 `ISSUES:` 아래에 이슈별로 `scope: IN/OUT`, `severity: BLOCKING/NON_BLOCKING`, `location`, `problem`, `evidence`, `impact`를 적으세요.");
     } else if (specialist.stage === "recorder") {
+      if (isProfessionalRecorder && specialist.finalVerdict) {
+        lines.push(`최종 검수 판정: ${specialist.finalVerdict}`);
+      }
+      if (isProfessionalRecorder && Object.prototype.hasOwnProperty.call(specialist, "reviewDiff")) {
+        lines.push("=== 최종 변경 요약 ===");
+        lines.push(boundedText(specialist.reviewDiff, MAX_REVIEW_DIFF_CHARS, "최종 변경").text);
+        lines.push("=== 최종 변경 요약 끝 ===");
+      }
+      if (isProfessionalRecorder && specialist.evidence) {
+        lines.push("=== 실행 근거 요약 ===");
+        lines.push(boundedText(JSON.stringify(specialist.evidence), MAX_REVIEW_EVIDENCE_CHARS, "Evidence").text);
+        lines.push("=== 실행 근거 요약 끝 ===");
+      }
       lines.push("- 아래 JSON 형식으로만 답하세요. 코드 블록을 써도 되고 안 써도 됩니다.");
       lines.push("- summary에는 이번 작업에서 확인된 사실, 결정, 완료 내용, 남은 작업을 Markdown으로 적으세요.");
       lines.push("- decisions에는 대화에서 실제로 합의된 내용만 넣으세요.");
@@ -268,7 +306,7 @@ function buildAgentPrompt({
       lines.push("- 전달받은 메시지를 출발점으로 후속 작업을 이어가세요.");
     }
   }
-  if (!isBuilder && !isCleanReviewer) {
+  if (!isBuilder && !isCleanReviewer && !isProfessionalRecorder) {
     lines.push("");
     lines.push("=== 대화 ===");
     if (omitted > 0) lines.push(`(이전 메시지 ${omitted}개 생략)`);

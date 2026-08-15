@@ -133,6 +133,43 @@ test("기획 검수는 Open Question이 남아 있으면 통과시키지 않는�
   assert.match(prompt, /Open Question이 남아 있으면 PASS로 처리하지 말고/);
 });
 
+test("기획 검수는 사용자 메시지와 구조화 입력만 보고 다른 에이전트 자유 대화는 제외한다", () => {
+  const prompt = buildAgentPrompt({
+    agent: AGENTS[1],
+    agents: AGENTS,
+    messages: [
+      message("user", "사용자 요구사항", "user"),
+      message("claude", "기획자의 자유 설명은 검수 근거가 아니어야 합니다"),
+    ],
+    memoryContext: "기록관 초안도 기획 검수에 넣지 않습니다",
+    specialist: {
+      stage: "plan_review",
+      feedback: "## Goal\n현재 TASK",
+      previousIssues: "1.\nseverity: BLOCKING\nrepeat: YES\nproblem: 이전 지적",
+    },
+  });
+
+  assert.match(prompt, /사용자 요구사항/);
+  assert.match(prompt, /현재 TASK/);
+  assert.match(prompt, /=== 이전 구조화 이슈 ===/);
+  assert.match(prompt, /repeat: YES/);
+  assert.doesNotMatch(prompt, /기획자의 자유 설명/);
+  assert.doesNotMatch(prompt, /기록관 초안/);
+  assert.doesNotMatch(prompt, /그룹 채팅의 참가자/);
+});
+
+test("기획 검수의 현재 TASK는 자르지 않고 예산 초과 시 호출을 막는다", () => {
+  assert.throws(
+    () => buildAgentPrompt({
+      agent: AGENTS[1],
+      agents: AGENTS,
+      messages: [message("user", "검수해", "user")],
+      specialist: { stage: "plan_review", feedback: "x".repeat(25 * 1024) },
+    }),
+    (error) => error?.code === "PROMPT_BUDGET_EXCEEDED"
+  );
+});
+
 test("전문 모드 구현자는 위임 금지, 검토자는 위임 시 되돌림 지침을 받는다", () => {
   const implementation = buildAgentPrompt({
     agent: AGENTS[1],
@@ -301,6 +338,28 @@ test("Builder 프롬프트는 그룹채팅 프레이밍과 대화 transcript를 
   assert.doesNotMatch(prompt, /사용자 원문/);
   assert.doesNotMatch(prompt, /프로젝트 공통 맥락/);
   assert.doesNotMatch(prompt, /채팅에 어울리게 간결히/);
+});
+
+test("전문 Recorder는 transcript 대신 Frozen Task와 최종 실행 근거만 받는다", () => {
+  const prompt = buildAgentPrompt({
+    agent: AGENTS[1],
+    agents: AGENTS,
+    messages: [message("user", "일반 대화 원문", "user"), message("claude", "Builder 자기보고", "agent")],
+    specialist: {
+      stage: "recorder",
+      professional: true,
+      frozenTask: { runId: "RUN-001", content: "Frozen Task 본문" },
+      reviewDiff: "diff --git a/a.js b/a.js",
+      finalVerdict: "PASS",
+      evidence: { execution: "OBSERVED" },
+    },
+  });
+  assert.match(prompt, /Frozen Task 본문/);
+  assert.match(prompt, /최종 검수 판정: PASS/);
+  assert.match(prompt, /diff --git/);
+  assert.doesNotMatch(prompt, /=== 대화 ===/);
+  assert.doesNotMatch(prompt, /일반 대화 원문/);
+  assert.doesNotMatch(prompt, /Builder 자기보고/);
 });
 
 test("Planner와 plan_review 프롬프트가 NEEDS_DECISION 및 repeat 규칙을 명시한다", () => {

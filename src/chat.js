@@ -55,6 +55,7 @@ const professionalImplementationButton = document.getElementById("btn-profession
 const professionalRecordButton = document.getElementById("btn-professional-record");
 const professionalFullButton = document.getElementById("btn-professional-full");
 const professionalPlanViewButton = document.getElementById("btn-professional-plan-view");
+const professionalProgress = document.getElementById("professional-progress");
 const planAutoReviseToggle = document.getElementById("plan-auto-revise");
 const planAutoLimitSelect = document.getElementById("plan-auto-limit");
 const implementationAutoReviseToggle = document.getElementById("implementation-auto-revise");
@@ -118,6 +119,8 @@ let specialistResumePhase = null;
 let specialistActive = false;
 let specialistNeedsInput = false;
 let specialistPlanReady = false;
+let specialistNode = null;
+let specialistStatus = null;
 let professionalModeEnabled = false;
 // 승인된 기획안(TASK.md) 경로/제목. "기획안 보기" 버튼으로 열람합니다.
 let specialistPlanTaskPath = null;
@@ -369,6 +372,8 @@ function setSpecialistState(state = {}) {
   specialistResumePhase = specialistResumeAvailable ? state.phase || null : null;
   specialistNeedsInput = Boolean(state.needsInput);
   specialistPlanReady = Boolean(state.planReady);
+  specialistNode = state.node || null;
+  specialistStatus = state.status || null;
   specialistPlanTaskPath = state.planTaskPath || null;
   specialistPlanTaskId = state.planTaskId || null;
 }
@@ -1306,7 +1311,7 @@ function renderHeader() {
     : professionalModeEnabled
       ? "일반 대화 화면으로 돌아갑니다"
       : configured
-        ? "기획·검수, 구현·검수, 기록, 전체 실행 버튼을 표시합니다"
+        ? "PLAN, 실행, 전체 실행 버튼을 표시합니다"
         : "프로젝트 설정에서 기획·구현·검토 담당자를 지정하면 사용할 수 있습니다";
   specialistButton.setAttribute(
     "aria-label",
@@ -1317,13 +1322,14 @@ function renderHeader() {
   // discussable = 사용 가능하고 참여 중인 에이전트가 둘 이상.
   responseModeBar.hidden = professionalModeEnabled || !discussable;
   const blockedOrBusy = specialistRunning || specialistActive || specialistBlockedAvailable || specialistResumeAvailable;
-  professionalPlanButton.disabled = !configured || blockedOrBusy;
+  const planStartable = !specialistNode || specialistNode === "COMPLETED" || specialistStatus === "INTERRUPTED" || specialistNeedsInput;
+  professionalPlanButton.disabled = !configured || blockedOrBusy || !planStartable;
   professionalImplementationButton.disabled = !configured || blockedOrBusy || !specialistPlanReady;
+  const canRegenerateRecord = specialistNode === "COMPLETED" || (specialistNode === "RECORDING" && specialistStatus === "WAITING");
+  professionalRecordButton.hidden = !canRegenerateRecord;
   professionalRecordButton.disabled = !review.agentId || blockedOrBusy;
-  professionalRecordButton.title = roleConfigFromProject(project, "recorder").agentId
-    ? "현재 대화와 결과를 기록관에게 정리하게 합니다"
-    : "기록 담당자가 비어 있어 검토 담당자가 기록을 정리합니다";
-  professionalFullButton.disabled = !configured || blockedOrBusy;
+  professionalRecordButton.title = "완료된 실행의 기록을 다시 만듭니다";
+  professionalFullButton.disabled = !configured || blockedOrBusy || !planStartable;
   // 저장된 기획안이 있으면(승인 대기 중이거나 통과한 경우) 열람 버튼을 노출합니다.
   const hasPlanTask = Boolean(specialistPlanTaskPath);
   professionalPlanViewButton.hidden = !hasPlanTask;
@@ -1332,13 +1338,32 @@ function renderHeader() {
     ? `기획안 보기 (${specialistPlanTaskId})`
     : "기획안 보기";
   professionalImplementationButton.title = specialistPlanReady
-    ? "기획 검수를 통과한 작업을 구현하고 검수합니다"
+    ? "기획 검수를 통과한 작업을 구현·검수·기록까지 실행합니다"
     : "먼저 기획·검수를 통과시켜 주세요";
   // 다음에 실행할 단계를 강조합니다: 기획 통과 전이면 1단계, 통과 후면 2단계.
   const nextIsImplementation = configured && specialistPlanReady && !blockedOrBusy;
   const nextIsPlan = configured && !specialistPlanReady && !blockedOrBusy;
   professionalPlanButton.classList.toggle("is-next-step", nextIsPlan);
   professionalImplementationButton.classList.toggle("is-next-step", nextIsImplementation);
+  if (professionalProgress) {
+    const indexByNode = {
+      PLANNING: 0,
+      PLAN_REVIEW: 1,
+      READY: 1,
+      IMPLEMENTING: 2,
+      REVIEWING: 3,
+      RECORDING: 4,
+      COMPLETED: 4,
+    };
+    const current = Number.isInteger(indexByNode[specialistNode]) ? indexByNode[specialistNode] : -1;
+    const steps = ["plan", "plan-review", "implementation", "review", "record"];
+    steps.forEach((step, index) => {
+      const item = professionalProgress.querySelector(`[data-professional-step="${step}"]`);
+      if (!item) return;
+      item.classList.toggle("is-current", index === current);
+      item.classList.toggle("is-complete", current >= 0 && index < current);
+    });
+  }
 }
 
 // --- 에이전트 칩 + 팝오버 ---
@@ -2431,9 +2456,11 @@ function openWorkflowPopover(anchor) {
 // --- 토론 팝오버 ---
 workflowButton.addEventListener("click", () => openWorkflowPopover(workflowButton));
 // 작업 시작 모달을 열고 상태에 따라 본문을 채웁니다.
-function openSpecialistDialog() {
+async function openSpecialistDialog() {
   if (!activeSessionId) return;
-  renderSpecialistDialog();
+  const result = await call(window.chatApi.specialistBlockDetails(activeSessionId));
+  if (!activeSessionId) return;
+  renderSpecialistDialog(result?.details || null);
   specialistBackdrop.hidden = false;
 }
 
@@ -2444,12 +2471,34 @@ function closeSpecialistDialog() {
 
 // 이 모달은 구현이 막혔을 때(BLOCKED)의 후속 처리 전용입니다.
 // 기획·구현·검수 실행은 전문 실행 줄의 버튼(runProfessionalAction)이 담당합니다.
-function renderSpecialistDialog() {
+function renderSpecialistDialog(details = null) {
   specialistBody.textContent = "";
   const hint = document.createElement("p");
   hint.className = "specialist-missing";
-  hint.textContent = "구현이 막혔습니다(BLOCKED). 계획에 빠진 조건이 있을 수 있습니다. 다음 처리를 선택해 주세요.";
+  const reason = details?.blockReason || "BLOCKED";
+  hint.textContent = `전문 실행이 안전하게 중단되었습니다 (${reason}). 현재 변경은 보존되어 있습니다. 다음 처리를 선택해 주세요.`;
   specialistBody.append(hint);
+  if (details?.runId || details?.taskPath) {
+    const meta = document.createElement("p");
+    meta.className = "popover-hint";
+    const parts = [];
+    if (details.runId) parts.push(`Run: ${details.runId}`);
+    if (details.taskPath) parts.push(`Task: ${details.taskPath}`);
+    meta.textContent = parts.join(" · ");
+    specialistBody.append(meta);
+  }
+  if (details?.block?.changes?.text) {
+    const changeDetails = document.createElement("details");
+    changeDetails.className = "specialist-block-changes";
+    const summary = document.createElement("summary");
+    summary.textContent = details.block.changes.truncated
+      ? "부분 변경 보기 (일부만 표시)"
+      : "부분 변경 보기";
+    const code = document.createElement("pre");
+    code.textContent = details.block.changes.text;
+    changeDetails.append(summary, code);
+    specialistBody.append(changeDetails);
+  }
   renderBlockedActions(specialistBody);
   specialistCancelBtn.textContent = "닫기";
 }
@@ -2542,10 +2591,10 @@ async function runProfessionalAction(action) {
   );
   if (result) {
     const labels = {
-      plan: "기획·검수를 시작했습니다.",
-      implementation: "구현·검수를 시작했습니다.",
-      record: "기록을 시작했습니다.",
-      full: "전체 실행을 시작했습니다.",
+      plan: "PLAN을 시작했습니다.",
+      implementation: "실행을 시작했습니다.",
+      record: "기록을 다시 만들기 시작했습니다.",
+      full: "전체 실행을 시작했습니다. 기획 검수 PASS 후 구현까지 이어집니다.",
     };
     flashNotice(labels[action], false);
   }
@@ -2645,16 +2694,15 @@ async function resolveBlocked(action) {
     }
   }
   const result = await call(window.chatApi.specialistResolveBlocked(activeSessionId, action));
-  if (result) {
-    flashNotice(
-      action === "keep"
-        ? "현재 변경을 유지했습니다."
-        : action === "restore"
-          ? "작업 전 상태로 되돌렸습니다."
-          : "작업을 폐기했습니다.",
-      false
-    );
-  }
+  if (!result) return;
+  flashNotice(
+    action === "keep"
+      ? "현재 변경을 유지했습니다."
+      : action === "restore"
+        ? "작업 전 상태로 되돌렸습니다."
+        : "작업을 폐기했습니다.",
+    false
+  );
   if (result?.meta) sessionMeta = result.meta;
   specialistBlockedAvailable = false;
   renderHeader();

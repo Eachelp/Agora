@@ -120,6 +120,7 @@ test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있
     "btn-professional-record",
     "btn-professional-full",
     "btn-professional-plan-view",
+    "professional-progress",
     "plan-auto-revise",
     "plan-auto-limit",
     "implementation-auto-revise",
@@ -127,10 +128,12 @@ test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있
   ]) {
     assert.match(html, new RegExp(`id="${id}"`));
   }
-  // 전문 실행 버튼에 단계 번호(①②③)가 붙어 순서를 드러낸다.
-  assert.match(html, /<span class="step-num">1<\/span>기획·검수/);
-  assert.match(html, /<span class="step-num">2<\/span>구현·검수/);
-  assert.match(html, /<span class="step-num">3<\/span>기록/);
+  // 전문 실행은 PLAN → ACT 흐름과 보조 기록 동작을 분리해 보여 준다.
+  assert.match(html, /id="btn-professional-plan"[^>]*>PLAN<\/button>/);
+  assert.match(html, /id="btn-professional-implementation"[^>]*>실행 ▶<\/button>/);
+  assert.match(html, /id="btn-professional-full"[^>]*>전체 실행 ⚡<\/button>/);
+  assert.match(html, /data-professional-step="plan-review"/);
+  assert.match(renderer, /specialistNode/);
   // 옛 모달 시작 화면(3방식 선택)은 제거되어 renderer에 남지 않는다.
   assert.doesNotMatch(renderer, /function buildStartDialog/);
   assert.doesNotMatch(renderer, /async function runSpecialist\(/);
@@ -141,6 +144,8 @@ test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있
   assert.match(preload, /sessionsMove: \(sessionId, projectId, applyProjectWorkspace = false\)/);
   assert.match(preload, /specialistStart: \(sessionId, options = \{\}\)/);
   assert.match(preload, /specialistPlanAnswer: \(sessionId, text\)/);
+  assert.match(preload, /specialistBlockDetails: \(sessionId\)/);
+  assert.match(renderer, /부분 변경 보기/);
   assert.match(preload, /readTaskFile: \(sessionId, taskPath\)/);
   assert.match(preload, /memoryAppend: \(projectId, content, title\)/);
   assert.match(preload, /decisionsCreate: \(input\)/);

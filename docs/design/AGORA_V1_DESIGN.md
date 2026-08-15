@@ -1,7 +1,7 @@
 # Ἀγορά (Agora) — V1 Multi-Agent & Professional Execution Design
 
 > 상태: **확정안 (v1 기준)**
-> 기준 커밋: `be83bc0` (PLAN ⇄ ACT 전문 실행 및 신뢰성 FSM 통합 반영)
+> 기준: `main`의 PLAN ⇄ ACT 전문 실행 및 신뢰성 FSM 구현
 > 작성일: 2026-08-10
 > 이 문서는 Agora의 **Multi-Agent 대화, Handoff, Professional Execution 모드 설계의 단일 기준**이다. (메인 윈도우 UI, 런타임/프로바이더 연동 등 제품 전반 명세는 별도 Baseline 문서와 함께 작동한다.)
 
@@ -29,6 +29,7 @@ v1에서 확정된 사용자 흐름은 네 가지 실행 방식으로 나뉜다.
 - Builder의 `STATUS` 누락·모호성은 성공으로 승격하지 않고 사용자 결정으로 보낸다. Frozen Task, checkpoint 이후 변경, 실행 evidence가 없거나 손상되면 자동 PASS를 금지한다.
 - Reviewer는 대화 transcript와 Builder 자기보고 없이 Frozen Task·변경·구조화된 실행 상태·bounded evidence를 먼저 보고 `회귀·안전성` 다음 `계약 충족` 순서로 판정한다.
 - checkpoint와 복구 저널은 세션 저장소 아래에 두고, 재시작 시 자동 재개하지 않고 keep/restore/discard를 제공한다.
+- UI는 `PLAN / 실행 / 전체 실행`으로 단순화한다. `실행`은 PLAN 검수 PASS 뒤 구현·검수·기록을 수행하고, `전체 실행`은 그 PASS를 ACT까지 진행해도 된다는 사전 승인으로 취급한다.
 
 ---
 
@@ -48,7 +49,13 @@ v1에서 확정된 사용자 흐름은 네 가지 실행 방식으로 나뉜다.
 
 ## 2. 실행 방식 (Professional Mode)
 
-전문 실행은 사용자가 선택한 **실행 방식**에 따라 동작한다. 세 방식 모두 **기획 블록이 끝나면(PLAN_READY) step/auto에서는 사람 승인 Gate에서 멈추고**, quick(빠른 실행)만 예외적으로 승인 없이 한 번에 진행한다.
+전문 실행의 사용자 표면은 다음 세 동작으로 고정한다.
+
+- **PLAN**: Planner → Plan Reviewer를 실행하고 PASS면 READY에서 멈춘다.
+- **실행**: READY의 승인된 Task만 동결해 Builder → Implementation Reviewer → Recorder까지 실행한다.
+- **전체 실행**: PLAN을 시작하고, Plan Reviewer PASS를 ACT까지 진행해도 된다는 사용자의 사전 승인으로 해석한다.
+
+`step / auto / quick`은 기존 호출과 저장된 세션을 위한 호환 어댑터로 유지한다. 새 UI는 이 세 모드를 직접 노출하지 않으며, UNKNOWN·NEEDS_DECISION·BLOCKED·저장 오류에서는 어떤 경로도 자동 진행하지 않는다.
 
 ### 2.0 세 방식 개요
 
@@ -447,7 +454,7 @@ Retry 또는 Restore 시:
 - checkpoint 생성: Builder 실행 직전에 세션 저장소 `.agora/sessions/<sessionId>/checkpoints/<checkpointId>/`에 manifest, `git stash create` baseline SHA, `tracked.patch`, untracked 파일 목록·내용을 원자적으로 보존한다. checkpoint ID는 내부 생성 opaque ID이며 절대 경로를 저널에 저장하지 않는다.
 - 복원: tracked 파일을 `git checkout -- .`로 HEAD에 되돌린 뒤 checkpoint 시점 diff를 재적용해 **사용자 사전 변경은 보존**한다. Builder가 새로 만든 untracked 파일만 제거하고, 실행 전부터 있던 untracked 파일은 checkpoint 내용으로 되살린다. Run의 `task.md`, `task-hash`, `evidence.json`, `invalid.json`은 복원 시 보존한다.
 - 전체 reset(작업 영역 전체를 HEAD로 되돌리기)은 사용하지 않는다.
-- restore와 cleanup은 동일한 안전 경로 해석기를 사용하며 manifest/session/run/workspace 일치와 `..` 탈출을 검증한다. 복구 저널은 세션 meta v2의 `pendingRecovery`에 두고 앱 재시작 후 자동 재개하지 않는다.
+- restore와 cleanup은 동일한 안전 경로 해석기를 사용하며 manifest/session/run/workspace 일치와 `..` 탈출을 검증한다. 세션 meta v3의 `professionalRun`이 실행 상태의 기준이며, 기존 `pendingRecovery`는 checkpoint 호환·복구 저널로만 유지한다. 앱 재시작 후 Provider를 자동 호출하지 않는다.
 - git 저장소 판별은 `.git` 항목 존재 여부로 동기 확인하여, 일반(비-git) workspace에서는 git 프로세스를 실행하지 않는다. non-Git 검수는 현재 파일을 읽을 수 있지만 PASS를 자동 완료하지 않고 `DIFF_UNAVAILABLE` 사용자 확인으로 보낸다.
 
 ---
@@ -530,7 +537,7 @@ TASK-011  v1 패키징·릴리스 검증 — Windows portable build 검증 완�
 
 ## 13. 테스트 기준
 
-- 전체 `npm test` 통과 (현재 기준: 448 pass / 0 fail)
+- 전체 `npm test` 통과 (현재 main의 테스트 수 기준)
 - 독립 발언 테스트 추가
 - 전문 모드 시그널 파싱 테스트 (PASS/FIX_REQUIRED/UNKNOWN, scope, stopReason)
 - 순차 모드·토론 회귀 테스트 통과

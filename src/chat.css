@@ -2173,6 +2173,45 @@ textarea:focus-visible {
   margin-left: 6px;
 }
 
+.professional-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.professional-progress [data-professional-step] {
+  font-weight: 600;
+}
+
+.professional-progress [data-professional-step].is-complete {
+  color: var(--ink-soft);
+}
+
+.professional-progress [data-professional-step].is-current {
+  color: var(--accent);
+}
+
+.specialist-block-changes {
+  margin: 8px 0;
+}
+
+.specialist-block-changes pre {
+  max-height: 180px;
+  overflow: auto;
+  margin: 6px 0 0;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-muted);
+  font: 12px/1.45 var(--font-mono, monospace);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* 전문 실행 버튼 앞의 단계 번호(①②③) 뱃지. */
 .professional-actions .step-num {
   display: inline-flex;
