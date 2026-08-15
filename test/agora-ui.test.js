@@ -69,7 +69,7 @@ test("Showcase 레일은 기존 에이전트 설정과 설정 창으로 연결�
     assert.match(html, new RegExp(`id="${id}"`));
   }
   assert.match(renderer, /openRailAgentSettings\(agentId, button\)/);
-  assert.match(renderer, /chip\.click\(\)/);
+  assert.match(renderer, /openAgentPopover\(button, agentId\)/);
   assert.match(renderer, /railSettingsButton[\s\S]*?btn-settings[\s\S]*?click\(\)/);
 });
 
@@ -85,6 +85,7 @@ test("Agora 채팅 화면은 기능 라벨을 간결하게 유지한다", () => 
 test("사이드바 2열부터 메인 대화까지 얇은 색 테두리의 둥근 패널로 이어진다", () => {
   const html = read("src/chat.html");
   const css = read("src/chat.css");
+  const renderer = read("src/chat.js");
   assert.match(html, /class="workspace-shell"[^>]*>[\s\S]*id="sidebar"[\s\S]*id="chat-scroll"/);
   assert.match(css, /\.workspace-shell \{[^}]*margin: 4px 4px 4px 0/);
   assert.match(css, /\.workspace-shell \{[^}]*border: 1px solid color-mix/);
@@ -97,6 +98,15 @@ test("사이드바 2열부터 메인 대화까지 얇은 색 테두리의 둥근
   assert.match(css, /\.app-rail-button \{[^}]*font-size: 10\.5px/);
   assert.match(css, /\.app-rail-button img,[\s\S]*?\.app-rail-glyph \{[^}]*width: 28px/);
   assert.match(css, /\.app-rail-settings svg \{[^}]*width: 24px/);
+  assert.match(html, /class="room-actions"[\s\S]*id="btn-workflow"[\s\S]*id="btn-discussion"[\s\S]*id="btn-specialist"/);
+  assert.match(html, /id="agent-chips"[^>]*hidden/);
+  assert.match(renderer, /function openRailAgentSettings\(agentId, button\)[\s\S]*?openAgentPopover\(button, agentId\)/);
+  assert.match(css, /\.professional-actions-label \{\s*display: none/);
+  assert.match(html, /class="professional-action-row"[\s\S]*id="btn-professional-full"[\s\S]*id="professional-progress"/);
+  assert.match(css, /\.professional-action-row \{[^}]*grid-area: actions[^}]*justify-content: flex-start/);
+  assert.match(css, /\.professional-actions \{[^}]*grid-template-areas:[\s\S]*"actions"[\s\S]*"progress"/);
+  assert.match(css, /\.professional-progress \{[^}]*grid-area: progress[\s\S]*?justify-content: flex-start/);
+  assert.match(css, /\.professional-auto-options \{[^}]*order: 2/);
   assert.match(css, /\.chat-scroll \{\s*background: var\(--surface\)/);
   assert.match(css, /\.composer \{\s*background: var\(--surface\)/);
 });

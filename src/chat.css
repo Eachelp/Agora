@@ -3125,17 +3125,32 @@ textarea:focus-visible {
   border-bottom-color: var(--line);
 }
 
-/* Top row: stage actions and progress. Bottom row: the existing auto-revise controls. */
+/* 진행 상태와 액션을 두 행으로 분리합니다. */
+.professional-actions-label {
+  display: none;
+}
+
+.professional-action-row {
+  grid-area: actions;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
 .professional-auto-options {
-  order: 10;
-  flex: 0 0 100%;
-  margin: 2px 0 0;
-  padding: 7px 0 0;
+  order: 2;
+  flex: none;
+  margin: 0 0 0 2px;
+  padding: 0 0 0 2px;
   border-right: 0;
-  border-top: 1px solid var(--line);
+  border-top: 0;
 }
 
 .professional-actions .chip-button {
+  order: 1;
   min-width: 74px;
   justify-content: center;
 }
@@ -3145,8 +3160,55 @@ textarea:focus-visible {
 }
 
 .professional-progress {
-  margin-left: auto;
-  padding-left: 8px;
+  grid-area: progress;
+  flex: none;
+  min-width: 0;
+  justify-content: flex-start;
+  margin-left: 0;
+  padding-left: 0;
+}
+
+/* 1행은 실행 버튼과 자동 보완, 2행은 진행 상태로 고정합니다. */
+.professional-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    "actions"
+    "progress";
+  gap: 4px;
+  padding: 7px 12px 8px;
+}
+
+.professional-progress {
+  gap: 2px;
+  font-size: 9.5px;
+}
+
+.professional-actions .chip-button {
+  min-width: 58px;
+  padding-left: 6px;
+  padding-right: 6px;
+  font-size: 10px;
+}
+
+.professional-full-button {
+  min-width: 78px !important;
+}
+
+.professional-auto-options {
+  gap: 3px;
+}
+
+.auto-revise-option {
+  gap: 3px;
+  font-size: 9.5px;
+}
+
+.professional-auto-options select {
+  min-height: 24px;
+  padding-left: 3px;
+  padding-right: 3px;
+  font-size: 9.5px;
 }
 
 .chat-scroll {

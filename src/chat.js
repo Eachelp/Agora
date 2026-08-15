@@ -1434,13 +1434,12 @@ function setRailActive(button) {
 }
 
 function openRailAgentSettings(agentId, button) {
-  const chip = [...agentChips.querySelectorAll(".agent-chip")].find((item) => item.dataset.agentId === agentId);
-  if (!chip) {
+  if (!agentById(agentId) || !providerById(agentId)) {
     flashNotice(`@${agentId} 담당 설정을 찾지 못했습니다.`);
     return;
   }
   setRailActive(button);
-  chip.click();
+  openAgentPopover(button, agentId);
 }
 
 railAgoraButton?.addEventListener("click", () => {

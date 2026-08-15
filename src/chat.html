@@ -113,7 +113,16 @@
             <button class="room-title-button" id="session-title" type="button" title="클릭해서 이름 바꾸기 (F2)">세션</button>
           </div>
           <div class="room-actions">
-            <div class="agent-chips" id="agent-chips" aria-label="참여 에이전트"></div>
+            <div class="agent-chips" id="agent-chips" aria-label="참여 에이전트" hidden></div>
+            <div class="room-controls-actions">
+              <button class="chip-button workflow-button" id="btn-workflow" type="button" title="이 프로젝트의 메모리·결정·작업 기록">프로젝트 기록</button>
+              <button class="chip-button discussion-button" id="btn-discussion" type="button" title="에이전트 토론 시작">토론 시작</button>
+              <button class="work-mode-switch" id="btn-specialist" type="button" role="switch" aria-checked="false" aria-label="일반 대화와 전문 실행 전환" title="전문 실행으로 전환">
+                <span class="work-mode-label work-mode-chat">일반</span>
+                <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+                <span class="work-mode-label work-mode-professional">전문</span>
+              </button>
+            </div>
           </div>
           <div class="room-controls">
             <div class="room-controls-context">
@@ -131,47 +140,40 @@
               <span class="enforcement-hint" id="enforcement-hint"></span>
               <button class="chip-button permission-warning" id="permission-warning" type="button" hidden></button>
             </div>
-            <div class="room-controls-actions">
-              <button class="chip-button workflow-button" id="btn-workflow" type="button" title="이 프로젝트의 메모리·결정·작업 기록">프로젝트 기록</button>
-              <button class="chip-button discussion-button" id="btn-discussion" type="button" title="에이전트 토론 시작">토론 시작</button>
-              <button class="work-mode-switch" id="btn-specialist" type="button" role="switch" aria-checked="false" aria-label="일반 대화와 전문 실행 전환" title="전문 실행으로 전환">
-                <span class="work-mode-label work-mode-chat">일반</span>
-                <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
-                <span class="work-mode-label work-mode-professional">전문</span>
-              </button>
-            </div>
           </div>
         </header>
 
         <div class="professional-actions" id="professional-actions" hidden aria-label="전문 실행">
           <span class="professional-actions-label">PLAN → ACT</span>
-          <div class="professional-auto-options" aria-label="자동 보완 설정">
-            <label class="auto-revise-option" title="기획 검수에서 범위 안의 수정이 필요하면 기획자에게 자동으로 돌려보냅니다">
-              <span>기획 자동 보완</span>
-              <input id="plan-auto-revise" type="checkbox">
-              <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
-            </label>
-            <select id="plan-auto-limit" aria-label="기획 자동 보완 최대 횟수">
-              <option value="1">1회</option>
-              <option value="2" selected>2회</option>
-              <option value="3">3회</option>
-            </select>
-            <label class="auto-revise-option" title="구현 검수에서 범위 안의 수정이 필요하면 구현자에게 자동으로 돌려보냅니다">
-              <span>구현 자동 보완</span>
-              <input id="implementation-auto-revise" type="checkbox">
-              <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
-            </label>
-            <select id="implementation-auto-limit" aria-label="구현 자동 보완 최대 횟수">
-              <option value="1" selected>1회</option>
-              <option value="2">2회</option>
-              <option value="3">3회</option>
-            </select>
+          <div class="professional-action-row">
+            <div class="professional-auto-options" aria-label="자동 보완 설정">
+              <label class="auto-revise-option" title="기획 검수에서 범위 안의 수정이 필요하면 기획자에게 자동으로 돌려보냅니다">
+                <span>기획 자동 보완</span>
+                <input id="plan-auto-revise" type="checkbox">
+                <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+              </label>
+              <select id="plan-auto-limit" aria-label="기획 자동 보완 최대 횟수">
+                <option value="1">1회</option>
+                <option value="2" selected>2회</option>
+                <option value="3">3회</option>
+              </select>
+              <label class="auto-revise-option" title="구현 검수에서 범위 안의 수정이 필요하면 구현자에게 자동으로 돌려보냅니다">
+                <span>구현 자동 보완</span>
+                <input id="implementation-auto-revise" type="checkbox">
+                <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+              </label>
+              <select id="implementation-auto-limit" aria-label="구현 자동 보완 최대 횟수">
+                <option value="1" selected>1회</option>
+                <option value="2">2회</option>
+                <option value="3">3회</option>
+              </select>
+            </div>
+            <button class="chip-button" id="btn-professional-plan" type="button" title="기획을 만들고 다른 담당자가 기획을 검수합니다">PLAN</button>
+            <button class="chip-button" id="btn-professional-implementation" type="button" title="기획 검수를 통과한 작업을 구현·검수·기록까지 실행합니다">실행 ▶</button>
+            <button class="chip-button" id="btn-professional-record" type="button" hidden title="완료된 실행의 기록을 다시 만듭니다">기록 다시 생성</button>
+            <button class="chip-button professional-full-button" id="btn-professional-full" type="button" title="기획 검수 PASS 후 별도 승인 없이 구현·검수·기록까지 이어서 실행합니다">전체 실행 ⚡</button>
+            <button class="chip-button professional-plan-view" id="btn-professional-plan-view" type="button" hidden title="승인된 기획안(TASK.md)을 열어 봅니다">기획안 보기</button>
           </div>
-          <button class="chip-button" id="btn-professional-plan" type="button" title="기획을 만들고 다른 담당자가 기획을 검수합니다">PLAN</button>
-          <button class="chip-button" id="btn-professional-implementation" type="button" title="기획 검수를 통과한 작업을 구현·검수·기록까지 실행합니다">실행 ▶</button>
-          <button class="chip-button" id="btn-professional-record" type="button" hidden title="완료된 실행의 기록을 다시 만듭니다">기록 다시 생성</button>
-          <button class="chip-button professional-full-button" id="btn-professional-full" type="button" title="기획 검수 PASS 후 별도 승인 없이 구현·검수·기록까지 이어서 실행합니다">전체 실행 ⚡</button>
-          <button class="chip-button professional-plan-view" id="btn-professional-plan-view" type="button" hidden title="승인된 기획안(TASK.md)을 열어 봅니다">기획안 보기</button>
           <div class="professional-progress" id="professional-progress" aria-label="전문 실행 진행 상태">
             <span data-professional-step="plan">기획</span><span aria-hidden="true">─</span>
             <span data-professional-step="plan-review">기획검수</span><span aria-hidden="true">─</span>
