@@ -3070,6 +3070,153 @@ textarea:focus-visible {
   color: var(--accent-strong);
 }
 
+/* --- Agora shell visual pass ---
+   Existing controls and IDs stay intact; this block only changes the shell.
+   ponytail: keep the first pass CSS-only so behavior remains on the tested path. */
+:root {
+  --page: #f4f7fb;
+  --sidebar: #eaf2f9;
+  --surface: #ffffff;
+  --ink: #102a43;
+  --ink-soft: #28455f;
+  --muted: #657d94;
+  --line: #d5e1ec;
+  --line-strong: #b9cad9;
+  --accent: #0b67a1;
+  --accent-soft: #e5f2fb;
+  --accent-strong: #084d7b;
+  --surface-muted: #f1f6fa;
+}
+
+.titlebar {
+  background: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.titlebar-title,
+.titlebar-btn {
+  color: #ffffff;
+}
+
+.titlebar-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.titlebar-btn.btn-close:hover {
+  background: #c93636;
+}
+
+.sidebar {
+  background: var(--sidebar);
+  border-right-color: var(--line);
+}
+
+.sidebar-brand {
+  background: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.sidebar-brand strong,
+.sidebar-brand > span {
+  color: #ffffff;
+}
+
+.sidebar-brand-icon {
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 3px;
+}
+
+.sidebar-head {
+  padding-left: 16px;
+  padding-right: 16px;
+}
+
+.project-head {
+  padding-top: 16px;
+}
+
+.chat-head {
+  border-top-color: var(--line);
+}
+
+.session-item.is-active {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--line));
+  box-shadow: 0 1px 3px rgba(16, 42, 67, 0.08);
+}
+
+.room-bar {
+  padding: 17px 24px 12px;
+  border-bottom-color: var(--line);
+}
+
+.room-title-button {
+  font-size: 19px;
+}
+
+.agent-chip {
+  min-height: 34px;
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(16, 42, 67, 0.05);
+}
+
+.chip-button,
+#permission-select,
+.work-mode-switch {
+  min-height: 30px;
+  border-radius: 7px;
+}
+
+.professional-actions {
+  align-items: center;
+  gap: 6px;
+  padding: 8px 28px 9px;
+  background: var(--surface-muted);
+  border-bottom-color: var(--line);
+}
+
+/* Top row: stage actions and progress. Bottom row: the existing auto-revise controls. */
+.professional-auto-options {
+  order: 10;
+  flex: 0 0 100%;
+  margin: 2px 0 0;
+  padding: 7px 0 0;
+  border-right: 0;
+  border-top: 1px solid var(--line);
+}
+
+.professional-actions .chip-button {
+  min-width: 74px;
+  justify-content: center;
+}
+
+.professional-full-button {
+  min-width: 92px !important;
+}
+
+.professional-progress {
+  margin-left: auto;
+  padding-left: 8px;
+}
+
+.chat-scroll {
+  background: var(--page);
+}
+
+.message .bubble {
+  box-shadow: 0 1px 4px rgba(16, 42, 67, 0.05);
+}
+
+.composer {
+  background: linear-gradient(180deg, rgba(244, 247, 251, 0) 0%, var(--page) 32%);
+}
+
+.composer-box {
+  border-radius: 10px;
+  box-shadow: 0 3px 12px rgba(16, 42, 67, 0.07);
+}
+
 .foot-button {
   display: inline-flex;
   align-items: center;
