@@ -4043,24 +4043,30 @@ function renderUsageStrip() {
       continue;
     }
 
-    // 칸 자체가 막대입니다. 남은 양만큼 채워지므로 숫자와 길이가 같은 뜻을 가집니다.
-    for (const window of summary.windows) {
-      const cell = document.createElement("span");
-      cell.className = window.tone ? `usage-mini ${window.tone}` : "usage-mini";
-      cell.style.setProperty("--fill", `${window.remaining}%`);
-      const value = document.createElement("strong");
-      value.textContent = `${window.remaining}%`;
-      cell.append(value);
-      cell.title = window.resetText
-        ? `${summary.label} ${window.label} · 남음 ${window.remaining}% · ${usageView.resetLabel(window.resetText)}`
-        : `${summary.label} ${window.label} · 남음 ${window.remaining}%`;
-      usageStripItems.append(cell);
-    }
-    // 창이 하나뿐이면 빈 칸으로 열을 맞춥니다.
-    if (summary.windows.length === 1) {
-      const filler = document.createElement("span");
-      filler.className = "usage-mini-empty";
-      usageStripItems.append(filler);
+    // 칸 자체가 막대입니다. 머리글(5시간/주간)과 일치하는 창을 찾아 알맞은 열에 넣습니다.
+    for (const header of headers) {
+      const window = summary.windows.find((w) => w.label === header);
+      if (window) {
+        const cell = document.createElement("span");
+        cell.className = window.tone ? `usage-mini ${window.tone}` : "usage-mini";
+        cell.style.setProperty("--fill", `${window.remaining}%`);
+        const value = document.createElement("strong");
+        value.textContent = `${window.remaining}%`;
+        cell.append(value);
+        cell.title = window.resetText
+          ? `${summary.label} ${window.label} · 남음 ${window.remaining}% · ${usageView.resetLabel(window.resetText)}`
+          : `${summary.label} ${window.label} · 남음 ${window.remaining}%`;
+        usageStripItems.append(cell);
+      } else {
+        const emptyCell = document.createElement("span");
+        emptyCell.className = "usage-mini usage-mini-empty";
+        const emptyVal = document.createElement("span");
+        emptyVal.className = "usage-mini-blank";
+        emptyVal.textContent = "—";
+        emptyCell.append(emptyVal);
+        emptyCell.title = `${summary.label} ${header} 한도 없음`;
+        usageStripItems.append(emptyCell);
+      }
     }
   }
 }

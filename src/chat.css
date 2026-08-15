@@ -2973,6 +2973,16 @@ textarea:focus-visible {
 /* 창이 하나뿐인 공급자가 있어도 열이 어긋나지 않게 자리만 채웁니다. */
 .usage-mini-empty {
   min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.usage-mini-blank {
+  opacity: 0.5;
 }
 
 .usage-strip-empty {

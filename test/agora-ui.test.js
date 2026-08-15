@@ -250,7 +250,7 @@ test("사용량은 채팅 사이드바에서 바로 보이고 설정은 사용�
   assert.match(renderer, /chatApi\.openSettings\("usage"\)/);
   // 좌하단 스트립은 "사용량 | 5시간 | 주간" 격자로 두 칸을 다 보여 줍니다.
   assert.match(renderer, /usageView\.summarizeWindows\(item\)/);
-  assert.match(renderer, /for \(const window of summary\.windows\)/);
+  assert.match(renderer, /for \(const header of headers\)/);
   assert.match(renderer, /function makeStripHead\(text\)/);
   assert.match(renderer, /makeStripHead\("사용량"\)/);
   assert.match(css, /\.usage-strip-items \{[^}]*grid-template-columns: auto minmax\(0, 1fr\) minmax\(0, 1fr\)/s);
