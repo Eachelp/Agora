@@ -1352,6 +1352,14 @@ function renderHeader() {
   professionalRecordButton.disabled = !review.agentId || blockedOrBusy;
   professionalRecordButton.title = "완료된 실행의 기록을 다시 만듭니다";
   professionalFullButton.disabled = !fullConfigured || blockedOrBusy || !planStartable;
+  // 버튼이 비활성인 이유를 툴팁으로 알려, 눌리지 않는 것처럼 보이지 않게 합니다.
+  const roleSetupHint = "프로젝트 설정(⋯)에서 담당자를 지정하면 사용할 수 있습니다";
+  professionalPlanButton.title = planConfigured
+    ? "기획을 만들고 다른 담당자가 기획을 검수합니다"
+    : `기획·검토 담당자가 필요합니다. ${roleSetupHint}`;
+  professionalFullButton.title = fullConfigured
+    ? "기획 검수 PASS 후 별도 승인 없이 구현·검수·기록까지 이어서 실행합니다"
+    : `기획·구현·검토 담당자가 모두 필요합니다. ${roleSetupHint}`;
   // 저장된 기획안이 있으면(승인 대기 중이거나 통과한 경우) 열람 버튼을 노출합니다.
   const hasPlanTask = Boolean(specialistPlanTaskPath);
   professionalPlanViewButton.hidden = !hasPlanTask;
@@ -1361,7 +1369,9 @@ function renderHeader() {
     : "기획안 보기";
   professionalImplementationButton.title = specialistPlanReady
     ? "기획 검수를 통과한 작업을 구현·검수·기록까지 실행합니다"
-    : "먼저 기획·검수를 통과시켜 주세요";
+    : implementationConfigured
+      ? "먼저 기획·검수를 통과시켜 주세요"
+      : `구현·검토 담당자가 필요합니다. ${roleSetupHint}`;
   // 다음에 실행할 단계를 강조합니다: 기획 통과 전이면 1단계, 통과 후면 2단계.
   const nextIsImplementation = implementationConfigured && specialistPlanReady && !blockedOrBusy;
   const nextIsPlan = planConfigured && !specialistPlanReady && !blockedOrBusy;

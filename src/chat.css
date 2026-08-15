@@ -3121,6 +3121,19 @@ textarea:focus-visible {
   display: none;
 }
 
+/* 브랜드를 뺀 만큼 프로젝트 목록이 위로 붙지 않게 상단 여백을 살립니다. */
+.sidebar .project-head {
+  padding-top: 14px;
+}
+
+/* 비활성 컨트롤은 눌러도 반응 없다는 신호를 커서로 명확히 합니다. */
+.chip-button:disabled,
+.work-mode-switch:disabled,
+.professional-actions .chip-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .sidebar-brand strong,
 .sidebar-brand > span {
   color: #ffffff;
@@ -3367,20 +3380,20 @@ textarea:focus-visible {
 }
 
 .app-rail-brand {
-  display: none;
+  display: flex;
   align-items: center;
   justify-content: center;
-  width: 38px;
-  height: 38px;
-  margin-bottom: 6px;
-  border-radius: 10px;
+  width: 40px;
+  height: 40px;
+  margin-bottom: 4px;
+  border-radius: 11px;
   background: #ffffff;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.14);
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.18);
 }
 
 .app-rail-brand img {
-  width: 29px;
-  height: 29px;
+  width: 30px;
+  height: 30px;
   object-fit: contain;
 }
 
