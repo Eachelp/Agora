@@ -46,6 +46,14 @@ function writeJsonAtomic(file, value) {
   fs.renameSync(tmp, file);
 }
 
+// TASK 본문도 JSON metadata와 같은 방식으로 원자 저장한다. Planner 결과를
+// 쓰는 도중 앱이 종료되더라도 이전 계약 파일을 반쯤 덮어쓰지 않는다.
+function writeTextAtomic(file, text) {
+  const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+  fs.writeFileSync(tmp, String(text || ""), "utf8");
+  fs.renameSync(tmp, file);
+}
+
 function readText(file) {
   try {
     const raw = fs.readFileSync(file, "utf8");
@@ -127,7 +135,7 @@ class TaskManager {
     if (!content.trim()) {
       throw new Error("Planner 결과가 비어 있어 TASK.md를 만들 수 없습니다.");
     }
-    fs.writeFileSync(absPath, content, "utf8");
+    writeTextAtomic(absPath, content);
     const relativePath = path.join(MEMORY_DIR, TASKS_DIR, filename);
     return {
       filename,
@@ -157,7 +165,7 @@ class TaskManager {
     if (!content.trim()) {
       throw new Error("Planner 결과가 비어 있어 TASK.md를 갱신할 수 없습니다.");
     }
-    fs.writeFileSync(absPath, content, "utf8");
+    writeTextAtomic(absPath, content);
     return {
       ...taskInfo,
       absPath,
@@ -204,8 +212,8 @@ class TaskManager {
     const hashPath = path.join(runDir, "task-hash");
     const content = contract.content;
     const hash = hashText(content);
-    fs.writeFileSync(taskPath, content, "utf8");
-    fs.writeFileSync(hashPath, hash, "utf8");
+    writeTextAtomic(taskPath, content);
+    writeTextAtomic(hashPath, hash);
     return {
       runNumber,
       runDir,
@@ -276,8 +284,14 @@ class TaskManager {
             truncated: Boolean(entry.truncated),
           }))
         : [];
+      const summary = evidence.commandSummary || {};
+      const total = Number.isInteger(summary.total) ? Math.max(0, summary.total) : commands.length;
+      const included = Math.min(
+        total,
+        Number.isInteger(summary.included) ? Math.max(0, summary.included) : commands.length
+      );
       writeJsonAtomic(path.join(runInfo.runDir, "evidence.json"), {
-        schemaVersion: 1,
+        schemaVersion: 2,
         round: evidence.round || 1,
         invocationId: evidence.invocationId || null,
         transport: evidence.transport || "COMPLETED",
@@ -288,11 +302,28 @@ class TaskManager {
         source: { kind: evidence.source?.kind || "provider-event", provider: evidence.source?.provider || null },
         provider: evidence.provider || evidence.source?.provider || null,
         commands,
+        commandSummary: {
+          total,
+          included,
+          omitted: Math.max(0, total - included),
+          failed: Number.isInteger(summary.failed) ? Math.max(0, summary.failed) : 0,
+          truncated: Number.isInteger(summary.truncated) ? Math.max(0, summary.truncated) : 0,
+        },
         persistedAt: this.now(),
       });
       return true;
     } catch {
       return false;
+    }
+  }
+
+  readRunEvidence(runInfo) {
+    if (!runInfo?.runDir) return null;
+    try {
+      const raw = readText(path.join(runInfo.runDir, "evidence.json"));
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
     }
   }
 

@@ -165,6 +165,29 @@ test("writeRunResult와 readRunResult는 실행 결과를 원자 저장하고 �
   assert.equal(read.recorded, true);
 });
 
+test("Run evidence는 원문 없이 commandSummary와 hash만 저장한다", (t) => {
+  const ws = makeTempWorkspace(t);
+  const mgr = new TaskManager();
+  const run = mgr.freezeTask({ contentSource: "inline", description: "작업", taskPath: null }, ws);
+
+  assert.equal(mgr.writeRunEvidence(run, {
+    round: 2,
+    provider: "codex",
+    commands: [
+      { command: "npm test", exitCode: 0, stdoutTail: "all tests passed", stderrTail: "" },
+      { command: "npm run lint", exitCode: 1, stdoutTail: "", stderrTail: "lint error", truncated: true },
+    ],
+    commandSummary: { total: 4, included: 2, omitted: 2, failed: 1, truncated: 1 },
+  }), true);
+
+  const evidence = mgr.readRunEvidence(run);
+  assert.equal(evidence.schemaVersion, 2);
+  assert.deepEqual(evidence.commandSummary, { total: 4, included: 2, omitted: 2, failed: 1, truncated: 1 });
+  assert.equal(evidence.commands[0].commandHash, hashText("npm test"));
+  assert.equal(evidence.commands[0].stdoutHash, hashText("all tests passed"));
+  assert.equal(Object.hasOwn(evidence.commands[0], "stdoutTail"), false);
+});
+
 test("writeRunBlock과 readRunBlock은 막힘 정보를 저장하고 다시 읽는다", (t) => {
   const ws = makeTempWorkspace(t);
   const mgr = new TaskManager();

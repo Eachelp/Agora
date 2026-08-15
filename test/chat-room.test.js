@@ -2041,7 +2041,7 @@ test("기획 자동 보완은 범위 안의 검수 지적만 제한 횟수 안�
       codex: [
         {
           ok: true,
-          text: "검증 조건을 추가하세요.\nVERDICT: FIX_REQUIRED\nISSUES:\n1.\nscope: IN\nseverity: BLOCKING\nproblem: 검증 조건 누락\nevidence: 완료 조건에 테스트가 없음\nimpact: 완료 판단 불가",
+          text: "검증 조건을 추가하세요.\nVERDICT: FIX_REQUIRED\nISSUES:\n1.\nscope: IN\nseverity: BLOCKING\nrepeat: NO\nproblem: 검증 조건 누락\nevidence: 완료 조건에 테스트가 없음\nimpact: 완료 판단 불가",
         },
         { ok: true, text: "기획 검수 통과\nVERDICT: PASS" },
       ],
@@ -2061,6 +2061,8 @@ test("기획 자동 보완은 범위 안의 검수 지적만 제한 횟수 안�
   assert.deepEqual(calls.map((call) => call.agentId), ["claude", "codex", "claude", "codex"]);
   assert.equal(room.specialistState().planTaskId, "TASK-001");
   assert.match(fs.readFileSync(path.join(workspace, ".project-memory", "tasks", "TASK-001.md"), "utf8"), /검증 조건을 보완한 기획/);
+  assert.match(calls[3].prompt, /=== 이전 구조화 이슈 ===/);
+  assert.match(calls[3].prompt, /repeat: NO/);
 });
 
 test("기획 자동 보완 중에도 Open Question은 사용자에게 반환한다", async (t) => {
@@ -2216,6 +2218,375 @@ test("전체 실행은 기획 검수 통과 뒤 구현·검수·기록까지 같
   assert.deepEqual(calls.map((call) => call.agentId), ["claude", "codex", "claude", "codex", "codex"]);
   assert.equal(room.specialistState().node, "COMPLETED");
   assert.equal(room.specialistState().status, "COMPLETED");
+});
+
+test("전체 실행은 Run 결과와 Workflow 수명주기를 함께 저장한다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-run-lifecycle-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const lifecycle = [];
+  const taskManager = new TaskManager();
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager,
+    onTaskCreated: () => true,
+    onProfessionalTaskState: (patch) => {
+      lifecycle.push(patch);
+      return true;
+    },
+    runAgent: fakeRunner({
+      claude: [
+        { ok: true, text: "## 목표\n수명주기 기록\nSTATUS: PLAN_READY" },
+        { ok: true, text: "구현 완료\nSTATUS: DONE" },
+      ],
+      codex: [
+        { ok: true, text: "기획 검수 통과\nVERDICT: PASS" },
+        { ok: true, text: "구현 검수 통과\nVERDICT: PASS" },
+        { ok: true, text: '{"summary":"완료","decisions":[],"nextActions":[]}' },
+      ],
+    }),
+  });
+
+  const result = await room.startSpecialist({
+    action: "full",
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      implementation: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+      recorder: { agent: room.findAgent("codex") },
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(lifecycle.map((entry) => entry.status), ["in_progress", "review", "done"]);
+  const runInfo = taskManager.runInfoForId("RUN-001", workspace);
+  assert.equal(taskManager.readRunResult(runInfo).status, "COMPLETED");
+  assert.equal(taskManager.readRunResult(runInfo).finalVerdict, "PASS");
+});
+
+test("Workflow 시작 기록에 실패하면 Builder를 실행하지 않는다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-workflow-start-fail-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    onTaskCreated: () => true,
+    onProfessionalTaskState: ({ status }) => status !== "in_progress",
+    runAgent: fakeRunner({
+      claude: [{ ok: true, text: "## 목표\n저장 실패\nSTATUS: PLAN_READY" }],
+      codex: [{ ok: true, text: "기획 검수 통과\nVERDICT: PASS" }],
+    }, calls),
+  });
+
+  const result = await room.startSpecialist({
+    action: "full",
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      implementation: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+      recorder: { agent: room.findAgent("codex") },
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.stopReason, "WORKFLOW_WRITE_FAILED");
+  assert.deepEqual(calls.map((call) => call.agentId), ["claude", "codex"]);
+});
+
+test("Planner TASK 파일은 Workflow 등록 실패 뒤에도 보존하고 TASK_INDEX_FAILED로 멈춘다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-task-index-fail-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    onTaskCreated: () => false,
+    runAgent: fakeRunner({
+      claude: [{ ok: true, text: "## 목표\n색인 실패\nSTATUS: PLAN_READY" }],
+    }, calls),
+  });
+
+  const result = await room.startSpecialist({
+    action: "plan",
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+    },
+  });
+
+  assert.equal(result.stopReason, "TASK_INDEX_FAILED");
+  assert.equal(calls.length, 1);
+  assert.equal(fs.existsSync(path.join(workspace, ".project-memory", "tasks", "TASK-001.md")), true);
+});
+
+test("ACT 중 사용자 중지는 변경·Run 결과를 BLOCKED로 남기고 checkpoint를 정리하지 않는다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-user-interrupt-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const taskManager = new TaskManager();
+  let releaseBuilder;
+  const builderStarted = new Promise((resolve) => { releaseBuilder = resolve; });
+  let signalBuilderStarted;
+  const builderBegan = new Promise((resolve) => { signalBuilderStarted = resolve; });
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager,
+    onTaskCreated: () => true,
+    runAgent: ({ agent, prompt }) => {
+      if (agent.id === "claude" && /전문 모드: 기획 ===/.test(prompt)) {
+        return { promise: Promise.resolve({ ok: true, text: "## 목표\n중지 보존\nSTATUS: PLAN_READY" }), cancel: () => {} };
+      }
+      if (agent.id === "codex" && /전문 모드: 기획 검수/.test(prompt)) {
+        return { promise: Promise.resolve({ ok: true, text: "VERDICT: PASS" }), cancel: () => {} };
+      }
+      if (agent.id === "claude" && /전문 모드: 구현/.test(prompt)) {
+        signalBuilderStarted();
+        return {
+          promise: builderStarted,
+          cancel: () => releaseBuilder({ ok: false, cancelled: true }),
+        };
+      }
+      throw new Error(`예상하지 않은 실행: ${agent.id}`);
+    },
+  });
+
+  const execution = room.startSpecialist({
+    action: "full",
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      implementation: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+      recorder: { agent: room.findAgent("codex") },
+    },
+  });
+  await builderBegan;
+  assert.equal(room.professionalRun.node, "IMPLEMENTING");
+  const cancelled = room.cancelSpecialist();
+  const result = await execution;
+
+  assert.equal(cancelled.ok, true, "사용자 중지는 IPC에서 오류가 아닌 정상 동작이다");
+  assert.equal(result.cancelled, true);
+  assert.equal(room.specialistState().blocked, true);
+  assert.equal(room.professionalRun.stopReason, "USER_INTERRUPTED");
+  const runInfo = taskManager.runInfoForId("RUN-001", workspace);
+  assert.equal(taskManager.readRunResult(runInfo).status, "BLOCKED");
+});
+
+test("PLAN 중 사용자 중지는 자동 재실행 없이 INTERRUPTED 상태로 남긴다", async () => {
+  let releasePlanner;
+  const plannerStarted = new Promise((resolve) => { releasePlanner = resolve; });
+  let signalStarted;
+  const started = new Promise((resolve) => { signalStarted = resolve; });
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: ({ agent }) => {
+      assert.equal(agent.id, "claude");
+      signalStarted();
+      return { promise: plannerStarted, cancel: () => releasePlanner({ ok: false, cancelled: true }) };
+    },
+  });
+
+  const execution = room.startSpecialist({
+    action: "plan",
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+    },
+  });
+  await started;
+  const cancelled = room.cancelSpecialist();
+  const result = await execution;
+
+  assert.equal(cancelled.ok, true);
+  assert.equal(result.cancelled, true);
+  assert.equal(room.professionalRun.node, "PLANNING");
+  assert.equal(room.professionalRun.status, "INTERRUPTED");
+  assert.equal(room.professionalRun.stopReason, "USER_INTERRUPTED");
+  assert.equal(room.specialistState().blocked, false);
+});
+
+test("Professional Reviewer의 FIX_REQUIRED는 자동 복원 대신 BLOCKED로 남긴다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-review-fix-blocked-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const calls = [];
+  const taskManager = new TaskManager();
+  const lifecycle = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager,
+    onTaskCreated: () => true,
+    onProfessionalTaskState: (patch) => {
+      lifecycle.push(patch);
+      return true;
+    },
+    runAgent: fakeRunner({
+      claude: [
+        { ok: true, text: "## 목표\n검수 보류\nSTATUS: PLAN_READY" },
+        { ok: true, text: "구현 완료\nSTATUS: DONE" },
+      ],
+      codex: [
+        { ok: true, text: "VERDICT: PASS" },
+        { ok: true, text: "VERDICT: FIX_REQUIRED\nISSUES:\n- scope: IN\n  severity: BLOCKING\n  problem: 검증 보완 필요" },
+      ],
+    }, calls),
+  });
+
+  const result = await room.startSpecialist({
+    action: "full",
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      implementation: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+      recorder: { agent: room.findAgent("codex") },
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.stopReason, "FIX_REQUIRED");
+  assert.equal(room.specialistState().blocked, true);
+  assert.equal(room.professionalRun.status, "BLOCKED");
+  assert.equal(taskManager.readRunResult(taskManager.runInfoForId("RUN-001", workspace)).status, "BLOCKED");
+  assert.deepEqual(calls.map((call) => call.agentId), ["claude", "codex", "claude", "codex"]);
+  assert.equal(lifecycle.at(-1).status, "blocked");
+  assert.equal(lifecycle.at(-1).activeRunId, "RUN-001");
+
+  const resolved = await room.resolveBlocked("keep");
+  assert.equal(resolved.ok, true);
+  assert.equal(lifecycle.at(-1).status, "blocked");
+  assert.equal(lifecycle.at(-1).activeRunId, null);
+  assert.equal(lifecycle.at(-1).lastRunId, "RUN-001");
+});
+
+test("재시작한 Professional Run은 자동 재실행하지 않고 INTERRUPTED로 열린다", () => {
+  const persisted = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    initialProfessionalRun: {
+      professionalRunId: "pr-restart",
+      node: "IMPLEMENTING",
+      status: "RUNNING",
+      taskPath: ".project-memory/tasks/TASK-001.md",
+      policy: {},
+    },
+    persistProfessionalRun: (run) => {
+      persisted.push(run);
+      return true;
+    },
+    runAgent: () => {
+      throw new Error("재시작만으로 agent를 호출하면 안 됩니다.");
+    },
+  });
+
+  assert.equal(room.specialistState().active, false);
+  assert.equal(room.specialistState().node, "IMPLEMENTING");
+  assert.equal(room.specialistState().status, "INTERRUPTED");
+  assert.equal(room.professionalRun.stopReason, "EXECUTION_INTERRUPTED");
+  assert.equal(persisted.length, 1);
+});
+
+test("v3 Professional Run은 checkpoint 복구 참조를 단일 Run journal에 저장한다", () => {
+  const runs = [];
+  const legacyRecoveries = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    initialProfessionalRun: {
+      professionalRunId: "pr-checkpoint-journal",
+      node: "IMPLEMENTING",
+      status: "BLOCKED",
+      taskPath: ".project-memory/tasks/TASK-001.md",
+      frozenRunId: "RUN-001",
+      checkpointId: "cp-abc123",
+      policy: {},
+    },
+    persistProfessionalRun: (run) => {
+      runs.push(run);
+      return true;
+    },
+    persistRecovery: (recovery) => {
+      legacyRecoveries.push(recovery);
+      return true;
+    },
+  });
+
+  const checkpoint = { checkpointId: "cp-abc123" };
+  assert.equal(room.persistRecoveryState(room.recoveryFor(checkpoint, {
+    status: "blocked",
+    runId: "RUN-001",
+    taskPath: ".project-memory/tasks/TASK-001.md",
+  })), true);
+  assert.equal(runs.at(-1).checkpointId, "cp-abc123");
+  assert.deepEqual(legacyRecoveries, [null]);
+
+  assert.equal(room.clearRecoveryState(), undefined);
+  assert.equal(runs.at(-1).checkpointId, null);
+  assert.deepEqual(legacyRecoveries, [null, null]);
+});
+
+test("기록 재생성은 RECORDING 대기 상태를 완료로 닫는다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-record-retry-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const taskManager = new TaskManager();
+  const task = taskManager.createTaskFromPlanner("## 목표\n기록 재생성", workspace);
+  const runInfo = taskManager.freezeTask({ contentSource: "file", taskPath: task.relativePath }, workspace);
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager,
+    initialProfessionalRun: {
+      professionalRunId: "pr-record-retry",
+      node: "RECORDING",
+      status: "WAITING",
+      taskPath: task.relativePath,
+      frozenRunId: runInfo.runId,
+      policy: {},
+    },
+    runAgent: fakeRunner({
+      codex: [{ ok: true, text: '{"summary":"재기록","decisions":[],"nextActions":[]}' }],
+    }),
+  });
+
+  const result = await room.startSpecialist({
+    action: "record",
+    stages: { recorder: { agent: room.findAgent("codex") } },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(room.specialistState().node, "COMPLETED");
+  assert.equal(room.specialistState().status, "COMPLETED");
+});
+
+test("기획 검수 뒤 TASK.md가 바뀌면 Builder를 시작하지 않는다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-task-changed-after-review-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    onTaskCreated: () => true,
+    runAgent: fakeRunner({
+      claude: [{ ok: true, text: "## 목표\n기획 검수 후 변경\nSTATUS: PLAN_READY" }],
+      codex: [{ ok: true, text: "기획 검수 통과\nVERDICT: PASS" }],
+    }, calls),
+  });
+  const stages = {
+    planner: { agent: room.findAgent("claude") },
+    implementation: { agent: room.findAgent("claude") },
+    review: { agent: room.findAgent("codex") },
+  };
+
+  const planned = await room.startSpecialist({ action: "plan", stages });
+  assert.equal(planned.ok, true);
+  fs.appendFileSync(path.join(workspace, room.professionalPlan.taskInfo.relativePath), "\n외부 변경", "utf8");
+
+  const result = await room.startSpecialist({ action: "implementation", stages });
+  assert.equal(result.ok, false);
+  assert.equal(result.stopReason, "TASK_CHANGED_AFTER_REVIEW");
+  assert.deepEqual(calls.map((call) => call.agentId), ["claude", "codex"]);
 });
 
 test("Professional Run 시작 상태 저장에 실패하면 Planner를 호출하지 않는다", async () => {

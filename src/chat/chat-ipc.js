@@ -706,7 +706,7 @@ function roomMeta(meta) {
       : action === "plan"
         ? ["planning", "review"]
         : action === "implementation"
-          ? ["implementation", "review"]
+          ? ["implementation", "review", "recorder"]
           : ["planning", "implementation", "review", "recorder"];
     for (const roleId of requiredRoles) {
       const stage = specialistStageFor(project, room, roleId);
@@ -739,6 +739,13 @@ function roomMeta(meta) {
     if (!ensureStore()) return null;
     const session = store.getSession(sessionId);
     if (!session) return null;
+    const sessionProject = projectForSession(session.meta);
+    const workflow = ensureWorkflowStore();
+    if (workflow && sessionProject && session.meta.workspace && !workflow.readOnly) {
+      try {
+        workflow.reconcileProjectTasks(sessionProject.id, session.meta.workspace);
+      } catch {}
+    }
 
     const room = new ChatRoom({
       sessionId,
@@ -766,9 +773,8 @@ function roomMeta(meta) {
       onTaskCreated: (task) => {
         try {
           const workflow = ensureWorkflowStore();
-          if (!workflow) return;
           const project = projectForSession(store.readMeta(sessionId));
-          if (!project) return;
+          if (!workflow || !project) return false;
           const entry = workflow.createTask({
             projectId: project.id,
             title: task.title || "Planner Task",
@@ -779,7 +785,7 @@ function roomMeta(meta) {
             status: task.status || "todo",
             role: task.role || "implementation",
             chatId: sessionId,
-            origin: "recorder",
+            origin: "planner",
           });
           if (entry) {
             refreshWorkflowForProject(project.id);
@@ -788,25 +794,53 @@ function roomMeta(meta) {
               workflow: workflowForProject(project.id),
             });
           }
+          return Boolean(entry);
         } catch (error) {
           console.warn("[agora] Planner Task workflow 등록 실패:", error?.message || error);
+          return false;
         }
       },
       onTaskUpdated: ({ taskPath, taskHash, status }) => {
         try {
           const workflow = ensureWorkflowStore();
           const project = projectForSession(store.readMeta(sessionId));
-          if (!workflow || !project) return;
+          if (!workflow || !project) return false;
           const target = workflow.listTasks(project.id).find((task) => task.taskPath === taskPath);
-          if (!target) return;
+          if (!target) return false;
           workflow.updateTask(target.id, { taskHash, status });
           refreshWorkflowForProject(project.id);
           broadcast("chat:workflow-changed", {
             projectId: project.id,
             workflow: workflowForProject(project.id),
           });
+          return Boolean(target);
         } catch (error) {
           console.warn("[agora] Planner Task workflow 갱신 실패:", error?.message || error);
+          return false;
+        }
+      },
+      onProfessionalTaskState: ({ taskPath, status, activeRunId = null, lastRunId = null }) => {
+        try {
+          const workflow = ensureWorkflowStore();
+          const project = projectForSession(store.readMeta(sessionId));
+          if (!workflow || !project || !taskPath) return false;
+          const task = workflow.listTasks(project.id).find((entry) => entry.taskPath === taskPath);
+          if (!task || task.syncState !== "ok") return false;
+          const updated = workflow.updateTask(task.id, {
+            status,
+            activeRunId,
+            lastRunId,
+          });
+          if (!updated) return false;
+          refreshWorkflowForProject(project.id);
+          broadcast("chat:workflow-changed", {
+            projectId: project.id,
+            workflow: workflowForProject(project.id),
+          });
+          return true;
+        } catch (error) {
+          console.warn("[agora] 전문 실행 Workflow 갱신 실패:", error?.message || error);
+          return false;
         }
       },
     });

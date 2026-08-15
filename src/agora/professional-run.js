@@ -154,6 +154,13 @@ function transitionProfessionalRun(current, event = {}) {
       next.implementationRound = 1;
       break;
     }
+    case "TASK_CHANGED_AFTER_REVIEW": {
+      if (current.node !== "READY") return { ok: false, reason: `잘못된 전이: ${current.node} -> TASK_CHANGED_AFTER_REVIEW` };
+      next.node = "PLAN_REVIEW";
+      next.status = "WAITING";
+      next.stopReason = "TASK_CHANGED_AFTER_REVIEW";
+      break;
+    }
     case "BUILDER_DONE": {
       if (current.node !== "IMPLEMENTING") return { ok: false, reason: `잘못된 전이: ${current.node} -> BUILDER_DONE` };
       if (next.policy.pauseBeforeReview) {
@@ -244,6 +251,14 @@ function transitionProfessionalRun(current, event = {}) {
       next.node = "RECORDING";
       next.status = "WAITING";
       next.stopReason = event.stopReason || "RECORDER_FAILED";
+      break;
+    }
+    case "USER_RETRY_RECORDER": {
+      if (current.node !== "RECORDING" || current.status !== "WAITING") {
+        return { ok: false, reason: "기록을 다시 실행할 수 있는 대기 상태가 아닙니다." };
+      }
+      next.status = "RUNNING";
+      next.stopReason = null;
       break;
     }
     case "INTERRUPT": {

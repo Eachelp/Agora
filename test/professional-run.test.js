@@ -130,4 +130,18 @@ test("recorder failure waits at RECORDING for an explicit retry", () => {
   assert.equal(result.state.node, "RECORDING");
   assert.equal(result.state.status, "WAITING");
   assert.equal(result.state.stopReason, "RECORDER_FAILED");
+
+  const retry = transitionProfessionalRun(result.state, { type: "USER_RETRY_RECORDER" });
+  assert.equal(retry.ok, true);
+  assert.equal(retry.state.status, "RUNNING");
+});
+
+test("TASK 변경은 READY에서 기획 재검수 대기로 되돌린다", () => {
+  const run = createProfessionalRun({ node: "READY", status: "WAITING" });
+  const result = transitionProfessionalRun(run, { type: "TASK_CHANGED_AFTER_REVIEW" });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.state.node, "PLAN_REVIEW");
+  assert.equal(result.state.status, "WAITING");
+  assert.equal(result.state.stopReason, "TASK_CHANGED_AFTER_REVIEW");
 });
