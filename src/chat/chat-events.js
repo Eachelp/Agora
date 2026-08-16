@@ -1,8 +1,10 @@
 // 프로바이더 CLI의 구조화 출력(JSONL)을 공통 이벤트로 정규화합니다.
 //   { kind: "delta", text }   — 실시간 본문 조각 (claude stream-json)
-//   { kind: "status", label } — 도구 실행/사고 등 상태 표시
+//   { kind: "status", label } — 사고 등 상태 표시
 //   { kind: "final", text }   — 신뢰 가능한 최종 답변
 //   { kind: "error", message }
+//   { kind: "command-started|command-finished", ... } — shell/command 실행
+//   { kind: "tool-started|tool-finished", ... }       — Read/Grep/Glob 등 비-command 도구
 // 알 수 없는 줄은 null(무시)로 처리해, CLI 버전이 바뀌어도 조용히 동작합니다.
 
 function parseJsonLine(line) {
@@ -21,6 +23,7 @@ function truncateLabel(text, limit = 80) {
 }
 
 const COMMAND_TAIL_CHARS = 2 * 1024;
+const TOOL_TARGET_CHARS = 512;
 
 function tailOutput(value, limit = COMMAND_TAIL_CHARS) {
   if (value == null) return { text: "", truncated: false };
@@ -60,6 +63,57 @@ function commandFinished({ command = null, exitCode = null, stdout = null, stder
   };
 }
 
+function compactToolTarget(value) {
+  if (value == null) return null;
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (!compact) return null;
+  return compact.length > TOOL_TARGET_CHARS
+    ? `${compact.slice(0, TOOL_TARGET_CHARS)}…`
+    : compact;
+}
+
+// provider별 입력 스키마가 달라도 탐색 비용을 비교할 수 있도록 가장 의미 있는
+// 대상(path/pattern/query 등)만 짧게 추출합니다. 원본 tool input 전체는 보존하지 않습니다.
+function toolTarget(input) {
+  if (!input || typeof input !== "object") return compactToolTarget(input);
+  for (const key of ["file_path", "path", "pattern", "query", "glob", "command"]) {
+    if (input[key] != null) return compactToolTarget(input[key]);
+  }
+  return null;
+}
+
+function toolStarted({ tool, input = null, toolUseId = null } = {}) {
+  return {
+    kind: "tool-started",
+    tool: truncateLabel(tool || "tool", 80),
+    target: toolTarget(input),
+    toolUseId: toolUseId || null,
+    startedAt: Date.now(),
+  };
+}
+
+function toolFinished({ tool = null, output = null, error = null, toolUseId = null, startedAt = null } = {}) {
+  const out = tailOutput(output);
+  const err = tailOutput(error);
+  return {
+    kind: "tool-finished",
+    tool: tool ? truncateLabel(tool, 80) : null,
+    toolUseId: toolUseId || null,
+    outputBytes: typeof output === "string" ? Buffer.byteLength(output, "utf8") : out.text.length,
+    outputTail: out.text,
+    errorTail: err.text,
+    startedAt: Number.isFinite(startedAt) ? startedAt : null,
+    finishedAt: Date.now(),
+    truncated: Boolean(out.truncated || err.truncated),
+    executionStatus: error ? "FAILED" : "OBSERVED",
+  };
+}
+
+function isCommandTool(name) {
+  return /^(bash|shell|run_command|run-command|command|exec)$/i.test(String(name || ""));
+}
+
 // claude -p --output-format stream-json --include-partial-messages --verbose
 function parseClaudeLine(line) {
   const event = parseJsonLine(line);
@@ -71,6 +125,7 @@ function parseClaudeLine(line) {
       return { kind: "delta", text: String(inner.delta.text || "") };
     }
     if (inner.type === "content_block_start" && inner.content_block?.type === "tool_use") {
+      // assistant 이벤트에 더 완전한 tool input이 다시 오므로 stream_event는 UI status만 유지합니다.
       return { kind: "status", label: `도구: ${truncateLabel(inner.content_block.name)}` };
     }
     return null;
@@ -79,8 +134,8 @@ function parseClaudeLine(line) {
   if (event.type === "assistant" && Array.isArray(event.message?.content)) {
     for (const block of event.message.content) {
       if (block?.type === "tool_use" && block.name) {
-        if (/^bash$/i.test(block.name) && block.input?.command) return commandStarted(block.input.command);
-        return { kind: "status", label: `도구: ${truncateLabel(block.name)}` };
+        if (isCommandTool(block.name) && block.input?.command) return commandStarted(block.input.command);
+        return toolStarted({ tool: block.name, input: block.input, toolUseId: block.id });
       }
     }
     return null;
@@ -99,9 +154,11 @@ function parseClaudeLine(line) {
   if (event.type === "user" && Array.isArray(event.message?.content)) {
     const result = event.message.content.find((block) => block?.type === "tool_result");
     if (result) {
-      return commandFinished({
-        stdout: typeof result.content === "string" ? result.content : result.content,
-        exitCode: Number.isInteger(result.exit_code) ? result.exit_code : null,
+      // Claude의 tool_result에는 원래 tool name이 없을 수 있으므로 tool_use_id로 runner가 매칭합니다.
+      return toolFinished({
+        toolUseId: result.tool_use_id,
+        output: typeof result.content === "string" ? result.content : result.content,
+        error: result.is_error ? result.content : null,
       });
     }
   }
@@ -191,14 +248,27 @@ function parseAgyLine(line) {
       };
     }
     if (tool && /^(START|STARTED|RUNNING|PENDING)$/i.test(String(step.state || ""))) {
-      return commandStarted(step.command || tool);
+      if (isCommandTool(tool)) return commandStarted(step.command || tool);
+      return toolStarted({
+        tool,
+        input: step.input ?? step.arguments ?? step.tool_info?.input ?? step.command,
+        toolUseId: step.id || step.step_id || null,
+      });
     }
     if (tool && /^(DONE|COMPLETED|SUCCESS|ERROR|FAILED)$/i.test(String(step.state || ""))) {
-      return commandFinished({
-        command: step.command || tool,
-        exitCode: step.exit_code ?? step.exitCode ?? (String(step.state).toUpperCase() === "SUCCESS" ? 0 : null),
-        stdout: step.stdout ?? step.output ?? step.tool_info?.output,
-        stderr: step.stderr ?? error,
+      if (isCommandTool(tool)) {
+        return commandFinished({
+          command: step.command || tool,
+          exitCode: step.exit_code ?? step.exitCode ?? (String(step.state).toUpperCase() === "SUCCESS" ? 0 : null),
+          stdout: step.stdout ?? step.output ?? step.tool_info?.output,
+          stderr: step.stderr ?? error,
+        });
+      }
+      return toolFinished({
+        tool,
+        toolUseId: step.id || step.step_id || null,
+        output: step.stdout ?? step.output ?? step.tool_info?.output,
+        error: step.stderr ?? error,
       });
     }
     if (tool) return { kind: "status", label: `도구: ${truncateLabel(tool)}` };
@@ -220,4 +290,11 @@ function createLineParser(providerId) {
   return null;
 }
 
-module.exports = { createLineParser, parseClaudeLine, parseCodexLine, parseAgyLine };
+module.exports = {
+  createLineParser,
+  parseClaudeLine,
+  parseCodexLine,
+  parseAgyLine,
+  toolStarted,
+  toolFinished,
+};
