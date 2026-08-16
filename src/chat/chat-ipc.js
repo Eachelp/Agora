@@ -19,6 +19,7 @@ const { MemoryStore } = require("../agora/memory-store");
 const { parseRecorderOutput } = require("../agora/recorder-output");
 const turnCheckpoint = require("../agora/turn-checkpoint");
 const { TaskManager } = require("../agora/task-manager");
+const { resolveTaskFileBoundary } = require("../agora/task-file-boundary");
 const {
   createCapabilityService,
   toPublicProviders,
@@ -554,7 +555,7 @@ function createChatFeature(options) {
       });
       if (!invocation.ok) {
         return {
-          promise: Promise.resolve({ ok: false, error: invocation.error }),
+          promise: Promise.resolve({ ok: false, error: invocation.error, ...(invocation.stopReason ? { stopReason: invocation.stopReason } : {}) }),
           cancel: () => {},
         };
       }
@@ -1057,21 +1058,14 @@ function roomMeta(meta) {
     return sessionId;
   }
 
-  // 세션 워크스페이스 안의 작업 지시서 경로를 검증해 절대 경로로 돌려줍니다.
-  // open-file/read-file이 같은 검증을 공유해 임의 경로 접근을 막습니다.
+  // 세션 워크스페이스 안의 작업 지시서 경로를 검증해 실제 regular file 경로로 돌려줍니다.
+  // open-file/read-file 모두 realpath containment와 같은 5MiB 상한을 공유합니다.
   function resolveTaskFilePath(sessionId, taskPath) {
     requireSession(sessionId);
     const meta = store.readMeta(sessionId);
-    const workspace = meta?.workspace;
-    if (!workspace) throw new Error("워크스페이스가 연결되어 있지 않습니다.");
-    const relative = String(taskPath || "");
-    if (!relative || path.isAbsolute(relative)) throw new Error("올바르지 않은 작업 지시서 경로입니다.");
-    const workspaceRoot = path.resolve(workspace);
-    const target = path.resolve(workspaceRoot, relative);
-    const prefix = workspaceRoot.endsWith(path.sep) ? workspaceRoot : workspaceRoot + path.sep;
-    if (!target.startsWith(prefix)) throw new Error("워크스페이스 밖의 파일은 접근할 수 없습니다.");
-    if (!fs.existsSync(target)) throw new Error("작업 지시서 파일을 찾을 수 없습니다.");
-    return target;
+    return resolveTaskFileBoundary(meta?.workspace, taskPath, {
+      maxBytes: MAX_TASK_READ_BYTES,
+    }).target;
   }
 
   function wrap(handler) {
@@ -1110,7 +1104,7 @@ function roomMeta(meta) {
     );
 
     // 작업 지시서(TASK.md)를 OS 기본 편집기로 엽니다.
-    // 임의 경로 열기를 막기 위해 해당 세션 workspace 안의 파일만 허용합니다.
+    // 임의 경로 열기를 막기 위해 해당 세션 workspace 안의 regular file만 허용합니다.
     ipcMain.handle(
       "chat:task:open-file",
       wrap(async ({ sessionId, taskPath }) => {
@@ -1122,16 +1116,11 @@ function roomMeta(meta) {
     );
 
     // 작업 지시서(TASK.md) 내용을 읽어 채팅 화면 안에서 보여줍니다(읽기 전용).
-    // open-file과 같은 경로 검증을 써서 세션 workspace 밖 파일은 읽지 않습니다.
+    // open-file과 같은 경로·realpath·regular file·크기 검증을 공유합니다.
     ipcMain.handle(
       "chat:task:read-file",
       wrap(async ({ sessionId, taskPath }) => {
         const target = resolveTaskFilePath(sessionId, taskPath);
-        const stat = fs.statSync(target);
-        if (!stat.isFile()) throw new Error("작업 지시서 파일을 찾을 수 없습니다.");
-        if (stat.size > MAX_TASK_READ_BYTES) {
-          throw new Error("작업 지시서 파일이 너무 커서 열 수 없습니다.");
-        }
         const content = fs.readFileSync(target, "utf8");
         return { content, taskPath: String(taskPath || "") };
       })
