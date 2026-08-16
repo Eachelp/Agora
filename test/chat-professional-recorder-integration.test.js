@@ -5,12 +5,16 @@ const assert = require("node:assert/strict");
 
 const { parseRecorderOutput } = require("../src/agora/recorder-output");
 const {
+  DETERMINISTIC_RECORDER_MODE,
   installDeterministicProfessionalRecorder,
 } = require("../src/chat/chat-professional-recorder");
 
 class FakeRoom {
-  constructor() {
+  constructor({ deterministic = true } = {}) {
     this.calls = [];
+    this.meta = deterministic
+      ? { professionalRecorderMode: DETERMINISTIC_RECORDER_MODE }
+      : {};
   }
 
   scheduleResponse(agent, context = {}) {
@@ -21,7 +25,7 @@ class FakeRoom {
 
 installDeterministicProfessionalRecorder(FakeRoom);
 
-test("professional recorder는 provider를 호출하지 않고 deterministic JSON을 반환한다", async () => {
+test("명시적 policy의 professional recorder는 provider를 호출하지 않고 deterministic JSON을 반환한다", async () => {
   const room = new FakeRoom();
   const result = await room.scheduleResponse({ id: "claude" }, {
     specialist: {
@@ -59,7 +63,16 @@ test("professional recorder는 provider를 호출하지 않고 deterministic JSO
   assert.deepEqual(parsed.nextActions, []);
 });
 
-test("토론/수동 recorder는 기존 provider 경로를 유지한다", async () => {
+test("policy가 없으면 professional recorder도 기존 provider 경로를 유지한다", async () => {
+  const room = new FakeRoom({ deterministic: false });
+  const result = await room.scheduleResponse({ id: "claude" }, {
+    specialist: { stage: "recorder", professional: true },
+  });
+  assert.equal(room.calls.length, 1);
+  assert.equal(result.text, "provider recorder");
+});
+
+test("토론/수동 recorder는 deterministic policy에서도 기존 provider 경로를 유지한다", async () => {
   const room = new FakeRoom();
   const result = await room.scheduleResponse({ id: "claude" }, {
     specialist: { stage: "recorder", professional: false },
