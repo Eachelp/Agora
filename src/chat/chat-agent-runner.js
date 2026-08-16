@@ -1,6 +1,7 @@
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const { StringDecoder } = require("node:string_decoder");
+const { buildRunMetrics } = require("./chat-run-metrics");
 
 // 에이전트 작업은 며칠간 이어질 수도 있으므로 기본 실행 시간 제한을 두지 않습니다.
 // timeoutMs는 테스트나 명시적인 호출자가 양수를 전달한 경우에만 적용됩니다.
@@ -198,12 +199,14 @@ function runAgentProcess({
   const strictFinal = requireFinal == null
     ? inferRequireFinalFromPrompt(prompt)
     : Boolean(requireFinal);
+  const runStartedAt = Date.now();
   let child = null;
   let settled = false;
   let cancelled = false;
   let outputLimitHit = false;
   let timer = null;
   let silenceTimer = null;
+  let explorationWarningRank = 0;
   const commandEvents = [];
   const pendingCommands = [];
 
@@ -243,7 +246,14 @@ function runAgentProcess({
             ...(telemetry?.exploration ? { exploration: telemetry.exploration } : {}),
           }
         : null;
-      resolve(evidence ? { ...result, evidence } : result);
+      const baseResult = evidence ? { ...result, evidence } : result;
+      const runMetrics = buildRunMetrics({
+        startedAt: runStartedAt,
+        finishedAt: Date.now(),
+        promptChars: String(prompt || "").length,
+        result: baseResult,
+      });
+      resolve({ ...baseResult, runMetrics });
     };
 
     if (promptTransport === "argv" && needsShell) {
@@ -290,6 +300,33 @@ function runAgentProcess({
       lastActivityAt = Date.now();
       nextSilenceWarnAt = lastActivityAt + silenceWarningMs;
     };
+
+    const notifyExplorationStatus = () => {
+      if (typeof parseLine?.getTelemetry !== "function") return;
+      const exploration = parseLine.getTelemetry()?.exploration;
+      const rank = exploration?.status === "LOOP_DETECTED"
+        ? 2
+        : exploration?.status === "WARNING"
+          ? 1
+          : 0;
+      if (rank <= explorationWarningRank) return;
+      explorationWarningRank = rank;
+      if (rank === 0 || typeof onEvent !== "function") return;
+      const label = rank === 2
+        ? "반복 탐색 루프가 감지되었습니다. 실행은 계속합니다."
+        : "반복 탐색이 늘고 있습니다. 실행은 계속합니다.";
+      try {
+        onEvent({
+          kind: "status",
+          label,
+          exploration: {
+            status: exploration.status,
+            reason: exploration.reason || null,
+          },
+        });
+      } catch {}
+    };
+
     if (Number.isFinite(silenceWarningMs) && silenceWarningMs > 0) {
       silenceTimer = setInterval(() => {
         if (settled) return;
@@ -344,6 +381,9 @@ function runAgentProcess({
         try {
           onEvent(event);
         } catch {}
+      }
+      if (event.kind === "tool-started" || event.kind === "tool-finished") {
+        notifyExplorationStatus();
       }
     };
 
