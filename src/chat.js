@@ -113,6 +113,7 @@ let pendingAttachments = [];
 const approvalQueue = [];
 let activeApproval = null;
 const typingAgents = new Set();
+let roomTurnState = { current: null, queue: [], deferred: [] };
 const liveRuns = new Map(); // runId → { item, textEl, statusEl, text }
 let mentionState = null;
 let noticeTimer = null;
@@ -1318,14 +1319,18 @@ function renderHeader() {
     : "토론에는 사용 가능한 에이전트가 두 명 이상 필요합니다";
   const project = projects.find((entry) => entry.id === activeProjectId);
   const planner = roleConfigFromProject(project, "planning");
+  const planReview = roleConfigFromProject(project, "plan_review");
   const implementation = roleConfigFromProject(project, "implementation");
   const review = roleConfigFromProject(project, "review");
+  const effectivePlanReview = planReview.agentId ? planReview : review;
   // 단계별 IPC 요구 조건과 버튼 활성 조건을 맞춥니다.
   // PLAN은 기획자와 기획 검수(비어 있으면 검토 담당자 재사용)만 필요하고,
   // 구현은 구현자·검토자, 전체 실행만 세 역할을 모두 필요로 합니다.
-  const planConfigured = Boolean(planner.agentId && review.agentId);
+  const planConfigured = Boolean(planner.agentId && effectivePlanReview.agentId);
   const implementationConfigured = Boolean(implementation.agentId && review.agentId);
-  const fullConfigured = Boolean(planner.agentId && implementation.agentId && review.agentId);
+  const fullConfigured = Boolean(
+    planner.agentId && effectivePlanReview.agentId && implementation.agentId && review.agentId
+  );
   specialistButton.disabled = !activeSessionId || specialistRunning || specialistActive;
   specialistButton.setAttribute("aria-checked", String(professionalModeEnabled));
   specialistButton.title = specialistBlockedAvailable
@@ -1343,7 +1348,18 @@ function renderHeader() {
   roomControlsActions.classList.toggle("is-professional-mode", professionalModeEnabled);
   // discussable = 사용 가능하고 참여 중인 에이전트가 둘 이상.
   responseModeBar.hidden = professionalModeEnabled || !discussable;
-  const blockedOrBusy = specialistRunning || specialistActive || specialistBlockedAvailable || specialistResumeAvailable;
+  const ordinaryTurnBusy = Boolean(
+    roomTurnState.current ||
+      (roomTurnState.queue || []).length > 0 ||
+      (roomTurnState.deferred || []).length > 0
+  );
+  const blockedOrBusy = Boolean(
+    specialistRunning ||
+      specialistActive ||
+      specialistBlockedAvailable ||
+      specialistResumeAvailable ||
+      ordinaryTurnBusy
+  );
   const planStartable = !specialistNode || specialistNode === "COMPLETED" || specialistStatus === "INTERRUPTED" || specialistNeedsInput;
   professionalPlanButton.disabled = !planConfigured || blockedOrBusy || !planStartable;
   professionalImplementationButton.disabled = !implementationConfigured || blockedOrBusy || !specialistPlanReady;
@@ -1354,12 +1370,16 @@ function renderHeader() {
   professionalFullButton.disabled = !fullConfigured || blockedOrBusy || !planStartable;
   // 버튼이 비활성인 이유를 툴팁으로 알려, 눌리지 않는 것처럼 보이지 않게 합니다.
   const roleSetupHint = "프로젝트 설정(⋯)에서 담당자를 지정하면 사용할 수 있습니다";
-  professionalPlanButton.title = planConfigured
-    ? "기획을 만들고 다른 담당자가 기획을 검수합니다"
-    : `기획·검토 담당자가 필요합니다. ${roleSetupHint}`;
-  professionalFullButton.title = fullConfigured
-    ? "기획 검수 PASS 후 별도 승인 없이 구현·검수·기록까지 이어서 실행합니다"
-    : `기획·구현·검토 담당자가 모두 필요합니다. ${roleSetupHint}`;
+  professionalPlanButton.title = ordinaryTurnBusy
+    ? "일반 응답이 끝난 뒤 전문 기획을 시작할 수 있습니다"
+    : planConfigured
+      ? "기획을 만들고 다른 담당자가 기획을 검수합니다"
+      : `기획·검토 담당자가 필요합니다. ${roleSetupHint}`;
+  professionalFullButton.title = ordinaryTurnBusy
+    ? "일반 응답이 끝난 뒤 전체 전문 실행을 시작할 수 있습니다"
+    : fullConfigured
+      ? "기획 검수 PASS 후 별도 승인 없이 구현·검수·기록까지 이어서 실행합니다"
+      : `기획·구현·검토 담당자가 모두 필요합니다. ${roleSetupHint}`;
   // 저장된 기획안이 있으면(승인 대기 중이거나 통과한 경우) 열람 버튼을 노출합니다.
   const hasPlanTask = Boolean(specialistPlanTaskPath);
   professionalPlanViewButton.hidden = !hasPlanTask;
@@ -1367,8 +1387,10 @@ function renderHeader() {
   professionalPlanViewButton.textContent = specialistPlanTaskId
     ? `기획안 보기 (${specialistPlanTaskId})`
     : "기획안 보기";
-  professionalImplementationButton.title = specialistPlanReady
-    ? "기획 검수를 통과한 작업을 구현·검수·기록까지 실행합니다"
+  professionalImplementationButton.title = ordinaryTurnBusy
+    ? "일반 응답이 끝난 뒤 구현·검수를 시작할 수 있습니다"
+    : specialistPlanReady
+      ? "기획 검수를 통과한 작업을 구현·검수·기록까지 실행합니다"
     : implementationConfigured
       ? "먼저 기획·검수를 통과시켜 주세요"
       : `구현·검토 담당자가 필요합니다. ${roleSetupHint}`;
@@ -3889,10 +3911,21 @@ async function sendCurrentMessage() {
   closeMentionPopup();
   autoresize();
   const independent = isIndependentResponseMode;
-  const result = await call(window.chatApi.send(activeSessionId, text, attachmentIds, independent));
+  const result = await call(
+    window.chatApi.send(
+      activeSessionId,
+      text,
+      attachmentIds,
+      independent,
+      professionalModeEnabled
+    )
+  );
   if (result) {
     pendingAttachments = [];
     renderPendingAttachments();
+    if (professionalModeEnabled) {
+      flashNotice("작업 요청을 기록했습니다. PLAN 또는 전체 실행을 선택하세요.", false);
+    }
   } else {
     // 실패 시 작성 중이던 내용을 그대로 복원한다.
     composerInput.value = draftText;
@@ -4012,6 +4045,7 @@ function applyFullState(full) {
     setSpecialistState(full.session.specialist || {});
     typingAgents.clear();
     for (const agentId of full.session.typing || []) typingAgents.add(agentId);
+    roomTurnState = full.session.turnState || { current: null, queue: [], deferred: [] };
     pendingAttachments = full.session.pendingAttachments || [];
     renderAllMessages(full.session.messages);
     scrollToBottom(true);
@@ -4054,11 +4088,21 @@ window.chatApi.onTyping(({ sessionId, agentId, busy }) => {
   else typingAgents.delete(agentId);
   renderTyping();
 });
+window.chatApi.onTurnState(({ sessionId, ...state }) => {
+  if (sessionId !== activeSessionId) return;
+  roomTurnState = {
+    current: state.current || null,
+    queue: Array.isArray(state.queue) ? state.queue : [],
+    deferred: Array.isArray(state.deferred) ? state.deferred : [],
+  };
+  renderHeader();
+});
 window.chatApi.onReset(({ sessionId }) => {
   if (sessionId !== activeSessionId) return;
   renderAllMessages([]);
   chatMessages = [];
   typingAgents.clear();
+  roomTurnState = { current: null, queue: [], deferred: [] };
   renderTyping();
 });
 window.chatApi.onSystemNotice(({ text }) => {

@@ -299,6 +299,7 @@ class ChatRoom extends EventEmitter {
     const trimmed = String(payload.text || "").trim();
     const attachments = Array.isArray(payload.attachments) ? payload.attachments : [];
     const independent = Boolean(payload.independent);
+    const recordOnly = Boolean(payload.recordOnly);
     if (!trimmed && attachments.length === 0) return null;
     // renderer 잠금이 늦게 반영되거나 우회되어도 전문 실행 맥락에는 일반 대화가 끼지 않습니다.
     if (this.isSpecialistLocked()) {
@@ -314,6 +315,9 @@ class ChatRoom extends EventEmitter {
     entry.turnRootId = entry.id;
 
     this.mentionsMuted = false;
+    // 전문 모드의 작업 요청은 실행 지시 원문으로만 기록한다. 여기서 일반
+    // 응답을 예약하면 Planner/Plan Reviewer와 일반 채팅 턴이 섞인다.
+    if (recordOnly) return entry;
     const mentionedIds = parseMentions(trimmed, this.agents, GROUP_ALIASES);
     const targets = mentionedIds.length > 0
       ? mentionedIds.map((agentId) => this.findAgent(agentId)).filter(Boolean)

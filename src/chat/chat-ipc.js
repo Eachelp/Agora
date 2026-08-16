@@ -1556,7 +1556,7 @@ function roomMeta(meta) {
 
     ipcMain.handle(
       "chat:send",
-      wrap(async ({ sessionId, text, attachmentIds, independent }) => {
+      wrap(async ({ sessionId, text, attachmentIds, independent, professionalDraft }) => {
         requireSession(sessionId);
         const room = getRoom(sessionId);
         if (room.isSpecialistLocked()) {
@@ -1571,7 +1571,12 @@ function roomMeta(meta) {
             pending.delete(id);
           }
         }
-        const entry = room.sendUserMessage({ text, attachments, independent });
+        const entry = room.sendUserMessage({
+          text,
+          attachments,
+          independent,
+          recordOnly: Boolean(professionalDraft),
+        });
         if (!entry) throw new Error("보낼 내용이 없습니다.");
         return {};
       })
