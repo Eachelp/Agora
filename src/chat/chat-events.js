@@ -38,21 +38,23 @@ function commandValue(value) {
   return null;
 }
 
-function commandStarted(command) {
+function commandStarted(command, toolUseId = null) {
   const value = commandValue(command);
   return {
     kind: "command-started",
     command: value,
+    toolUseId: toolUseId || null,
     startedAt: Date.now(),
   };
 }
 
-function commandFinished({ command = null, exitCode = null, stdout = null, stderr = null, startedAt = null } = {}) {
+function commandFinished({ command = null, exitCode = null, stdout = null, stderr = null, startedAt = null, toolUseId = null } = {}) {
   const out = tailOutput(stdout);
   const err = tailOutput(stderr);
   return {
     kind: "command-finished",
     command: commandValue(command),
+    toolUseId: toolUseId || null,
     exitCode: Number.isInteger(exitCode) ? exitCode : null,
     stdoutTail: out.text,
     stderrTail: err.text,
@@ -93,20 +95,21 @@ function toolStarted({ tool, input = null, toolUseId = null } = {}) {
   };
 }
 
-function toolFinished({ tool = null, output = null, error = null, toolUseId = null, startedAt = null } = {}) {
+function toolFinished({ tool = null, output = null, error = null, toolUseId = null, startedAt = null, exitCode = null } = {}) {
   const out = tailOutput(output);
   const err = tailOutput(error);
   return {
     kind: "tool-finished",
     tool: tool ? truncateLabel(tool, 80) : null,
     toolUseId: toolUseId || null,
+    exitCode: Number.isInteger(exitCode) ? exitCode : null,
     outputBytes: typeof output === "string" ? Buffer.byteLength(output, "utf8") : out.text.length,
     outputTail: out.text,
     errorTail: err.text,
     startedAt: Number.isFinite(startedAt) ? startedAt : null,
     finishedAt: Date.now(),
     truncated: Boolean(out.truncated || err.truncated),
-    executionStatus: error ? "FAILED" : "OBSERVED",
+    executionStatus: error ? "FAILED" : Number.isInteger(exitCode) ? "OBSERVED" : "PARTIAL",
   };
 }
 
@@ -134,7 +137,9 @@ function parseClaudeLine(line) {
   if (event.type === "assistant" && Array.isArray(event.message?.content)) {
     for (const block of event.message.content) {
       if (block?.type === "tool_use" && block.name) {
-        if (isCommandTool(block.name) && block.input?.command) return commandStarted(block.input.command);
+        if (isCommandTool(block.name) && block.input?.command) {
+          return commandStarted(block.input.command, block.id || null);
+        }
         return toolStarted({ tool: block.name, input: block.input, toolUseId: block.id });
       }
     }
@@ -154,11 +159,13 @@ function parseClaudeLine(line) {
   if (event.type === "user" && Array.isArray(event.message?.content)) {
     const result = event.message.content.find((block) => block?.type === "tool_result");
     if (result) {
-      // Claude의 tool_result에는 원래 tool name이 없을 수 있으므로 tool_use_id로 runner가 매칭합니다.
+      // 결과만으로 command/tool 종류를 단정하지 않습니다. runner가 tool_use_id로
+      // 앞선 command-started/tool-started와 결합해 최종 evidence 종류를 결정합니다.
       return toolFinished({
         toolUseId: result.tool_use_id,
-        output: typeof result.content === "string" ? result.content : result.content,
+        output: result.content,
         error: result.is_error ? result.content : null,
+        exitCode: result.exit_code,
       });
     }
   }
@@ -248,7 +255,7 @@ function parseAgyLine(line) {
       };
     }
     if (tool && /^(START|STARTED|RUNNING|PENDING)$/i.test(String(step.state || ""))) {
-      if (isCommandTool(tool)) return commandStarted(step.command || tool);
+      if (isCommandTool(tool)) return commandStarted(step.command || tool, step.id || step.step_id || null);
       return toolStarted({
         tool,
         input: step.input ?? step.arguments ?? step.tool_info?.input ?? step.command,
@@ -259,6 +266,7 @@ function parseAgyLine(line) {
       if (isCommandTool(tool)) {
         return commandFinished({
           command: step.command || tool,
+          toolUseId: step.id || step.step_id || null,
           exitCode: step.exit_code ?? step.exitCode ?? (String(step.state).toUpperCase() === "SUCCESS" ? 0 : null),
           stdout: step.stdout ?? step.output ?? step.tool_info?.output,
           stderr: step.stderr ?? error,
@@ -269,6 +277,7 @@ function parseAgyLine(line) {
         toolUseId: step.id || step.step_id || null,
         output: step.stdout ?? step.output ?? step.tool_info?.output,
         error: step.stderr ?? error,
+        exitCode: step.exit_code ?? step.exitCode,
       });
     }
     if (tool) return { kind: "status", label: `도구: ${truncateLabel(tool)}` };
