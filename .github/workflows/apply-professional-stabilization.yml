@@ -29,30 +29,8 @@ jobs:
           p = Path('scripts/apply-professional-stabilization.js')
           s = p.read_text(encoding='utf-8')
           s = s.replace('```', r'\x60{3}')
-          before = '''  function roomMeta(meta) {
-    const project = projectForSession(meta);
-    return {
-      permissionMode: meta?.permissionMode || "chat",
-      workspace: meta?.workspace || null,'''
-          after = '''function roomMeta(meta) {
-  const project = projectForSession(meta);
-  const memory = ensureMemoryStore();
-  return {
-    permissionMode: meta?.permissionMode || "chat",
-    workspace: meta?.workspace || null,'''
-          s = s.replace(before, after)
-          before2 = '''  function roomMeta(meta) {
-    const project = projectForSession(meta);
-    return {
-      permissionMode: meta?.permissionMode || "chat",
-      workspace: project?.workspace || null,'''
-          after2 = '''function roomMeta(meta) {
-  const project = projectForSession(meta);
-  const memory = ensureMemoryStore();
-  return {
-    permissionMode: meta?.permissionMode || "chat",
-    workspace: project?.workspace || null,'''
-          s = s.replace(before2, after2)
+          s = s.replace('  function roomMeta(meta) {\n    const project = projectForSession(meta);\n    return {\n      permissionMode: meta?.permissionMode || "chat",\n      workspace: meta?.workspace || null,', 'function roomMeta(meta) {\n  const project = projectForSession(meta);\n  const memory = ensureMemoryStore();\n  return {\n    permissionMode: meta?.permissionMode || "chat",\n    workspace: meta?.workspace || null,')
+          s = s.replace('  function roomMeta(meta) {\n    const project = projectForSession(meta);\n    return {\n      permissionMode: meta?.permissionMode || "chat",\n      workspace: project?.workspace || null,', 'function roomMeta(meta) {\n  const project = projectForSession(meta);\n  const memory = ensureMemoryStore();\n  return {\n    permissionMode: meta?.permissionMode || "chat",\n    workspace: project?.workspace || null,')
           p.write_text(s, encoding='utf-8')
           PY
       - name: Apply guarded transform
