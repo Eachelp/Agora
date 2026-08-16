@@ -22,13 +22,17 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Repair helper quoting
+      - name: Repair helper against current HEAD
         run: |
           python3 - <<'PY'
           from pathlib import Path
           p = Path('scripts/apply-professional-stabilization.js')
           s = p.read_text(encoding='utf-8')
           s = s.replace('```', r'\x60{3}')
+          s = s.replace(
+              '  function roomMeta(meta) {\n    const project = projectForSession(meta);\n    return {',
+              '  function roomMeta(meta) {\n    const project = projectForSession(meta);\n    const memory = ensureMemoryStore();\n    return {'
+          )
           p.write_text(s, encoding='utf-8')
           PY
       - name: Apply guarded transform
