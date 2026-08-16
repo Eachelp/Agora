@@ -23,6 +23,13 @@ const MEMORY_DIR = ".project-memory";
 const TASKS_DIR = "tasks";
 const RUNS_DIR = "runs";
 
+// UI의 Task 파일 읽기 상한과 동일한 방어선입니다. 실제 실행 계약은 아래의
+// 문자 수 상한을 추가로 적용해 거대한 파일이 Freeze/Prompt 경로로 들어오지 못하게 합니다.
+const MAX_TASK_READ_BYTES = 5 * 1024 * 1024;
+// 전문 실행 프롬프트 전체 상한(24K chars)보다 Task 하나가 더 커질 수 없게 합니다.
+// 규칙·Diff·Evidence가 함께 들어가므로 이 값 이하라도 최종 prompt budget 검사는 별도로 유지합니다.
+const MAX_TASK_CONTRACT_CHARS = 24 * 1024;
+
 function stripControlMarkers(text) {
   // Planner 출력의 파싱용 제어 마커(STATUS: PLAN_READY 등)를 본문에서 제거합니다.
   // Task lifecycle status와 구분되는 파싱용 마커이므로 파일에 저장할 필요가 없습니다.
@@ -62,6 +69,79 @@ function readText(file) {
   } catch {
     return null;
   }
+}
+
+function taskError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function isAbsoluteOnAnyPlatform(value) {
+  const text = String(value || "");
+  return path.isAbsolute(text) || /^[A-Za-z]:[\\/]/.test(text) || /^\\\\/.test(text);
+}
+
+function isInside(root, target) {
+  const relative = path.relative(root, target);
+  return relative === "" || (
+    relative !== ".." &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
+}
+
+function validateTaskContractContent(value) {
+  const content = String(value ?? "");
+  if (content.length > MAX_TASK_CONTRACT_CHARS) {
+    throw taskError(
+      "TASK_CONTRACT_TOO_LARGE",
+      `실행 계약(Task)이 너무 깁니다 (${content.length}/${MAX_TASK_CONTRACT_CHARS}자). 작업을 더 작은 단위로 나눠 주세요.`
+    );
+  }
+  return content;
+}
+
+// file-backed Task는 workspace 내부의 실제 regular file만 읽습니다.
+// lexical `..` 탈출뿐 아니라 symlink/junction이 workspace 밖을 가리키는 경우도
+// realpath 기준으로 거부합니다. 존재하지 않는 파일은 기존 계약대로 null입니다.
+function readTaskContractFile(workspaceRoot, taskPath) {
+  const root = resolveWorkspace(workspaceRoot);
+  if (!root) return null;
+  const relative = String(taskPath || "");
+  if (!relative || relative.includes("\0") || isAbsoluteOnAnyPlatform(relative)) {
+    throw taskError("TASK_PATH_INVALID", "작업 지시서 경로가 올바르지 않습니다.");
+  }
+  const target = path.resolve(root, relative.replace(/^\.\/+/, ""));
+  if (!isInside(root, target)) {
+    throw taskError("TASK_PATH_OUTSIDE_WORKSPACE", "워크스페이스 밖의 작업 지시서는 사용할 수 없습니다.");
+  }
+  if (!fs.existsSync(target)) return null;
+
+  let realTarget;
+  try {
+    realTarget = fs.realpathSync(target);
+  } catch {
+    return null;
+  }
+  if (!isInside(root, realTarget)) {
+    throw taskError("TASK_PATH_OUTSIDE_WORKSPACE", "워크스페이스 밖을 가리키는 작업 지시서는 사용할 수 없습니다.");
+  }
+
+  let stat;
+  try {
+    stat = fs.statSync(realTarget);
+  } catch {
+    return null;
+  }
+  if (!stat.isFile()) return null;
+  if (stat.size > MAX_TASK_READ_BYTES) {
+    throw taskError(
+      "TASK_FILE_TOO_LARGE",
+      `작업 지시서 파일이 너무 큽니다 (${stat.size}/${MAX_TASK_READ_BYTES} bytes).`
+    );
+  }
+  return validateTaskContractContent(fs.readFileSync(realTarget, "utf8"));
 }
 
 // Planner Task용 TASK-xxx.md 파일명을 만듭니다. 기존 번호와 충돌하지 않도록
@@ -131,7 +211,7 @@ class TaskManager {
     const number = nextTaskNumber(tasksDir);
     const filename = `TASK-${String(number).padStart(3, "0")}.md`;
     const absPath = path.join(tasksDir, filename);
-    const content = stripControlMarkers(plannerText);
+    const content = validateTaskContractContent(stripControlMarkers(plannerText));
     if (!content.trim()) {
       throw new Error("Planner 결과가 비어 있어 TASK.md를 만들 수 없습니다.");
     }
@@ -161,7 +241,7 @@ class TaskManager {
     if (!absPath || !safeRoot || !normalize(absPath).startsWith(normalize(safeRoot))) {
       throw new Error("갱신할 Planner Task 경로가 올바르지 않습니다.");
     }
-    const content = stripControlMarkers(plannerText);
+    const content = validateTaskContractContent(stripControlMarkers(plannerText));
     if (!content.trim()) {
       throw new Error("Planner 결과가 비어 있어 TASK.md를 갱신할 수 없습니다.");
     }
@@ -180,16 +260,15 @@ class TaskManager {
   resolveTaskContract(task, workspace) {
     if (!task) return null;
     if (task.contentSource === "file") {
-      const root = resolveWorkspace(workspace);
-      if (!root) return null;
-      const abs = task.taskPath
-        ? path.resolve(root, task.taskPath.replace(/^\.\/+/, ""))
-        : null;
-      const content = abs ? readText(abs) : null;
+      const content = readTaskContractFile(workspace, task.taskPath);
       if (content == null) return null;
       return { source: "file", taskPath: task.taskPath, content };
     }
-    return { source: "inline", taskPath: null, content: String(task.description || "") };
+    return {
+      source: "inline",
+      taskPath: null,
+      content: validateTaskContractContent(String(task.description || "")),
+    };
   }
 
   // Builder 실행 직전에 Task Contract를 RUN-xxx/task.md로 동결(Freeze)합니다.
@@ -229,10 +308,18 @@ class TaskManager {
     if (!runDir) throw new Error("Frozen Task 경로가 없습니다.");
     const taskPath = path.join(runDir, "task.md");
     const hashPath = path.join(runDir, "task-hash");
+    let stat = null;
+    try {
+      stat = fs.statSync(taskPath);
+    } catch {}
+    if (stat?.isFile() && stat.size > MAX_TASK_READ_BYTES) {
+      throw taskError("TASK_FILE_TOO_LARGE", `Frozen Task가 너무 큽니다 (${stat.size}/${MAX_TASK_READ_BYTES} bytes).`);
+    }
     const content = readText(taskPath);
     if (content == null || !content.trim()) {
       throw new Error(`Frozen Task(task.md)가 누락되었습니다: ${runDir}`);
     }
+    validateTaskContractContent(content);
     const savedHash = readText(hashPath);
     if (savedHash == null || !savedHash.trim()) {
       throw new Error(`Frozen Task 해시가 누락되었습니다: ${runDir}`);
@@ -418,6 +505,10 @@ module.exports = {
   MEMORY_DIR,
   TASKS_DIR,
   RUNS_DIR,
+  MAX_TASK_READ_BYTES,
+  MAX_TASK_CONTRACT_CHARS,
   stripControlMarkers,
   hashText,
+  validateTaskContractContent,
+  readTaskContractFile,
 };
