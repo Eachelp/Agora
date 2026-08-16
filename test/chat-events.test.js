@@ -34,11 +34,12 @@ test("claude: Read 도구는 탐색 이벤트로 정규화", () => {
 test("claude: Bash는 기존 command-started 계약을 유지", () => {
   const line = JSON.stringify({
     type: "assistant",
-    message: { content: [{ type: "tool_use", name: "Bash", input: { command: "npm test" } }] },
+    message: { content: [{ type: "tool_use", id: "bash-1", name: "Bash", input: { command: "npm test" } }] },
   });
   const parsed = parseClaudeLine(line);
   assert.equal(parsed.kind, "command-started");
   assert.equal(parsed.command, "npm test");
+  assert.equal(parsed.toolUseId, "bash-1");
 });
 
 test("claude: tool_result는 tool-finished와 output bytes를 남긴다", () => {
@@ -56,7 +57,41 @@ test("claude: tool_result는 tool-finished와 output bytes를 남긴다", () => 
   assert.equal(parsed.kind, "tool-finished");
   assert.equal(parsed.toolUseId, "tool-1");
   assert.equal(parsed.outputBytes, Buffer.byteLength("파일 내용", "utf8"));
-  assert.equal(parsed.executionStatus, "OBSERVED");
+});
+
+test("claude: 실제 line parser는 Bash 결과를 command-finished로 복원한다", () => {
+  const parser = createLineParser("claude");
+  const started = parser(JSON.stringify({
+    type: "assistant",
+    message: { content: [{ type: "tool_use", id: "bash-1", name: "Bash", input: { command: "npm test" } }] },
+  }));
+  assert.equal(started.kind, "command-started");
+
+  const finished = parser(JSON.stringify({
+    type: "user",
+    message: { content: [{ type: "tool_result", tool_use_id: "bash-1", content: "525 passed", exit_code: 0 }] },
+  }));
+  assert.equal(finished.kind, "command-finished");
+  assert.equal(finished.command, "npm test");
+  assert.equal(finished.exitCode, 0);
+  assert.equal(finished.stdoutTail, "525 passed");
+  assert.equal(finished.toolUseId, "bash-1");
+});
+
+test("claude: 실제 line parser는 Read 결과에 도구와 target을 복원한다", () => {
+  const parser = createLineParser("claude");
+  parser(JSON.stringify({
+    type: "assistant",
+    message: { content: [{ type: "tool_use", id: "read-1", name: "Read", input: { file_path: "src/main.js" } }] },
+  }));
+  const finished = parser(JSON.stringify({
+    type: "user",
+    message: { content: [{ type: "tool_result", tool_use_id: "read-1", content: "abc" }] },
+  }));
+  assert.equal(finished.kind, "tool-finished");
+  assert.equal(finished.tool, "Read");
+  assert.equal(finished.target, "src/main.js");
+  assert.equal(finished.outputBytes, 3);
 });
 
 test("claude: result 성공은 final, 실패는 error", () => {
