@@ -3329,6 +3329,14 @@ function renderMessage(message) {
       summaryBadge.title = "이전 토론을 종합한 요약 카드입니다";
       meta.append(summaryBadge);
     }
+
+    if (message.simplifyMeta || agentMeta.simplifyMeta) {
+      const simplifyBadge = document.createElement("span");
+      simplifyBadge.className = "role-badge role-simplify-summary";
+      simplifyBadge.textContent = "💡 쉬운 설명";
+      simplifyBadge.title = "복잡한 기술 용어를 비개발자도 이해하기 쉬운 말로 깔끔하게 풀어주는 요약본입니다";
+      meta.append(simplifyBadge);
+    }
   }
 
   const timeEl = document.createElement("span");
