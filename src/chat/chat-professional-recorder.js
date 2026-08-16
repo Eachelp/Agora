@@ -10,7 +10,12 @@ function isDeterministicProfessionalRecorderContext(context = {}) {
 }
 
 function usesDeterministicProfessionalRecorder(room) {
-  return room?.meta?.professionalRecorderMode === DETERMINISTIC_RECORDER_MODE;
+  // 실제 Agora 앱의 새 Professional Run은 professional journal을 영속화한다.
+  // 명시적 mode가 있으면 그것을 우선하고, mode가 없는 기존 production room은
+  // persistProfessionalRun 계약을 기준으로 deterministic recorder를 기본 사용한다.
+  const mode = room?.meta?.professionalRecorderMode;
+  if (mode != null) return mode === DETERMINISTIC_RECORDER_MODE;
+  return typeof room?.persistProfessionalRun === "function";
 }
 
 function deterministicRecorderResult(context = {}) {
