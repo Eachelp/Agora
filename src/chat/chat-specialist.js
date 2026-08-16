@@ -37,6 +37,13 @@ const SAFE_BLOCK_REASONS = new Set([
   "CHECKPOINT_CLEANUP_FAILED",
 ]);
 
+// Task 파일 첨부 정보를 만듭니다. taskPath가 없으면 null을 돌려줍니다.
+function taskFileInfo(taskPath) {
+  return taskPath
+    ? { relativePath: taskPath, filename: path.basename(taskPath) }
+    : null;
+}
+
 function safeBlockReason(value) {
   const reason = String(value || "");
   return SAFE_BLOCK_REASONS.has(reason) ? reason : "EXECUTION_BLOCKED";
@@ -886,9 +893,7 @@ class SpecialistMixin {
       const retryCheckpoint = retryingRecorder ? this.checkpointForProfessionalRun() : null;
       if (retryingRecorder && !retryRunInfo) {
         return this.holdForFrozenTaskCorruption({
-          taskInfo: this.professionalRun?.taskPath
-            ? { relativePath: this.professionalRun.taskPath, filename: path.basename(this.professionalRun.taskPath) }
-            : null,
+          taskInfo: taskFileInfo(this.professionalRun?.taskPath),
           checkpoint: retryCheckpoint,
           stage: "recorder",
           round: this.professionalRun?.implementationRound || 1,
@@ -900,9 +905,7 @@ class SpecialistMixin {
         if (!frozenCheck.ok) {
           return this.holdForFrozenTaskCorruption({
             runInfo: retryRunInfo,
-            taskInfo: this.professionalRun?.taskPath
-              ? { relativePath: this.professionalRun.taskPath, filename: path.basename(this.professionalRun.taskPath) }
-              : null,
+            taskInfo: taskFileInfo(this.professionalRun?.taskPath),
             checkpoint: retryCheckpoint,
             stage: "recorder",
             round: this.professionalRun?.implementationRound || 1,
@@ -949,9 +952,7 @@ class SpecialistMixin {
         if (retryingRecorder) {
           const runInfo = retryRunInfo;
           const round = this.professionalRun?.implementationRound || 1;
-          const taskInfo = this.professionalRun?.taskPath
-            ? { relativePath: this.professionalRun.taskPath, filename: path.basename(this.professionalRun.taskPath) }
-            : null;
+          const taskInfo = taskFileInfo(this.professionalRun?.taskPath);
           if (runInfo && this.taskManager?.writeRunResult && !this.taskManager.writeRunResult(runInfo, {
             status: "COMMITTING",
             finalVerdict: "PASS",
@@ -1344,9 +1345,7 @@ class SpecialistMixin {
     const runInfo = professionalAct && this.professionalRun?.frozenRunId && this.taskManager?.runInfoForId
       ? this.taskManager.runInfoForId(this.professionalRun.frozenRunId, this.meta.workspace)
       : null;
-    const taskInfo = professionalAct && this.professionalRun?.taskPath
-      ? { relativePath: this.professionalRun.taskPath, filename: path.basename(this.professionalRun.taskPath) }
-      : null;
+    const taskInfo = professionalAct ? taskFileInfo(this.professionalRun?.taskPath) : null;
     const checkpoint = professionalAct
       ? this.checkpointForProfessionalRun()
       : this.specialistResume?.checkpoint || null;
@@ -2888,9 +2887,7 @@ class SpecialistMixin {
         feedback += `\n\n=== 이전 작업 부분 변경 ===\n${block.changes.text}\n=== 이전 작업 부분 변경 끝 ===`;
       }
 
-      const taskInfo = pending.taskPath
-        ? { relativePath: pending.taskPath, filename: path.basename(pending.taskPath) }
-        : null;
+      const taskInfo = taskFileInfo(pending.taskPath);
 
       this.appendSystem(
         workspaceAction === "restore"

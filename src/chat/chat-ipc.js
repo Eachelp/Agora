@@ -49,6 +49,7 @@ const { createChatWindow } = require("./chat-window");
 // 세션별로 남겨두는 실행 원본 로그 개수. 진단에는 최근 실행만 필요하므로
 // 무한히 쌓이지 않게 오래된 파일부터 지웁니다.
 const MAX_RUN_LOG_FILES = 20;
+const MAX_TASK_READ_BYTES = 5 * 1024 * 1024;
 
 // 실행 원본 stdout을 파일로 흘려보내는 writer.
 // 메모리에 전체를 들고 있지 않으므로 출력이 아무리 길어도 진단 정보를 남길 수 있습니다.
@@ -1026,6 +1027,23 @@ function roomMeta(meta) {
     return sessionId;
   }
 
+  // 세션 워크스페이스 안의 작업 지시서 경로를 검증해 절대 경로로 돌려줍니다.
+  // open-file/read-file이 같은 검증을 공유해 임의 경로 접근을 막습니다.
+  function resolveTaskFilePath(sessionId, taskPath) {
+    requireSession(sessionId);
+    const meta = store.readMeta(sessionId);
+    const workspace = meta?.workspace;
+    if (!workspace) throw new Error("워크스페이스가 연결되어 있지 않습니다.");
+    const relative = String(taskPath || "");
+    if (!relative || path.isAbsolute(relative)) throw new Error("올바르지 않은 작업 지시서 경로입니다.");
+    const workspaceRoot = path.resolve(workspace);
+    const target = path.resolve(workspaceRoot, relative);
+    const prefix = workspaceRoot.endsWith(path.sep) ? workspaceRoot : workspaceRoot + path.sep;
+    if (!target.startsWith(prefix)) throw new Error("워크스페이스 밖의 파일은 접근할 수 없습니다.");
+    if (!fs.existsSync(target)) throw new Error("작업 지시서 파일을 찾을 수 없습니다.");
+    return target;
+  }
+
   function wrap(handler) {
     return async (_event, input) => {
       try {
@@ -1066,17 +1084,7 @@ function roomMeta(meta) {
     ipcMain.handle(
       "chat:task:open-file",
       wrap(async ({ sessionId, taskPath }) => {
-        requireSession(sessionId);
-        const meta = store.readMeta(sessionId);
-        const workspace = meta?.workspace;
-        if (!workspace) throw new Error("워크스페이스가 연결되어 있지 않습니다.");
-        const relative = String(taskPath || "");
-        if (!relative || path.isAbsolute(relative)) throw new Error("올바르지 않은 작업 지시서 경로입니다.");
-        const workspaceRoot = path.resolve(workspace);
-        const target = path.resolve(workspaceRoot, relative);
-        const prefix = workspaceRoot.endsWith(path.sep) ? workspaceRoot : workspaceRoot + path.sep;
-        if (!target.startsWith(prefix)) throw new Error("워크스페이스 밖의 파일은 열 수 없습니다.");
-        if (!fs.existsSync(target)) throw new Error("작업 지시서 파일을 찾을 수 없습니다.");
+        const target = resolveTaskFilePath(sessionId, taskPath);
         const error = await shell.openPath(target);
         if (error) throw new Error(error);
         return {};
@@ -1088,19 +1096,14 @@ function roomMeta(meta) {
     ipcMain.handle(
       "chat:task:read-file",
       wrap(async ({ sessionId, taskPath }) => {
-        requireSession(sessionId);
-        const meta = store.readMeta(sessionId);
-        const workspace = meta?.workspace;
-        if (!workspace) throw new Error("워크스페이스가 연결되어 있지 않습니다.");
-        const relative = String(taskPath || "");
-        if (!relative || path.isAbsolute(relative)) throw new Error("올바르지 않은 작업 지시서 경로입니다.");
-        const workspaceRoot = path.resolve(workspace);
-        const target = path.resolve(workspaceRoot, relative);
-        const prefix = workspaceRoot.endsWith(path.sep) ? workspaceRoot : workspaceRoot + path.sep;
-        if (!target.startsWith(prefix)) throw new Error("워크스페이스 밖의 파일은 읽을 수 없습니다.");
-        if (!fs.existsSync(target)) throw new Error("작업 지시서 파일을 찾을 수 없습니다.");
+        const target = resolveTaskFilePath(sessionId, taskPath);
+        const stat = fs.statSync(target);
+        if (!stat.isFile()) throw new Error("작업 지시서 파일을 찾을 수 없습니다.");
+        if (stat.size > MAX_TASK_READ_BYTES) {
+          throw new Error("작업 지시서 파일이 너무 커서 열 수 없습니다.");
+        }
         const content = fs.readFileSync(target, "utf8");
-        return { content, taskPath: relative };
+        return { content, taskPath: String(taskPath || "") };
       })
     );
 

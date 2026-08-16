@@ -112,3 +112,48 @@ test("대화 이동에서 명시적으로 선택하면 프로젝트 폴더/권�
   assert.equal(movedWithApply.session.meta.workspace, root);
   assert.equal(movedWithApply.session.meta.permissionMode, "workspace-read");
 });
+
+test("작업 지시서 읽기는 워크스페이스 안 파일만 크기 상한 안에서 허용한다", async () => {
+  const root = makeRoot();
+  const feature = makeFeature(root);
+
+  const created = await feature.invoke("chat:projects:create", {
+    name: "폴더 있는 프로젝트",
+    workspace: root,
+  });
+  assert.equal(created.ok, true);
+  const sessionId = created.session.meta.id;
+
+  fs.writeFileSync(path.join(root, "TASK-001.md"), "기획안 내용", "utf8");
+  const ok = await feature.invoke("chat:task:read-file", {
+    sessionId,
+    taskPath: "TASK-001.md",
+  });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.content, "기획안 내용");
+
+  // 워크스페이스 밖(../) 경로는 거부됩니다.
+  const outside = await feature.invoke("chat:task:read-file", {
+    sessionId,
+    taskPath: "../secret.md",
+  });
+  assert.equal(outside.ok, false);
+  assert.match(outside.error, /워크스페이스 밖/);
+
+  // 크기 상한(5 MiB)을 넘는 파일은 읽지 않습니다.
+  const bigPath = path.join(root, "TASK-big.md");
+  fs.writeFileSync(bigPath, Buffer.alloc(5 * 1024 * 1024 + 1));
+  const tooBig = await feature.invoke("chat:task:read-file", {
+    sessionId,
+    taskPath: "TASK-big.md",
+  });
+  assert.equal(tooBig.ok, false);
+  assert.match(tooBig.error, /너무 커서/);
+
+  // 절대 경로는 거부됩니다.
+  const absolute = await feature.invoke("chat:task:read-file", {
+    sessionId,
+    taskPath: path.join(root, "TASK-001.md"),
+  });
+  assert.equal(absolute.ok, false);
+});
