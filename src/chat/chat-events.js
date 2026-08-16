@@ -75,8 +75,6 @@ function compactToolTarget(value) {
     : compact;
 }
 
-// provider별 입력 스키마가 달라도 탐색 비용을 비교할 수 있도록 가장 의미 있는
-// 대상(path/pattern/query 등)만 짧게 추출합니다. 원본 tool input 전체는 보존하지 않습니다.
 function toolTarget(input) {
   if (!input || typeof input !== "object") return compactToolTarget(input);
   for (const key of ["file_path", "path", "pattern", "query", "glob", "command"]) {
@@ -117,7 +115,6 @@ function isCommandTool(name) {
   return /^(bash|shell|run_command|run-command|command|exec)$/i.test(String(name || ""));
 }
 
-// claude -p --output-format stream-json --include-partial-messages --verbose
 function parseClaudeLine(line) {
   const event = parseJsonLine(line);
   if (!event || typeof event !== "object") return null;
@@ -128,7 +125,6 @@ function parseClaudeLine(line) {
       return { kind: "delta", text: String(inner.delta.text || "") };
     }
     if (inner.type === "content_block_start" && inner.content_block?.type === "tool_use") {
-      // assistant 이벤트에 더 완전한 tool input이 다시 오므로 stream_event는 UI status만 유지합니다.
       return { kind: "status", label: `도구: ${truncateLabel(inner.content_block.name)}` };
     }
     return null;
@@ -159,8 +155,6 @@ function parseClaudeLine(line) {
   if (event.type === "user" && Array.isArray(event.message?.content)) {
     const result = event.message.content.find((block) => block?.type === "tool_result");
     if (result) {
-      // 결과만으로 command/tool 종류를 단정하지 않습니다. runner가 tool_use_id로
-      // 앞선 command-started/tool-started와 결합해 최종 evidence 종류를 결정합니다.
       return toolFinished({
         toolUseId: result.tool_use_id,
         output: result.content,
@@ -173,12 +167,47 @@ function parseClaudeLine(line) {
   return null;
 }
 
-// codex exec --json (버전에 따라 이벤트 스키마가 달라 두 형태를 모두 처리합니다)
+function createClaudeLineParser() {
+  const pending = new Map();
+  return (line) => {
+    const parsed = parseClaudeLine(line);
+    if (!parsed) return null;
+
+    if ((parsed.kind === "command-started" || parsed.kind === "tool-started") && parsed.toolUseId) {
+      pending.set(parsed.toolUseId, parsed);
+      return parsed;
+    }
+
+    if (parsed.kind === "tool-finished" && parsed.toolUseId) {
+      const started = pending.get(parsed.toolUseId) || null;
+      pending.delete(parsed.toolUseId);
+      if (started?.kind === "command-started") {
+        return commandFinished({
+          command: started.command,
+          toolUseId: parsed.toolUseId,
+          exitCode: parsed.exitCode,
+          stdout: parsed.outputTail,
+          stderr: parsed.errorTail,
+          startedAt: started.startedAt,
+        });
+      }
+      if (started?.kind === "tool-started") {
+        return {
+          ...parsed,
+          tool: parsed.tool || started.tool,
+          target: started.target || null,
+          startedAt: parsed.startedAt ?? started.startedAt,
+        };
+      }
+    }
+
+    return parsed;
+  };
+}
+
 function parseCodexLine(line) {
   const event = parseJsonLine(line);
   if (!event || typeof event !== "object") return null;
-
-  // 신형: {type:"item.completed", item:{type,text,...}}
   const item = event.item;
   if (typeof event.type === "string" && item && typeof item === "object") {
     if (event.type.startsWith("item.") && item.type === "agent_message" && item.text) {
@@ -204,16 +233,12 @@ function parseCodexLine(line) {
     }
     return null;
   }
-
   if (event.type === "error" && event.message) {
     return { kind: "error", message: truncateLabel(event.message, 200) };
   }
-
   if (event.type === "turn.failed" && event.error?.message) {
     return { kind: "error", message: truncateLabel(event.error.message, 200) };
   }
-
-  // 구형: {id, msg:{type:...}}
   const msg = event.msg;
   if (msg && typeof msg === "object") {
     if (msg.type === "agent_message" && msg.message) {
@@ -236,7 +261,6 @@ function parseCodexLine(line) {
     }
     return null;
   }
-
   return null;
 }
 
@@ -293,7 +317,7 @@ function parseAgyLine(line) {
 }
 
 function createLineParser(providerId) {
-  if (providerId === "claude") return parseClaudeLine;
+  if (providerId === "claude") return createClaudeLineParser();
   if (providerId === "codex") return parseCodexLine;
   if (providerId === "agy") return parseAgyLine;
   return null;
