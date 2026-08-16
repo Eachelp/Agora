@@ -121,7 +121,7 @@ test("agy stream-json의 최종 응답과 권한 거부를 정규화한다", () 
   assert.equal(typeof createLineParser("codex"), "function");
   assert.equal(typeof createLineParser("agy"), "function");
   assert.deepEqual(parseAgyLine(JSON.stringify({ event: "result", result: { status: "SUCCESS", response: "안녕" } })), { kind: "final", text: "안녕" });
-  const denied = parseAgyLine(JSON.stringify({ event: "step_update", step_update: { state: "ERROR", tool_name: "run_command", tool_info: { error: { message: "permission denied" } } }));
+  const denied = parseAgyLine(JSON.stringify({ event: "step_update", step_update: { state: "ERROR", tool_name: "run_command", tool_info: { error: { message: "permission denied" } } } }));
   assert.equal(denied.kind, "approval-required");
 });
 
