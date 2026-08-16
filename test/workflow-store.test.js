@@ -10,7 +10,8 @@ const {
 } = require("../src/agora/workflow-store");
 
 function makeRoot() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "agora-workflow-store-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agora-workflow-store-"));
+  return fs.realpathSync(dir);
 }
 
 test("결정과 작업은 안정적인 id로 저장하고 다시 읽을 수 있다", () => {
@@ -110,7 +111,7 @@ test("contentSource가 없는 기존 Task는 legacy inline으로 취급된다", 
   assert.equal(task.description, "본문 내용");
 });
 
-test("reconcileProjectTasks는 디스크 상의 TASK 파일과 workflow 상태를 동기화하고 누락/손상을 감지한다", () => {
+test("reconcileProjectTasks는 디스크 상의 TASK 파일과 workflow 상태를 동기화하고 누락 및 디스크 변경을 반영한다", () => {
   const root = makeRoot();
   const wsRoot = makeRoot();
   const tasksDir = path.join(wsRoot, ".project-memory", "tasks");
@@ -134,7 +135,8 @@ test("reconcileProjectTasks는 디스크 상의 TASK 파일과 workflow 상태�
 
   fs.writeFileSync(file1, "Modified Task 1 content", "utf8");
   const res3 = store.reconcileProjectTasks("project-a", wsRoot);
-  assert.equal(res3.tasks[0].syncState, "hash_mismatch");
+  assert.equal(res3.tasks[0].syncState, "ok");
+  assert.equal(res3.tasks[0].taskHash, require("node:crypto").createHash("sha256").update("Modified Task 1 content").digest("hex"));
 });
 
 test("listTasks 기본 목록에서 missing_file/superseded를 숨기고 includeAll로 전체를 볼 수 있다", () => {
@@ -232,4 +234,93 @@ test("migrateOrphanedTasks는 프로젝트 workspace의 파일 hash를 기준으
   assert.ok(orphan, "중복 항목은 삭제되지 않고 남는다");
   assert.equal(orphan.syncState, "superseded");
   assert.equal(store.listTasks(project.id).length, 1);
+});
+
+test("미래의 스키마 버전(forward-schema)도 readOnly 상태에서 기존 decisions와 tasks를 정상적으로 읽어 표시한다", () => {
+  const root = makeRoot();
+  const file = path.join(root, "workflow.json");
+  const futureData = {
+    schemaVersion: 999,
+    decisions: [
+      { id: "d-future-1", projectId: "p-future", title: "미래 결정", content: "내용", status: "confirmed", createdAt: 100, updatedAt: 100 }
+    ],
+    tasks: [
+      { id: "t-future-1", projectId: "p-future", title: "미래 작업", status: "todo", contentSource: "inline", createdAt: 100, updatedAt: 100 }
+    ]
+  };
+  fs.writeFileSync(file, JSON.stringify(futureData), "utf8");
+
+  const store = new WorkflowStore({ root }).init();
+  assert.equal(store.readOnly, true);
+  const decisions = store.listDecisions("p-future");
+  const tasks = store.listTasks("p-future");
+  assert.equal(decisions.length, 1);
+  assert.equal(decisions[0].title, "미래 결정");
+  assert.equal(tasks.length, 1);
+  assert.equal(tasks[0].title, "미래 작업");
+  assert.throws(() => store.createTask({ projectId: "p-future", title: "새 작업" }), /읽기 전용/);
+});
+
+test("reconcileProjectTasks는 disk hash와 일치하는 기존 항목이 없어도 가장 최근 항목을 canonical로 갱신하고 구버전은 superseded 처리한다", () => {
+  const root = makeRoot();
+  const wsRoot = makeRoot();
+  const tasksDir = path.join(wsRoot, ".project-memory", "tasks");
+  fs.mkdirSync(tasksDir, { recursive: true });
+  const content = "새로운 디스크 내용";
+  fs.writeFileSync(path.join(tasksDir, "TASK-888.md"), content, "utf8");
+
+  const store = new WorkflowStore({ root }).init();
+  const old1 = store.createTask({
+    projectId: "p1",
+    title: "TASK-888.md",
+    contentSource: "file",
+    taskPath: ".project-memory/tasks/TASK-888.md",
+    taskHash: "mismatch1",
+    updatedAt: 10,
+  });
+  const old2 = store.createTask({
+    projectId: "p1",
+    title: "TASK-888.md",
+    contentSource: "file",
+    taskPath: ".project-memory/tasks/TASK-888.md",
+    taskHash: "mismatch2",
+    updatedAt: 20,
+  });
+
+  const res = store.reconcileProjectTasks("p1", wsRoot);
+  assert.equal(res.ok, true);
+  const tasks = res.tasks;
+  const canonical = tasks.find((t) => t.id === old2.id);
+  const superseded = tasks.find((t) => t.id === old1.id);
+  assert.equal(canonical.syncState, "ok");
+  assert.equal(superseded.syncState, "superseded");
+  // 기본 목록에서는 canonical만 노출된다
+  const visible = store.listTasks("p1");
+  assert.equal(visible.length, 1);
+  assert.equal(visible[0].id, old2.id);
+});
+
+test("migrateOrphanedTasks는 단일(unique) file-backed task도 디스크에 파일이 없으면 missing_file로 정리한다", () => {
+  const root = makeRoot();
+  const wsRoot = makeRoot();
+  const { ProjectStore } = require("../src/agora/project-store");
+  const projectStore = new ProjectStore({ root }).init();
+  const project = projectStore.createProject({ name: "단일 작업 프로젝트", workspace: wsRoot });
+
+  const store = new WorkflowStore({ root }).init();
+  const singleTask = store.createTask({
+    projectId: project.id,
+    title: "TASK-333.md",
+    contentSource: "file",
+    taskPath: ".project-memory/tasks/TASK-333.md",
+    taskHash: "nonexistent",
+    syncState: "ok",
+  });
+
+  const res = store.migrateOrphanedTasks();
+  assert.equal(res.ok, true);
+  const after = store.listTasks(project.id, { includeAll: true });
+  assert.equal(after[0].id, singleTask.id);
+  assert.equal(after[0].syncState, "missing_file");
+  assert.equal(store.listTasks(project.id).length, 0);
 });

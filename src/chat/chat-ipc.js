@@ -382,13 +382,16 @@ function createChatFeature(options) {
 
   // 프로젝트 workspace 변경을 프로젝트에 속한 모든 세션 meta에 일괄 반영합니다.
   // 워크스페이스의 유일한 출처는 프로젝트이며 세션 개별 폴더 설계는 없습니다.
-  // workspace가 null이면 권한도 chat으로 되돌립니다.
+  // workspace를 설정할 때는 세션의 기존 권한을 유지하고, 해제할 때만 chat으로
+  // 되돌립니다(해제 전에 workspace 권한으로 실행 중이던 세션 보호).
   function syncProjectWorkspaceToSessions(projectId, workspace) {
     if (!ensureStore() || !projectId) return;
     const project = ensureProjectStore()?.getProject(projectId);
-    const targetMode = defaultPermissionMode(project?.defaultPermissionMode, workspace);
     for (const entry of listSessionsForProject(projectId)) {
-      const patch = { workspace, permissionMode: targetMode };
+      const patch = { workspace };
+      if (workspace == null) {
+        patch.permissionMode = "chat";
+      }
       store.updateMeta(entry.id, patch);
       refreshRoomAgents(entry.id);
     }

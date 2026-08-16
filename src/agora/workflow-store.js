@@ -141,18 +141,20 @@ class WorkflowStore {
     const exists = fs.existsSync(this.filePath);
     const loaded = readJsonSafe(this.filePath);
     if (loaded && typeof loaded === "object" && !Array.isArray(loaded)) {
+      // 어느 버전이든 기존 결정/작업은 읽어서 표시합니다. 더 새로운
+      // 스키마 버전의 데이터는 쓰기만 차단하고(readOnly) 읽기는 유지합니다.
+      this.data = {
+        schemaVersion: WORKFLOW_SCHEMA_VERSION,
+        decisions: Array.isArray(loaded.decisions)
+          ? loaded.decisions.map((entry) => normalizeDecision(entry, this.now())).filter(Boolean)
+          : [],
+        tasks: Array.isArray(loaded.tasks)
+          ? loaded.tasks.map((entry) => normalizeTask(entry, this.now())).filter(Boolean)
+          : [],
+      };
       if (Number(loaded.schemaVersion) > WORKFLOW_SCHEMA_VERSION) {
         this.readOnly = true;
       } else {
-        this.data = {
-          schemaVersion: WORKFLOW_SCHEMA_VERSION,
-          decisions: Array.isArray(loaded.decisions)
-            ? loaded.decisions.map((entry) => normalizeDecision(entry, this.now())).filter(Boolean)
-            : [],
-          tasks: Array.isArray(loaded.tasks)
-            ? loaded.tasks.map((entry) => normalizeTask(entry, this.now())).filter(Boolean)
-            : [],
-        };
         // 스키마 3 → 4: 프로젝트 workspace 기준으로 같은 taskPath의 중복 항목을
         // 해시로 canonical 하나만 남기고 나머지는 superseded로 표시합니다.
         // schemaVersion bump는 마이그레이션 게이트로만 사용하고 실제 로직은
@@ -373,8 +375,9 @@ class WorkflowStore {
       this.mutateAndPersist(() => {
         let changed = false;
         // 동일 taskPath 그룹: 현재 워크스페이스 파일 hash와 일치하는 항목을
-        // canonical로 선택합니다. 일치하는 게 없으면 가장 최근 업데이트 항목을
-        // canonical로 삼고, 나머지는 superseded로 표시해 기본 목록에서 숨깁니다.
+        // canonical로 선택합니다. 일치하는 게 없으면 disk가 현재 소스이므로
+        // 가장 최근 항목을 disk hash로 갱신해 canonical로 승격하고 나머지는
+        // superseded로 표시합니다. hash_mismatch를 canonical로 남기지 않습니다.
         const pathGroups = new Map();
         for (const task of this.data.tasks) {
           if (task.projectId !== projectId || task.contentSource !== "file" || !task.taskPath) continue;
@@ -387,9 +390,16 @@ class WorkflowStore {
           const onDisk = fileMap.get(normPath);
           let canonical = null;
           if (onDisk) {
-            canonical =
-              group.find((task) => task.taskHash && task.taskHash === onDisk.hash) ||
-              [...group].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+            canonical = group.find((task) => task.taskHash && task.taskHash === onDisk.hash);
+          }
+          if (onDisk && !canonical) {
+            canonical = [...group].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0] || null;
+            if (canonical) {
+              canonical.taskHash = onDisk.hash;
+              canonical.syncState = "ok";
+              canonical.updatedAt = this.now();
+              changed = true;
+            }
           }
           for (const task of group) {
             if (group.length > 1 && task !== canonical) {
@@ -406,14 +416,8 @@ class WorkflowStore {
                 task.updatedAt = this.now();
                 changed = true;
               }
-            } else {
-              if (task.taskHash && task.taskHash !== onDisk.hash) {
-                if (task.syncState !== "hash_mismatch") {
-                  task.syncState = "hash_mismatch";
-                  task.updatedAt = this.now();
-                  changed = true;
-                }
-              } else if (task.syncState !== "ok") {
+            } else if (task === canonical) {
+              if (task.syncState !== "ok") {
                 task.syncState = "ok";
                 task.updatedAt = this.now();
                 changed = true;
@@ -502,16 +506,39 @@ class WorkflowStore {
         }
 
         for (const [normPath, group] of groups) {
-          if (group.length < 2) continue;
           const onDisk = fileMap.get(normPath);
+          if (!onDisk) {
+            for (const task of group) {
+              if (task.syncState !== "missing_file") {
+                task.syncState = "missing_file";
+                task.updatedAt = this.now();
+                changed = true;
+              }
+            }
+            continue;
+          }
           let canonical =
-            (onDisk && group.find((task) => task.taskHash && task.taskHash === onDisk.hash)) ||
+            group.find((task) => task.taskHash && task.taskHash === onDisk.hash) ||
             [...group].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+          if (canonical) {
+            if (canonical.taskHash !== onDisk.hash) {
+              canonical.taskHash = onDisk.hash;
+              canonical.syncState = "ok";
+              canonical.updatedAt = this.now();
+              changed = true;
+            } else if (canonical.syncState !== "ok") {
+              canonical.syncState = "ok";
+              canonical.updatedAt = this.now();
+              changed = true;
+            }
+          }
           for (const task of group) {
             if (task === canonical) continue;
-            task.syncState = "superseded";
-            task.updatedAt = this.now();
-            changed = true;
+            if (task.syncState !== "superseded") {
+              task.syncState = "superseded";
+              task.updatedAt = this.now();
+              changed = true;
+            }
           }
         }
       }

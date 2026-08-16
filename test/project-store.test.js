@@ -120,3 +120,38 @@ test("새 대화에는 프로젝트 기본 설정만 복사하고 기존 대화 
   assert.equal(created.permissionMode, "workspace-write");
   assert.equal(created.agents.claude.enabled, false);
 });
+
+test("migrateSessionsToProjects는 고유 세션 workspace를 프로젝트로 승격하고 충돌 시 임의 선택하지 않는다", () => {
+  const root = makeRoot();
+  const chats = new ChatStore({ root }).init();
+  const projects = new ProjectStore({ root }).init();
+
+  // 케이스 1: 프로젝트 workspace가 null이고 세션들의 workspace가 동일하게 1개 존재 -> 프로젝트로 승격
+  const p1 = projects.createProject({ name: "승격 프로젝트" });
+  const s1 = chats.createSession({ title: "대화 1", projectId: p1.id, workspace: "D:/Work/Project1" });
+  const s2 = chats.createSession({ title: "대화 2", projectId: p1.id, workspace: "D:/Work/Project1" });
+
+  // 케이스 2: 프로젝트 workspace가 null이고 세션들의 workspace가 서로 다름 (충돌) -> 승격하지 않고 유지
+  const p2 = projects.createProject({ name: "충돌 프로젝트" });
+  chats.createSession({ title: "대화 A", projectId: p2.id, workspace: "D:/Work/A" });
+  chats.createSession({ title: "대화 B", projectId: p2.id, workspace: "D:/Work/B" });
+
+  // 케이스 3: 프로젝트 workspace가 이미 설정되어 있음 -> 모든 세션에 프로젝트 workspace 반영
+  const p3 = projects.createProject({ name: "기존 폴더 프로젝트", workspace: "D:/Work/Canonical" });
+  const s3 = chats.createSession({ title: "대화 X", projectId: p3.id, workspace: "D:/Work/Old" });
+
+  migrateSessionsToProjects(chats, projects);
+
+  // 검증 1: 승격 확인
+  const reloadedP1 = projects.getProject(p1.id);
+  assert.equal(reloadedP1.workspace, "D:/Work/Project1");
+  assert.equal(chats.readMeta(s1.id).workspace, "D:/Work/Project1");
+  assert.equal(chats.readMeta(s2.id).workspace, "D:/Work/Project1");
+
+  // 검증 2: 충돌 시 임의 선택 금지 (null 유지)
+  const reloadedP2 = projects.getProject(p2.id);
+  assert.equal(reloadedP2.workspace, null);
+
+  // 검증 3: canonical 프로젝트 workspace 일괄 적용
+  assert.equal(chats.readMeta(s3.id).workspace, "D:/Work/Canonical");
+});

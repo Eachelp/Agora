@@ -6,7 +6,8 @@ const path = require("node:path");
 const { createChatFeature } = require("../src/chat/chat-ipc");
 
 function makeRoot() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "agora-project-ipc-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agora-project-ipc-"));
+  return fs.realpathSync(dir);
 }
 
 function makeFeature(root, dialogResult = { canceled: true, filePaths: [] }) {
