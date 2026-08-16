@@ -22,6 +22,15 @@ const {
   findControlMarker,
   runGeneratedPaths,
 } = require("./chat-specialist");
+const {
+  executionAxes: professionalExecutionAxes,
+  buildProfessionalEvidencePayload,
+} = require("./chat-professional-evidence");
+
+// Runner가 새로 반환하는 protocol failure를 기존 specialist fail-closed 경로에서도
+// 일반 EXECUTION_BLOCKED로 뭉개지 않고 정확한 원인으로 보존합니다. exported Set은
+// chat-specialist 내부 safeBlockReason()이 참조하는 동일 객체입니다.
+SAFE_BLOCK_REASONS.add("PROTOCOL_FINAL_MISSING");
 
 // 채팅방 오케스트레이션.
 // - 멘션이 없으면 세션 참가자 전체, 있으면 멘션된 참가자만 응답합니다.
@@ -1074,3 +1083,17 @@ module.exports = { ChatRoom, DEFAULT_DISCUSSION_RUN_BUDGET };
 
 
 installSpecialistMethods(ChatRoom);
+
+// Stage B: specialist FSM 자체는 그대로 두고 evidence shaping만 provider-neutral
+// 모듈로 교체합니다. Reviewer와 Run evidence가 같은 payload를 보게 하는 단일 경계입니다.
+ChatRoom.prototype.executionAxes = function executionAxes(options = {}) {
+  return professionalExecutionAxes(options);
+};
+
+ChatRoom.prototype.evidencePayload = function evidencePayload(options = {}) {
+  const payload = buildProfessionalEvidencePayload(options);
+  const runInfo = options.runInfo || null;
+  if (!runInfo || !this.taskManager?.writeRunEvidence) return { ok: true, payload };
+  const ok = this.taskManager.writeRunEvidence(runInfo, payload);
+  return ok ? { ok: true, payload } : { ok: false, payload };
+};
