@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   apply:
-    if: github.event.head_commit.message == 'chore: stage professional routing fix'
+    if: ${{ github.event.head_commit.message == 'trigger-professional-routing-fix' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
