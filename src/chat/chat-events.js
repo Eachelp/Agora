@@ -1,3 +1,5 @@
+const { createRunTelemetry } = require("./chat-run-telemetry");
+
 // 프로바이더 CLI의 구조화 출력(JSONL)을 공통 이벤트로 정규화합니다.
 //   { kind: "delta", text }   — 실시간 본문 조각 (claude stream-json)
 //   { kind: "status", label } — 사고 등 상태 표시
@@ -316,10 +318,22 @@ function parseAgyLine(line) {
   return null;
 }
 
+function instrumentParser(baseParser) {
+  const telemetry = createRunTelemetry();
+  const parser = (line) => {
+    const event = baseParser(line);
+    if (!event) return null;
+    telemetry.observe(event);
+    return event;
+  };
+  parser.getTelemetry = () => telemetry.snapshot();
+  return parser;
+}
+
 function createLineParser(providerId) {
-  if (providerId === "claude") return createClaudeLineParser();
-  if (providerId === "codex") return parseCodexLine;
-  if (providerId === "agy") return parseAgyLine;
+  if (providerId === "claude") return instrumentParser(createClaudeLineParser());
+  if (providerId === "codex") return instrumentParser(parseCodexLine);
+  if (providerId === "agy") return instrumentParser(parseAgyLine);
   return null;
 }
 
