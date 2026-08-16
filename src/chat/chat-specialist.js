@@ -8,6 +8,10 @@ const {
 } = require("../agora/professional-run");
 const { TaskManager, hashText } = require("../agora/task-manager");
 const { describeWorkspaceChanges } = require("../agora/workspace-diff");
+const {
+  executionAxes: professionalExecutionAxes,
+  buildProfessionalEvidencePayload,
+} = require("./chat-professional-evidence");
 
 const SAFE_BLOCK_REASONS = new Set([
   "BLOCKED",
@@ -18,6 +22,7 @@ const SAFE_BLOCK_REASONS = new Set([
   "DIFF_COLLECTION_FAILED",
   "EVIDENCE_WRITE_FAILED",
   "PROMPT_BUDGET_EXCEEDED",
+  "PROTOCOL_FINAL_MISSING",
   "RECOVERY_JOURNAL_WRITE_FAILED",
   "TRANSPORT_FAILED",
   "TIMED_OUT",
@@ -505,40 +510,13 @@ class SpecialistMixin {
     };
   }
 
-  executionAxes({ builderResult = null, diff = null } = {}) {
-    const commands = builderResult?.evidence?.commands || [];
-    const hasFinished = commands.some((entry) => entry?.kind === "command-finished" || Number.isInteger(entry?.exitCode));
-    return {
-      transport: builderResult?.transport || "COMPLETED",
-      declaration: builderResult?.builderStatus || "MISSING",
-      changes: diff?.status || "UNSUPPORTED",
-      execution: hasFinished ? "OBSERVED" : commands.length > 0 ? "PARTIAL" : "UNAVAILABLE",
-    };
+  executionAxes(options = {}) {
+    return professionalExecutionAxes(options);
   }
 
-  evidencePayload({ runInfo, builderResult, diff, round, provider }) {
-    const axes = this.executionAxes({ builderResult, diff });
-    const allCommands = (builderResult?.evidence?.commands || [])
-      .filter((entry) => entry?.kind === "command-finished" || Number.isInteger(entry?.exitCode))
-      .map((entry) => ({ ...entry }));
-    const commands = allCommands.slice(0, 20);
-    const payload = {
-      schemaVersion: 2,
-      round: round || 1,
-      invocationId: builderResult?.runId || null,
-      provider: provider || null,
-      source: { kind: "provider-event", provider: provider || null },
-      ...axes,
-      sessionPersisted: builderResult?.evidencePersisted !== false,
-      commands,
-      commandSummary: {
-        total: allCommands.length,
-        included: commands.length,
-        omitted: Math.max(0, allCommands.length - commands.length),
-        failed: allCommands.filter((entry) => Number.isInteger(entry.exitCode) && entry.exitCode !== 0).length,
-        truncated: allCommands.filter((entry) => entry.truncated).length,
-      },
-    };
+  evidencePayload(options = {}) {
+    const payload = buildProfessionalEvidencePayload(options);
+    const runInfo = options.runInfo || null;
     if (!runInfo || !this.taskManager?.writeRunEvidence) return { ok: true, payload };
     const ok = this.taskManager.writeRunEvidence(runInfo, payload);
     return ok ? { ok: true, payload } : { ok: false, payload };
