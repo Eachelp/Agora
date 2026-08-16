@@ -253,6 +253,11 @@ function runAgentProcess({
         promptChars: String(prompt || "").length,
         result: baseResult,
       });
+      if (typeof onEvent === "function") {
+        try {
+          onEvent({ kind: "run-metrics", metrics: runMetrics });
+        } catch {}
+      }
       resolve({ ...baseResult, runMetrics });
     };
 
