@@ -22,6 +22,15 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Repair helper quoting
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('scripts/apply-professional-stabilization.js')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace('```', r'\x60{3}')
+          p.write_text(s, encoding='utf-8')
+          PY
       - name: Apply guarded transform
         run: node scripts/apply-professional-stabilization.js
       - name: Enforce same-author direct simplify
