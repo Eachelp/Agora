@@ -31,7 +31,11 @@ jobs:
           s = s.replace('```', r'\x60{3}')
           s = s.replace(
               '  function roomMeta(meta) {\n    const project = projectForSession(meta);\n    return {',
-              '  function roomMeta(meta) {\n    const project = projectForSession(meta);\n    const memory = ensureMemoryStore();\n    return {'
+              'function roomMeta(meta) {\n    const project = projectForSession(meta);\n    const memory = ensureMemoryStore();\n    return {'
+          )
+          s = s.replace(
+              '  function roomMeta(meta) {\n    const project = projectForSession(meta);\n    const memory = ensureMemoryStore();\n    return {',
+              'function roomMeta(meta) {\n    const project = projectForSession(meta);\n    const memory = ensureMemoryStore();\n    return {'
           )
           p.write_text(s, encoding='utf-8')
           PY
