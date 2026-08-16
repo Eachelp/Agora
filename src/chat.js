@@ -1025,26 +1025,9 @@ function openSessionMovePopover(anchor, session) {
       option.disabled = project.id === activeProjectId;
       row.append(option);
 
-      // 프로젝트 폴더가 이 대화의 현재 폴더와 다를 때만 적용 여부를 물어봅니다.
-      // 기본값은 기존 대화의 워크스페이스/권한을 그대로 유지하는 것입니다.
-      let applyWorkspace = false;
-      if (project.id !== activeProjectId && project.workspace && project.workspace !== session.workspace) {
-        const applyRow = document.createElement("label");
-        applyRow.className = "project-move-apply-workspace";
-        const checkbox = document.createElement("input");
-        checkbox.type = "checkbox";
-        checkbox.addEventListener("change", () => {
-          applyWorkspace = checkbox.checked;
-        });
-        const text = document.createElement("span");
-        text.textContent = `이 대화에도 "${baseName(project.workspace)}" 폴더 적용`;
-        applyRow.append(checkbox, text);
-        row.append(applyRow);
-      }
-
       option.addEventListener("click", async () => {
         const result = await call(
-          window.chatApi.sessionsMove(session.id, project.id, applyWorkspace)
+          window.chatApi.sessionsMove(session.id, project.id)
         );
         if (result) {
           closePopover();
@@ -1261,11 +1244,11 @@ function renderHeader() {
   const entry = activeSessionEntry();
   sessionTitleEl.textContent = sessionMeta?.title || entry?.title || "세션";
 
-  const workspace = sessionMeta?.workspace || null;
+  const workspace = activeProjectEntry()?.workspace || null;
   workspaceLabel.textContent = workspace ? baseName(workspace) : "워크스페이스 없음";
   workspaceButton.title = workspace
     ? `${workspace}\n클릭해 변경 · 우클릭으로 해제`
-    : "세션에서 사용할 폴더를 선택합니다";
+    : "프로젝트에서 사용할 폴더를 선택합니다";
 
   const mode = sessionMeta?.permissionMode || "chat";
   permissionSelect.value = mode;
@@ -2944,23 +2927,25 @@ discussionButton.addEventListener("click", () => {
 
 // --- 워크스페이스 / 권한 ---
 workspaceButton.addEventListener("click", async () => {
-  const result = await call(window.chatApi.workspaceChoose(activeSessionId));
-  if (result && !result.canceled && result.meta) {
-    sessionMeta = result.meta;
+  const result = await call(window.chatApi.projectsWorkspaceChoose(activeProjectId));
+  if (result && !result.canceled && result.project) {
+    if (result.projects) projects = result.projects;
     sessions = result.sessions || sessions;
     renderSessions();
+    renderProjects();
     renderHeader();
   }
 });
 
 workspaceButton.addEventListener("contextmenu", async (event) => {
   event.preventDefault();
-  if (!sessionMeta?.workspace) return;
-  const result = await call(window.chatApi.workspaceClear(activeSessionId));
-  if (result?.meta) {
-    sessionMeta = result.meta;
+  if (!activeProjectEntry()?.workspace) return;
+  const result = await call(window.chatApi.projectsWorkspaceClear(activeProjectId));
+  if (result?.project) {
+    if (result.projects) projects = result.projects;
     sessions = result.sessions || sessions;
     renderSessions();
+    renderProjects();
     renderHeader();
   }
 });

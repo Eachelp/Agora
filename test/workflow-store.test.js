@@ -136,3 +136,100 @@ test("reconcileProjectTasks는 디스크 상의 TASK 파일과 workflow 상태�
   const res3 = store.reconcileProjectTasks("project-a", wsRoot);
   assert.equal(res3.tasks[0].syncState, "hash_mismatch");
 });
+
+test("listTasks 기본 목록에서 missing_file/superseded를 숨기고 includeAll로 전체를 볼 수 있다", () => {
+  const root = makeRoot();
+  const store = new WorkflowStore({ root }).init();
+  const okTask = store.createTask({ projectId: "p1", title: "정상", syncState: "ok" });
+  const missing = store.createTask({ projectId: "p1", title: "파일 없음", syncState: "missing_file" });
+  const superseded = store.createTask({ projectId: "p1", title: "밀림", syncState: "superseded" });
+  assert.equal(okTask.syncState, "ok");
+  assert.equal(missing.syncState, "missing_file");
+  assert.equal(superseded.syncState, "superseded");
+
+  const shown = store.listTasks("p1");
+  assert.deepEqual(shown.map((t) => t.id), [okTask.id]);
+  const withMissing = store.listTasks("p1", { includeMissing: true });
+  assert.deepEqual(withMissing.map((t) => t.id).sort(), [missing.id, okTask.id, superseded.id].sort());
+  const all = store.listTasks("p1", { includeAll: true });
+  assert.deepEqual(all.map((t) => t.id).sort(), [missing.id, okTask.id, superseded.id].sort());
+});
+
+test("reconcileProjectTasks는 같은 taskPath의 hash 일치 항목을 canonical로 선택하고 나머지를 superseded 처리한다", () => {
+  const root = makeRoot();
+  const wsRoot = makeRoot();
+  const tasksDir = path.join(wsRoot, ".project-memory", "tasks");
+  fs.mkdirSync(tasksDir, { recursive: true });
+  const content = "TASK-777 본문";
+  fs.writeFileSync(path.join(tasksDir, "TASK-777.md"), content, "utf8");
+
+  const store = new WorkflowStore({ root }).init();
+  const crypto = require("node:crypto");
+  const hash = crypto.createHash("sha256").update(content, "utf8").digest("hex");
+  // 같은 taskPath로 구버전(다른 hash)과 최신(hash 일치) 항목 두 개를 만든다.
+  const stale = store.createTask({
+    projectId: "p1",
+    title: "TASK-777.md",
+    contentSource: "file",
+    taskPath: ".project-memory/tasks/TASK-777.md",
+    taskHash: "oldhash",
+    updatedAt: 1,
+  });
+  const canonical = store.createTask({
+    projectId: "p1",
+    title: "TASK-777.md",
+    contentSource: "file",
+    taskPath: ".project-memory/tasks/TASK-777.md",
+    taskHash: hash,
+    updatedAt: 2,
+  });
+
+  const res = store.reconcileProjectTasks("p1", wsRoot);
+  assert.equal(res.ok, true);
+  const byId = new Map(res.tasks.map((t) => [t.id, t]));
+  assert.equal(byId.get(canonical.id).syncState, "ok");
+  assert.equal(byId.get(stale.id).syncState, "superseded");
+});
+
+test("migrateOrphanedTasks는 프로젝트 workspace의 파일 hash를 기준으로 중복 항목을 정리한다", () => {
+  const root = makeRoot();
+  const wsRoot = makeRoot();
+  const tasksDir = path.join(wsRoot, ".project-memory", "tasks");
+  fs.mkdirSync(tasksDir, { recursive: true });
+  const content = "TASK-999 본문";
+  fs.writeFileSync(path.join(tasksDir, "TASK-999.md"), content, "utf8");
+
+  const { ProjectStore } = require("../src/agora/project-store");
+  const projectStore = new ProjectStore({ root }).init();
+  const project = projectStore.createProject({ name: "마이그레이션 프로젝트", workspace: wsRoot });
+
+  const store = new WorkflowStore({ root }).init();
+  const crypto = require("node:crypto");
+  const hash = crypto.createHash("sha256").update(content, "utf8").digest("hex");
+  const a = store.createTask({
+    projectId: project.id,
+    title: "TASK-999.md",
+    contentSource: "file",
+    taskPath: ".project-memory/tasks/TASK-999.md",
+    taskHash: hash,
+  });
+  const b = store.createTask({
+    projectId: project.id,
+    title: "TASK-999.md",
+    contentSource: "file",
+    taskPath: ".project-memory/tasks/TASK-999.md",
+    taskHash: "stalehash",
+  });
+  assert.equal(a.id === b.id, false);
+
+  const res = store.migrateOrphanedTasks();
+  assert.equal(res.ok, true);
+  const after = store.listTasks(project.id, { includeAll: true });
+  const canonical = after.find((t) => t.taskHash === hash);
+  const orphan = after.find((t) => t.taskHash === "stalehash");
+  assert.ok(canonical, "hash 일치 항목이 남아 있어야 한다");
+  assert.equal(canonical.syncState, "ok");
+  assert.ok(orphan, "중복 항목은 삭제되지 않고 남는다");
+  assert.equal(orphan.syncState, "superseded");
+  assert.equal(store.listTasks(project.id).length, 1);
+});

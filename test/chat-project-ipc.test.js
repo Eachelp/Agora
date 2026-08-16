@@ -9,7 +9,7 @@ function makeRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "agora-project-ipc-"));
 }
 
-function makeFeature(root) {
+function makeFeature(root, dialogResult = { canceled: true, filePaths: [] }) {
   const handlers = new Map();
   const ipcMain = {
     handle(channel, handler) {
@@ -20,7 +20,11 @@ function makeFeature(root) {
   const feature = createChatFeature({
     electron: {
       ipcMain,
-      dialog: {},
+      dialog: {
+        async showOpenDialog() {
+          return dialogResult;
+        },
+      },
       BrowserWindow: class BrowserWindow {},
       shell: {},
     },
@@ -59,7 +63,7 @@ test("IPC는 프로젝트를 만들고 기존 채팅을 다른 프로젝트로 �
   assert.equal(moved.sessions.some((session) => session.id === created.session.meta.id), true);
 });
 
-test("대화 이동은 명시적으로 선택하지 않으면 워크스페이스를 그대로 둔다", async () => {
+test("대화 이동은 항상 대상 프로젝트의 워크스페이스를 상속한다", async () => {
   const root = makeRoot();
   const feature = makeFeature(root);
 
@@ -75,17 +79,18 @@ test("대화 이동은 명시적으로 선택하지 않으면 워크스페이스
   const sessionId = plain.session.meta.id;
   assert.equal(plain.session.meta.workspace, null);
 
-  const movedWithoutApply = await feature.invoke("chat:sessions:move", {
+  // 옵션 없이 이동해도 프로젝트 workspace를 무조건 상속합니다.
+  const moved = await feature.invoke("chat:sessions:move", {
     sessionId,
     projectId,
   });
-  assert.equal(movedWithoutApply.ok, true);
-  assert.equal(movedWithoutApply.session.meta.projectId, projectId);
-  assert.equal(movedWithoutApply.session.meta.workspace, null);
-  assert.equal(movedWithoutApply.session.meta.permissionMode, "chat");
+  assert.equal(moved.ok, true);
+  assert.equal(moved.session.meta.projectId, projectId);
+  assert.equal(moved.session.meta.workspace, root);
+  assert.equal(moved.session.meta.permissionMode, "chat");
 });
 
-test("대화 이동에서 명시적으로 선택하면 프로젝트 폴더/권한을 함께 적용한다", async () => {
+test("이동 시 프로젝트 기본 권한 모드를 상속한다", async () => {
   const root = makeRoot();
   const feature = makeFeature(root);
 
@@ -102,15 +107,14 @@ test("대화 이동에서 명시적으로 선택하면 프로젝트 폴더/권�
   const plain = await feature.invoke("chat:projects:create", { name: "폴더 없는 프로젝트" });
   const sessionId = plain.session.meta.id;
 
-  const movedWithApply = await feature.invoke("chat:sessions:move", {
+  const moved = await feature.invoke("chat:sessions:move", {
     sessionId,
     projectId,
-    applyProjectWorkspace: true,
   });
-  assert.equal(movedWithApply.ok, true);
-  assert.equal(movedWithApply.session.meta.projectId, projectId);
-  assert.equal(movedWithApply.session.meta.workspace, root);
-  assert.equal(movedWithApply.session.meta.permissionMode, "workspace-read");
+  assert.equal(moved.ok, true);
+  assert.equal(moved.session.meta.projectId, projectId);
+  assert.equal(moved.session.meta.workspace, root);
+  assert.equal(moved.session.meta.permissionMode, "workspace-read");
 });
 
 test("작업 지시서 읽기는 워크스페이스 안 파일만 크기 상한 안에서 허용한다", async () => {
@@ -156,4 +160,55 @@ test("작업 지시서 읽기는 워크스페이스 안 파일만 크기 상한 
     taskPath: path.join(root, "TASK-001.md"),
   });
   assert.equal(absolute.ok, false);
+});
+
+test("세션 워크스페이스 설정은 프로젝트 단위로 위임된다", async () => {
+  const root = makeRoot();
+  const feature = makeFeature(root, { canceled: true, filePaths: [] });
+
+  const created = await feature.invoke("chat:projects:create", {
+    name: "워크스페이스 프로젝트",
+    workspace: root,
+  });
+  assert.equal(created.ok, true);
+  const s1 = created.session.meta.id;
+  assert.equal(created.session.meta.workspace, root);
+
+  // 세션 단위 호출은 프로젝트로 위임된다. 대화상자 취소시 canceled를 반환한다.
+  const chosen = await feature.invoke("chat:workspace:choose", { sessionId: s1 });
+  assert.equal(chosen.ok, true);
+  assert.equal(chosen.canceled, true);
+
+  // 세션 단위 clear는 프로젝트 workspace를 해제하고 모든 세션을 chat 권한으로 돌리는다.
+  const cleared = await feature.invoke("chat:workspace:clear", { sessionId: s1 });
+  assert.equal(cleared.ok, true);
+  const state = await feature.invoke("chat:state");
+  for (const session of state.sessions) {
+    assert.equal(session.workspace, null);
+    assert.equal(session.permissionMode, "chat");
+  }
+});
+
+test("프로젝트 workspace 변경은 모든 세션 meta에 일괄 반영된다", async () => {
+  const root = makeRoot();
+  const feature = makeFeature(root, { canceled: false, filePaths: [root] });
+
+  const created = await feature.invoke("chat:projects:create", {
+    name: "일괄 반영 프로젝트",
+  });
+  assert.equal(created.ok, true);
+  const projectId = created.activeProjectId;
+
+  const second = await feature.invoke("chat:sessions:create");
+  assert.equal(second.ok, true);
+  assert.equal(second.session.meta.workspace, null);
+
+  // 프로젝트 workspace 사용자 선택이 모든 세션에 반영된다.
+  const changed = await feature.invoke("chat:projects:workspace:choose", { projectId });
+  assert.equal(changed.ok, true);
+  assert.equal(changed.project.workspace, root);
+  const state = await feature.invoke("chat:state");
+  for (const session of state.sessions) {
+    assert.equal(session.workspace, root);
+  }
 });

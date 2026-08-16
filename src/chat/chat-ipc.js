@@ -380,6 +380,20 @@ function createChatFeature(options) {
     return store.listSessions().filter((entry) => projectIdForMeta(entry) === projectId);
   }
 
+  // 프로젝트 workspace 변경을 프로젝트에 속한 모든 세션 meta에 일괄 반영합니다.
+  // 워크스페이스의 유일한 출처는 프로젝트이며 세션 개별 폴더 설계는 없습니다.
+  // workspace가 null이면 권한도 chat으로 되돌립니다.
+  function syncProjectWorkspaceToSessions(projectId, workspace) {
+    if (!ensureStore() || !projectId) return;
+    const project = ensureProjectStore()?.getProject(projectId);
+    const targetMode = defaultPermissionMode(project?.defaultPermissionMode, workspace);
+    for (const entry of listSessionsForProject(projectId)) {
+      const patch = { workspace, permissionMode: targetMode };
+      store.updateMeta(entry.id, patch);
+      refreshRoomAgents(entry.id);
+    }
+  }
+
   function workflowForProject(projectId = getActiveProjectId()) {
     const workflow = ensureWorkflowStore();
     if (!workflow || !projectId) {
@@ -1186,6 +1200,7 @@ function roomMeta(meta) {
         const workspace = await chooseWorkspace("프로젝트 워크스페이스 선택");
         if (!workspace) return { canceled: true, ...sessionsPayload() };
         const project = ensureProjectStore().updateProject(projectId, { workspace });
+        syncProjectWorkspaceToSessions(projectId, workspace);
         const payload = sessionsPayload();
         broadcast("chat:sessions-changed", payload);
         return { ...payload, project };
@@ -1197,6 +1212,7 @@ function roomMeta(meta) {
       wrap(async ({ projectId }) => {
         requireProject(projectId);
         const project = ensureProjectStore().updateProject(projectId, { workspace: null });
+        syncProjectWorkspaceToSessions(projectId, null);
         const payload = sessionsPayload();
         broadcast("chat:sessions-changed", payload);
         return { ...payload, project };
@@ -1489,7 +1505,7 @@ function roomMeta(meta) {
 
     ipcMain.handle(
       "chat:sessions:move",
-      wrap(async ({ sessionId, projectId, applyProjectWorkspace = false }) => {
+      wrap(async ({ sessionId, projectId }) => {
         requireSession(sessionId);
         const targetProject = requireProject(projectId);
         const currentMeta = store.readMeta(sessionId);
@@ -1497,14 +1513,17 @@ function roomMeta(meta) {
         const projectChanged = projectIdForMeta(currentMeta) !== targetProject.id;
         if (projectChanged) {
           const patch = { projectId: targetProject.id };
-          // 프로젝트 폴더를 이 대화에도 적용하도록 사용자가 명시적으로 선택한 경우에만
-          // 워크스페이스/권한을 함께 바꿉니다. 기본값은 기존 대화 설정을 그대로 둡니다.
-          if (applyProjectWorkspace && targetProject.workspace) {
+          // 대화가 프로젝트로 이동하면 항상 대상 프로젝트의 workspace를 상속합니다.
+          // 채팅 단위 workspace는 설계에서 제거되었으므로 선택지가 없습니다.
+          if (targetProject.workspace) {
             patch.workspace = targetProject.workspace;
             patch.permissionMode = defaultPermissionMode(
               targetProject.defaultPermissionMode,
               targetProject.workspace
             );
+          } else {
+            patch.workspace = null;
+            patch.permissionMode = "chat";
           }
           store.updateMeta(sessionId, patch);
           // 대화가 다른 프로젝트로 옮겨지면, 이 대화에 연결된 결정/작업의 프로젝트 연결을 정리합니다.
@@ -1886,11 +1905,13 @@ function roomMeta(meta) {
       "chat:workspace:choose",
       wrap(async ({ sessionId }) => {
         requireSession(sessionId);
-        // 워크스페이스 경로의 유일한 출처: OS 폴더 선택 대화상자.
-        const workspace = await chooseWorkspace("세션 워크스페이스 선택");
+        // 워크스페이스는 이제 프로젝트 단위입니다. 세션 호출은 프로젝트로 위임합니다.
+        const project = projectForSession(store.readMeta(sessionId));
+        if (!project) return { canceled: true };
+        const workspace = await chooseWorkspace("프로젝트 워크스페이스 선택");
         if (!workspace) return { canceled: true };
-        store.updateMeta(sessionId, { workspace });
-        refreshRoomAgents(sessionId);
+        ensureProjectStore().updateProject(project.id, { workspace });
+        syncProjectWorkspaceToSessions(project.id, workspace);
         return { meta: publicMeta(store.readMeta(sessionId)), ...sessionsPayload() };
       })
     );
@@ -1908,9 +1929,12 @@ function roomMeta(meta) {
       "chat:workspace:clear",
       wrap(async ({ sessionId }) => {
         requireSession(sessionId);
-        // 워크스페이스가 없으면 workspace 권한 모드도 의미가 없어 chat으로 되돌립니다.
-        store.updateMeta(sessionId, { workspace: null, permissionMode: "chat" });
-        refreshRoomAgents(sessionId);
+        // 프로젝트 단위 해제. 같은 프로젝트의 모든 세션 권한을 chat으로 되돌립니다.
+        const project = projectForSession(store.readMeta(sessionId));
+        if (project) {
+          ensureProjectStore().updateProject(project.id, { workspace: null });
+          syncProjectWorkspaceToSessions(project.id, null);
+        }
         return { meta: publicMeta(store.readMeta(sessionId)), ...sessionsPayload() };
       })
     );
