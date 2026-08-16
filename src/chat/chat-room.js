@@ -26,6 +26,9 @@ const {
   executionAxes: professionalExecutionAxes,
   buildProfessionalEvidencePayload,
 } = require("./chat-professional-evidence");
+const {
+  installDeterministicProfessionalRecorder,
+} = require("./chat-professional-recorder");
 
 // Runner가 새로 반환하는 protocol failure를 기존 specialist fail-closed 경로에서도
 // 일반 EXECUTION_BLOCKED로 뭉개지 않고 정확한 원인으로 보존합니다. exported Set은
@@ -1083,6 +1086,7 @@ module.exports = { ChatRoom, DEFAULT_DISCUSSION_RUN_BUDGET };
 
 
 installSpecialistMethods(ChatRoom);
+installDeterministicProfessionalRecorder(ChatRoom);
 
 // Stage B: specialist FSM 자체는 그대로 두고 evidence shaping만 provider-neutral
 // 모듈로 교체합니다. Reviewer와 Run evidence가 같은 payload를 보게 하는 단일 경계입니다.
