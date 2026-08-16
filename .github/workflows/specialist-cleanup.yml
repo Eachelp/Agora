@@ -1,0 +1,34 @@
+name: Specialist Cleanup
+
+on:
+  push:
+    branches:
+      - feat/multi-harness-runtime
+    paths:
+      - .github/workflows/specialist-cleanup.yml
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/multi-harness-runtime
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply guarded cleanup
+        run: node scripts/apply-specialist-cleanup.js
+      - name: Commit cleanup
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --exit-code && exit 0
+          git commit -m "refactor: finalize professional evidence ownership"
+          git push origin HEAD:feat/multi-harness-runtime
