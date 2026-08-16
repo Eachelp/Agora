@@ -41,6 +41,8 @@ jobs:
           s = s.replace('    schemaVersion: 3,\n    capturedAt: new Date().toISOString(),\n    checkpointProtection: checkpointProtection || null,', '    schemaVersion: 3,\n    checkpointProtection: checkpointProtection || null,\n    round: round || 1,')
           s = s.replace('      schemaVersion: 2,\n      runId: info.runId,', '        schemaVersion: 2,\n        round: evidence.round || 1,')
           s = s.replace('      schemaVersion: 3,\n      runId: info.runId,\n      checkpointProtection: ["protected", "unavailable_non_git", "unavailable_checkpoint_failed", "unavailable_user_approved"].includes(evidence.checkpointProtection)\n        ? evidence.checkpointProtection\n        : null,', '        schemaVersion: 3,\n        checkpointProtection: ["protected", "unavailable_non_git", "unavailable_checkpoint_failed", "unavailable_user_approved"].includes(evidence.checkpointProtection)\n          ? evidence.checkpointProtection\n          : null,\n        round: evidence.round || 1,')
+          s = s.replace('const path = require("node:path");', 'const { buildConversationWindow } = require("./chat-summary-window");')
+          s = s.replace('const path = require("node:path");\nconst { roleContextPolicy, roleContextPromptLines } = require("./professional-role-context");', 'const { buildConversationWindow } = require("./chat-summary-window");\nconst { roleContextPolicy, roleContextPromptLines } = require("./professional-role-context");')
           p.write_text(s, encoding='utf-8')
           PY
       - name: Apply guarded transform
