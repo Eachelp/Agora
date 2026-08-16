@@ -3,9 +3,14 @@
 const { serializeDeterministicRecorderOutput } = require("../agora/deterministic-recorder");
 
 const INSTALL_MARK = Symbol.for("agora.deterministicProfessionalRecorderInstalled");
+const DETERMINISTIC_RECORDER_MODE = "deterministic";
 
 function isDeterministicProfessionalRecorderContext(context = {}) {
   return context?.specialist?.stage === "recorder" && context?.specialist?.professional === true;
+}
+
+function usesDeterministicProfessionalRecorder(room) {
+  return room?.meta?.professionalRecorderMode === DETERMINISTIC_RECORDER_MODE;
 }
 
 function deterministicRecorderResult(context = {}) {
@@ -42,7 +47,10 @@ function installDeterministicProfessionalRecorder(ChatRoom) {
   });
 
   ChatRoom.prototype.scheduleResponse = function scheduleResponseWithDeterministicRecorder(agent, context = {}) {
-    if (isDeterministicProfessionalRecorderContext(context)) {
+    if (
+      usesDeterministicProfessionalRecorder(this) &&
+      isDeterministicProfessionalRecorderContext(context)
+    ) {
       return Promise.resolve(deterministicRecorderResult(context));
     }
     return original.call(this, agent, context);
@@ -51,7 +59,9 @@ function installDeterministicProfessionalRecorder(ChatRoom) {
 }
 
 module.exports = {
+  DETERMINISTIC_RECORDER_MODE,
   installDeterministicProfessionalRecorder,
   isDeterministicProfessionalRecorderContext,
+  usesDeterministicProfessionalRecorder,
   deterministicRecorderResult,
 };
