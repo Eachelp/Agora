@@ -186,6 +186,55 @@ function resolveWorkspace(workspaceRoot) {
   }
 }
 
+function sanitizeToolSummary(value) {
+  if (!value || typeof value !== "object") return null;
+  const repeatedTargets = Array.isArray(value.repeatedTargets)
+    ? value.repeatedTargets.slice(0, 10).map((entry) => ({
+        tool: String(entry?.tool || "tool").slice(0, 80),
+        target: entry?.target == null ? null : String(entry.target).slice(0, 512),
+        count: Number.isInteger(entry?.count) ? Math.max(0, entry.count) : 0,
+      }))
+    : [];
+  const byTool = Array.isArray(value.byTool)
+    ? value.byTool.slice(0, 20).map((entry) => ({
+        tool: String(entry?.tool || "tool").slice(0, 80),
+        count: Number.isInteger(entry?.count) ? Math.max(0, entry.count) : 0,
+      }))
+    : [];
+  return {
+    started: Number.isInteger(value.started) ? Math.max(0, value.started) : 0,
+    finished: Number.isInteger(value.finished) ? Math.max(0, value.finished) : 0,
+    failed: Number.isInteger(value.failed) ? Math.max(0, value.failed) : 0,
+    truncated: Number.isInteger(value.truncated) ? Math.max(0, value.truncated) : 0,
+    outputBytes: Number.isInteger(value.outputBytes) ? Math.max(0, value.outputBytes) : 0,
+    uniqueTargets: Number.isInteger(value.uniqueTargets) ? Math.max(0, value.uniqueTargets) : 0,
+    repeatedCalls: Number.isInteger(value.repeatedCalls) ? Math.max(0, value.repeatedCalls) : 0,
+    maxRepeatCount: Number.isInteger(value.maxRepeatCount) ? Math.max(0, value.maxRepeatCount) : 0,
+    repeatedTargets,
+    byTool,
+  };
+}
+
+function sanitizeExploration(value) {
+  if (!value || typeof value !== "object") return null;
+  const status = ["NORMAL", "WARNING", "LOOP_DETECTED"].includes(value.status)
+    ? value.status
+    : "NORMAL";
+  return {
+    status,
+    reason: value.reason == null ? null : String(value.reason).slice(0, 80),
+    reasons: Array.isArray(value.reasons)
+      ? value.reasons.slice(0, 8).map((reason) => String(reason).slice(0, 160))
+      : [],
+    maxRepeatCount: Number.isInteger(value.maxRepeatCount) ? Math.max(0, value.maxRepeatCount) : 0,
+    repeatedCalls: Number.isInteger(value.repeatedCalls) ? Math.max(0, value.repeatedCalls) : 0,
+    outputBytes: Number.isInteger(value.outputBytes) ? Math.max(0, value.outputBytes) : 0,
+    failed: Number.isInteger(value.failed) ? Math.max(0, value.failed) : 0,
+    finished: Number.isInteger(value.finished) ? Math.max(0, value.finished) : 0,
+    failureRate: Number.isFinite(value.failureRate) ? Math.max(0, Math.min(1, value.failureRate)) : 0,
+  };
+}
+
 class TaskManager {
   constructor(options = {}) {
     this.memoryRoot = options.memoryRoot || null;
@@ -377,6 +426,8 @@ class TaskManager {
         total,
         Number.isInteger(summary.included) ? Math.max(0, summary.included) : commands.length
       );
+      const toolSummary = sanitizeToolSummary(evidence.toolSummary);
+      const exploration = sanitizeExploration(evidence.exploration);
       writeJsonAtomic(path.join(runInfo.runDir, "evidence.json"), {
         schemaVersion: 2,
         round: evidence.round || 1,
@@ -396,6 +447,8 @@ class TaskManager {
           failed: Number.isInteger(summary.failed) ? Math.max(0, summary.failed) : 0,
           truncated: Number.isInteger(summary.truncated) ? Math.max(0, summary.truncated) : 0,
         },
+        ...(toolSummary ? { toolSummary } : {}),
+        ...(exploration ? { exploration } : {}),
         persistedAt: this.now(),
       });
       return true;
@@ -511,4 +564,6 @@ module.exports = {
   hashText,
   validateTaskContractContent,
   readTaskContractFile,
+  sanitizeToolSummary,
+  sanitizeExploration,
 };
