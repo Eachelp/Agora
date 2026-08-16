@@ -1610,7 +1610,7 @@ function openHandoffPopover(anchor, messageId, sourceAuthor) {
     intentReview.textContent = "검토 요청";
     const intentSimplify = document.createElement("option");
     intentSimplify.value = "SIMPLIFY";
-    intentSimplify.textContent = "💡 비개발자용으로 쉽게 풀어보기";
+    intentSimplify.textContent = "쉽게 설명";
     intentSelect.append(intentContinue, intentReview, intentSimplify);
     root.append(makeField("전달 목적", intentSelect));
 
