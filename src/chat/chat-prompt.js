@@ -1,3 +1,5 @@
+const { buildConversationWindow } = require("./chat-summary-window");
+
 const DEFAULT_MAX_MESSAGES = 40;
 const MAX_SPECIALIST_PROMPT_CHARS = 24 * 1024;
 const MAX_MESSAGE_CHARS = 4 * 1024;
@@ -77,12 +79,24 @@ function buildAgentPrompt({
   const sourceMessages = isPlanReviewer
     ? messages.filter((message) => message?.authorType === "user")
     : messages;
+  const useGeneralSummaryWindow = !isSpecialist && !isDiscussionSummary && !isSimplify && !discussion;
+  const conversationWindow = useGeneralSummaryWindow
+    ? buildConversationWindow(sourceMessages, { maxMessages })
+    : null;
   const recent = isBuilder || isCleanReviewer || isProfessionalRecorder || isSimplify
     ? []
     : isDiscussionSummary
       ? sourceMessages
-      : sourceMessages.slice(-maxMessages);
-  const omitted = isDiscussionSummary || isSimplify ? 0 : sourceMessages.length - recent.length;
+      : conversationWindow?.compacted
+        ? conversationWindow.recent
+        : sourceMessages.slice(-maxMessages);
+  const omitted = isDiscussionSummary || isSimplify
+    ? 0
+    : conversationWindow?.compacted
+      ? conversationWindow.omitted
+      : sourceMessages.length - recent.length;
+  const pinned = conversationWindow?.compacted ? conversationWindow.pinned : [];
+  const compressedHistory = conversationWindow?.compacted ? conversationWindow.summary : [];
 
   const lines = [];
   if (isBuilder) {
@@ -357,14 +371,32 @@ function buildAgentPrompt({
     lines.push("");
     lines.push("=== 대화 ===");
     if (omitted > 0) lines.push(`(이전 메시지 ${omitted}개 생략)`);
+    if (conversationWindow?.compacted) {
+      if (pinned.length > 0) {
+        lines.push("=== 대화 고정 배경 ===");
+        for (const message of pinned) {
+          lines.push(`[${speakerLabel(message, agentsById)}] ${String(message.text || "")}${attachmentSuffix(message)}`);
+        }
+        lines.push("=== 대화 고정 배경 끝 ===");
+      }
+      if (compressedHistory.length > 0) {
+        lines.push("=== 이전 대화 압축 기록 ===");
+        for (const message of compressedHistory) {
+          lines.push(`- ${speakerLabel(message, agentsById)}: ${String(message.text || "")}${attachmentSuffix(message)}`);
+        }
+        lines.push("=== 이전 대화 압축 기록 끝 ===");
+      }
+      lines.push("=== 최근 대화 ===");
+    }
     for (const message of recent) {
-      // Professional payload만 개별 메시지 예산을 적용한다. 일반 채팅·토론은
-      // 기존과 동일하게 원문 transcript를 provider에 전달한다.
+      // Professional payload만 개별 메시지 예산을 적용한다. 일반 채팅의 긴
+      // 과거는 위 Summary Window에서 줄이고, 최근 원문은 그대로 전달한다.
       const bounded = isSpecialist
         ? boundedText(message.text, MAX_MESSAGE_CHARS, "메시지")
         : { text: String(message.text || "") };
       lines.push(`[${speakerLabel(message, agentsById)}] ${bounded.text}${attachmentSuffix(message)}`);
     }
+    if (conversationWindow?.compacted) lines.push("=== 최근 대화 끝 ===");
     lines.push("=== 대화 끝 ===");
   }
   for (const line of extraLines) lines.push(line);
