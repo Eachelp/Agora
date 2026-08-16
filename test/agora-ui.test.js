@@ -90,7 +90,7 @@ test("사이드바 2열부터 메인 대화까지 얇은 색 테두리의 둥근
   assert.match(css, /\.workspace-shell \{[^}]*margin: 4px 4px 4px 0/);
   assert.match(css, /\.workspace-shell \{[^}]*border: 1px solid color-mix/);
   assert.match(css, /\.workspace-shell \{[^}]*border-left: 0/);
-  assert.match(css, /\.workspace-shell \{[^}]*border-radius: 14px/);
+  assert.match(css, /\.workspace-shell \{[^}]*border-radius: 10px/);
   assert.match(css, /\.app \{\s*background: var\(--accent\)/);
   assert.match(css, /\.chat-main \{[^}]*margin: 0/);
   assert.match(css, /\.app-rail \{[^}]*border-right: 0/);
