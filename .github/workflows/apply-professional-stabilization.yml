@@ -31,6 +31,8 @@ jobs:
           s = s.replace('```', r'\x60{3}')
           s = s.replace('  function roomMeta(meta) {\n    const project = projectForSession(meta);\n    return {\n      permissionMode: meta?.permissionMode || "chat",\n      workspace: meta?.workspace || null,', 'function roomMeta(meta) {\n  const project = projectForSession(meta);\n  const memory = ensureMemoryStore();\n  return {\n    permissionMode: meta?.permissionMode || "chat",\n    workspace: meta?.workspace || null,')
           s = s.replace('  function roomMeta(meta) {\n    const project = projectForSession(meta);\n    return {\n      permissionMode: meta?.permissionMode || "chat",\n      workspace: project?.workspace || null,', 'function roomMeta(meta) {\n  const project = projectForSession(meta);\n  const memory = ensureMemoryStore();\n  return {\n    permissionMode: meta?.permissionMode || "chat",\n    workspace: project?.workspace || null,')
+          s = s.replace('      if (workflow && sessionProject && session.meta.workspace && !workflow.readOnly) {\n        workflow.reconcileProjectTasks(sessionProject.id, session.meta.workspace);', '    if (workflow && sessionProject && session.meta.workspace && !workflow.readOnly) {\n      try {\n        workflow.reconcileProjectTasks(sessionProject.id, session.meta.workspace);')
+          s = s.replace('      if (workflow && sessionProject?.workspace && !workflow.readOnly) {\n        workflow.reconcileProjectTasks(sessionProject.id, sessionProject.workspace);', '    if (workflow && sessionProject?.workspace && !workflow.readOnly) {\n      try {\n        workflow.reconcileProjectTasks(sessionProject.id, sessionProject.workspace);')
           p.write_text(s, encoding='utf-8')
           PY
       - name: Apply guarded transform
