@@ -44,6 +44,18 @@ const SILENCE_CHECK_INTERVAL_MS = 30 * 1000;
 // HarnessAdapter가 도입되기 전까지 runner가 전문 실행 strict-final 여부를 구분하는 데만 씁니다.
 const PROFESSIONAL_PROMPT_MARKER = "=== 전문 모드:";
 
+// fallback 마커 감지는 Agora가 프롬프트 헤더에 넣은 전문 블록만 인정합니다.
+// 일반 채팅에서 사용자가 같은 문자열을 입력하면 그 텍스트는 `=== 대화 ===` 뒤에
+// 놓이므로 strict-final을 켜지 않습니다. 명시적인 requireFinal 값이 있으면 이
+// 추론보다 항상 우선합니다.
+function inferRequireFinalFromPrompt(prompt) {
+  const text = String(prompt || "");
+  const markerIndex = text.indexOf(PROFESSIONAL_PROMPT_MARKER);
+  if (markerIndex < 0) return false;
+  const dialogueIndex = text.indexOf("=== 대화 ===");
+  return dialogueIndex < 0 || markerIndex < dialogueIndex;
+}
+
 // tail buffer가 유지하는 머리 부분 비율. 초반 지시/헤더와 최신 출력이 모두
 // 진단에 필요하므로 양쪽을 남기고 중간만 버립니다.
 const CAPTURE_HEAD_RATIO = 0.25;
@@ -184,7 +196,7 @@ function runAgentProcess({
   requireFinal = null,
 }) {
   const strictFinal = requireFinal == null
-    ? String(prompt || "").includes(PROFESSIONAL_PROMPT_MARKER)
+    ? inferRequireFinalFromPrompt(prompt)
     : Boolean(requireFinal);
   let child = null;
   let settled = false;
@@ -568,6 +580,7 @@ module.exports = {
   quoteArgForShell,
   compactArgvPrompt,
   createTailBuffer,
+  inferRequireFinalFromPrompt,
   DEFAULT_TIMEOUT_MS,
   DEFAULT_CAPTURE_OUTPUT_BYTES,
   DEFAULT_HARD_OUTPUT_LIMIT_BYTES,
