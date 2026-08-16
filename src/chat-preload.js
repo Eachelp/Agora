@@ -47,6 +47,7 @@ const INVOKE = Object.freeze({
   TASK_OPEN_FILE: "chat:task:open-file",
   TASK_READ_FILE: "chat:task:read-file",
   MESSAGE_HANDOFF: "chat:message:handoff",
+  MESSAGE_SIMPLIFY: "chat:message:simplify",
   APPROVAL_RESPOND: "chat:approval:respond",
   WORKSPACE_CHOOSE: "chat:workspace:choose",
   WORKSPACE_CLEAR: "chat:workspace:clear",
@@ -140,6 +141,8 @@ contextBridge.exposeInMainWorld("chatApi", {
     ipcRenderer.invoke(INVOKE.TASK_READ_FILE, { sessionId, taskPath }),
   handoffMessage: (sessionId, targetAgentId, messageId, intent) =>
     ipcRenderer.invoke(INVOKE.MESSAGE_HANDOFF, { sessionId, targetAgentId, messageId, intent }),
+  simplifyMessage: (sessionId, targetAgentId, messageId) =>
+    ipcRenderer.invoke(INVOKE.MESSAGE_SIMPLIFY, { sessionId, targetAgentId, messageId }),
   approvalRespond: (sessionId, approvalId, decision) =>
     ipcRenderer.invoke(INVOKE.APPROVAL_RESPOND, { sessionId, approvalId, decision }),
 

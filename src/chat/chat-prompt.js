@@ -62,6 +62,7 @@ function buildAgentPrompt({
   broadcast = null,
   mentionsEnabled = !discussion,
   discussionSummary = null,
+  simplifyMeta = null,
   extraLines = [],
 }) {
   const isBuilder = specialist?.stage === "implementation";
@@ -70,17 +71,18 @@ function buildAgentPrompt({
   const isProfessionalRecorder = specialist?.stage === "recorder" && specialist?.professional === true;
   const isSpecialist = Boolean(specialist);
   const isDiscussionSummary = Boolean(discussionSummary);
+  const isSimplify = Boolean(simplifyMeta);
   const agentsById = new Map(agents.map((entry) => [entry.id, entry]));
   const others = agents.filter((entry) => entry.id !== agent.id);
   const sourceMessages = isPlanReviewer
     ? messages.filter((message) => message?.authorType === "user")
     : messages;
-  const recent = isBuilder || isCleanReviewer || isProfessionalRecorder
+  const recent = isBuilder || isCleanReviewer || isProfessionalRecorder || isSimplify
     ? []
     : isDiscussionSummary
       ? sourceMessages
       : sourceMessages.slice(-maxMessages);
-  const omitted = isDiscussionSummary ? 0 : sourceMessages.length - recent.length;
+  const omitted = isDiscussionSummary || isSimplify ? 0 : sourceMessages.length - recent.length;
 
   const lines = [];
   if (isBuilder) {
@@ -113,6 +115,15 @@ function buildAgentPrompt({
       lines.push("");
       lines.push("⚠ 주의: 이번 토론은 정해진 실행 예산 도달, 사용자 중단 또는 일부 참가자 오류로 인해 '미완성' 상태로 종료되었습니다. 요약 상단에 토론이 미완성으로 끝났음을 알리고, 합의가 불완전하거나 오류로 누락된 지점을 분명히 밝히세요.");
     }
+  } else if (isSimplify) {
+    lines.push(`당신은 복잡한 기술적 내용을 비개발자도 이해하기 쉽게 풀어주는 통역가("@${agent.id}")입니다.`);
+    lines.push("");
+    lines.push("작성 규칙:");
+    lines.push("- 전문 개발 용어나 내부 아키텍처, 단순 로그 설명을 걷어내세요.");
+    lines.push("- 비개발자 시점에서 명확하고 깔끔한 업무 언어로 핵심(원인, 결과, 결정할 사항)만 재작성하세요.");
+    lines.push("- 과도한 비유나 어린아이 대하듯 하는 어투는 피하고, 보고서처럼 담백하게 정리하세요.");
+    lines.push("- 다른 참가자를 @멘션으로 호출하지 마세요.");
+    lines.push("- 인사말이나 서론 없이, 결과만 바로 출력하세요.");
   } else {
     lines.push(
       `당신은 여러 AI 코딩 에이전트가 사용자와 함께 있는 그룹 채팅의 참가자 "@${agent.id}"(${agent.name})입니다.`
@@ -148,21 +159,21 @@ function buildAgentPrompt({
     lines.push("=== 프로젝트 현재 규칙 끝 ===");
     lines.push("- 이 규칙은 반드시 지키세요.");
   }
-  const context = isBuilder || isCleanReviewer || isProfessionalRecorder ? "" : String(projectContext || "").trim();
+  const context = isBuilder || isCleanReviewer || isProfessionalRecorder || isSimplify ? "" : String(projectContext || "").trim();
   if (context) {
     lines.push("");
     lines.push("=== 프로젝트 공통 맥락 ===");
     lines.push(context);
     lines.push("=== 프로젝트 공통 맥락 끝 ===");
   }
-  const workflow = isBuilder || isCleanReviewer || isProfessionalRecorder ? "" : String(workflowContext || "").trim();
+  const workflow = isBuilder || isCleanReviewer || isProfessionalRecorder || isSimplify ? "" : String(workflowContext || "").trim();
   if (workflow) {
     lines.push("");
     lines.push("=== 확정된 결정과 진행 중 작업 ===");
     lines.push(workflow);
     lines.push("=== 확정된 결정과 진행 중 작업 끝 ===");
   }
-  const memoryFull = isBuilder || isCleanReviewer || isPlanReviewer || isProfessionalRecorder ? "" : String(memoryContext || "").trim();
+  const memoryFull = isBuilder || isCleanReviewer || isPlanReviewer || isProfessionalRecorder || isSimplify ? "" : String(memoryContext || "").trim();
   if (memoryFull) {
     const usedSoFar = rules.length + context.length + workflow.length;
     const budget = Math.max(0, MAX_CONTEXT_CHARS - usedSoFar);
@@ -334,7 +345,15 @@ function buildAgentPrompt({
       lines.push("- 전달받은 메시지를 출발점으로 후속 작업을 이어가세요.");
     }
   }
-  if (!isBuilder && !isCleanReviewer && !isProfessionalRecorder) {
+  if (simplifyMeta && !isBuilder) {
+    lines.push("");
+    lines.push("=== 풀어볼 원문 메시지 ===");
+    lines.push(`작성자: ${simplifyMeta.fromAgentId}`);
+    lines.push(simplifyMeta.text);
+    lines.push("=== 원문 메시지 끝 ===");
+    lines.push("- 위 메시지를 작성 규칙에 맞게 쉬운 말로 다시 작성해 주세요.");
+  }
+  if (!isBuilder && !isCleanReviewer && !isProfessionalRecorder && !isSimplify) {
     lines.push("");
     lines.push("=== 대화 ===");
     if (omitted > 0) lines.push(`(이전 메시지 ${omitted}개 생략)`);
@@ -354,6 +373,8 @@ function buildAgentPrompt({
     lines.push("현재 단계의 구현 결과와 선언을 반환하세요.");
   } else if (isDiscussionSummary) {
     lines.push("위 지침과 고정 섹션 형식에 맞추어 토론 결론 요약을 작성하세요.");
+  } else if (isSimplify) {
+    lines.push("위 메시지를 비개발자가 이해하기 쉬운 말로 번역해 반환하세요.");
   } else {
     lines.push(`지금 "@${agent.id}"로서 답할 차례입니다.`);
   }
