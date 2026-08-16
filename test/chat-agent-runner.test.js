@@ -75,7 +75,7 @@ test("parseLine이 delta/status/final 이벤트를 발생시키고 final을 답�
   const result = await run.promise;
   assert.equal(result.ok, true);
   assert.equal(result.text, "파서 최종");
-  assert.deepEqual(events.map((event) => event.kind), ["status", "delta", "final"]);
+  assert.deepEqual(events.map((event) => event.kind), ["status", "delta", "final", "run-metrics"]);
 });
 
 test("여러 구조화 오류가 오면 마지막 종료 원인을 반환한다", async () => {
@@ -210,7 +210,7 @@ test("짧은 정상 스트리밍은 복구 로직 없이 그대로 동작한다"
   assert.equal(result.ok, true);
   assert.equal(result.text, "정상 최종");
   // 같은 이벤트가 중복 발생하지 않아야 합니다.
-  assert.deepEqual(events, ["delta", "delta", "final"]);
+  assert.deepEqual(events, ["delta", "delta", "final", "run-metrics"]);
 });
 
 test("hard limit으로 끊겨도 화면에 보였던 중간 출력을 partialText로 보존한다", async () => {
