@@ -61,6 +61,7 @@ function buildAgentPrompt({
   handoff = null,
   broadcast = null,
   mentionsEnabled = !discussion,
+  discussionSummary = null,
   extraLines = [],
 }) {
   const isBuilder = specialist?.stage === "implementation";
@@ -68,13 +69,18 @@ function buildAgentPrompt({
   const isPlanReviewer = specialist?.stage === "plan_review";
   const isProfessionalRecorder = specialist?.stage === "recorder" && specialist?.professional === true;
   const isSpecialist = Boolean(specialist);
+  const isDiscussionSummary = Boolean(discussionSummary);
   const agentsById = new Map(agents.map((entry) => [entry.id, entry]));
   const others = agents.filter((entry) => entry.id !== agent.id);
   const sourceMessages = isPlanReviewer
     ? messages.filter((message) => message?.authorType === "user")
     : messages;
-  const recent = isBuilder || isCleanReviewer || isProfessionalRecorder ? [] : sourceMessages.slice(-maxMessages);
-  const omitted = sourceMessages.length - recent.length;
+  const recent = isBuilder || isCleanReviewer || isProfessionalRecorder
+    ? []
+    : isDiscussionSummary
+      ? sourceMessages
+      : sourceMessages.slice(-maxMessages);
+  const omitted = isDiscussionSummary ? 0 : sourceMessages.length - recent.length;
 
   const lines = [];
   if (isBuilder) {
@@ -89,6 +95,24 @@ function buildAgentPrompt({
   } else if (isProfessionalRecorder) {
     lines.push("당신은 Agora 전문 실행의 Recorder입니다.");
     lines.push("대화 transcript나 다른 에이전트의 자유 설명은 보지 않습니다. Frozen Task, 최종 변경 요약, 검수 판정과 실행 근거만 기록하세요.");
+  } else if (isDiscussionSummary) {
+    lines.push(`당신은 Agora의 토론 결론 종합자 "@${agent.id}"(${agent.name})입니다.`);
+    lines.push("앞서 진행된 논의(사용자 질문, 사전 발언, 토론 전체)를 객관적으로 분석해 핵심 결론을 명확하고 구조화된 요약 카드로 정리하세요.");
+    lines.push("");
+    lines.push("작성 규칙:");
+    lines.push("- 새로운 파일 수정이나 도구 명령을 제안하지 말고, 오직 제시된 대화 내용에만 근거해 정리하세요.");
+    lines.push("- 다른 참가자를 @멘션으로 호출하지 마세요.");
+    lines.push("- 대화에서 쓰인 언어로 답하세요.");
+    lines.push("- 아래의 고정 섹션 구조를 정확히 지켜 Markdown으로 작성하세요:");
+    lines.push("  ## 논의 주제");
+    lines.push("  ## 공통 합의점");
+    lines.push("  ## 주요 쟁점과 입장");
+    lines.push("  ## 권장 결론");
+    lines.push("  ## 사용자 결정 사항 / 다음 행동");
+    if (discussionSummary?.incomplete || (discussionSummary?.failures && discussionSummary.failures > 0)) {
+      lines.push("");
+      lines.push("⚠ 주의: 이번 토론은 정해진 실행 예산 도달, 사용자 중단 또는 일부 참가자 오류로 인해 '미완성' 상태로 종료되었습니다. 요약 상단에 토론이 미완성으로 끝났음을 알리고, 합의가 불완전하거나 오류로 누락된 지점을 분명히 밝히세요.");
+    }
   } else {
     lines.push(
       `당신은 여러 AI 코딩 에이전트가 사용자와 함께 있는 그룹 채팅의 참가자 "@${agent.id}"(${agent.name})입니다.`
@@ -326,7 +350,13 @@ function buildAgentPrompt({
   }
   for (const line of extraLines) lines.push(line);
   lines.push("");
-  lines.push(isBuilder ? "현재 단계의 구현 결과와 선언을 반환하세요." : `지금 "@${agent.id}"로서 답할 차례입니다.`);
+  if (isBuilder) {
+    lines.push("현재 단계의 구현 결과와 선언을 반환하세요.");
+  } else if (isDiscussionSummary) {
+    lines.push("위 지침과 고정 섹션 형식에 맞추어 토론 결론 요약을 작성하세요.");
+  } else {
+    lines.push(`지금 "@${agent.id}"로서 답할 차례입니다.`);
+  }
   const prompt = lines.join("\n");
   if (isSpecialist && prompt.length > MAX_SPECIALIST_PROMPT_CHARS) {
     throw promptBudgetError(

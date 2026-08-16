@@ -410,3 +410,31 @@ test("Handoff(이어서 작업)은 전달 메시지를 후속 작업으로 주�
   assert.match(prompt, /후속 작업을 이어가/);
 });
 
+test("토론 종합 프롬프트는 고정 요약 섹션과 미완성 경고 지침을 포함한다", () => {
+  const prompt = buildAgentPrompt({
+    agent: AGENTS[0],
+    agents: AGENTS,
+    messages: [
+      message("user", "토론 주제 질문", "user"),
+      message("claude", "클로드 토론 발언"),
+      message("codex", "코덱스 토론 발언"),
+    ],
+    discussionSummary: {
+      discussionId: "disc-123",
+      incomplete: true,
+      participants: ["claude", "codex"],
+    },
+  });
+  assert.match(prompt, /Agora의 토론 결론 종합자/);
+  assert.match(prompt, /## 논의 주제/);
+  assert.match(prompt, /## 공통 합의점/);
+  assert.match(prompt, /## 주요 쟁점과 입장/);
+  assert.match(prompt, /## 권장 결론/);
+  assert.match(prompt, /## 사용자 결정 사항 \/ 다음 행동/);
+  assert.match(prompt, /미완성.*상태로 종료/);
+  assert.match(prompt, /토론 주제 질문/);
+  assert.match(prompt, /클로드 토론 발언/);
+  assert.doesNotMatch(prompt, /그룹 채팅의 참가자/);
+  assert.doesNotMatch(prompt, /다른 참가자를 호출하려면 @이름/);
+});
+

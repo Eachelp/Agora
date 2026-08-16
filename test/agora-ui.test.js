@@ -366,3 +366,13 @@ test("연속된 시스템 알림은 접히고 다시 펼칠 수 있다", () => {
   assert.match(renderer, /function mergeIntoPreviousSystem\(item\)/);
   assert.match(css, /\.message-list\.show-system-history \.message\.is-collapsed/);
 });
+
+test("토론 종료 알림은 결론 종합 버튼을 제공하고 토론 종합 배지 스타일이 정의되어 있다", () => {
+  const renderer = read("src/chat.js");
+  const css = read("src/chat.css");
+  assert.match(renderer, /openDiscussionSummaryPopover/);
+  assert.match(renderer, /discussion-summary-button/);
+  assert.match(renderer, /role-discussion-summary/);
+  assert.match(css, /\.role-badge\.role-discussion-summary/);
+  assert.match(css, /\.discussion-summary-button/);
+});

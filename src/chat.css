@@ -590,6 +590,12 @@ textarea:focus-visible {
   border: 1px solid rgba(245, 158, 11, 0.25);
 }
 
+.role-badge.role-discussion-summary {
+  background: rgba(14, 165, 233, 0.12);
+  color: #0284c7;
+  border: 1px solid rgba(14, 165, 233, 0.25);
+}
+
 .meta-pill {
   display: inline-flex;
   align-items: center;
@@ -728,6 +734,40 @@ textarea:focus-visible {
 .system-toggle-button:hover {
   border-color: var(--accent);
   color: var(--ink);
+}
+
+.discussion-summary-actions {
+  margin-top: 6px;
+  display: flex;
+  justify-content: center;
+}
+
+.discussion-summary-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--ink-soft);
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  transition: border-color 0.15s, color 0.15s, background-color 0.15s, box-shadow 0.15s;
+}
+
+.discussion-summary-button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+}
+
+.discussion-summary-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* 파일 경로 칩: 이동하지 않고, 읽을 수 있는 이름만 보여 주고 클릭하면 경로를 복사합니다. */

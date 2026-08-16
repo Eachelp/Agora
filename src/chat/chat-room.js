@@ -888,11 +888,16 @@ class ChatRoom extends EventEmitter {
   // 턴을 공유해, 한 릴레이에서 같은 발언권이 중복 예약되지 않게 합니다.
   scheduleResponse(agent, context = {}) {
     const generation = this.generation;
-    const dedupeKey = context.discussion || !context.turnRootId
-      ? null
-      : `${context.turnRootId}:${agent.id}`;
-    if (dedupeKey && this.pendingTurns.has(dedupeKey)) {
-      return this.pendingTurns.get(dedupeKey).promise;
+    const dedupeKey = context.discussionSummary
+      ? `summary:${context.discussionSummary.discussionId}`
+      : (context.discussion || !context.turnRootId ? null : `${context.turnRootId}:${agent.id}`);
+    if (dedupeKey) {
+      if (this.pendingTurns.has(dedupeKey)) {
+        return this.pendingTurns.get(dedupeKey).promise;
+      }
+      if (this.currentTurn && this.currentTurn.dedupeKey === dedupeKey) {
+        return this.currentTurn.promise;
+      }
     }
 
     let resolveTurn;
@@ -1087,11 +1092,16 @@ class ChatRoom extends EventEmitter {
       ...(context.specialist?.frozenTask?.taskHash
         ? { taskHash: context.specialist.frozenTask.taskHash }
         : {}),
+      ...(context.discussionSummary
+        ? { discussionSummary: context.discussionSummary }
+        : {}),
     };
 
     const specialistStage = context.specialist?.stage || null;
     let permissionMode;
-    if (specialistStage) {
+    if (context.discussionSummary) {
+      permissionMode = "chat";
+    } else if (specialistStage) {
       const auth = this.activeRunAuthorization || "workspace-write";
       permissionMode = specialistPermissionMode(specialistStage, auth);
     } else {
@@ -1110,7 +1120,9 @@ class ChatRoom extends EventEmitter {
       prompt = buildAgentPrompt({
         agent,
         agents: this.enabledAgents(),
-        messages: builderStage ? [] : this.promptMessages(context.promptLimit, context.independent),
+        messages: builderStage
+          ? []
+          : context.discussionSummaryMessages || this.promptMessages(context.promptLimit, context.independent),
         maxMessages: this.maxPromptMessages,
         permissionMode,
         projectContext: this.meta.projectContext,
@@ -1118,12 +1130,13 @@ class ChatRoom extends EventEmitter {
         rulesContext: this.meta.rulesContext,
         workflowContext: this.meta.workflowContext,
         discussion: context.discussion || null,
+        discussionSummary: context.discussionSummary || null,
         specialist: context.specialist || null,
         broadcast: context.broadcast || null,
         handoff: context.handoff || null,
         // 전문 모드 실행 중에는 @멘션 호출을 끕니다. 구현·검토·기록이
         // 담당자 밖으로 새어 나가는 것을 막기 위해서입니다.
-        mentionsEnabled: !context.discussion && !context.specialist && mentionDepth < this.mentionChainLimit,
+        mentionsEnabled: !context.discussion && !context.specialist && !context.discussionSummary && mentionDepth < this.mentionChainLimit,
       });
     } catch (error) {
       const stopReason = error?.code || "PROMPT_BUILD_FAILED";
@@ -1282,11 +1295,12 @@ class ChatRoom extends EventEmitter {
       // 실제 실행 시 적용된 역할별 모델을 저장합니다. 일반 채팅의 기본 모델과
       // 달라도 최종·오류 헤더가 실행값을 그대로 표시할 수 있습니다.
       agentMeta: responseAgentMeta,
+      ...(context.discussionSummary ? { discussionSummary: context.discussionSummary } : {}),
       ...(context.turnRootId ? { turnRootId: context.turnRootId } : {}),
       ...(result.deliveries ? { deliveries: result.deliveries } : {}),
     });
     // 토론 모드는 자체 턴 오케스트레이션이 있으므로 멘션 호출을 만들지 않습니다.
-    if (!context.discussion && !context.specialist) {
+    if (!context.discussion && !context.specialist && !context.discussionSummary) {
       this.scheduleMentionReplies(
         agent,
         text,
@@ -1346,6 +1360,49 @@ class ChatRoom extends EventEmitter {
     this.appendSystem(`@${target.id}에게 ${source.author}의 메시지를 전달합니다.`);
     this.scheduleResponse(target, { handoff });
     return { ok: true };
+  }
+
+  // 토론 결론 종합: 최근 사용자 질문부터 토론 종료까지의 발언을 대상 에이전트가 요약합니다.
+  summarizeDiscussion(discussionId, agentId) {
+    if (this.discussionRequested || this.discussionActive || this.isSpecialistLocked()) {
+      return Promise.resolve({ ok: false, error: "토론이나 전문 실행이 진행 중에는 요약할 수 없습니다." });
+    }
+    const agent = this.findAgent(agentId);
+    if (!agent || !agent.available || agent.enabled === false) {
+      return Promise.resolve({ ok: false, error: "요약할 에이전트를 사용할 수 없습니다." });
+    }
+
+    const conclusionMsg = this.messages.find(
+      (m) => m.discussionMeta && m.discussionMeta.discussionId === discussionId
+    );
+    if (!conclusionMsg || !conclusionMsg.discussionMeta) {
+      return Promise.resolve({ ok: false, error: "해당 토론 기록을 찾을 수 없습니다." });
+    }
+
+    const { startMessageId, endMessageId, incomplete, participants, reason, failures } = conclusionMsg.discussionMeta;
+    let startIndex = startMessageId ? this.messages.findIndex((m) => m.id === startMessageId) : 0;
+    if (startIndex === -1) startIndex = 0;
+    let endIndex = endMessageId ? this.messages.findIndex((m) => m.id === endMessageId) : this.messages.length - 1;
+    if (endIndex === -1) endIndex = this.messages.length - 1;
+
+    const rawSlice = this.messages.slice(startIndex, endIndex + 1);
+    const discussionMessages = rawSlice.filter(
+      (m) => m.authorType !== "system" && !m.error
+    );
+    if (discussionMessages.length === 0) {
+      return Promise.resolve({ ok: false, error: "요약할 토론 메시지가 없습니다." });
+    }
+
+    return this.scheduleResponse(agent, {
+      discussionSummary: {
+        discussionId,
+        incomplete,
+        participants,
+        reason,
+        failures: failures || 0,
+      },
+      discussionSummaryMessages: discussionMessages,
+    });
   }
 
   // 기획·검수 블록: Planner → Reviewer(기획 검수)까지 실행합니다.
@@ -3823,6 +3880,19 @@ class ChatRoom extends EventEmitter {
     }
     this.discussionActive = true;
 
+    // 이번 토론을 촉발한 직전 사용자 질문을 시작 메시지로 특정합니다.
+    let startMessageId = null;
+    for (let i = this.messages.length - 1; i >= 0; i -= 1) {
+      if (this.messages[i].authorType === "user") {
+        startMessageId = this.messages[i].id;
+        break;
+      }
+    }
+    if (!startMessageId && this.messages.length > 0) {
+      startMessageId = this.messages[0].id;
+    }
+    const discussionId = `disc-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
     const budget = this.discussionRunBudget;
     this.appendSystem(
       `자율 토론 시작 · ${pool.map((agent) => `@${agent.id}`).join(", ")} · 최대 ${budget}턴`
@@ -3832,32 +3902,60 @@ class ChatRoom extends EventEmitter {
     let completed = 0;
     let settled = 0;
     let concluded = false;
+    let failures = 0;
+    let wasStopped = false;
     try {
       for (let turn = 1; turn <= budget; turn += 1) {
-        if (generation !== this.generation) break;
-        if (this.discussionInterrupted) { concluded = true; break; }
+        if (generation !== this.generation) { wasStopped = true; break; }
+        if (this.discussionInterrupted) { concluded = true; wasStopped = true; break; }
         const agent = pool[(turn - 1) % pool.length];
         const outcome = await this.scheduleResponse(agent, {
           discussion: { turn, maxTurns: budget },
         });
         completed += 1;
+        if (!outcome?.ok) failures += 1;
         const signal = outcome?.discussionSignal || "CONTINUE";
         if (signal === "CONCLUDE") { concluded = true; break; }
         if (signal === "AGREE" || signal === "PASS") settled += 1;
         else settled = 0;
         if (settled >= pool.length) { concluded = true; break; }
       }
-
-      if (generation === this.generation) {
-        if (this.discussionInterrupted) {
-          this.appendSystem("사용자 개입으로 토론을 여기서 마쳤습니다.");
-        } else if (!concluded && completed >= budget) {
-          this.appendSystem(`토론 실행 예산(${budget}회)에 도달해 여기서 마쳤습니다.`);
-        } else {
-          this.appendSystem("참가자들이 합의하거나 결론에 도달해 토론을 마쳤습니다.");
-        }
-      }
     } finally {
+      if (generation !== this.generation) wasStopped = true;
+      const endMessageId = this.messages[this.messages.length - 1]?.id || startMessageId;
+      const incomplete = Boolean(wasStopped || (!concluded && completed >= budget) || failures > 0);
+      const reason = wasStopped
+        ? "interrupted"
+        : failures > 0 && !concluded
+          ? "failed"
+          : (!concluded && completed >= budget)
+            ? "budget"
+            : "concluded";
+      const conclusionText = wasStopped
+        ? (this.discussionInterrupted ? "사용자 개입으로 토론을 여기서 마쳤습니다." : "사용자가 중지해 토론을 여기서 마쳤습니다.")
+        : (!concluded && completed >= budget)
+          ? `토론 실행 예산(${budget}회)에 도달해 여기서 마쳤습니다.`
+          : failures > 0 && !concluded
+            ? "일부 에이전트 응답 실패로 토론을 마쳤습니다."
+            : "참가자들이 합의하거나 결론에 도달해 토론을 마쳤습니다.";
+
+      this.appendMessage({
+        authorType: "system",
+        author: "system",
+        text: conclusionText,
+        discussionMeta: {
+          discussionId,
+          startMessageId,
+          endMessageId,
+          concluded,
+          completed,
+          budget,
+          incomplete,
+          reason,
+          failures,
+          participants: pool.map((agent) => agent.id),
+        },
+      });
       this.discussionActive = false;
       this.discussionRequested = false;
       this.discussionInterrupted = false;

@@ -1610,6 +1610,17 @@ function roomMeta(meta) {
     );
 
     ipcMain.handle(
+      "chat:discussion:summarize",
+      wrap(async ({ sessionId, discussionId, agentId }) => {
+        requireSession(sessionId);
+        const room = getRoom(sessionId);
+        const result = await room.summarizeDiscussion(discussionId, agentId);
+        if (result && result.ok === false) throw new Error(result.error);
+        return result || {};
+      })
+    );
+
+    ipcMain.handle(
       "chat:specialist:start",
       wrap(async ({
         sessionId,

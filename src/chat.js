@@ -1634,6 +1634,66 @@ function openHandoffPopover(anchor, messageId, sourceAuthor) {
   });
 }
 
+// 토론 결론 종합 팝오버: 사용자가 요약할 에이전트를 선택합니다.
+function openDiscussionSummaryPopover(anchor, discussionMeta) {
+  const availableAgents = agents.filter((agent) => agent.available && agent.enabled !== false);
+  if (availableAgents.length === 0) {
+    flashNotice("사용 가능한 에이전트가 없습니다.");
+    return;
+  }
+  openPopover(anchor, (root) => {
+    const head = document.createElement("div");
+    head.className = "popover-head";
+    const title = document.createElement("strong");
+    title.textContent = "토론 결론 종합";
+    head.append(title);
+    root.append(head);
+
+    const p = document.createElement("p");
+    p.className = "popover-status";
+    p.textContent = discussionMeta.incomplete
+      ? "토론이 미완성 상태로 종료되었습니다. 요약할 모델을 선택하세요."
+      : "토론 내용을 분석하고 결론을 정리할 모델을 선택하세요.";
+    root.append(p);
+
+    const select = document.createElement("select");
+    for (const agent of availableAgents) {
+      const opt = document.createElement("option");
+      opt.value = agent.id;
+      opt.textContent = `${agent.name} (@${agent.id})`;
+      select.append(opt);
+    }
+    root.append(makeField("요약자 선택", select));
+
+    const actions = document.createElement("div");
+    actions.className = "popover-actions";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "취소";
+    cancel.addEventListener("click", closePopover);
+
+    const confirm = document.createElement("button");
+    confirm.type = "button";
+    confirm.className = "button-primary";
+    confirm.textContent = "요약 시작";
+    confirm.addEventListener("click", async () => {
+      const agentId = select.value;
+      closePopover();
+      anchor.disabled = true;
+      const originalLabel = anchor.textContent;
+      anchor.textContent = "요약 중...";
+      try {
+        await call(window.chatApi.discussionSummarize(sessionMeta?.id, discussionMeta.discussionId, agentId));
+      } finally {
+        anchor.disabled = false;
+        anchor.textContent = originalLabel;
+      }
+    });
+    actions.append(cancel, confirm);
+    root.append(actions);
+  });
+}
+
 function openAgentPopover(anchor, agentId) {
   const agent = agentById(agentId);
   const provider = providerById(agentId);
@@ -3171,10 +3231,29 @@ function renderMessage(message) {
     item.classList.add("is-system");
     if (message.error) item.classList.add("is-error");
     // 바로 앞 알림과 같은지 비교하는 열쇠입니다. 오류 여부가 다르면 다른 알림으로 봅니다.
-    item.dataset.systemKey = `${message.error ? "!" : ""}${message.text}`;
+    const discId = message.discussionMeta?.discussionId;
+    item.dataset.systemKey = discId ? `disc-${discId}` : `${message.error ? "!" : ""}${message.text}`;
     const bubble = document.createElement("div");
     bubble.className = "bubble";
-    bubble.textContent = message.text;
+    const textSpan = document.createElement("span");
+    textSpan.textContent = message.text;
+    bubble.append(textSpan);
+
+    if (message.discussionMeta && message.discussionMeta.discussionId) {
+      const actions = document.createElement("div");
+      actions.className = "discussion-summary-actions";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "discussion-summary-button";
+      btn.textContent = "📊 결론 종합하기";
+      btn.title = "원하는 AI를 선택해 토론 결론을 요약 카드로 정리합니다";
+      btn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openDiscussionSummaryPopover(btn, message.discussionMeta);
+      });
+      actions.append(btn);
+      bubble.append(actions);
+    }
     item.append(bubble);
     return item;
   }
@@ -3240,6 +3319,15 @@ function renderMessage(message) {
       taskChip.textContent = `📋 ${taskId || "TASK"}${hashShort}`;
       taskChip.title = `불변 스냅샷 실행 계약: ${taskId || "TASK"}${hashShort}`;
       meta.append(taskChip);
+    }
+
+    // 5. 토론 결론 종합 배지
+    if (message.discussionSummary || agentMeta.discussionSummary) {
+      const summaryBadge = document.createElement("span");
+      summaryBadge.className = "role-badge role-discussion-summary";
+      summaryBadge.textContent = "📊 토론 종합";
+      summaryBadge.title = "이전 토론을 종합한 요약 카드입니다";
+      meta.append(summaryBadge);
     }
   }
 
@@ -3340,8 +3428,10 @@ function renderMessage(message) {
 // (전문 실행을 여러 번 취소하면 똑같은 문장이 화면을 채웁니다)
 function mergeIntoPreviousSystem(item) {
   if (!item.classList.contains("is-system")) return false;
+  if (item.querySelector(".discussion-summary-button")) return false;
   const last = messageList.lastElementChild;
   if (!last || !last.classList.contains("is-system")) return false;
+  if (last.querySelector(".discussion-summary-button")) return false;
   if (last.dataset.systemKey !== item.dataset.systemKey) return false;
 
   const count = Number(last.dataset.systemCount || "1") + 1;
@@ -3366,6 +3456,7 @@ function trailingSystemRun() {
   const run = [];
   let cursor = messageList.lastElementChild;
   while (cursor && cursor.classList.contains("is-system")) {
+    if (cursor.querySelector(".discussion-summary-button")) break;
     if (cursor !== systemToggle) run.unshift(cursor);
     cursor = cursor.previousElementSibling;
   }

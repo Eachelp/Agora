@@ -1100,6 +1100,190 @@ test("토론 중 예약된 일반 응답은 토론이 끝날 때까지 발언하
   ]);
 });
 
+
+test("토론 종료 시 discussionMeta가 남고 summarizeDiscussion으로 결론을 요약한다", async () => {
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({
+      claude: [
+        { ok: true, text: "첫 토론 의견\n[[CODEPET_DISCUSSION:CONTINUE]]" },
+        { ok: true, text: "## 논의 주제\n주제\n## 공통 합의점\n합의" },
+      ],
+      codex: [{ ok: true, text: "두 번째 의견 및 결론\n[[CODEPET_DISCUSSION:CONCLUDE]]" }],
+    }, calls),
+  });
+
+  room.appendMessage({ authorType: "user", author: "user", text: "이전 세션 질문" });
+  room.appendMessage({ authorType: "user", author: "user", text: "이번 토론 질문" });
+  const discResult = await room.startDiscussion();
+  await settle(room);
+  assert.equal(discResult.ok, true);
+
+  const endNotice = room.messages.find((m) => m.discussionMeta);
+  assert.ok(endNotice);
+  assert.ok(endNotice.discussionMeta.discussionId);
+  assert.equal(endNotice.discussionMeta.concluded, true);
+  assert.equal(endNotice.discussionMeta.incomplete, false);
+
+  // 토론 종료 후 추가 발언
+  room.appendMessage({ authorType: "agent", author: "codex", text: "토론 이후 발언" });
+
+  // Claude로 토론 결론 종합
+  const summaryResult = await room.summarizeDiscussion(endNotice.discussionMeta.discussionId, "claude");
+  await settle(room);
+  assert.equal(summaryResult.ok, true);
+
+  const summaryCall = calls.at(-1);
+  assert.equal(summaryCall.agentId, "claude");
+  // 이번 토론 질문과 토론 발언은 포함되고, 토론 이후 발언은 포함되지 않아야 함
+  assert.match(summaryCall.prompt, /이번 토론 질문/);
+  assert.match(summaryCall.prompt, /첫 토론 의견/);
+  assert.match(summaryCall.prompt, /두 번째 의견 및 결론/);
+  assert.doesNotMatch(summaryCall.prompt, /토론 이후 발언/);
+  assert.match(summaryCall.prompt, /Agora의 토론 결론 종합자/);
+
+  const summaryMessage = room.messages.at(-1);
+  assert.equal(summaryMessage.author, "claude");
+  assert.ok(summaryMessage.discussionSummary);
+  assert.equal(summaryMessage.discussionSummary.discussionId, endNotice.discussionMeta.discussionId);
+});
+
+test("존재하지 않는 토론 ID나 비활성 에이전트의 summarizeDiscussion 요청은 거부된다", async () => {
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({}),
+  });
+  const invalidDisc = await room.summarizeDiscussion("non-existent", "claude");
+  assert.equal(invalidDisc.ok, false);
+  assert.match(invalidDisc.error, /토론 기록을 찾을 수 없습니다/);
+
+  const invalidAgent = await room.summarizeDiscussion("any", "unknown-agent");
+  assert.equal(invalidAgent.ok, false);
+  assert.match(invalidAgent.error, /사용할 수 없습니다/);
+});
+
+test("사용자가 중지한 토론도 discussionMeta가 보존되어 요약할 수 있다", async () => {
+  const calls = [];
+  let releaseFirst;
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: ({ agent, prompt }) => {
+      calls.push({ agentId: agent.id, prompt });
+      if (calls.length === 1) {
+        return {
+          promise: new Promise((resolve) => { releaseFirst = resolve; }),
+          cancel: () => {},
+        };
+      }
+      return { promise: Promise.resolve({ ok: true, text: "요약 결과" }), cancel: () => {} };
+    },
+  });
+
+  room.appendMessage({ authorType: "user", author: "user", text: "토론 질문" });
+  const discPromise = room.startDiscussion();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  // 토론 진행 중 사용자 중지
+  room.stopAll();
+  releaseFirst({ ok: true, text: "첫 발언 진행 중 취소" });
+  await discPromise;
+  await settle(room);
+
+  const endNotice = room.messages.find((m) => m.discussionMeta);
+  assert.ok(endNotice);
+  assert.equal(endNotice.discussionMeta.incomplete, true);
+  assert.equal(endNotice.discussionMeta.reason, "interrupted");
+
+  // 중지된 토론도 요약 가능
+  const summaryResult = await room.summarizeDiscussion(endNotice.discussionMeta.discussionId, "claude");
+  await settle(room);
+  assert.equal(summaryResult.ok, true);
+  const lastCall = calls.at(-1);
+  assert.match(lastCall.prompt, /미완성.*상태로 종료/);
+});
+
+test("동일 토론에 대한 동시 summarizeDiscussion 호출은 중복 실행되지 않는다", async () => {
+  const calls = [];
+  let resolveSummary;
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({
+      claude: [{ ok: true, text: "토론 결론\n[[CODEPET_DISCUSSION:CONCLUDE]]" }],
+      codex: [{ ok: true, text: "동의\n[[CODEPET_DISCUSSION:AGREE]]" }],
+    }),
+  });
+
+  room.appendMessage({ authorType: "user", author: "user", text: "토론 질문" });
+  await room.startDiscussion();
+  await settle(room);
+
+  const endNotice = room.messages.find((m) => m.discussionMeta);
+  assert.ok(endNotice);
+
+  // 러너를 지연 러너로 변경
+  room.runAgent = ({ agent, prompt }) => {
+    calls.push({ agentId: agent.id, prompt });
+    return {
+      promise: new Promise((resolve) => { resolveSummary = resolve; }),
+      cancel: () => {},
+    };
+  };
+
+  // 2번 연속 호출
+  const p1 = room.summarizeDiscussion(endNotice.discussionMeta.discussionId, "claude");
+  const p2 = room.summarizeDiscussion(endNotice.discussionMeta.discussionId, "claude");
+  assert.equal(p1, p2); // 동일 promise 반환 (deduplication)
+
+  resolveSummary({ ok: true, text: "요약 완료" });
+  await p1;
+  await settle(room);
+  assert.equal(calls.length, 1); // 1번만 실행됨
+});
+
+test("토론 결론 종합 시 오류 메시지는 요약 대상에서 제외된다", async () => {
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({
+      claude: [{ ok: false, text: "오류 발생!", error: "연결 실패" }],
+    }, calls),
+  });
+
+  room.appendMessage({ authorType: "user", author: "user", text: "토론 질문" });
+  const discResult = await room.startDiscussion();
+  await settle(room);
+  
+  // 실패를 포함해 조기 종료됨을 확인
+  assert.equal(discResult.ok, true);
+  const endNotice = room.messages.find((m) => m.discussionMeta);
+  assert.ok(endNotice);
+  assert.equal(endNotice.discussionMeta.incomplete, true);
+  assert.equal(endNotice.discussionMeta.failures, 1);
+
+  // 러너 변경 (codex로 요약)
+  room.runAgent = ({ agent, prompt }) => {
+    calls.push({ agentId: agent.id, prompt });
+    return {
+      promise: Promise.resolve({ ok: true, text: "요약 완료" }),
+      cancel: () => {},
+    };
+  };
+
+  const summaryResult = await room.summarizeDiscussion(endNotice.discussionMeta.discussionId, "codex");
+  await settle(room);
+  assert.equal(summaryResult.ok, true);
+  
+  const lastCall = calls.at(-1);
+  assert.equal(lastCall.agentId, "codex");
+  // 질문은 포함됨
+  assert.match(lastCall.prompt, /토론 질문/);
+  // 실패 메시지 원문이나 "응답 실패 오류" 같은 문구가 없어야 함
+  assert.doesNotMatch(lastCall.prompt, /연결 실패/);
+  assert.doesNotMatch(lastCall.prompt, /오류 발생!/);
+  assert.doesNotMatch(lastCall.prompt, /응답 실패 오류/);
+});
+
 test("중지하면 진행 중인 턴뿐 아니라 전역 큐의 대기 턴도 폐기한다", async () => {
   const calls = [];
   let resolveActive;

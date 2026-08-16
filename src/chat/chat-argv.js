@@ -155,7 +155,7 @@ function codexArgv({ permissionMode, workspace, model, effort, outputFile, image
 function agyArgv({ permissionMode, workspace, model, effort, attachmentsDir, hasPathDeliveries, autoApprove }) {
   // agy 1.1.10의 --print는 다음 argv를 필수 프롬프트로 소비합니다. 실제
   // 프롬프트는 runner가 모든 옵션 뒤에 붙입니다.
-  const argv = ["--sandbox", "--disable-slash-commands", "--output-format", "stream-json"];
+  const argv = ["--sandbox", "--disable-slash-commands", "--output-format", "stream-json", "--print-timeout", "10h"];
   if (model) argv.push("--model", model);
   if (effort) argv.push("--effort", effort);
 
@@ -328,3 +328,4 @@ module.exports = {
   agyEffortForModel,
   attachmentKind,
 };
+
