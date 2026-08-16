@@ -35,6 +35,16 @@ function normalizedThresholds(overrides = {}) {
   return result;
 }
 
+function canonicalExplorationReason(reasons = []) {
+  const first = Array.isArray(reasons) ? reasons[0] || "" : "";
+  if (first.startsWith("same-target:")) return "repeated-target";
+  if (first.startsWith("repeated-calls:")) return "repeated-calls";
+  if (first.startsWith("tool-output-bytes:")) return "output-volume";
+  if (first.startsWith("failure-loop:")) return "failure-loop";
+  if (first.startsWith("failure-rate:")) return "failure-rate";
+  return null;
+}
+
 function detectExplorationLoop(snapshot, overrides = {}) {
   const thresholds = normalizedThresholds(overrides);
   const summary = snapshot?.toolSummary || {};
@@ -81,10 +91,12 @@ function detectExplorationLoop(snapshot, overrides = {}) {
     : warningReasons.length > 0
       ? "WARNING"
       : "NORMAL";
+  const reasons = status === "LOOP_DETECTED" ? loopReasons : warningReasons;
 
   return {
     status,
-    reasons: status === "LOOP_DETECTED" ? loopReasons : warningReasons,
+    reason: canonicalExplorationReason(reasons),
+    reasons,
     maxRepeatCount,
     repeatedCalls,
     outputBytes,
@@ -206,6 +218,7 @@ function createRunTelemetry(options = {}) {
 module.exports = {
   createRunTelemetry,
   detectExplorationLoop,
+  canonicalExplorationReason,
   DEFAULT_RECENT_TOOL_EVENTS,
   DEFAULT_REPEATED_TARGETS,
   DEFAULT_LOOP_THRESHOLDS,
