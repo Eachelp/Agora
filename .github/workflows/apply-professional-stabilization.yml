@@ -1,0 +1,56 @@
+name: Apply Professional Stabilization
+
+on:
+  push:
+    branches:
+      - feat/multi-harness-runtime
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/multi-harness-runtime
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Apply guarded transform
+        run: node scripts/apply-professional-stabilization.js
+      - name: Enforce same-author direct simplify
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const file = 'src/chat.js';
+          let source = fs.readFileSync(file, 'utf8');
+          const before = `    const simplifyTarget = sourceAgent?.available && sourceAgent?.enabled !== false\n      ? sourceAgent\n      : agents.find((entry) => entry.available && entry.enabled !== false) || null;`;
+          const after = `    const simplifyTarget = sourceAgent?.available && sourceAgent?.enabled !== false\n      ? sourceAgent\n      : null;`;
+          if (!source.includes(before)) throw new Error('direct simplify fallback transform did not match');
+          source = source.replace(before, after);
+          source = source.replace(
+            `    simplifyBtn.title = simplifyLocked\n      ? "전문 실행 중에는 쉽게 설명을 실행할 수 없습니다"\n      : "이 메시지를 작성한 AI가 같은 모델로 쉽게 풀어 설명합니다";`,
+            `    simplifyBtn.title = simplifyLocked\n      ? "전문 실행 중에는 쉽게 설명을 실행할 수 없습니다"\n      : !simplifyTarget\n        ? "원문을 작성한 AI를 현재 사용할 수 없습니다"\n        : "이 메시지를 작성한 AI가 같은 모델로 쉽게 풀어 설명합니다";`
+          );
+          fs.writeFileSync(file, source, 'utf8');
+          NODE
+      - name: Test transformed tree
+        run: npm test
+      - name: Remove one-shot helpers
+        run: |
+          rm -f scripts/apply-professional-stabilization.js
+          rm -f .github/workflows/apply-professional-stabilization.yml
+      - name: Commit transformed tree
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "feat(agora): complete professional mode stabilization stages 1-5"
+          git push origin HEAD:feat/multi-harness-runtime
