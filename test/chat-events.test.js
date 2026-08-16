@@ -94,6 +94,27 @@ test("claude: 실제 line parser는 Read 결과에 도구와 target을 복원한
   assert.equal(finished.outputBytes, 3);
 });
 
+test("line parser는 실행 단위 telemetry snapshot을 노출한다", () => {
+  const parser = createLineParser("claude");
+  assert.equal(typeof parser.getTelemetry, "function");
+  for (let i = 0; i < 4; i += 1) {
+    const id = `read-${i}`;
+    parser(JSON.stringify({
+      type: "assistant",
+      message: { content: [{ type: "tool_use", id, name: "Read", input: { file_path: "src/large.js" } }] },
+    }));
+    parser(JSON.stringify({
+      type: "user",
+      message: { content: [{ type: "tool_result", tool_use_id: id, content: "x".repeat(100) }] },
+    }));
+  }
+  const telemetry = parser.getTelemetry();
+  assert.equal(telemetry.toolSummary.started, 4);
+  assert.equal(telemetry.toolSummary.finished, 4);
+  assert.equal(telemetry.toolSummary.maxRepeatCount, 4);
+  assert.equal(telemetry.exploration.status, "WARNING");
+});
+
 test("claude: result 성공은 final, 실패는 error", () => {
   const success = JSON.stringify({ type: "result", subtype: "success", result: "최종 답변" });
   assert.deepEqual(parseClaudeLine(success), { kind: "final", text: "최종 답변" });
