@@ -2,6 +2,7 @@
 
 > 상태: 진행 중
 > 최초 작성: 2026-08-16
+> 최근 갱신: 2026-08-16
 > 대상 브랜치: `feat/multi-harness-runtime`
 > 관련 문서:
 > - [AGORA_V1_DESIGN.md](AGORA_V1_DESIGN.md)
@@ -149,6 +150,8 @@ Professional FSM → HarnessAdapter → Managed Harness Runtime
 - 전문 실행 strict-final 강화
   - 구조화 final 없이 delta-only 종료 시 성공 승격 금지
   - `PROTOCOL_FINAL_MISSING`
+- 실제 앱 실행 경로에서 전문 실행 여부를 `requireFinal: Boolean(specialistStage)`로 명시 전달
+  - prompt marker 추론은 fallback 호환 경로로만 남김
 - Claude command evidence 회귀 수정
   - `tool_use_id`로 Bash start/result를 다시 결합
   - command 실행은 기존 `command-started` / `command-finished` 계약 유지
@@ -166,6 +169,13 @@ Professional FSM → HarnessAdapter → Managed Harness Runtime
 - external side effect / Git mutation / subagent capability 분리
 
 일부 항목은 Stage C의 stateful runtime이 들어간 뒤 처리하는 편이 더 안전하다.
+
+### cleanup 부채
+
+- `PROTOCOL_FINAL_MISSING`은 현재 동작상 정상 보존되지만, `chat-room.js`가 exported `SAFE_BLOCK_REASONS` Set에 import 시점에 `add()`하는 임시 연결을 사용한다.
+  - 장기적으로는 `chat-specialist.js`의 원본 reason 목록에 직접 포함해야 한다.
+- `chat-specialist.js` 안의 기존 `executionAxes()` / `evidencePayload()`는 새 `chat-professional-evidence.js` 경계로 override되어 사실상 dead code다.
+  - Specialist FSM 분리/정리 시 delegation 또는 제거한다.
 
 ---
 
@@ -187,6 +197,7 @@ command-started
 command-finished
 tool-started
 tool-finished
+run-metrics
 ```
 
 원칙:
@@ -263,8 +274,17 @@ failure-rate
 
 - WARNING → 실행 계속
 - LOOP_DETECTED → 실행 계속
+- 실행 중 soft warning status event 발생
 - Evidence/metrics에 기록
 - hard kill은 실제 Run 분포를 본 뒤 결정
+
+현재 탐지는 Read/Grep/Glob 등 tool 탐색 반복을 주 대상으로 한다.
+command 반복 자체는 아직 loop 판정에 넣지 않는다.
+
+이유:
+
+- 동일한 `npm test`, build, formatter 실행이 수정 과정에서 정상적으로 반복될 수 있다.
+- command 반복을 나중에 감지한다면 단순 횟수보다 `동일 command fingerprint + 변경 없음 + 반복 횟수` 같은 조건을 결합하는 편이 안전하다.
 
 ### 6.5 Professional Evidence bridge
 
@@ -283,50 +303,129 @@ Provider event
 
 따라서 오래된 실패 command가 bounded detail window 밖으로 밀려나도 전체 실행 상태가 사라지지 않는다.
 
-### 6.6 RunMetrics — 진행 중
+### 6.6 RunMetrics — core + persistence 연결 완료
 
-Evidence와 별도로 성능/낭비 비교를 위한 RunMetrics를 추가하는 중이다.
+Evidence와 별도로 성능/낭비 비교를 위한 RunMetrics를 provider-independent schema로 만든다.
 
-목표 필드:
+현재 필드:
 
 ```text
-run / invocation id
+invocationId
 provider
 model
+effort
 professional stage
 startedAt / finishedAt / durationMs
 promptChars
 stdoutBytes
+captureTruncated
+approvalRequired
+ok / stopReason
 command total / failed / truncated
-tool started / finished / failed
+tool started / finished / failed / truncated
 tool outputBytes
 uniqueTargets
 repeatedCalls
 maxRepeatCount
 exploration status / reason
-stopReason / result class
 ```
 
 장기 metrics에는 raw command output, 파일 내용, tool target 원문을 보존하지 않는다.
 
+현재 연결:
+
+```text
+runAgentProcess
+  → result.runMetrics
+  → canonical run-metrics event
+  → ChatRoom provenance
+       runId / agentId / model / effort / specialistStage
+  → chat-ipc execution boundary
+  → persistRunMetrics()
+  → <runId>.metrics.json
+```
+
+저장 정책:
+
+- 세션별 `.metrics.json` 최대 100개 보존
+- raw `.log` / `.evidence.json`의 20개 보존 정책과 분리
+- metrics 저장 실패는 에이전트 실행 자체를 실패시키지 않는다.
+- provider/model/effort/stage provenance를 저장 시 명시한다.
+
+`stopReason` 기준은 한 가지로 통일했다.
+
+```text
+성공 → COMPLETED
+실패 → 실제 stopReason 우선, 없으면 실패 분류
+```
+
+store에서 성공 값을 다시 복원하는 우회 처리는 제거했다.
+
+### 6.7 Deterministic Recorder — core 준비 완료, 실행 경로 전환 전
+
+LLM Recorder를 제거하기 위한 순수 core를 추가했다.
+
+원칙:
+
+- Frozen Task
+- 최종 PASS verdict
+- 실제 변경 파일 / Diff metadata
+- Evidence command/tool aggregate
+- exploration 상태
+
+처럼 이미 구조화된 **확정 사실만** 사용한다.
+
+현재 deterministic core는 transcript를 읽지 않고, 새로운 결정을 추론하지 않는다.
+
+```text
+decisions: []
+nextActions: []
+```
+
+새 결정/다음 작업 후보 생성이 필요하면 향후 별도 선택적 `Memory Curator`로 분리한다.
+
+아직 실제 Professional FSM의 모든 Recorder 호출을 대체하지 않았다.
+
+이유:
+
+- 전문 full/step/manual record 경로에 Recorder 호출이 여러 군데 존재한다.
+- 한 곳만 교체하면 일부 실행은 deterministic, 일부는 LLM인 불일치가 생긴다.
+- 다음 전환에서는 recorder policy 경계를 하나로 모은 뒤 기본 Professional Recorder를 deterministic 구현으로 바꾼다.
+
 ### 검증 기준점
 
-- RunMetrics 추가 직전 전체 `npm test`: 549 / 549 PASS
-- 이후 RunMetrics core / metrics store / soft warning 변경은 별도 로컬 회귀 검증이 필요하다.
+- Stage B Professional Evidence bridge 완료 시 전체 `npm test`: **549 / 549 PASS**
+- RunMetrics 변경 후 사용자 targeted suite: **123 / 123 PASS**
+- `run-metrics` 이벤트 추가 직후 CI에서 기존 runner event expectation 2건이 회귀를 잡아냄
+  - 실제 기능 실패가 아니라 새 canonical event를 옛 테스트가 반영하지 못한 문제
+  - 기존 기대값을 갱신하고 회귀 테스트 추가
+- RunMetrics persistence 연결 후 GitHub Actions CI:
+  - `ubuntu-latest` — PASS
+  - `macos-latest` — PASS
+  - `windows-latest` — PASS
+
+현재 CI 기준점 commit:
+
+```text
+143411a285d392c74a833750f39d15e1ebb62476
+```
 
 ---
 
 ## 7. Stage B에서 남은 작업
 
-1. RunMetrics persistence를 실제 `chat-ipc` invocation 결과에 연결
-2. `.metrics.json` 장기 보존 확인
-3. 실제 Professional Run 데이터를 몇 건 수집
-4. soft loop warning의 false positive 확인
-5. Deterministic Recorder
-6. General Chat Summary Windowing
-7. 필요 시 Stage B cleanup
+현재 우선순위:
+
+1. 실제 Professional Run을 몇 건 실행해 `.metrics.json` 데이터 분포 수집
+2. soft loop warning의 false positive / threshold 적합성 확인
+3. Deterministic Recorder의 호출 경로를 단일 policy boundary로 통합
+4. 기본 Professional LLM Recorder를 Deterministic Recorder로 전환
+5. General Chat Summary Windowing
+6. Stage B cleanup
    - `PROTOCOL_FINAL_MISSING` 등록 위치 정리
-   - 기존 SpecialistMixin의 dead `executionAxes/evidencePayload` 제거 또는 delegation
+   - SpecialistMixin의 dead `executionAxes/evidencePayload` 제거 또는 delegation
+7. 필요 시 command-loop heuristic 설계
+   - 단순 반복 횟수로 차단하지 않는다.
 
 Stage B를 닫을 때 hard loop kill을 반드시 넣을 필요는 없다. 관측 데이터 없이 자동 중단 정책을 먼저 만들지 않는다.
 
@@ -571,6 +670,7 @@ Harness Runtime
 - Claude Bash evidence correlation
 - safe block reason 보존
 - strict-final marker 오탐 방어
+- 실제 전문 호출 경계에서 `requireFinal` 명시 전달
 
 검증:
 
@@ -600,9 +700,9 @@ Loop detection
 
 까지 연결됐다.
 
-### 2026-08-16 — RunMetrics / soft warning 작업 시작
+### 2026-08-16 — RunMetrics / soft warning core
 
-반영 중:
+반영:
 
 - provider-independent RunMetrics snapshot
 - duration / prompt chars / stdout bytes
@@ -610,11 +710,59 @@ Loop detection
 - exploration status
 - soft WARNING / LOOP_DETECTED status event
 - 별도 metrics persistence module
+- canonical `run-metrics` event
+- ChatRoom에서 run/model/effort/stage provenance 보존
 
-주의:
+검증:
 
-- 이 시점의 RunMetrics 이후 변경은 최신 전체 회귀 테스트가 아직 필요하다.
-- loop detection은 관측용이며 자동 kill하지 않는다.
+- 사용자 targeted suite 123 / 123 PASS
+- 새 `run-metrics` 이벤트 때문에 옛 runner event expectation 2건이 CI에서 실패해 회귀를 발견
+- 테스트 기대값을 현재 canonical event contract에 맞게 수정
+
+### 2026-08-16 — RunMetrics persistence 연결 및 CI 정상화
+
+반영:
+
+- `chat-ipc`의 공통 provider invocation 완료 경계에서 `persistRunMetrics()` 호출
+- 일반 대화와 전문 실행 모두 동일 저장 경계 사용
+- `<runId>.metrics.json`으로 세션별 저장
+- provider / model / effort / specialist stage 저장
+- 최대 100개 보존
+- 저장 실패는 실행 성공/실패 판단과 분리
+- `stopReason` 성공 규칙을 `COMPLETED`로 통일
+- 실제 전문 호출에서 `requireFinal: Boolean(specialistStage)` 명시
+- IPC metrics persistence 경계 회귀 테스트 추가
+
+검증:
+
+```text
+GitHub Actions CI
+  ubuntu-latest  PASS
+  macos-latest   PASS
+  windows-latest PASS
+```
+
+기준 commit:
+
+```text
+143411a285d392c74a833750f39d15e1ebb62476
+```
+
+이 시점부터 RunMetrics는 "생성만 되는 구조"가 아니라 실제 장기 비교 가능한 persisted observability 데이터가 됐다.
+
+### 2026-08-16 — Deterministic Recorder core 준비
+
+반영:
+
+- 구조화된 Frozen Task / PASS / Diff / Evidence를 바탕으로 기록을 만드는 순수 deterministic core 추가
+- transcript에 의존하지 않음
+- 확인되지 않은 decision / next action을 추론하지 않음
+
+남은 일:
+
+- 여러 Professional Recorder 호출 경로를 하나의 recorder policy boundary로 모으기
+- 기본 Professional LLM Recorder를 deterministic recorder로 교체
+- 토론 요약 등 별도 목적의 LLM Recorder는 필요에 따라 유지/분리
 
 ---
 
@@ -633,6 +781,7 @@ Loop detection
 - hard safety policy 추가
 - 기존 heuristic을 hard gate로 승격
 - 대규모 성능 최적화 결과 측정
+- RunMetrics / Recorder / Summary Windowing처럼 Stage B의 완료 상태가 바뀌는 변경
 
 코드가 무엇을 하는지는 테스트와 소스가 말해준다.
 
