@@ -9,6 +9,8 @@ const {
   TaskManager,
   stripControlMarkers,
   hashText,
+  MAX_TASK_READ_BYTES,
+  MAX_TASK_CONTRACT_CHARS,
 } = require("../src/agora/task-manager");
 
 function makeTempWorkspace(t) {
@@ -85,6 +87,69 @@ test("resolveTaskContract는 file Task의 TASK.md 본문을 읽는다", (t) => {
   const resolved = mgr.resolveTaskContract(fileTask, ws);
   assert.equal(resolved.source, "file");
   assert.equal(resolved.content, "실행 계약 본문");
+});
+
+test("file Task는 workspace 밖 상대 경로를 거부한다", (t) => {
+  const ws = makeTempWorkspace(t);
+  const outside = path.join(path.dirname(ws), `outside-${Date.now()}.md`);
+  fs.writeFileSync(outside, "outside", "utf8");
+  t.after(() => fs.rmSync(outside, { force: true }));
+  const mgr = new TaskManager();
+  assert.throws(
+    () => mgr.resolveTaskContract({ contentSource: "file", taskPath: `../${path.basename(outside)}` }, ws),
+    (error) => error?.code === "TASK_PATH_OUTSIDE_WORKSPACE"
+  );
+});
+
+test("file Task는 절대 경로를 거부한다", (t) => {
+  const ws = makeTempWorkspace(t);
+  const mgr = new TaskManager();
+  assert.throws(
+    () => mgr.resolveTaskContract({ contentSource: "file", taskPath: path.join(ws, "TASK.md") }, ws),
+    (error) => error?.code === "TASK_PATH_INVALID"
+  );
+});
+
+test("file Task는 5MiB 초과 파일을 실행 계약으로 읽지 않는다", (t) => {
+  const ws = makeTempWorkspace(t);
+  const file = path.join(ws, "TASK-big.md");
+  fs.writeFileSync(file, Buffer.alloc(MAX_TASK_READ_BYTES + 1));
+  const mgr = new TaskManager();
+  assert.throws(
+    () => mgr.resolveTaskContract({ contentSource: "file", taskPath: "TASK-big.md" }, ws),
+    (error) => error?.code === "TASK_FILE_TOO_LARGE"
+  );
+});
+
+test("실행 계약은 전문 프롬프트보다 큰 본문을 저장하지 않는다", (t) => {
+  const ws = makeTempWorkspace(t);
+  const mgr = new TaskManager();
+  assert.throws(
+    () => mgr.createTaskFromPlanner("x".repeat(MAX_TASK_CONTRACT_CHARS + 1), ws),
+    (error) => error?.code === "TASK_CONTRACT_TOO_LARGE"
+  );
+  assert.throws(
+    () => mgr.freezeTask({ contentSource: "inline", description: "x".repeat(MAX_TASK_CONTRACT_CHARS + 1) }, ws),
+    (error) => error?.code === "TASK_CONTRACT_TOO_LARGE"
+  );
+});
+
+test("file Task symlink가 workspace 밖을 가리키면 거부한다", (t) => {
+  const ws = makeTempWorkspace(t);
+  const outside = path.join(path.dirname(ws), `outside-link-${Date.now()}.md`);
+  const link = path.join(ws, "TASK-link.md");
+  fs.writeFileSync(outside, "outside", "utf8");
+  t.after(() => fs.rmSync(outside, { force: true }));
+  try {
+    fs.symlinkSync(outside, link, "file");
+  } catch {
+    return;
+  }
+  const mgr = new TaskManager();
+  assert.throws(
+    () => mgr.resolveTaskContract({ contentSource: "file", taskPath: "TASK-link.md" }, ws),
+    (error) => error?.code === "TASK_PATH_OUTSIDE_WORKSPACE"
+  );
 });
 
 test("freezeTask는 RUN-xxx/task.md와 task-hash를 만든다", (t) => {
