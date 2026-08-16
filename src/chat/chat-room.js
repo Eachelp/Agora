@@ -890,7 +890,9 @@ class ChatRoom extends EventEmitter {
     const generation = this.generation;
     const dedupeKey = context.discussionSummary
       ? `summary:${context.discussionSummary.discussionId}`
-      : (context.discussion || !context.turnRootId ? null : `${context.turnRootId}:${agent.id}`);
+      : context.simplifyMeta
+        ? `simplify:${context.simplifyMeta.messageId}`
+        : (context.discussion || !context.turnRootId ? null : `${context.turnRootId}:${agent.id}`);
     if (dedupeKey) {
       if (this.pendingTurns.has(dedupeKey)) {
         return this.pendingTurns.get(dedupeKey).promise;
@@ -1099,7 +1101,7 @@ class ChatRoom extends EventEmitter {
 
     const specialistStage = context.specialist?.stage || null;
     let permissionMode;
-    if (context.discussionSummary) {
+    if (context.discussionSummary || context.simplifyMeta) {
       permissionMode = "chat";
     } else if (specialistStage) {
       const auth = this.activeRunAuthorization || "workspace-write";
@@ -1131,12 +1133,13 @@ class ChatRoom extends EventEmitter {
         workflowContext: this.meta.workflowContext,
         discussion: context.discussion || null,
         discussionSummary: context.discussionSummary || null,
+        simplifyMeta: context.simplifyMeta || null,
         specialist: context.specialist || null,
         broadcast: context.broadcast || null,
         handoff: context.handoff || null,
         // 전문 모드 실행 중에는 @멘션 호출을 끕니다. 구현·검토·기록이
         // 담당자 밖으로 새어 나가는 것을 막기 위해서입니다.
-        mentionsEnabled: !context.discussion && !context.specialist && !context.discussionSummary && mentionDepth < this.mentionChainLimit,
+        mentionsEnabled: !context.discussion && !context.specialist && !context.discussionSummary && !context.simplifyMeta && mentionDepth < this.mentionChainLimit,
       });
     } catch (error) {
       const stopReason = error?.code || "PROMPT_BUILD_FAILED";
@@ -1296,11 +1299,12 @@ class ChatRoom extends EventEmitter {
       // 달라도 최종·오류 헤더가 실행값을 그대로 표시할 수 있습니다.
       agentMeta: responseAgentMeta,
       ...(context.discussionSummary ? { discussionSummary: context.discussionSummary } : {}),
+      ...(context.simplifyMeta ? { simplifyMeta: context.simplifyMeta } : {}),
       ...(context.turnRootId ? { turnRootId: context.turnRootId } : {}),
       ...(result.deliveries ? { deliveries: result.deliveries } : {}),
     });
     // 토론 모드는 자체 턴 오케스트레이션이 있으므로 멘션 호출을 만들지 않습니다.
-    if (!context.discussion && !context.specialist && !context.discussionSummary) {
+    if (!context.discussion && !context.specialist && !context.discussionSummary && !context.simplifyMeta) {
       this.scheduleMentionReplies(
         agent,
         text,
@@ -1350,6 +1354,16 @@ class ChatRoom extends EventEmitter {
     const source = this.messages.find((message) => message.id === messageId);
     if (!source || source.authorType === "system" || source.authorType === "user") {
       return { ok: false, error: "전달할 메시지를 찾을 수 없습니다." };
+    }
+    if (intent === "SIMPLIFY") {
+      const simplifyMeta = {
+        text: source.text || "",
+        fromAgentId: source.author,
+        messageId,
+      };
+      this.appendSystem(`@${target.id}에게 ${source.author}의 메시지를 알기 쉽게 풀어달라고 요청합니다.`);
+      this.scheduleResponse(target, { simplifyMeta });
+      return { ok: true };
     }
     const handoff = {
       intent: intent === "REVIEW_OPINION" ? "REVIEW_OPINION" : "CONTINUE",

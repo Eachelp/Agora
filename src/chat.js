@@ -1602,14 +1602,17 @@ function openHandoffPopover(anchor, messageId, sourceAuthor) {
     root.append(makeField("전달할 에이전트", targetSelect));
 
     const intentSelect = document.createElement("select");
-    const intentReview = document.createElement("option");
-    intentReview.value = "REVIEW_OPINION";
-    intentReview.textContent = "검토 요청";
     const intentContinue = document.createElement("option");
     intentContinue.value = "CONTINUE";
     intentContinue.textContent = "이어서 작업";
-    intentSelect.append(intentContinue, intentReview);
-    root.append(makeField("전달 의도", intentSelect));
+    const intentReview = document.createElement("option");
+    intentReview.value = "REVIEW_OPINION";
+    intentReview.textContent = "검토 요청";
+    const intentSimplify = document.createElement("option");
+    intentSimplify.value = "SIMPLIFY";
+    intentSimplify.textContent = "💡 비개발자용으로 쉽게 풀어보기";
+    intentSelect.append(intentContinue, intentReview, intentSimplify);
+    root.append(makeField("전달 목적", intentSelect));
 
     const actions = document.createElement("div");
     actions.className = "popover-actions";

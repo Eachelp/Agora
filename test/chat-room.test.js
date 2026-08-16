@@ -1285,45 +1285,6 @@ test("토론 결론 종합 시 오류 메시지는 요약 대상에서 제외된
 });
 
 
-test("토론 결론 종합 시 오류 메시지는 요약 대상에서 제외된다", async () => {
-  const calls = [];
-  const room = new ChatRoom({
-    agents: makeAgents(),
-    runAgent: fakeRunner({
-      claude: [{ ok: false, text: "오류 발생!", error: "연결 실패" }],
-    }, calls),
-  });
-
-  room.appendMessage({ authorType: "user", author: "user", text: "토론 질문" });
-  const discResult = await room.startDiscussion();
-  await settle(room);
-  
-  assert.equal(discResult.ok, true);
-  const endNotice = room.messages.find((m) => m.discussionMeta);
-  assert.ok(endNotice);
-  assert.equal(endNotice.discussionMeta.incomplete, true);
-  assert.equal(endNotice.discussionMeta.failures, 1);
-
-  room.runAgent = ({ agent, prompt }) => {
-    calls.push({ agentId: agent.id, prompt });
-    return {
-      promise: Promise.resolve({ ok: true, text: "요약 완료" }),
-      cancel: () => {},
-    };
-  };
-
-  const summaryResult = await room.summarizeDiscussion(endNotice.discussionMeta.discussionId, "codex");
-  await settle(room);
-  assert.equal(summaryResult.ok, true);
-  
-  const lastCall = calls.at(-1);
-  assert.equal(lastCall.agentId, "codex");
-  assert.match(lastCall.prompt, /토론 질문/);
-  assert.doesNotMatch(lastCall.prompt, /연결 실패/);
-  assert.doesNotMatch(lastCall.prompt, /오류 발생!/);
-  assert.doesNotMatch(lastCall.prompt, /응답 실패 오류/);
-});
-
 test("중지하면 진행 중인 턴뿐 아니라 전역 큐의 대기 턴도 폐기한다", async () => {
   const calls = [];
   let resolveActive;
@@ -1737,6 +1698,30 @@ test("이어 발언 모드(independent: false)에서는 같은 턴의 앞선 답
   const secondCall = calls[1];
   assert.ok(secondCall.prompt.includes("앞선 참가자의 답변을 읽고"));
   assert.ok(secondCall.prompt.includes("의 순차 응답"));
+});
+
+test("handoffMessage의 SIMPLIFY intent는 simplifyMeta로 쉬운 말 번역을 요청한다", async () => {
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({ codex: [{ ok: true, text: "쉽게 풀어서 설명한 내용입니다." }] }, calls),
+  });
+  room.messages.push({ id: "msg-complex", authorType: "agent", author: "claude", text: "복잡한 아키텍처 및 뮤텍스 락 설명" });
+
+  const result = room.handoffMessage("codex", "msg-complex", "SIMPLIFY");
+  assert.equal(result.ok, true);
+  await settle(room);
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].agentId, "codex");
+  assert.match(calls[0].prompt, /비개발자도 이해하기 쉽게 풀어주는 통역가/);
+  assert.match(calls[0].prompt, /풀어볼 원문 메시지/);
+  assert.match(calls[0].prompt, /복잡한 아키텍처 및 뮤텍스 락 설명/);
+
+  const responseMsg = room.messages.at(-1);
+  assert.equal(responseMsg.author, "codex");
+  assert.ok(responseMsg.simplifyMeta);
+  assert.equal(responseMsg.simplifyMeta.messageId, "msg-complex");
 });
 
 test("handoffMessage는 다른 AI의 메시지를 대상 에이전트에게 전달해 이어서 답하게 한다", async () => {

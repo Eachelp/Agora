@@ -438,3 +438,22 @@ test("토론 종합 프롬프트는 고정 요약 섹션과 미완성 경고 지
   assert.doesNotMatch(prompt, /다른 참가자를 호출하려면 @이름/);
 });
 
+
+test("쉬운 설명(simplifyMeta) 프롬프트는 통역 규칙과 원문 메시지만을 포함한다", () => {
+  const prompt = buildAgentPrompt({
+    agent: AGENTS[0],
+    agents: AGENTS,
+    messages: [{ author: "user", authorType: "user", text: "이전 대화" }],
+    simplifyMeta: {
+      fromAgentId: "claude",
+      text: "어려운 기술 용어 원문",
+      messageId: "msg-1",
+    },
+  });
+  assert.match(prompt, /비개발자도 이해하기 쉽게 풀어주는 통역가/);
+  assert.match(prompt, /전문 개발 용어나 내부 아키텍처, 단순 로그 설명을 걷어내세요/);
+  assert.match(prompt, /풀어볼 원문 메시지/);
+  assert.match(prompt, /작성자: claude/);
+  assert.match(prompt, /어려운 기술 용어 원문/);
+  assert.doesNotMatch(prompt, /이전 대화/);
+});
