@@ -7,6 +7,7 @@ const {
   phaseForNode,
 } = require("../agora/professional-run");
 const { TaskManager, hashText } = require("../agora/task-manager");
+const { validateTaskContract } = require("../agora/task-contract-validator");
 const { describeWorkspaceChanges } = require("../agora/workspace-diff");
 const {
   executionAxes: professionalExecutionAxes,
@@ -554,6 +555,8 @@ class SpecialistMixin {
       ? Math.min(3, Math.max(0, planAutoRevisions))
       : 0;
     let planRevisionCount = 0;
+    let contractRepairCount = 0;
+    const MAX_CONTRACT_REPAIRS = 2;
     let nextFeedback = feedback;
     let nextTaskInfo = taskInfo;
     let previousPlanIssues = String(previousIssues || "").trim();
@@ -599,6 +602,46 @@ class SpecialistMixin {
           this.appendSystem("기획자가 답변이 필요한 질문을 남겼습니다. 아래 전용 입력칸에서 답한 뒤 기획·검수를 다시 실행하세요.");
           return { ok: false, stage: "planner", needsUserDecision: true, stopReason: "NEEDS_DECISION", result: plannerResult };
         }
+
+        const contractCheck = validateTaskContract(plannerResult.text || "");
+        if (!contractCheck.valid) {
+          if (contractRepairCount < MAX_CONTRACT_REPAIRS) {
+            contractRepairCount += 1;
+            this.appendSystem(
+              "기획서 필수 섹션 누락(" + contractCheck.missing.join(", ") + ")으로 자동 보완 요청 (" + contractRepairCount + "/" + MAX_CONTRACT_REPAIRS + "회)"
+            );
+            nextFeedback =
+              "[기획서 검증 실패] 작업 지시서(Task Contract)에 다음 필수 섹션 또는 내용이 누락되었습니다: " + contractCheck.missing.join(", ") + ".\n" +
+              "반드시 다음 6개 필수 섹션을 포함하여 다시 작성해 주세요:\n- ## Goal\n- ## Requirements\n- ## Implementation Approach\n- ## Acceptance Criteria\n- ## Verification\n- ## Out of Scope\n\n각 섹션 아래에는 코드 블록 외의 실제 설명 본문이 반드시 있어야 합니다.\n\n이전 작성 내용:\n" + (plannerResult.text || "");
+            continue;
+          }
+          const transition = this.transitionProfessional({
+            type: "PLANNER_NEEDS_DECISION",
+            stopReason: "NEEDS_DECISION",
+          });
+          if (!transition.ok) return this.professionalTransitionFailure("planner", transition);
+          this.specialistResume = {
+            stages,
+            mode,
+            planAutoRevisions: planRevisionLimit,
+            implementationAutoRevisions,
+            action,
+            feedback: plannerResult.text || nextFeedback,
+            taskInfo: nextTaskInfo,
+            phase: "needs_decision",
+          };
+          this.appendSystem(
+            "기획서에 필수 섹션(" + contractCheck.missing.join(", ") + ")이 반복 누락되어 자동 진행을 멈췄습니다. 아래 전용 입력칸에서 보완 내용을 알려 주세요."
+          );
+          return {
+            ok: false,
+            stage: "planner",
+            needsUserDecision: true,
+            stopReason: "NEEDS_DECISION",
+            result: plannerResult,
+          };
+        }
+        contractRepairCount = 0;
 
         const previousTaskInfo = nextTaskInfo;
         if (this.meta.workspace) {

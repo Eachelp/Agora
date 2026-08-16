@@ -16,6 +16,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { validateTaskContract } = require("./task-contract-validator");
 
 // 프로젝트 작업 영역 내부의 표준 메타 데이터 폴더 이름.
 // .gitignore가 이를 무시하는지 여부와 무관하게, Run snapshot은 이 폴더에 둡니다.
@@ -328,6 +329,17 @@ class TaskManager {
     const contract = this.resolveTaskContract(task, workspace);
     if (!contract || !contract.content.trim()) {
       throw new Error("실행 계약(Task)을 읽을 수 없습니다. Task를 확인해 주세요.");
+    }
+    // 최후 방어선: Frozen Task는 필수 6개 섹션과 non-empty content를 반드시
+    // 갖춰야 합니다. 누락 시 즉시 거부하며 repair 없이 중단합니다.
+    // (Planner 생성/수정 경계는 chat-specialist가 제한된 횟수로 복구를 시도하고,
+    // 여기는 그 검증을 통과하지 못한 계약이 실행으로 들어오지 못하게 막습니다.)
+    const contractCheck = validateTaskContract(contract.content);
+    if (!contractCheck.valid) {
+      throw taskError(
+        "TASK_CONTRACT_INCOMPLETE",
+        `실행 계약(Task)에 필수 섹션이 빠졌습니다: ${contractCheck.missing.join(", ")}`
+      );
     }
     const memoryRoot = this.memoryRootFor(workspace);
     if (!memoryRoot) throw new Error("작업 공간이 없어 Run을 만들 수 없습니다.");

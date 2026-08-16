@@ -47,12 +47,28 @@ function fakeCapabilities() {
   };
 }
 
+const VALID_PLAN_CONTRACT = [
+  "## Goal",
+  "기획 완료",
+  "## Requirements",
+  "요구사항",
+  "## Implementation Approach",
+  "구현 방식",
+  "## Acceptance Criteria",
+  "완료 조건",
+  "## Verification",
+  "검증 계획",
+  "## Out of Scope",
+  "제외 범위",
+  "STATUS: PLAN_READY",
+].join("\n");
+
 function fakeRunAgent(calls = []) {
   return ({ agent, prompt }) => {
     calls.push({ agentId: agent.id, prompt });
     let text = "응답 없음";
     if (/전문 모드: 기획 검수/.test(prompt)) text = "기획 검수 통과\n[[CODEPET_REVIEW:PASS]]";
-    else if (/전문 모드: 기획/.test(prompt)) text = "기획 완료\nSTATUS: PLAN_READY";
+    else if (/전문 모드: 기획/.test(prompt)) text = VALID_PLAN_CONTRACT;
     else if (/전문 모드: 구현/.test(prompt)) text = "구현 완료\nSTATUS: DONE";
     else if (/전문 모드: 검토/.test(prompt)) text = "검토 통과\n[[CODEPET_REVIEW:PASS]]";
     return { promise: Promise.resolve({ ok: true, text }), cancel: () => {} };

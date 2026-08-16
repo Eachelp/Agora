@@ -7,6 +7,26 @@ const { TaskManager } = require("../src/agora/task-manager");
 const turnCheckpoint = require("../src/agora/turn-checkpoint");
 const { ChatRoom } = require("../src/chat/chat-room");
 
+
+function makePlanContract(goal = "목표", extra = "") {
+  return [
+    "## Goal",
+    goal,
+    "## Requirements",
+    "기능 요구사항",
+    "## Implementation Approach",
+    "구현 접근 방식",
+    "## Acceptance Criteria",
+    "완료 수용 기준",
+    "## Verification",
+    "검증 계획",
+    "## Out of Scope",
+    "제외 범위",
+    extra,
+    "STATUS: PLAN_READY",
+  ].filter(Boolean).join("\n");
+}
+
 function makeAgents() {
   return [
     { id: "claude", name: "Claude", aliases: ["claude"], available: true, enabled: true },
@@ -144,7 +164,7 @@ test("빠른 실행도 Frozen Task와 검토 피드백을 유지하며 제한 �
   t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
   const replies = {
     claude: [
-      { ok: true, text: "## 목표\n빠른 실행 보완\nSTATUS: PLAN_READY" },
+      { ok: true, text: makePlanContract("빠른 실행 보완") },
       { ok: true, text: "누락된 검증을 추가하세요.\nVERDICT: FIX_REQUIRED\nISSUES:\n1.\nscope: IN\nseverity: BLOCKING\nlocation: src/a.js\nproblem: 검증 누락\nevidence: 테스트 실패\nimpact: 회귀 가능" },
       { ok: true, text: "통과\nVERDICT: PASS" },
       { ok: true, text: "기록 완료" },
@@ -1768,7 +1788,7 @@ test("TASK-007: Planner PLAN_READY 결과로 TASK.md를 만들고 workflow에 �
     runAgent: fakeRunner(
       {
         claude: [
-          { ok: true, text: "## 목표\n로그인\nSTATUS: PLAN_READY" },
+          { ok: true, text: makePlanContract("로그인") },
         ],
         codex: [
           { ok: true, text: "구현 완료\nSTATUS: DONE" },
@@ -1830,7 +1850,7 @@ test("TASK-007: step 모드에서 승인(resume) 후 같은 Frozen Task로 Build
       let reply;
       if (agent.id === "claude" && plannerReply) {
         plannerReply = false;
-        reply = { ok: true, text: "## 목표\n메서드 분리\nSTATUS: PLAN_READY" };
+        reply = { ok: true, text: makePlanContract("메서드 분리") };
       } else if (agent.id === "codex") {
         reply = { ok: true, text: "수정 완료\nSTATUS: DONE" };
       } else {
@@ -1903,7 +1923,7 @@ test("step 모드가 완료·판단 불가로 끝나면 임시 Checkpoint를 정
       let text = "";
       if (agent.id === "claude" && plannerReply) {
         plannerReply = false;
-        text = "## 목표\n정리\nSTATUS: PLAN_READY";
+        text = makePlanContract("정리");
       } else if (agent.id === "codex") {
         text = "구현 완료\nSTATUS: DONE";
       } else {
@@ -2151,7 +2171,7 @@ test("전문 실행 메시지에 Frozen Task 정보(runId/taskId/taskHash)가 �
     taskManager,
     runAgent: fakeRunner(
       {
-        claude: [{ ok: true, text: "## 목표\n로그인\nSTATUS: PLAN_READY" }],
+        claude: [{ ok: true, text: makePlanContract("로그인") }],
         codex: [
           { ok: true, text: "구현 완료\nSTATUS: DONE" },
           { ok: true, text: "검토 통과\nVERDICT: PASS" },
@@ -2209,7 +2229,7 @@ test("버튼형 기획·검수는 Planner와 Reviewer를 차례로 호출하고 
     meta: { workspace },
     taskManager: new TaskManager(),
     runAgent: fakeRunner({
-      claude: [{ ok: true, text: "## 목표\n로그인 화면 개선\nSTATUS: PLAN_READY" }],
+      claude: [{ ok: true, text: makePlanContract("로그인 화면 개선") }],
       codex: [{ ok: true, text: "기획 검수 통과\nVERDICT: PASS" }],
     }, calls),
   });
@@ -2244,8 +2264,8 @@ test("기획 자동 보완은 범위 안의 검수 지적만 제한 횟수 안�
     taskManager: new TaskManager(),
     runAgent: fakeRunner({
       claude: [
-        { ok: true, text: "## 목표\n초안\nSTATUS: PLAN_READY" },
-        { ok: true, text: "## 목표\n검증 조건을 보완한 기획\nSTATUS: PLAN_READY" },
+        { ok: true, text: makePlanContract("초안") },
+        { ok: true, text: makePlanContract("검증 조건을 보완한 기획") },
       ],
       codex: [
         {
@@ -2283,7 +2303,7 @@ test("기획 자동 보완 중에도 Open Question은 사용자에게 반환한�
     meta: { workspace },
     taskManager: new TaskManager(),
     runAgent: fakeRunner({
-      claude: [{ ok: true, text: "## 목표\n초안\nSTATUS: PLAN_READY" }],
+      claude: [{ ok: true, text: makePlanContract("초안") }],
       codex: [{
         ok: true,
         text: "사용자 결정이 필요합니다.\nVERDICT: FIX_REQUIRED\nISSUES:\n1.\nscope: IN\nseverity: BLOCKING\nproblem: 대상 미정\nevidence: 대화에 없음\nimpact: 범위 불명확\n## Open Questions\n1. 어느 화면까지 포함할까요?",
@@ -2316,7 +2336,7 @@ test("구현 자동 보완 스위치 값은 버튼형 구현·검수의 제한 �
     taskManager: new TaskManager(),
     runAgent: fakeRunner({
       claude: [
-        { ok: true, text: "## 목표\n자동 보완 구현\nSTATUS: PLAN_READY" },
+        { ok: true, text: makePlanContract("자동 보완 구현") },
         { ok: true, text: "첫 구현\nSTATUS: DONE" },
         { ok: true, text: "보완 구현\nSTATUS: DONE" },
       ],
@@ -2367,8 +2387,8 @@ test("Open Question은 PLAN_READY 마커가 있어도 답변 대기로 멈추고
     taskManager: new TaskManager(),
     runAgent: fakeRunner({
       claude: [
-        { ok: true, text: "## 목표\n화면 개선\n## Open Question\n1. 어느 화면까지 포함할까요?\nSTATUS: PLAN_READY" },
-        { ok: true, text: "## 목표\n로그인 화면만 개선\nSTATUS: PLAN_READY" },
+        { ok: true, text: makePlanContract("화면 개선", "## Open Question\n1. 어느 화면까지 포함할까요?") },
+        { ok: true, text: makePlanContract("로그인 화면만 개선") },
       ],
       codex: [{ ok: true, text: "검수 통과\nVERDICT: PASS" }],
     }, calls),
@@ -2400,7 +2420,7 @@ test("전체 실행은 기획 검수 통과 뒤 구현·검수·기록까지 같
     taskManager: new TaskManager(),
     runAgent: fakeRunner({
       claude: [
-        { ok: true, text: "## 목표\n전체 실행\nSTATUS: PLAN_READY" },
+        { ok: true, text: makePlanContract("전체 실행") },
         { ok: true, text: "구현 완료\nSTATUS: DONE" },
       ],
       codex: [
@@ -2445,7 +2465,7 @@ test("전체 실행은 Run 결과와 Workflow 수명주기를 함께 저장한�
     },
     runAgent: fakeRunner({
       claude: [
-        { ok: true, text: "## 목표\n수명주기 기록\nSTATUS: PLAN_READY" },
+        { ok: true, text: makePlanContract("수명주기 기록") },
         { ok: true, text: "구현 완료\nSTATUS: DONE" },
       ],
       codex: [
@@ -2484,7 +2504,7 @@ test("Workflow 시작 기록에 실패하면 Builder를 실행하지 않는다",
     onTaskCreated: () => true,
     onProfessionalTaskState: ({ status }) => status !== "in_progress",
     runAgent: fakeRunner({
-      claude: [{ ok: true, text: "## 목표\n저장 실패\nSTATUS: PLAN_READY" }],
+      claude: [{ ok: true, text: makePlanContract("저장 실패") }],
       codex: [{ ok: true, text: "기획 검수 통과\nVERDICT: PASS" }],
     }, calls),
   });
@@ -2514,7 +2534,7 @@ test("Planner TASK 파일은 Workflow 등록 실패 뒤에도 보존하고 TASK_
     taskManager: new TaskManager(),
     onTaskCreated: () => false,
     runAgent: fakeRunner({
-      claude: [{ ok: true, text: "## 목표\n색인 실패\nSTATUS: PLAN_READY" }],
+      claude: [{ ok: true, text: makePlanContract("색인 실패") }],
     }, calls),
   });
 
@@ -2546,7 +2566,7 @@ test("ACT 중 사용자 중지는 변경·Run 결과를 BLOCKED로 남기고 che
     onTaskCreated: () => true,
     runAgent: ({ agent, prompt }) => {
       if (agent.id === "claude" && /전문 모드: 기획 ===/.test(prompt)) {
-        return { promise: Promise.resolve({ ok: true, text: "## 목표\n중지 보존\nSTATUS: PLAN_READY" }), cancel: () => {} };
+        return { promise: Promise.resolve({ ok: true, text: makePlanContract("중지 보존") }), cancel: () => {} };
       }
       if (agent.id === "codex" && /전문 모드: 기획 검수/.test(prompt)) {
         return { promise: Promise.resolve({ ok: true, text: "VERDICT: PASS" }), cancel: () => {} };
@@ -2634,7 +2654,7 @@ test("Professional Reviewer의 FIX_REQUIRED는 자동 복원 대신 BLOCKED로 �
     },
     runAgent: fakeRunner({
       claude: [
-        { ok: true, text: "## 목표\n검수 보류\nSTATUS: PLAN_READY" },
+        { ok: true, text: makePlanContract("검수 보류") },
         { ok: true, text: "구현 완료\nSTATUS: DONE" },
       ],
       codex: [
@@ -2739,7 +2759,7 @@ test("기록 재생성은 RECORDING 대기 상태를 완료로 닫는다", async
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-record-retry-"));
   t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
   const taskManager = new TaskManager();
-  const task = taskManager.createTaskFromPlanner("## 목표\n기록 재생성", workspace);
+  const task = taskManager.createTaskFromPlanner(makePlanContract("기록 재생성"), workspace);
   const runInfo = taskManager.freezeTask({ contentSource: "file", taskPath: task.relativePath }, workspace);
   const room = new ChatRoom({
     agents: makeAgents(),
@@ -2778,7 +2798,7 @@ test("기획 검수 뒤 TASK.md가 바뀌면 Builder를 시작하지 않는다",
     taskManager: new TaskManager(),
     onTaskCreated: () => true,
     runAgent: fakeRunner({
-      claude: [{ ok: true, text: "## 목표\n기획 검수 후 변경\nSTATUS: PLAN_READY" }],
+      claude: [{ ok: true, text: makePlanContract("기획 검수 후 변경") }],
       codex: [{ ok: true, text: "기획 검수 통과\nVERDICT: PASS" }],
     }, calls),
   });
@@ -2804,7 +2824,7 @@ test("Professional Run 시작 상태 저장에 실패하면 Planner를 호출하
     agents: makeAgents(),
     persistProfessionalRun: () => false,
     runAgent: fakeRunner({
-      claude: [{ ok: true, text: "STATUS: PLAN_READY" }],
+      claude: [{ ok: true, text: makePlanContract("시작 실패") }],
       codex: [{ ok: true, text: "VERDICT: PASS" }],
     }, calls),
   });
@@ -2835,7 +2855,7 @@ test("전체 실행의 기획·검수 통과 사이에는 일반 응답을 끼�
     runAgent: ({ agent, prompt }) => {
       calls.push({ agentId: agent.id, prompt });
       if (/전문 모드: 기획 ===/.test(prompt)) {
-        return { promise: Promise.resolve({ ok: true, text: "## 목표\n전체 실행\nSTATUS: PLAN_READY" }), cancel: () => {} };
+        return { promise: Promise.resolve({ ok: true, text: makePlanContract("전체 실행") }), cancel: () => {} };
       }
       if (/전문 모드: 기획 검수/.test(prompt)) {
         return { promise: planReviewPromise, cancel: () => {} };
@@ -2894,9 +2914,9 @@ test("replanBlocked는 keep 선택 시 부분 변경을 유지하고 기획자�
       calls.push({ agentId: agent.id, prompt });
       if (/전문 모드: 기획 ===/.test(prompt)) {
         if (/이전 구현.*막혔습니다/.test(prompt)) {
-          return { promise: Promise.resolve({ ok: true, text: "## 수정 목표\n재기획 완료\nSTATUS: PLAN_READY" }), cancel: () => {} };
+          return { promise: Promise.resolve({ ok: true, text: makePlanContract("재기획 완료") }), cancel: () => {} };
         }
-        return { promise: Promise.resolve({ ok: true, text: "## 초기 목표\n초기 기획\nSTATUS: PLAN_READY" }), cancel: () => {} };
+        return { promise: Promise.resolve({ ok: true, text: makePlanContract("초기 기획") }), cancel: () => {} };
       }
       if (/전문 모드: 기획 검수/.test(prompt)) {
         return { promise: Promise.resolve({ ok: true, text: "기획 통과\nVERDICT: PASS" }), cancel: () => {} };
@@ -2941,7 +2961,7 @@ test("replanBlocked는 restore 선택 시 작업 전으로 복원 후 재기획�
     runAgent: ({ agent, prompt }) => {
       calls.push({ agentId: agent.id, prompt });
       if (/전문 모드: 기획 ===/.test(prompt)) {
-        return { promise: Promise.resolve({ ok: true, text: "## 목표\n기획\nSTATUS: PLAN_READY" }), cancel: () => {} };
+        return { promise: Promise.resolve({ ok: true, text: makePlanContract("기획") }), cancel: () => {} };
       }
       if (/전문 모드: 기획 검수/.test(prompt)) {
         return { promise: Promise.resolve({ ok: true, text: "기획 통과\nVERDICT: PASS" }), cancel: () => {} };

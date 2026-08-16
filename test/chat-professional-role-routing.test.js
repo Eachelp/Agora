@@ -41,6 +41,22 @@ test("professional draft는 사용자 작업 요청만 기록하고 일반 응�
   assert.equal(room.messages.filter((message) => message.authorType === "agent").length, 0);
 });
 
+const VALID_CONTRACT = [
+  "## Goal",
+  "작업 계획을 확정합니다.",
+  "## Requirements",
+  "요구사항",
+  "## Implementation Approach",
+  "구현 방식",
+  "## Acceptance Criteria",
+  "완료 조건",
+  "## Verification",
+  "검증 계획",
+  "## Out of Scope",
+  "제외 범위",
+  "STATUS: PLAN_READY",
+].join("\n");
+
 test("같은 AGY 담당자라도 Planner와 Plan Reviewer의 역할별 모델을 그대로 유지한다", async () => {
   const calls = [];
   const agent = agyAgent();
@@ -55,7 +71,7 @@ test("같은 AGY 담당자라도 Planner와 Plan Reviewer의 역할별 모델을
         effort: invoked.effort,
       });
       const text = specialistStage === "planner"
-        ? "작업 계획을 확정합니다.\nSTATUS: PLAN_READY"
+        ? VALID_CONTRACT
         : "계획이 구현 가능하고 요구사항을 충족합니다.\nVERDICT: PASS\n[[CODEPET_REVIEW:PASS]]";
       return { promise: Promise.resolve({ ok: true, text }), cancel() {} };
     },

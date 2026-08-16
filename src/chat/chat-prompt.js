@@ -265,7 +265,9 @@ function buildAgentPrompt({
       lines.push("- 워크스페이스 작업이면 PLAN_READY 전에 요청과 직접 관련된 파일·호출 경로·테스트를 필요한 범위에서 읽어 현재 상태와 근거를 확인하세요. 작은 작업을 위해 저장소 전체를 훑지는 마세요.");
       lines.push("- 확인하지 못한 사실은 단정하지 말고 `Risks / Open Questions`에 남기세요.");
       lines.push("- 하나의 작업이 하나의 명확한 목표와 완료 조건을 갖도록 큰 작업을 분해하세요.");
-      lines.push("- TASK에는 가능하면 `Goal`, `Current State / Evidence`, `Requirements`, `Affected Modules`, `Invariants / Must Preserve`, `Implementation Approach`, `Acceptance Criteria`, `Verification`, `Risks / Open Questions`, `Out of Scope`를 포함하세요.");
+      lines.push("- TASK에는 다음 6개 필수 섹션을 반드시 정확한 헤딩(`## Goal`, `## Requirements`, `## Implementation Approach`, `## Acceptance Criteria`, `## Verification`, `## Out of Scope`)과 함께 본문(코드 블록 제외한 실제 설명)을 포함해 작성하세요.");
+      lines.push("- 다음 보조 섹션의 포함을 권장합니다: `## Current State / Evidence`, `## Affected Modules`, `## Invariants / Must Preserve`, `## Risks / Open Questions`, `## Dependencies`, `## Related Tasks`.");
+      lines.push("- 의존하는 다른 작업이나 선행 조건이 있다면 `## Dependencies` 또는 `## Related Tasks`에 명시하세요.");
       lines.push("- 코드를 수정하거나 구현을 시작하지 마세요. 구현 담당자를 자동으로 부르지 마세요.");
       lines.push("- BLOCKING 지적을 해결하지 못하거나 수용하지 않을 때는 TASK를 고친 것처럼 다시 쓰지 마세요. `STATUS: NEEDS_DECISION`과 그 이유·사용자에게 필요한 질문을 반환하고, 기존 TASK.md를 덮어쓰지 마세요.");
       lines.push("- 응답 안에 `STATUS: PLAN_READY` 또는 `STATUS: NEEDS_DECISION` 하나를 넣으세요.");
