@@ -43,6 +43,7 @@ jobs:
           s = s.replace('      schemaVersion: 3,\n      runId: info.runId,\n      checkpointProtection: ["protected", "unavailable_non_git", "unavailable_checkpoint_failed", "unavailable_user_approved"].includes(evidence.checkpointProtection)\n        ? evidence.checkpointProtection\n        : null,', '        schemaVersion: 3,\n        checkpointProtection: ["protected", "unavailable_non_git", "unavailable_checkpoint_failed", "unavailable_user_approved"].includes(evidence.checkpointProtection)\n          ? evidence.checkpointProtection\n          : null,\n        round: evidence.round || 1,')
           s = s.replace('const path = require("node:path");', 'const { buildConversationWindow } = require("./chat-summary-window");')
           s = s.replace('const path = require("node:path");\nconst { roleContextPolicy, roleContextPromptLines } = require("./professional-role-context");', 'const { buildConversationWindow } = require("./chat-summary-window");\nconst { roleContextPolicy, roleContextPromptLines } = require("./professional-role-context");')
+          s = s.replace('const { buildConversationWindow } = require("./chat-summary-window");\n\nconst root = process.cwd();', 'const path = require("node:path");\n\nconst root = process.cwd();', 1)
           p.write_text(s, encoding='utf-8')
           PY
       - name: Apply guarded transform
