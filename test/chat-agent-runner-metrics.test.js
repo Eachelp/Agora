@@ -26,6 +26,24 @@ test("runner는 모든 실행에 bounded runMetrics를 붙인다", async () => {
   assert.equal(result.runMetrics.stopReason, "COMPLETED");
 });
 
+test("runner는 종료 시 canonical run-metrics 이벤트를 정확히 한 번 보낸다", async () => {
+  const events = [];
+  const run = runAgentProcess({
+    commandPath: NODE,
+    argv: ["-e", "process.stdout.write('완료')"],
+    prompt: "metrics-event",
+    cwd: os.tmpdir(),
+    onEvent: (event) => events.push(event),
+  });
+  const result = await run.promise;
+
+  const metricEvents = events.filter((event) => event.kind === "run-metrics");
+  assert.equal(metricEvents.length, 1);
+  assert.deepEqual(metricEvents[0].metrics, result.runMetrics);
+  assert.equal(metricEvents[0].metrics.promptChars, "metrics-event".length);
+  assert.equal(metricEvents[0].metrics.stopReason, "COMPLETED");
+});
+
 test("반복 탐색은 WARNING과 LOOP_DETECTED를 한 번씩 알리되 실행을 중단하지 않는다", async () => {
   const payloads = [];
   for (let i = 0; i < 8; i += 1) {
