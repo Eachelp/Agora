@@ -3,6 +3,15 @@
 const DEFAULT_RECENT_TOOL_EVENTS = 40;
 const DEFAULT_REPEATED_TARGETS = 10;
 
+const DEFAULT_LOOP_THRESHOLDS = Object.freeze({
+  warningRepeatCount: 4,
+  loopRepeatCount: 8,
+  warningRepeatedCalls: 6,
+  loopRepeatedCalls: 12,
+  warningOutputBytes: 2 * 1024 * 1024,
+  loopOutputBytes: 5 * 1024 * 1024,
+});
+
 function nonNegativeInteger(value) {
   return Number.isInteger(value) && value >= 0 ? value : 0;
 }
@@ -16,6 +25,73 @@ function targetKey(tool, target) {
   const normalizedTarget = normalizeTarget(target);
   if (!normalizedTarget) return null;
   return `${String(tool || "tool").toLowerCase()}\u0000${normalizedTarget}`;
+}
+
+function normalizedThresholds(overrides = {}) {
+  const result = { ...DEFAULT_LOOP_THRESHOLDS };
+  for (const key of Object.keys(result)) {
+    if (Number.isInteger(overrides[key]) && overrides[key] >= 0) result[key] = overrides[key];
+  }
+  return result;
+}
+
+function detectExplorationLoop(snapshot, overrides = {}) {
+  const thresholds = normalizedThresholds(overrides);
+  const summary = snapshot?.toolSummary || {};
+  const maxRepeatCount = nonNegativeInteger(summary.maxRepeatCount);
+  const repeatedCalls = nonNegativeInteger(summary.repeatedCalls);
+  const outputBytes = nonNegativeInteger(summary.outputBytes);
+  const failed = nonNegativeInteger(summary.failed);
+  const finished = nonNegativeInteger(summary.finished);
+  const failureRate = finished > 0 ? failed / finished : 0;
+
+  const loopReasons = [];
+  const warningReasons = [];
+
+  if (maxRepeatCount >= thresholds.loopRepeatCount) {
+    loopReasons.push(`same-target:${maxRepeatCount}`);
+  } else if (maxRepeatCount >= thresholds.warningRepeatCount) {
+    warningReasons.push(`same-target:${maxRepeatCount}`);
+  }
+
+  if (repeatedCalls >= thresholds.loopRepeatedCalls) {
+    loopReasons.push(`repeated-calls:${repeatedCalls}`);
+  } else if (repeatedCalls >= thresholds.warningRepeatedCalls) {
+    warningReasons.push(`repeated-calls:${repeatedCalls}`);
+  }
+
+  if (outputBytes >= thresholds.loopOutputBytes) {
+    loopReasons.push(`tool-output-bytes:${outputBytes}`);
+  } else if (outputBytes >= thresholds.warningOutputBytes) {
+    warningReasons.push(`tool-output-bytes:${outputBytes}`);
+  }
+
+  // 실패가 절반 이상인 상태에서 반복 호출도 함께 관찰되면 단순 대용량 탐색보다
+  // 도구 실패 → 우회 → 재시도 루프일 가능성이 높습니다.
+  if (finished >= 4 && failureRate >= 0.5 && repeatedCalls >= 2) {
+    if (maxRepeatCount >= thresholds.warningRepeatCount || repeatedCalls >= thresholds.warningRepeatedCalls) {
+      loopReasons.push(`failure-loop:${failed}/${finished}`);
+    } else {
+      warningReasons.push(`failure-rate:${failed}/${finished}`);
+    }
+  }
+
+  const status = loopReasons.length > 0
+    ? "LOOP_DETECTED"
+    : warningReasons.length > 0
+      ? "WARNING"
+      : "NORMAL";
+
+  return {
+    status,
+    reasons: status === "LOOP_DETECTED" ? loopReasons : warningReasons,
+    maxRepeatCount,
+    repeatedCalls,
+    outputBytes,
+    failed,
+    finished,
+    failureRate,
+  };
 }
 
 function createRunTelemetry(options = {}) {
@@ -96,7 +172,7 @@ function createRunTelemetry(options = {}) {
     const maxRepeatCount = [...targetCounts.values()]
       .reduce((max, entry) => Math.max(max, entry.count), 0);
 
-    return {
+    const snapshotValue = {
       commands: {
         total: commandFinished,
         failed: commandFailed,
@@ -118,6 +194,10 @@ function createRunTelemetry(options = {}) {
           .sort((a, b) => b.count - a.count || a.tool.localeCompare(b.tool)),
       },
     };
+    return {
+      ...snapshotValue,
+      exploration: detectExplorationLoop(snapshotValue, options.loopThresholds),
+    };
   }
 
   return { observe, snapshot };
@@ -125,6 +205,8 @@ function createRunTelemetry(options = {}) {
 
 module.exports = {
   createRunTelemetry,
+  detectExplorationLoop,
   DEFAULT_RECENT_TOOL_EVENTS,
   DEFAULT_REPEATED_TARGETS,
+  DEFAULT_LOOP_THRESHOLDS,
 };
