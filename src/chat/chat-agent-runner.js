@@ -158,9 +158,10 @@ function killTree(child, platform = process.platform) {
 }
 
 // 프로바이더 프로세스 1회 실행.
-// - argv는 chat-argv가 만든 검증된 배열이며, 프롬프트는 항상 stdin으로 전달합니다.
+// - argv는 chat-argv가 만든 검증된 배열이며, 프롬프트는 provider transport에 따라 stdin/argv로 전달합니다.
 // - parseLine이 있으면 stdout을 줄 단위로 정규화 이벤트로 바꿔 onEvent로 알립니다.
 // - 최종 답변 우선순위: outputFile(codex -o) → parser의 final → stdout 원문.
+// - requireFinal=true이면 parser가 있는 실행에서 delta-only 정상 종료를 성공으로 승격하지 않습니다.
 function runAgentProcess({
   commandPath,
   needsShell = false,
@@ -177,6 +178,7 @@ function runAgentProcess({
   onRawChunk = null,
   promptTransport = "stdin",
   silenceWarningMs = DEFAULT_SILENCE_WARNING_MS,
+  requireFinal = false,
 }) {
   let child = null;
   let settled = false;
@@ -485,8 +487,23 @@ function runAgentProcess({
         return;
       }
 
+      // 전문 실행은 parser가 있는 provider에서 명시적인 final(outputFile/parser final)이
+      // 없으면 성공으로 간주하지 않습니다. 일반 채팅만 기존 delta fallback을 유지합니다.
+      if (requireFinal && parseLine) {
+        const partial = deltaText.trim();
+        finish({
+          ok: false,
+          protocolFailed: true,
+          stopReason: "PROTOCOL_FINAL_MISSING",
+          error: "구조화된 최종 응답을 확인하지 못했습니다.",
+          ...(partial ? { partialText: partial } : {}),
+          output: outputInfo,
+        });
+        return;
+      }
+
       // 정상 종료(code 0, 오류 신호 없음)인데 final 이벤트만 누락된 경우는
-      // 중간 답변을 최종 결과로 승격합니다 (기존 호환성 유지).
+      // 일반 채팅 호환성을 위해 중간 답변을 최종 결과로 승격합니다.
       const fallbackText = deltaText.trim();
       if (fallbackText) {
         finish({ ok: true, text: fallbackText, output: outputInfo });
