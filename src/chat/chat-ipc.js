@@ -36,6 +36,7 @@ const {
 } = require("./chat-argv");
 const { createLineParser } = require("./chat-events");
 const { runAgentProcess } = require("./chat-agent-runner");
+const { persistRunMetrics } = require("./chat-run-metrics-store");
 const {
   importAttachment,
   readImagePreview,
@@ -138,6 +139,21 @@ function writeBoundedEvidence(store, sessionId, runId, provider, evidence) {
   } catch {
     return false;
   }
+}
+
+function persistInvocationMetrics({ store, sessionId, runId, agent, specialistStage = null, result }) {
+  if (!result?.runMetrics) return false;
+  const saved = persistRunMetrics({
+    store,
+    sessionId,
+    runId,
+    provider: agent?.id || null,
+    model: agent?.model || null,
+    effort: agent?.effort || null,
+    stage: specialistStage || null,
+    metrics: result.runMetrics,
+  });
+  return Boolean(saved?.ok);
 }
 
 // 오래된 실행 로그를 정리합니다. 실패해도 실행에는 영향을 주지 않습니다.
@@ -576,6 +592,7 @@ function createChatFeature(options) {
         parseLine: createLineParser(agent.id),
         onEvent: emitEvent,
         timeoutMs: options.timeoutMs,
+        requireFinal: Boolean(specialistStage),
         // 출력이 길다는 이유로 실행을 죽이지 않습니다. hard limit은 사용자가
         // 명시적으로 켜지 않으면 undefined(=상한 없음)로 남습니다.
         ...(Number.isFinite(options.captureOutputBytes) && options.captureOutputBytes > 0
@@ -597,6 +614,14 @@ function createChatFeature(options) {
                 }
               : null;
           const enrichedResult = diagnostics ? { ...result, output: diagnostics } : result;
+          const metricsPersisted = persistInvocationMetrics({
+            store,
+            sessionId,
+            runId,
+            agent,
+            specialistStage,
+            result: enrichedResult,
+          });
           const persistedEvidence = specialistStage
             ? writeBoundedEvidence(
                 store,
@@ -607,8 +632,13 @@ function createChatFeature(options) {
               )
             : true;
           return enrichedResult.ok
-            ? { ...enrichedResult, deliveries: invocation.deliveries, evidencePersisted: persistedEvidence }
-            : { ...enrichedResult, evidencePersisted: persistedEvidence };
+            ? {
+                ...enrichedResult,
+                deliveries: invocation.deliveries,
+                evidencePersisted: persistedEvidence,
+                metricsPersisted,
+              }
+            : { ...enrichedResult, evidencePersisted: persistedEvidence, metricsPersisted };
         }),
         cancel: run.cancel,
       };
@@ -2084,5 +2114,6 @@ module.exports = {
   publicAttachment,
   attachmentContextLines,
   createRunLogWriter,
+  persistInvocationMetrics,
   MAX_RUN_LOG_FILES,
 };
