@@ -212,9 +212,26 @@ function runAgentProcess({
       cleanup();
       const finishedCommands = commandEvents.filter((event) => event.kind === "command-finished");
       const boundedCommands = (finishedCommands.length > 0 ? finishedCommands : commandEvents).slice(-20);
-      resolve(boundedCommands.length > 0
-        ? { ...result, evidence: { commands: boundedCommands } }
-        : result);
+      const telemetry = typeof parseLine?.getTelemetry === "function"
+        ? parseLine.getTelemetry()
+        : null;
+      const hasTelemetry = Boolean(
+        telemetry && (
+          telemetry.commands?.total > 0 ||
+          telemetry.toolSummary?.started > 0 ||
+          telemetry.exploration?.status
+        )
+      );
+      const evidence = boundedCommands.length > 0 || hasTelemetry
+        ? {
+            commands: boundedCommands,
+            ...(telemetry?.commands ? { commandSummary: telemetry.commands } : {}),
+            ...(Array.isArray(telemetry?.tools) ? { tools: telemetry.tools } : {}),
+            ...(telemetry?.toolSummary ? { toolSummary: telemetry.toolSummary } : {}),
+            ...(telemetry?.exploration ? { exploration: telemetry.exploration } : {}),
+          }
+        : null;
+      resolve(evidence ? { ...result, evidence } : result);
     };
 
     if (promptTransport === "argv" && needsShell) {
