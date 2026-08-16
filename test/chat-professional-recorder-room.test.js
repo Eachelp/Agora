@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 
 const { ChatRoom } = require("../src/chat/chat-room");
 const { parseRecorderOutput } = require("../src/agora/recorder-output");
+const { DETERMINISTIC_RECORDER_MODE } = require("../src/chat/chat-professional-recorder");
 
 function recorderAgent() {
   return {
@@ -18,12 +19,13 @@ function recorderAgent() {
   };
 }
 
-test("실제 ChatRoom professional recorder는 runAgent를 호출하지 않는다", async () => {
+test("explicit policy의 실제 ChatRoom professional recorder는 runAgent를 호출하지 않는다", async () => {
   let providerCalls = 0;
   const agent = recorderAgent();
   const room = new ChatRoom({
     sessionId: "s-recorder",
     agents: [agent],
+    meta: { professionalRecorderMode: DETERMINISTIC_RECORDER_MODE },
     runAgent() {
       providerCalls += 1;
       return {
