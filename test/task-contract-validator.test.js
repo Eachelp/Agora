@@ -157,3 +157,45 @@ test("같은 레이블의 축약 헤딩도 매칭된다", () => {
   assert.ok(!result.warnings.includes("Risks / Open Questions"));
   assert.ok(!result.warnings.includes("Dependencies"));
 });
+
+test("필수 섹션은 축약 헤딩으로 통과하지 못한다", () => {
+  const contract = [
+    "## Goal",
+    "목표",
+    "## Requirements",
+    "요구사항",
+    "## Implementation",
+    "접근",
+    "## Acceptance",
+    "완료",
+    "## Verification",
+    "검증",
+    "## Out",
+    "범위밖",
+  ].join(NL);
+  const result = validateTaskContract(contract);
+  assert.equal(result.valid, false);
+  assert.ok(result.missing.includes("Implementation Approach"));
+  assert.ok(result.missing.includes("Acceptance Criteria"));
+  assert.ok(result.missing.includes("Out of Scope"));
+});
+
+test("control marker만 있는 섹션 body는 empty로 취급된다", () => {
+  const contract = [
+    "## Goal",
+    "목표",
+    "## Requirements",
+    "요구사항",
+    "## Implementation Approach",
+    "접근",
+    "## Acceptance Criteria",
+    "완료",
+    "## Verification",
+    "검증",
+    "## Out of Scope",
+    "STATUS: PLAN_READY",
+  ].join(NL);
+  const result = validateTaskContract(contract);
+  assert.equal(result.valid, false);
+  assert.ok(result.missing.includes("Out of Scope"));
+});

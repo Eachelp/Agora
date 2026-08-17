@@ -375,9 +375,11 @@ class WorkflowStore {
       this.mutateAndPersist(() => {
         let changed = false;
         // 동일 taskPath 그룹: 현재 워크스페이스 파일 hash와 일치하는 항목을
-        // canonical로 선택합니다. 일치하는 게 없으면 disk가 현재 소스이므로
-        // 가장 최근 항목을 disk hash로 갱신해 canonical로 승격하고 나머지는
-        // superseded로 표시합니다. hash_mismatch를 canonical로 남기지 않습니다.
+        // canonical로 선택합니다. 일치하는 항목이 하나도 없으면(disk 파일이
+        // 외부에서 바뀌었거나 새 revision) 기존 항목의 taskHash·실행 상태를
+        // 덮어쓰지 않고, disk 기준으로 새 canonical 항목을 만들고 기존 항목들은
+        // 전부 superseded로 표시합니다. 과거 Run 실행 상태가 새 내용에 잘못
+        // 붙는 provenance 오염을 막습니다.
         const pathGroups = new Map();
         for (const task of this.data.tasks) {
           if (task.projectId !== projectId || task.contentSource !== "file" || !task.taskPath) continue;
@@ -386,6 +388,7 @@ class WorkflowStore {
           pathGroups.get(normPath).push(task);
         }
 
+        const pendingNew = [];
         for (const [normPath, group] of pathGroups) {
           const onDisk = fileMap.get(normPath);
           let canonical = null;
@@ -393,11 +396,23 @@ class WorkflowStore {
             canonical = group.find((task) => task.taskHash && task.taskHash === onDisk.hash);
           }
           if (onDisk && !canonical) {
-            canonical = [...group].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0] || null;
-            if (canonical) {
-              canonical.taskHash = onDisk.hash;
-              canonical.syncState = "ok";
-              canonical.updatedAt = this.now();
+            // 기존 항목을 재사용해 덮어쓰지 않는다. 새 canonical 항목을 만든다.
+            const first = group[0];
+            if (first) {
+              pendingNew.push({
+                projectId,
+                title: onDisk.filename,
+                description: "",
+                contentSource: "file",
+                taskPath: normPath,
+                taskHash: onDisk.hash,
+                status: "todo",
+                role: first.role || "implementation",
+                origin: first.origin || "planner",
+                syncState: "ok",
+                chatId: first.chatId || null,
+                decisionId: first.decisionId || null,
+              });
               changed = true;
             }
           }
@@ -424,6 +439,11 @@ class WorkflowStore {
               }
             }
           }
+        }
+
+        for (const input of pendingNew) {
+          const built = normalizeTask(input, this.now());
+          if (built) this.data.tasks.push(built);
         }
 
         for (const [relPath, info] of fileMap.entries()) {
@@ -517,20 +537,36 @@ class WorkflowStore {
             }
             continue;
           }
-          let canonical =
-            group.find((task) => task.taskHash && task.taskHash === onDisk.hash) ||
-            [...group].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
-          if (canonical) {
-            if (canonical.taskHash !== onDisk.hash) {
-              canonical.taskHash = onDisk.hash;
-              canonical.syncState = "ok";
-              canonical.updatedAt = this.now();
-              changed = true;
-            } else if (canonical.syncState !== "ok") {
-              canonical.syncState = "ok";
-              canonical.updatedAt = this.now();
-              changed = true;
+          let canonical = group.find((task) => task.taskHash && task.taskHash === onDisk.hash) || null;
+          if (!canonical) {
+            // 기존 항목을 덮어써 provenance를 오염시키지 않는다. disk 기준으로
+            // 새 canonical 항목을 만들고 기존 항목은 superseded로 처리한다.
+            const first = group[0];
+            if (first) {
+              const built = normalizeTask({
+                projectId,
+                title: onDisk.filename,
+                description: "",
+                contentSource: "file",
+                taskPath: normPath,
+                taskHash: onDisk.hash,
+                status: "todo",
+                role: first.role || "implementation",
+                origin: first.origin || "planner",
+                syncState: "ok",
+                chatId: first.chatId || null,
+                decisionId: first.decisionId || null,
+              }, this.now());
+              if (built) {
+                this.data.tasks.push(built);
+                canonical = built;
+                changed = true;
+              }
             }
+          } else if (canonical.syncState !== "ok") {
+            canonical.syncState = "ok";
+            canonical.updatedAt = this.now();
+            changed = true;
           }
           for (const task of group) {
             if (task === canonical) continue;

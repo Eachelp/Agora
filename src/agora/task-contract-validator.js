@@ -38,8 +38,9 @@ function tokens(value) {
 }
 
 // Candidate normalized keys for a section label.
-// "Current State / Evidence" -> {current, currentstate, currentstateevidence,
-// evidence, ...} so shortened headings like "Current State" or "Risks" match.
+// For required sections we only allow the exact normalized heading so the
+// prompt-mandated headings cannot be satisfied by shortened aliases.
+// Recommended sections still accept shortened aliases since they are non-blocking.
 function candidateKeys(label) {
   const toks = tokens(label);
   const keys = new Set();
@@ -48,6 +49,11 @@ function candidateKeys(label) {
   }
   keys.add(toks.join(""));
   return keys;
+}
+
+// Exact normalized match for required sections (no aliases).
+function exactKey(label) {
+  return normalizeHeading(label);
 }
 
 function normalizeHeading(value) {
@@ -77,6 +83,9 @@ function stripFences(lines) {
   let inFence = false;
   for (const line of lines) {
     const trimmed = line.trim();
+    // Drop protocol control markers so a heading whose body only contains
+    // "STATUS: PLAN_READY" is treated as empty content.
+    if (/^STATUS:\s*[A-Z_]+$/i.test(trimmed)) continue;
     if (isFenceLine(trimmed)) {
       inFence = !inFence;
       continue;
@@ -123,7 +132,7 @@ function validateTaskContract(content) {
   const sections = [];
 
   function collect(label, required) {
-    const keys = candidateKeys(label);
+    const keys = new Set(required ? [exactKey(label)] : [...candidateKeys(label)]);
     let idx = -1;
     for (let i = 0; i < headings.length; i += 1) {
       if (keys.has(normalizeHeading(headings[i].heading))) {

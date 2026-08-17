@@ -544,6 +544,20 @@ function createChatFeature(options) {
           cancel: () => {},
         };
       }
+      // 실행 authority는 프로젝트 workspace가 canonical이다. 세션 workspace는
+      // 마이그레이션 호환 캐시일 뿐이며, 프로젝트 workspace를 덮어쓰지 않는다.
+      const project = projectForSession(meta);
+      const canonicalWorkspace = project?.workspace || null;
+      // workspace를 필요로 하는 권한(workspace-read/write)인데 프로젝트 workspace가
+      // 없으면 fail-closed로 차단한다. (migration conflict로 프로젝트 workspace가
+      // null인 경우가 대표적이며, 이때 세션별 workspace로 실행되면 같은 프로젝트의
+      // 다른 채팅이 서로 다른 repo에서 실행될 수 있기 때문.)
+      if ((permissionMode === "workspace-read" || permissionMode === "workspace-write") && !canonicalWorkspace) {
+        return {
+          promise: Promise.resolve({ ok: false, error: "프로젝트 workspace가 설정되어 있지 않아 실행할 수 없습니다. 프로젝트 워크스페이스 폴더를 먼저 선택해 주세요." }),
+          cancel: () => {},
+        };
+      }
       const attachmentsDir = store.attachmentsDir(sessionId);
       const enriched = (attachments || []).map((attachment) => ({
         ...attachment,
@@ -561,7 +575,7 @@ function createChatFeature(options) {
       const invocation = buildAgentInvocation({
         provider: record,
         permissionMode,
-        workspace: meta.workspace || null,
+        workspace: canonicalWorkspace || meta.workspace || null,
         model: agent.model,
         effort: agent.effort,
         attachments: enriched,

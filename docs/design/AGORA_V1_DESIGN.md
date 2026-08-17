@@ -174,21 +174,22 @@ Recorder   : 새로운 결정을 만들지 않는다.
     ## Requirements
     ...
 
-    ## Constraints
+    ## Implementation Approach
     ...
 
     ## Acceptance Criteria
     ...
 
-    ## Out of Scope
+    ## Verification
     ...
 
-    ## Open Questions / Risks
+    ## Out of Scope
     ...
     ```
 - **Terminal**: `PLAN_READY` / `NEEDS_DECISION`
 
 ### 3.2 Builder — 구현자
+Planner 계약(위 6개 필수 섹션)은 정확한 헤딩으로 반드시 포함해야 하며, 축약 헤딩은 필수 섹션 판정에서 허용되지 않습니다. 각 필수 섹션 아래에는 실질적인 설명이 있어야 합니다.
 
 - **Purpose**: 승인된 Task를 **최소한의 변경으로 정확하게 실행**한다.
 - **Inputs**: Project Rules, Frozen Task Revision, Workspace.

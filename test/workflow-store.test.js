@@ -261,7 +261,7 @@ test("미래의 스키마 버전(forward-schema)도 readOnly 상태에서 기존
   assert.throws(() => store.createTask({ projectId: "p-future", title: "새 작업" }), /읽기 전용/);
 });
 
-test("reconcileProjectTasks는 disk hash와 일치하는 기존 항목이 없어도 가장 최근 항목을 canonical로 갱신하고 구버전은 superseded 처리한다", () => {
+test("reconcileProjectTasks는 disk hash와 일치하는 기존 항목이 없으면 새 canonical을 만들고 기존 항목은 superseded 처리한다", () => {
   const root = makeRoot();
   const wsRoot = makeRoot();
   const tasksDir = path.join(wsRoot, ".project-memory", "tasks");
@@ -289,15 +289,21 @@ test("reconcileProjectTasks는 disk hash와 일치하는 기존 항목이 없어
 
   const res = store.reconcileProjectTasks("p1", wsRoot);
   assert.equal(res.ok, true);
-  const tasks = res.tasks;
-  const canonical = tasks.find((t) => t.id === old2.id);
-  const superseded = tasks.find((t) => t.id === old1.id);
-  assert.equal(canonical.syncState, "ok");
-  assert.equal(superseded.syncState, "superseded");
-  // 기본 목록에서는 canonical만 노출된다
+ const tasks = res.tasks;
+  // disk hash와 일치하는 기존 항목이 없으므로 새 canonical 항목을 생성하고,
+  // 기존 항목(old1/old2)은 provenance 오염을 막기 위해 superseded 처리된다.
+  const newCanonical = tasks.find((t) => t.taskHash && t.taskHash !== "mismatch1" && t.taskHash !== "mismatch2");
+  const oldOne = tasks.find((t) => t.id === old1.id);
+  const oldTwo = tasks.find((t) => t.id === old2.id);
+  assert.ok(newCanonical, "새 canonical 항목이 있어야 한다");
+  assert.equal(newCanonical.syncState, "ok");
+  assert.ok(!newCanonical.lastRunId && !newCanonical.activeRunId, "새 canonical은 실행 상태가 없어야 한다");
+  assert.equal(oldOne.syncState, "superseded");
+  assert.equal(oldTwo.syncState, "superseded");
+  // 기본 목록에는 새 canonical만 노출된다
   const visible = store.listTasks("p1");
   assert.equal(visible.length, 1);
-  assert.equal(visible[0].id, old2.id);
+  assert.equal(visible[0].taskHash, newCanonical.taskHash);
 });
 
 test("migrateOrphanedTasks는 단일(unique) file-backed task도 디스크에 파일이 없으면 missing_file로 정리한다", () => {

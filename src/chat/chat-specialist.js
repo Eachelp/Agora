@@ -1553,6 +1553,10 @@ class SpecialistMixin {
             this.appendSystem("작업 전 상태 백업(checkpoint)을 만들지 못해 전문 실행을 시작하지 않았습니다. 워크스페이스의 Git 상태를 확인해 주세요.");
             return { ok: false, stage: "implementation", completedIterations: 0, needsUserDecision: true, stopReason: "CHECKPOINT_FAILED" };
           }
+          if (error?.code === "TASK_CONTRACT_INCOMPLETE") {
+            this.appendSystem("동결된 Task의 계약이 불완전해 실행을 중단합니다. 필수 섹션을 모두 채워야 실행할 수 있습니다.");
+            return { ok: false, stage: "planner", completedIterations: 0, needsUserDecision: true, stopReason: "TASK_CONTRACT_INCOMPLETE", taskError: error?.message || "Task 계약이 불완전합니다." };
+          }
           this.appendSystem(`Frozen Task를 만들지 못해 실행을 중단합니다. (${error?.message || "알 수 없는 오류"})`);
           return { ok: false, stage: "planner", completedIterations: 0, needsUserDecision: true, stopReason: "FROZEN_TASK_MISSING", taskError: error?.message || "알 수 없는 오류" };
         }
@@ -1938,6 +1942,17 @@ class SpecialistMixin {
             round,
             error: error.message,
           });
+        }
+        if (error?.code === "TASK_CONTRACT_INCOMPLETE") {
+          this.appendSystem("동결된 Task의 계약이 불완전해 실행을 중단합니다. 필수 섹션을 모두 채워야 실행할 수 있습니다.");
+          return {
+            ok: false,
+            stage: "planner",
+            completedIterations: 0,
+            needsUserDecision: true,
+            stopReason: "TASK_CONTRACT_INCOMPLETE",
+            taskError: error?.message || "Task 계약이 불완전합니다.",
+          };
         }
         this.appendSystem(`Frozen Task를 만들지 못해 실행을 중단합니다. (${error?.message || "알 수 없는 오류"})`);
         return {
