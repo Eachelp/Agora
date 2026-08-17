@@ -1332,7 +1332,7 @@ fake transport로 검증했다. 실사용 전 로컬 live smoke(1 Codex professi
 최종 commit SHA:
 
 ```text
-__C3_SHA__
+ae61eb33dfa529c175e02a06108ee7f617056599
 ```
 
 ---
