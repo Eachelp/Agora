@@ -72,6 +72,7 @@ function createProfessionalRun(options = {}) {
     // 사용자가 백업 없이 실행하겠다고 명시 승인했는지 여부를 영속 보존한다.
     // checkpointProtection enum과 함께 evidence/Reviewer 판단 근거가 된다.
     userApprovedUnprotectedExecution: Boolean(options.userApprovedUnprotectedExecution),
+    missingSections: Array.isArray(options.missingSections) ? [...options.missingSections] : null,
     stopReason: options.stopReason || null,
     blockReason: options.blockReason || null,
     createdAt: Number.isFinite(options.createdAt) ? options.createdAt : now,
@@ -321,6 +322,17 @@ function transitionProfessionalRun(current, event = {}) {
       next.checkpointProtection = "unavailable_checkpoint_failed";
       break;
     }
+    case "TASK_CONTRACT_INCOMPLETE": {
+      if (current.node !== "READY" && current.node !== "IMPLEMENTING") {
+        return { ok: false, reason: `계약 불완전 전이는 READY/IMPLEMENTING에서만 가능합니다: ${current.node}` };
+      }
+      next.node = "READY";
+      next.status = "WAITING";
+      next.stopReason = "TASK_CONTRACT_INCOMPLETE";
+      next.approvedTaskHash = null;
+      if (event.missingSections) next.missingSections = [...event.missingSections];
+      break;
+    }
     case "CHECKPOINT_RETRY": {
       if (current.status !== "WAITING" || current.stopReason !== "CHECKPOINT_FAILED") {
         return { ok: false, reason: "checkpoint 재시도는 CHECKPOINT_FAILED 대기 상태에서만 가능합니다." };
@@ -407,8 +419,13 @@ function publicProfessionalState(run, options = {}) {
   const blocked = run.status === "BLOCKED" || run.status === "INVALID";
   const needsInput =
     run.status === "WAITING" &&
-    (["PLANNING", "PLAN_REVIEW"].includes(run.node) || run.stopReason === "CHECKPOINT_FAILED");
-  const planReady = run.node === "READY" && run.status === "WAITING";
+    (["PLANNING", "PLAN_REVIEW"].includes(run.node) ||
+      run.stopReason === "CHECKPOINT_FAILED" ||
+      run.stopReason === "TASK_CONTRACT_INCOMPLETE");
+  const planReady =
+    run.node === "READY" &&
+    run.status === "WAITING" &&
+    run.stopReason !== "TASK_CONTRACT_INCOMPLETE";
   const hasTask = Boolean(run.taskPath);
   const taskId = run.taskPath ? run.taskPath.replace(/^.*[\\/]/, "").replace(/\.md$/i, "") : null;
 
@@ -432,6 +449,7 @@ function publicProfessionalState(run, options = {}) {
     checkpointProtection: run.checkpointProtection || null,
     checkpointFailReason: run.checkpointFailReason || null,
     userApprovedUnprotectedExecution: Boolean(run.userApprovedUnprotectedExecution),
+    missingSections: run.missingSections || options.missingSections || null,
   };
 }
 

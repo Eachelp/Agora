@@ -253,8 +253,8 @@ class ChatRoom extends EventEmitter {
       phase: professional?.phase || this.specialistResume?.phase || null,
       node: professional?.node || null,
       status: professional?.status || null,
-      needsInput: Boolean(professional?.needsInput) || ["needs_decision", "plan_review_fix_required"].includes(this.specialistResume?.phase),
-      planReady: Boolean(professional?.planReady) || Boolean(this.professionalPlan),
+      needsInput: Boolean(professional?.needsInput) || ["needs_decision", "plan_review_fix_required", "task_contract_incomplete"].includes(this.specialistResume?.phase),
+      planReady: (Boolean(professional?.planReady) || Boolean(this.professionalPlan)) && this.specialistResume?.phase !== "task_contract_incomplete" && professional?.stopReason !== "TASK_CONTRACT_INCOMPLETE",
       // 승인된 기획안(Frozen Task 원본)을 채팅에서 열어볼 수 있게 경로/제목을 노출합니다.
       planTaskPath: taskPath,
       planTaskId: taskId,
@@ -271,6 +271,7 @@ class ChatRoom extends EventEmitter {
       stopReason: professional?.stopReason || null,
       checkpointProtection: professional?.checkpointProtection || null,
       checkpointFailReason: professional?.checkpointFailReason || null,
+      missingSections: this.specialistResume?.missingSections || professional?.missingSections || null,
     };
   }
 

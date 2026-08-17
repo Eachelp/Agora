@@ -1415,7 +1415,12 @@ function renderProfessionalStatusDetail() {
   if (!box) return;
   const parts = [];
   if (specialistStopReason) {
-    const label = specialistStopReason === "CHECKPOINT_FAILED" ? "Checkpoint 실패" : specialistStopReason;
+    const label =
+      specialistStopReason === "CHECKPOINT_FAILED"
+        ? "Checkpoint 실패"
+        : specialistStopReason === "TASK_CONTRACT_INCOMPLETE"
+          ? "Task 계약 불완전"
+          : specialistStopReason;
     parts.push("Stop: " + label);
   }
   if (specialistCheckpointProtection) {
@@ -4221,8 +4226,13 @@ function lockComposer(locked) {
       composerInput.placeholder = "아래에서 다음 처리를 선택하세요";
       composerInput.disabled = true;
       sendButton.textContent = "선택 대기";
+    } else if (specialistStopReason === "TASK_CONTRACT_INCOMPLETE") {
+      composerInput.placeholder = "기획을 보완하려면 수정 사항을 입력하세요 (Enter 전송)";
+      composerInput.disabled = false;
+      sendButton.textContent = "기획 보완";
     } else {
       composerInput.placeholder = "기획자의 Open Question에 답하세요 (Enter 전송)";
+      composerInput.disabled = false;
       sendButton.textContent = "답변 보내기";
     }
   } else if (specialistNode === "READY" && !specialistActive) {

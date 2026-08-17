@@ -868,20 +868,34 @@ class SpecialistMixin {
 
   async _answerPlanQuestion(answer) {
     const resume = this.specialistResume;
-    // READY(plan_ready) 상태에서도 기획 수정을 허용한다.
-    if (!resume || !["needs_decision", "plan_review_fix_required", "plan_ready"].includes(resume.phase)) {
+    // READY(plan_ready) 상태 및 task_contract_incomplete 상태에서도 기획 수정을 허용한다.
+    if (!resume || !["needs_decision", "plan_review_fix_required", "plan_ready", "task_contract_incomplete"].includes(resume.phase)) {
       return { ok: false, error: "답변을 기다리는 기획 질문이 없거나 기획 수정 가능한 상태가 아닙니다." };
     }
     const isReadyEdit = resume.phase === "plan_ready";
+    const isContractFix = resume.phase === "task_contract_incomplete";
     const text = String(answer || "").trim();
-    if (!text) return { ok: false, error: isReadyEdit ? "기획 수정 내용을 입력해 주세요." : "기획자에게 보낼 답변을 입력해 주세요." };
+    if (!text && !isContractFix) return { ok: false, error: isReadyEdit ? "기획 수정 내용을 입력해 주세요." : "기획자에게 보낼 답변을 입력해 주세요." };
+    const fixText = text || "계약에 누락된 필수 섹션과 설명 본문을 모두 포함하여 작업 지시서를 보완해 주세요.";
     const transition = this.transitionProfessional({ type: "USER_ANSWER_PLAN" });
     if (!transition.ok) return this.professionalTransitionFailure("planner", transition);
     this.specialistResume = null;
-    this.appendMessage({ authorType: "user", author: "user", text: isReadyEdit ? `[기획 수정] ${text}` : `[기획 답변] ${text}` });
-    const editPrefix = isReadyEdit ? "\n\n=== 기획 수정 요청 ===\n" : "\n\n=== 사용자 답변 ===\n";
-    const editSuffix = isReadyEdit ? "\n=== 기획 수정 요청 끝 ===" : "\n=== 사용자 답변 끝 ===";
-    const feedback = `${resume.feedback || ""}${editPrefix}${text}${editSuffix}`;
+    const tag = isContractFix ? "[기획 보완]" : isReadyEdit ? "[기획 수정]" : "[기획 답변]";
+    this.appendMessage({ authorType: "user", author: "user", text: `${tag} ${fixText}` });
+    let editPrefix = "\n\n=== 기획 보완 요청 ===\n";
+    if (isContractFix && resume.missingSections && resume.missingSections.length > 0) {
+      editPrefix += `[기획서 계약 누락] 필수 섹션 또는 내용 누락: ${resume.missingSections.join(", ")}\n반드시 다음 6개 필수 섹션(Goal, Requirements, Implementation Approach, Acceptance Criteria, Verification, Out of Scope)과 본문 설명을 모두 포함하여 다시 작성해 주세요.\n`;
+    } else if (isReadyEdit) {
+      editPrefix = "\n\n=== 기획 수정 요청 ===\n";
+    } else if (!isContractFix) {
+      editPrefix = "\n\n=== 사용자 답변 ===\n";
+    }
+    const editSuffix = isContractFix
+      ? "\n=== 기획 보완 요청 끝 ==="
+      : isReadyEdit
+        ? "\n=== 기획 수정 요청 끝 ==="
+        : "\n=== 사용자 답변 끝 ===";
+    const feedback = `${resume.feedback || ""}${editPrefix}${fixText}${editSuffix}`;
     const result = await this.runPlanBlock({ ...resume, feedback, taskInfo: resume.taskInfo || null });
     if (resume.action === "full" && result?.ok) {
       return this.runProfessionalImplementation({
@@ -1200,8 +1214,6 @@ class SpecialistMixin {
       this.emitSpecialistState();
       return { ok: false, cancelled: true };
     }
-
-    this.appendSystem(`구현·검수 시작 · 구현 @${implementation.agent.id} · 검수 @${review.agent.id}`);
 
     const feedback = this.professionalPlan.feedback || "";
     const taskInfo = this.professionalPlan.taskInfo;
@@ -1637,8 +1649,36 @@ class SpecialistMixin {
             return { ok: false, stage: "implementation", completedIterations: 0, needsUserDecision: true, stopReason: "CHECKPOINT_FAILED" };
           }
           if (error?.code === "TASK_CONTRACT_INCOMPLETE") {
-            this.appendSystem("동결된 Task의 계약이 불완전해 실행을 중단합니다. 필수 섹션을 모두 채워야 실행할 수 있습니다.");
-            return { ok: false, stage: "planner", completedIterations: 0, needsUserDecision: true, stopReason: "TASK_CONTRACT_INCOMPLETE", taskError: error?.message || "Task 계약이 불완전합니다." };
+            const missing = error?.missing || error?.contractCheck?.missing || [];
+            const missingStr = missing.length > 0 ? missing.join(", ") : "필수 섹션 누락 또는 내용 없음";
+            const transition = this.transitionProfessional({
+              type: "TASK_CONTRACT_INCOMPLETE",
+              missingSections: missing,
+            });
+            if (!transition.ok) return this.professionalTransitionFailure("planner", transition);
+            this.specialistResume = {
+              stages,
+              mode: resume.mode,
+              phase: "task_contract_incomplete",
+              taskInfo: taskInfo || null,
+              feedback: feedback || (taskInfo?.content || ""),
+              missingSections: missing,
+              taskError: error?.message || `실행 계약(Task)에 필수 섹션이 빠졌습니다: ${missingStr}`,
+              maxAutoRevisions,
+            };
+            this.emitSpecialistState();
+            this.appendSystem(
+              `동결된 Task의 계약이 불완전해 실행을 중단합니다.\n누락되거나 내용이 없는 필수 섹션: ${missingStr}\n\n필수 6개 섹션(Goal, Requirements, Implementation Approach, Acceptance Criteria, Verification, Out of Scope)과 본문 설명이 필요합니다.\n기획을 보완하려면 수정 사항을 입력해 주세요.`
+            );
+            return {
+              ok: false,
+              stage: "planner",
+              completedIterations: 0,
+              needsUserDecision: true,
+              stopReason: "TASK_CONTRACT_INCOMPLETE",
+              taskError: error?.message || `실행 계약(Task)에 필수 섹션이 빠졌습니다: ${missingStr}`,
+              missingSections: missing,
+            };
           }
           this.appendSystem(`Frozen Task를 만들지 못해 실행을 중단합니다. (${error?.message || "알 수 없는 오류"})`);
           return { ok: false, stage: "planner", completedIterations: 0, needsUserDecision: true, stopReason: "FROZEN_TASK_MISSING", taskError: error?.message || "알 수 없는 오류" };
@@ -2027,14 +2067,35 @@ class SpecialistMixin {
           });
         }
         if (error?.code === "TASK_CONTRACT_INCOMPLETE") {
-          this.appendSystem("동결된 Task의 계약이 불완전해 실행을 중단합니다. 필수 섹션을 모두 채워야 실행할 수 있습니다.");
+          const missing = error?.missing || error?.contractCheck?.missing || [];
+          const missingStr = missing.length > 0 ? missing.join(", ") : "필수 섹션 누락 또는 내용 없음";
+          const transition = this.transitionProfessional({
+            type: "TASK_CONTRACT_INCOMPLETE",
+            missingSections: missing,
+          });
+          if (!transition.ok) return this.professionalTransitionFailure("planner", transition);
+          this.specialistResume = {
+            stages,
+            mode,
+            phase: "task_contract_incomplete",
+            taskInfo: taskInfo || null,
+            feedback: feedback || (taskInfo?.content || ""),
+            missingSections: missing,
+            taskError: error?.message || `실행 계약(Task)에 필수 섹션이 빠졌습니다: ${missingStr}`,
+            maxAutoRevisions,
+          };
+          this.emitSpecialistState();
+          this.appendSystem(
+            `동결된 Task의 계약이 불완전해 실행을 중단합니다.\n누락되거나 내용이 없는 필수 섹션: ${missingStr}\n\n필수 6개 섹션(Goal, Requirements, Implementation Approach, Acceptance Criteria, Verification, Out of Scope)과 본문 설명이 필요합니다.\n기획을 보완하려면 수정 사항을 입력해 주세요.`
+          );
           return {
             ok: false,
             stage: "planner",
             completedIterations: 0,
             needsUserDecision: true,
             stopReason: "TASK_CONTRACT_INCOMPLETE",
-            taskError: error?.message || "Task 계약이 불완전합니다.",
+            taskError: error?.message || `실행 계약(Task)에 필수 섹션이 빠졌습니다: ${missingStr}`,
+            missingSections: missing,
           };
         }
         this.appendSystem(`Frozen Task를 만들지 못해 실행을 중단합니다. (${error?.message || "알 수 없는 오류"})`);
@@ -2173,6 +2234,8 @@ class SpecialistMixin {
         message: "작업 목록 상태를 저장하지 못해 구현을 시작하지 않았습니다. 복구 정보는 그대로 유지합니다.",
       });
     }
+
+    this.appendSystem(`구현·검수 시작 · 구현 @${implementation.agent.id} · 검수 @${review.agent.id}`);
 
     // 화면에 "어떤 Task revision 기준으로 일하는 중인지" 칩으로 보여주기 위한 값.
     // TASK-003.md → "TASK-003" 형태의 표시용 id를 만듭니다.

@@ -336,10 +336,13 @@ class TaskManager {
     // 여기는 그 검증을 통과하지 못한 계약이 실행으로 들어오지 못하게 막습니다.)
     const contractCheck = validateTaskContract(contract.content);
     if (!contractCheck.valid) {
-      throw taskError(
+      const err = taskError(
         "TASK_CONTRACT_INCOMPLETE",
         `실행 계약(Task)에 필수 섹션이 빠졌습니다: ${contractCheck.missing.join(", ")}`
       );
+      err.missing = contractCheck.missing;
+      err.contractCheck = contractCheck;
+      throw err;
     }
     const memoryRoot = this.memoryRootFor(workspace);
     if (!memoryRoot) throw new Error("작업 공간이 없어 Run을 만들 수 없습니다.");

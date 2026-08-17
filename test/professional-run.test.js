@@ -313,3 +313,27 @@ test("IMPLEMENTING에서 USER_ANSWER_PLAN은 거부된다", () => {
   const res = transitionProfessionalRun(run, { type: "USER_ANSWER_PLAN" });
   assert.equal(res.ok, false);
 });
+
+test("TASK_CONTRACT_INCOMPLETE 전이는 READY/IMPLEMENTING에서 WAITING으로 전환하고 diagnostics를 보존한다", () => {
+  const run = createProfessionalRun({
+    node: "READY",
+    status: "WAITING",
+    approvedTaskHash: "hash-old",
+  });
+  const res = transitionProfessionalRun(run, {
+    type: "TASK_CONTRACT_INCOMPLETE",
+    missingSections: ["Verification", "Out of Scope"],
+  });
+  assert.equal(res.ok, true);
+  assert.equal(res.state.node, "READY");
+  assert.equal(res.state.status, "WAITING");
+  assert.equal(res.state.stopReason, "TASK_CONTRACT_INCOMPLETE");
+  assert.equal(res.state.approvedTaskHash, null);
+  assert.deepEqual(res.state.missingSections, ["Verification", "Out of Scope"]);
+
+  const view = publicProfessionalState(res.state);
+  assert.equal(view.needsInput, true);
+  assert.equal(view.planReady, false);
+  assert.equal(view.stopReason, "TASK_CONTRACT_INCOMPLETE");
+  assert.deepEqual(view.missingSections, ["Verification", "Out of Scope"]);
+});
