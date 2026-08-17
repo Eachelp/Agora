@@ -17,6 +17,10 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { validateTaskContract } = require("./task-contract-validator");
+const {
+  resolveTaskFileBoundary,
+  resolveTaskWriteBoundary,
+} = require("./task-file-boundary");
 
 // 프로젝트 작업 영역 내부의 표준 메타 데이터 폴더 이름.
 // .gitignore가 이를 무시하는지 여부와 무관하게, Run snapshot은 이 폴더에 둡니다.
@@ -31,9 +35,9 @@ const MAX_TASK_READ_BYTES = 5 * 1024 * 1024;
 // 규칙·Diff·Evidence가 함께 들어가므로 이 값 이하라도 최종 prompt budget 검사는 별도로 유지합니다.
 const MAX_TASK_CONTRACT_CHARS = 24 * 1024;
 
+// Planner 출력의 파싱용 제어 마커(STATUS: PLAN_READY 등)를 본문에서 제거합니다.
+// Task lifecycle status와 구분되는 파싱용 마커이므로 파일에 저장할 필요가 없습니다.
 function stripControlMarkers(text) {
-  // Planner 출력의 파싱용 제어 마커(STATUS: PLAN_READY 등)를 본문에서 제거합니다.
-  // Task lifecycle status와 구분되는 파싱용 마커이므로 파일에 저장할 필요가 없습니다.
   return String(text || "")
     .replace(/^\s*STATUS:\s*(PLAN_READY|NEEDS_DECISION|DONE|BLOCKED)\b.*$/gim, "")
     .replace(/\n{3,}/g, "\n\n")
@@ -78,20 +82,6 @@ function taskError(code, message) {
   return error;
 }
 
-function isAbsoluteOnAnyPlatform(value) {
-  const text = String(value || "");
-  return path.isAbsolute(text) || /^[A-Za-z]:[\\/]/.test(text) || /^\\\\/.test(text);
-}
-
-function isInside(root, target) {
-  const relative = path.relative(root, target);
-  return relative === "" || (
-    relative !== ".." &&
-    !relative.startsWith(`..${path.sep}`) &&
-    !path.isAbsolute(relative)
-  );
-}
-
 function validateTaskContractContent(value) {
   const content = String(value ?? "");
   if (content.length > MAX_TASK_CONTRACT_CHARS) {
@@ -105,44 +95,17 @@ function validateTaskContractContent(value) {
 
 // file-backed Task는 workspace 내부의 실제 regular file만 읽습니다.
 // lexical `..` 탈출뿐 아니라 symlink/junction이 workspace 밖을 가리키는 경우도
-// realpath 기준으로 거부합니다. 존재하지 않는 파일은 기존 계약대로 null입니다.
+// 공용 task-file-boundary의 realpath 검사를 재사용합니다. 존재하지 않는 파일은 기존 계약대로 null입니다.
 function readTaskContractFile(workspaceRoot, taskPath) {
-  const root = resolveWorkspace(workspaceRoot);
-  if (!root) return null;
-  const relative = String(taskPath || "");
-  if (!relative || relative.includes("\0") || isAbsoluteOnAnyPlatform(relative)) {
-    throw taskError("TASK_PATH_INVALID", "작업 지시서 경로가 올바르지 않습니다.");
-  }
-  const target = path.resolve(root, relative.replace(/^\.\/+/, ""));
-  if (!isInside(root, target)) {
-    throw taskError("TASK_PATH_OUTSIDE_WORKSPACE", "워크스페이스 밖의 작업 지시서는 사용할 수 없습니다.");
-  }
-  if (!fs.existsSync(target)) return null;
-
-  let realTarget;
   try {
-    realTarget = fs.realpathSync(target);
-  } catch {
-    return null;
+    const boundary = resolveTaskFileBoundary(workspaceRoot, taskPath, {
+      maxBytes: MAX_TASK_READ_BYTES,
+    });
+    return validateTaskContractContent(fs.readFileSync(boundary.target, "utf8"));
+  } catch (error) {
+    if (["TASK_WORKSPACE_MISSING", "TASK_WORKSPACE_INVALID", "TASK_FILE_MISSING", "TASK_FILE_NOT_REGULAR"].includes(error?.code)) return null;
+    throw error;
   }
-  if (!isInside(root, realTarget)) {
-    throw taskError("TASK_PATH_OUTSIDE_WORKSPACE", "워크스페이스 밖을 가리키는 작업 지시서는 사용할 수 없습니다.");
-  }
-
-  let stat;
-  try {
-    stat = fs.statSync(realTarget);
-  } catch {
-    return null;
-  }
-  if (!stat.isFile()) return null;
-  if (stat.size > MAX_TASK_READ_BYTES) {
-    throw taskError(
-      "TASK_FILE_TOO_LARGE",
-      `작업 지시서 파일이 너무 큽니다 (${stat.size}/${MAX_TASK_READ_BYTES} bytes).`
-    );
-  }
-  return validateTaskContractContent(fs.readFileSync(realTarget, "utf8"));
 }
 
 // Planner Task용 TASK-xxx.md 파일명을 만듭니다. 기존 번호와 충돌하지 않도록
@@ -254,22 +217,33 @@ class TaskManager {
   // 2. workflow.json metadata(index) 등록은 호출 측에서 수행
   // 반환: { filename, absPath, relativePath, content, hash, taskNumber }
   createTaskFromPlanner(plannerText, workspace) {
+    const root = resolveWorkspace(workspace);
     const memoryRoot = this.memoryRootFor(workspace);
-    if (!memoryRoot) throw new Error("작업 공간이 없어 Planner Task를 만들 수 없습니다.");
+    if (!root || !memoryRoot) throw new Error("작업 공간이 없어 Planner Task를 만들 수 없습니다.");
     const tasksDir = path.join(memoryRoot, TASKS_DIR);
+
+    // 번호 조회 전에 tasksDir의 기존 symlink/junction이 workspace 밖으로
+    // 빠지지 않는지 먼저 확인합니다. 실제 파일 생성 전에는 같은 경계를
+    // 한 번 더 확인해 mkdir 이후 경로도 fail-closed로 검증합니다.
+    resolveTaskWriteBoundary(root, path.join(MEMORY_DIR, TASKS_DIR, ".agora-boundary"), {
+      allowedRoot: tasksDir,
+    });
     ensureDir(tasksDir);
+
     const number = nextTaskNumber(tasksDir);
     const filename = `TASK-${String(number).padStart(3, "0")}.md`;
-    const absPath = path.join(tasksDir, filename);
+    const relativePath = path.join(MEMORY_DIR, TASKS_DIR, filename);
     const content = validateTaskContractContent(stripControlMarkers(plannerText));
     if (!content.trim()) {
       throw new Error("Planner 결과가 비어 있어 TASK.md를 만들 수 없습니다.");
     }
-    writeTextAtomic(absPath, content);
-    const relativePath = path.join(MEMORY_DIR, TASKS_DIR, filename);
+    const boundary = resolveTaskWriteBoundary(root, relativePath, { allowedRoot: tasksDir });
+    ensureDir(boundary.parent);
+    const finalBoundary = resolveTaskWriteBoundary(root, relativePath, { allowedRoot: tasksDir });
+    writeTextAtomic(finalBoundary.target, content);
     return {
       filename,
-      absPath,
+      absPath: finalBoundary.target,
       relativePath,
       content,
       hash: hashText(content),
@@ -283,23 +257,21 @@ class TaskManager {
     const root = resolveWorkspace(workspace);
     const memoryRoot = this.memoryRootFor(workspace);
     const relativePath = String(taskInfo?.relativePath || "");
-    const absPath = root && relativePath
-      ? path.resolve(root, relativePath.replace(/^\.\/+/, ""))
-      : null;
-    const safeRoot = memoryRoot ? `${path.resolve(memoryRoot)}${path.sep}` : "";
-    const normalize = (value) => process.platform === "win32" ? value.toLowerCase() : value;
-    if (!absPath || !safeRoot || !normalize(absPath).startsWith(normalize(safeRoot))) {
-      throw new Error("갱신할 Planner Task 경로가 올바르지 않습니다.");
+    if (!root || !memoryRoot || !relativePath) {
+      throw taskError("TASK_PATH_INVALID", "갱신할 Planner Task 경로가 올바르지 않습니다.");
     }
+    const tasksDir = path.join(memoryRoot, TASKS_DIR);
     const content = validateTaskContractContent(stripControlMarkers(plannerText));
     if (!content.trim()) {
       throw new Error("Planner 결과가 비어 있어 TASK.md를 갱신할 수 없습니다.");
     }
-    ensureDir(path.dirname(absPath));
-    writeTextAtomic(absPath, content);
+    const boundary = resolveTaskWriteBoundary(root, relativePath, { allowedRoot: tasksDir });
+    ensureDir(boundary.parent);
+    const finalBoundary = resolveTaskWriteBoundary(root, relativePath, { allowedRoot: tasksDir });
+    writeTextAtomic(finalBoundary.target, content);
     return {
       ...taskInfo,
-      absPath,
+      absPath: finalBoundary.target,
       relativePath,
       content,
       hash: hashText(content),
