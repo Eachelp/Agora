@@ -1249,7 +1249,7 @@ invalidation, cross-restart resume, one-writer lease governance, general chat pe
 최종 commit SHA:
 
 ```text
-__C2_SHA__
+c85c1b94a505a10e01c51d6a0d1fa88ef76b93b9
 ```
 
 ---
