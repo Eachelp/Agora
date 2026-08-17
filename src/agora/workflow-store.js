@@ -417,26 +417,30 @@ class WorkflowStore {
             }
           }
           for (const task of group) {
-            if (group.length > 1 && task !== canonical) {
-              if (task.syncState !== "superseded") {
-                task.syncState = "superseded";
-                task.updatedAt = this.now();
-                changed = true;
-              }
-              continue;
-            }
             if (!onDisk) {
               if (task.syncState !== "missing_file") {
                 task.syncState = "missing_file";
                 task.updatedAt = this.now();
                 changed = true;
               }
-            } else if (task === canonical) {
+              continue;
+            }
+            if (task === canonical) {
               if (task.syncState !== "ok") {
                 task.syncState = "ok";
                 task.updatedAt = this.now();
                 changed = true;
               }
+              continue;
+            }
+            // disk 파일이 존재하는데 canonical이 아니면 그룹 크기와 무관하게
+            // superseded로 표시합니다. 기존 revision이 하나뿐인 상태에서 파일이
+            // 외부 수정되어 hash가 어긋난 경우(canonical === null)에도 과거
+            // 항목이 활성 상태로 남지 않도록 fail-closed 처리합니다.
+            if (task.syncState !== "superseded") {
+              task.syncState = "superseded";
+              task.updatedAt = this.now();
+              changed = true;
             }
           }
         }

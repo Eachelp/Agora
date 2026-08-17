@@ -1595,7 +1595,10 @@ function makeField(labelText, control) {
 function openHandoffPopover(anchor, messageId, sourceAuthor) {
   const source = agentById(sourceAuthor);
   const options = agents.filter((agent) => agent.available && agent.enabled !== false && agent.id !== sourceAuthor);
-  if (options.length === 0) {
+  // 쉽게 설명은 원문 작성자 본인만 수행하므로, 다른 에이전트가 없더라도
+  // 원문 작성자를 쓸 수 있으면 팝오버를 열 수 있습니다.
+  const simplifyAvailable = Boolean(source && source.available && source.enabled !== false);
+  if (options.length === 0 && !simplifyAvailable) {
     openPopover(anchor, (root) => {
       const head = document.createElement("div");
       head.className = "popover-head";
@@ -1636,7 +1639,29 @@ function openHandoffPopover(anchor, messageId, sourceAuthor) {
     intentReview.value = "REVIEW_OPINION";
     intentReview.textContent = "검토 요청";
     intentSelect.append(intentContinue, intentReview);
+    // 쉽게 설명 옵션 복원. 단 대상은 항상 원문 작성자로 고정됩니다.
+    if (simplifyAvailable) {
+      const intentSimplify = document.createElement("option");
+      intentSimplify.value = "SIMPLIFY";
+      intentSimplify.textContent = "쉽게 설명 (원문 작성자가 같은 모델로)";
+      intentSelect.append(intentSimplify);
+    }
+    if (options.length === 0) {
+      // 다른 에이전트가 없으면 쉽게 설명만 가능합니다.
+      intentContinue.disabled = true;
+      intentReview.disabled = true;
+      intentSelect.value = "SIMPLIFY";
+    }
     root.append(makeField("전달 목적", intentSelect));
+
+    // SIMPLIFY는 원문 작성자 고정이라 대상 선택이 의미가 없습니다.
+    const targetField = targetSelect.closest(".popover-field");
+    const syncTargetVisibility = () => {
+      const isSimplify = intentSelect.value === "SIMPLIFY";
+      if (targetField) targetField.hidden = isSimplify;
+    };
+    intentSelect.addEventListener("change", syncTargetVisibility);
+    syncTargetVisibility();
 
     const actions = document.createElement("div");
     actions.className = "popover-actions";
@@ -1649,8 +1674,14 @@ function openHandoffPopover(anchor, messageId, sourceAuthor) {
     confirm.className = "button-primary";
     confirm.textContent = "전달";
       confirm.addEventListener("click", async () => {
-        const target = targetSelect.value;
         const intent = intentSelect.value;
+        // 쉽게 설명은 원문 작성자에게만 보냅니다(fallback 금지).
+        const target = intent === "SIMPLIFY" ? sourceAuthor : targetSelect.value;
+        if (!target) {
+          closePopover();
+          flashNotice("전달 대상 에이전트를 찾을 수 없습니다.");
+          return;
+        }
         closePopover();
         await call(
           window.chatApi.handoffMessage(sessionMeta?.id, target, messageId, intent)
@@ -3437,21 +3468,26 @@ function renderMessage(message) {
     simplifyBtn.type = "button";
     simplifyBtn.className = "message-simplify-button";
     simplifyBtn.textContent = "\u{1F4A1} 쉽게 설명";
-    simplifyBtn.title = "이 메시지를 비개발자도 이해할 수 있게 풀어줍니다";
-    if (specialistRunning || specialistLocksComposer()) {
+    // 같은 저자 + 같은 모델 고정 계약: 원문 작성 에이전트만 수행할 수 있고
+    // 다른 에이전트로 대체하지 않습니다. 사용할 수 없으면 버튼을 비활성화합니다.
+    const simplifyAuthor = agentById(message.author);
+    const simplifyAuthorUsable = Boolean(
+      simplifyAuthor && simplifyAuthor.available && simplifyAuthor.enabled !== false
+    );
+    simplifyBtn.title = simplifyAuthorUsable
+      ? "원문을 작성한 에이전트가 같은 모델로 알기 쉽게 다시 설명합니다"
+      : "원문을 작성한 에이전트를 사용할 수 없어 쉽게 설명을 실행할 수 없습니다";
+    if (specialistRunning || specialistLocksComposer() || !simplifyAuthorUsable) {
       simplifyBtn.disabled = true;
       simplifyBtn.classList.add("is-disabled");
     }
     simplifyBtn.addEventListener("click", async (event) => {
       event.stopPropagation();
       if (specialistRunning || specialistLocksComposer()) return;
-      // 기본 대상: 원문 작성 에이전트 -> 사용 가능한 첫 번째 에이전트 -> 없으면 중단
-      let target = agentById(message.author);
+      // fallback 금지: 원문 작성 에이전트를 쓸 수 없으면 실행하지 않습니다.
+      const target = agentById(message.author);
       if (!target || !target.available || target.enabled === false) {
-        target = agents.find(a => a.available && a.enabled !== false);
-      }
-      if (!target) {
-        flashNotice("사용 가능한 에이전트가 없습니다.");
+        flashNotice("원문을 작성한 에이전트를 사용할 수 없어 쉽게 설명을 실행할 수 없습니다.");
         return;
       }
       await call(window.chatApi.handoffMessage(sessionMeta?.id, target.id, message.id, "SIMPLIFY"));

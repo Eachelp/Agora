@@ -14,6 +14,22 @@ const {
   buildProfessionalEvidencePayload,
 } = require("./chat-professional-evidence");
 
+// checkpoint 실패 taxonomy를 사용자가 이해할 수 있는 한국어 설명으로 바꿉니다.
+// 원인 코드 자체(CHECKPOINT_*)는 evidence/Reviewer 판단에 그대로 쓰이므로
+// 여기서는 표시용 설명만 제공합니다.
+const CHECKPOINT_FAILURE_DESCRIPTIONS = Object.freeze({
+  CHECKPOINT_GIT_FAILED: "Git 명령 실행에 실패했습니다. 저장소 상태를 확인해 주세요",
+  CHECKPOINT_STORAGE_FAILED: "백업 파일을 저장하지 못했습니다. 디스크 공간과 폴더 권한을 확인해 주세요",
+  CHECKPOINT_MANIFEST_FAILED: "백업 목록 파일을 기록하지 못했습니다. 디스크 공간과 권한을 확인해 주세요",
+  CHECKPOINT_COPY_FAILED: "추적되지 않은 파일을 백업 폴더로 복사하지 못했습니다",
+  CHECKPOINT_UNTRACKED_NOT_REGULAR: "일반 파일이 아닌 항목(심볼릭 링크 등)이 있어 백업할 수 없습니다",
+  CHECKPOINT_UNKNOWN: "알 수 없는 이유로 백업에 실패했습니다",
+});
+
+function describeCheckpointFailure(reason) {
+  return CHECKPOINT_FAILURE_DESCRIPTIONS[reason] || CHECKPOINT_FAILURE_DESCRIPTIONS.CHECKPOINT_UNKNOWN;
+}
+
 const SAFE_BLOCK_REASONS = new Set([
   "BLOCKED",
   "BUILDER_STATUS_MISSING",
@@ -161,8 +177,20 @@ class SpecialistMixin {
     };
   }
 
+  // Workflow 인덱스의 canonical Task 상태를 갱신합니다.
+  //
+  // taskPath가 없으면 갱신할 대상이 없으므로 true를 반환하지만, Run에 연결된
+  // 실행 상태(activeRunId/lastRunId)를 기록하려는 호출에서 taskPath가 비어
+  // 있다면 그것은 실행 context가 유실되었다는 신호다. 이 경우 조용히 성공으로
+  // 넘기면 workflow 인덱스가 갱신되지 않은 사실이 감춰지므로 fail-closed로
+  // 막는다(예: checkpoint 재시도 재개에서 taskInfo가 유실된 경우).
   updateProfessionalTaskState(patch) {
-    if (!this.onProfessionalTaskState || !patch?.taskPath) return true;
+    if (!this.onProfessionalTaskState) return true;
+    if (!patch?.taskPath) {
+      const carriesRunState = Boolean(patch && (patch.activeRunId || patch.lastRunId));
+      if (carriesRunState) return false;
+      return true;
+    }
     try {
       return this.onProfessionalTaskState(patch) !== false;
     } catch {
@@ -523,6 +551,16 @@ class SpecialistMixin {
         options.checkpointProtection !== undefined
           ? options.checkpointProtection
           : this.professionalRun?.checkpointProtection || null,
+      // 백업 실패 원인과 사용자 승인 사실도 함께 전달해 Reviewer가 신뢰도
+      // 제한 사유를 구체적으로 알 수 있게 한다.
+      checkpointFailReason:
+        options.checkpointFailReason !== undefined
+          ? options.checkpointFailReason
+          : this.professionalRun?.checkpointFailReason || null,
+      userApprovedUnprotectedExecution:
+        options.userApprovedUnprotectedExecution !== undefined
+          ? options.userApprovedUnprotectedExecution
+          : Boolean(this.professionalRun?.userApprovedUnprotectedExecution),
     });
     const runInfo = options.runInfo || null;
     if (!runInfo || !this.taskManager?.writeRunEvidence) return { ok: true, payload };
@@ -2059,10 +2097,16 @@ class SpecialistMixin {
         checkpointFailReason: checkpointReason,
         round,
         requestedGeneration,
+        // 재개 시 원래 실행 context를 그대로 복원해야 canonical Task 상태가
+        // 갱신된다. taskInfo가 빠지면 재시도 실행이 workflow 인덱스를 전혀
+        // 갱신하지 않은 채 성공한 것처럼 끝난다.
+        taskInfo: taskInfo || null,
+        feedback: feedback || "",
+        maxAutoRevisions,
       };
       this.emitSpecialistState();
       this.appendSystem(
-        `작업 전 상태 백업(checkpoint)을 만들지 못했습니다. 워크스페이스의 Git 상태를 확인해 주세요.
+        `작업 전 상태 백업(checkpoint)을 만들지 못했습니다. (${checkpointReason}: ${describeCheckpointFailure(checkpointReason)})
 아래에서 다음 처리를 선택해 주세요.
 1) 재시도 — 백업을 다시 만든 뒤 Builder를 시작합니다
 2) 무보호 진행 — 백업 없이 실행합니다(사전 스냅샷이 없어 회귀 검증 신뢰도가 제한됩니다)

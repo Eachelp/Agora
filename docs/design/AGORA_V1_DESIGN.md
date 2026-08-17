@@ -462,23 +462,26 @@ Retry 또는 Restore 시:
 
 **Stage 3 — checkpoint 실패 taxonomy와 3선택지 UX**
 
-- 실패 원인을 enum으로 드러낸다. git 명령 실패 등 코드가 없거나 exit-code인 에러는 CHECKPOINT_GIT_FAILED로, 경로·일반 파일 무결성 위반은 CHECKPOINT_UNTRACKED_NOT_REGULAR/CHECKPOINT_COPY_FAILED로 정규화한다. createCheckpoint 실패 시 보호 실패(사유 포함)를 반환한다.
+- 실패 원인을 enum으로 드러낸다. **각 failure site에서 typed error를 생성**하며, OS raw error code(EACCES/ENOSPC/ENOENT 등)를 최종 reason으로 노출하지 않는다. taxonomy: CHECKPOINT_GIT_FAILED(git 명령 실패) · CHECKPOINT_STORAGE_FAILED(백업 파일 저장 실패) · CHECKPOINT_MANIFEST_FAILED(manifest 기록 실패) · CHECKPOINT_COPY_FAILED(사본 복사/검증 실패) · CHECKPOINT_UNTRACKED_NOT_REGULAR(일반 파일 아님) · CHECKPOINT_UNKNOWN(그 외). catch는 enum 이외의 값을 받지 않는다(fail-closed). 사용자 안내 메시지에도 구체적 원인을 함께 표시한다.
 - 실패 시 반드시 Builder를 시작하지 않고 멈춘다. CHECKPOINT_FAILED 전이는 READY/IMPLEMENTING에서만 가능하며, 상태 노드는 유지한 채 WAITING + stopReason:CHECKPOINT_FAILED로 전환하고 frozenRunId는 유지해 기존 Frozen Run을 재사용한다.
 - 사용자에게 3선택지를 제시한다: ① 재시도(CHECKPOINT_RETRY, 기존 Frozen Run 재사용) ② 무보호 진행(PROCEED_UNPROTECTED, checkpoint 없이 시작하되 checkpointProtection:unavailable_user_approved) ③ 취소(별도 cancel IPC).
 - checkpoint 보호 상태를 evidence/Reviewer/UI까지 end-to-end로 전달한다. checkpointProtection enum: protected | unavailable_non_git | unavailable_checkpoint_failed | unavailable_user_approved. 무보호 실행이면 Reviewer 프롬프트가 사전 workspace snapshot 없음 경고를 붙인다.
+- 무보호 실행을 승인해도 **checkpointFailReason은 지우지 않는다.** 사용자 승인 사실은 별도 영속 필드 userApprovedUnprotectedExecution으로 보존하며, 두 값 모두 evidence에 기록되어 Reviewer가 회귀 검증 신뢰도 제한 사유를 구체적으로 판단할 수 있게 한다.
+- checkpoint 실패 후 재시도·무보호 재개는 **원래 실행 context를 그대로 복원한다.** resume payload에 taskInfo/feedback/maxAutoRevisions를 보존하며, Run 실행 상태(activeRunId/lastRunId)를 기록하려는 호출에 taskPath가 없으면 조용히 성공 처리하지 않고 거부한다(fail-closed). taskInfo 유실로 workflow 인덱스가 갱신되지 않은 채 성공한 것처럼 끝나는 경로를 차단한다.
 
 **Stage 4 — 전문모드 입력 라우팅 + UI 명확화**
 
-- professional-ipc-policy.js: 상태별 허용 IPC를 fail-closed 정책 테이블로 정의한다. 정책에 없는 IPC는 거부된다. 상태는 (node, status) 조합으로 식별한다.
+- professional-ipc-policy.js: 상태별 허용 IPC를 fail-closed 정책 테이블로 정의한다. 정책에 없는 IPC는 거부된다. 상태는 (node, status) 조합으로 식별한다. **이 테이블은 문서가 아니라 runtime authority다.** chat-ipc.js의 enforceProfessionalPolicy() 게이트를 통해 chat:send · chat:turn:interject · chat:discussion:start · chat:message:handoff가 모두 이 정책을 통과한다.
 - READY 기획 수정: USER_ANSWER_PLAN이 READY+WAITING에서도 허용되며, PLANNING으로 복귀하고 approvedTaskHash를 리셋한다. chat-specialist.js의 answerPlanQuestion이 plan_ready phase에서도 동작하며, 기획 수정 요청으로 구분 표시한다.
-- professional-role-context.js: 역할별 context 경계(sees/excludes)를 중앙 정책으로 정의한다. chat-prompt.js가 이를 import해 각 stage 프롬프트에 context 경계 안내를 자동 생성한다.
+- professional-role-context.js: 역할별 context 경계(sees/excludes)를 중앙 정책으로 정의한다. chat-prompt.js는 이 정책으로 **프롬프트 안내 문구와 실제 context 조립을 모두 결정한다.** includesPromptContext()가 projectContext/workflowContext/memoryContext 포함 여부의 단일 기준이며, 역할별 하드코딩 분기로 중복 정의하지 않는다.
 - 상태별 Composer UX: READY에서 composer가 잠기지 않고 기획 수정 입력이 가능하다. CHECKPOINT_FAILED에서는 선택 대기 안내를 표시한다. 텍스트 전송은 READY에서 specialistPlanAnswer로 라우팅된다.
 
 **Stage 5 — 쉽게 설명 독립 버튼**
 
-- 메시지 액션 영역에 독립 "쉽게 설명" 버튼을 추가한다. 원문 작성 에이전트를 기본 대상으로 팝오버 없이 즉시 SIMPLIFY intent를 실행한다.
-- Handoff 팝오버에서 SIMPLIFY 옵션을 제거하고, 이어서 작업 / 검토 요청 2개만 남긴다.
-- 백엔드(chat-room.js의 simplifyMeta 경로, chat-prompt.js의 통역가 역할)는 변경 없음.
+- 메시지 액션 영역에 독립 "쉽게 설명" 버튼을 추가한다. 팝오버 없이 즉시 SIMPLIFY intent를 실행한다.
+- **같은 저자 + 같은 모델 고정 계약.** 대상은 항상 원문을 작성한 에이전트이며, 사용할 수 없어도 다른 에이전트로 대체(fallback)하지 않고 버튼을 비활성화한다. 실행 모델은 원문 작성 당시의 model/effort를 재사용하므로, 그 사이 사용자가 모델 설정을 바꿨더라도 다른 모델로 재설명되지 않는다.
+- Handoff 팝오버에도 "쉽게 설명" 옵션을 유지한다. 이 경로에서도 대상은 원문 작성자로 강제되며, 대상 선택 필드는 숨겨진다.
+- 백엔드는 chat-room.js의 simplifyMeta 경로에서 저자 일치를 검증하고 원문 model/effort를 agentConfig로 고정한다. chat-prompt.js의 통역가 역할은 변경 없음.
 
 ---
 

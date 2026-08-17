@@ -28,6 +28,7 @@ const { toDiagnostics } = require("../providers/provider-diagnostics");
 const { roomAgentsFromCapabilities } = require("./chat-agents");
 const { ChatRoom, DEFAULT_DISCUSSION_RUN_BUDGET } = require("./chat-room");
 const { MAX_SPECIALIST_PROMPT_CHARS } = require("./chat-prompt");
+const { isStateAllowed, allowedIpcFor, isActiveProfessionalRun } = require("./professional-ipc-policy");
 const {
   buildAgentInvocation,
   PERMISSION_MODES,
@@ -1110,6 +1111,28 @@ function roomMeta(meta) {
     };
   }
 
+  // Professional Mode 상태별 허용 IPC의 runtime authority.
+  // 판단 기준은 professional-ipc-policy의 중앙 정책 테이블 하나뿐이며,
+  // 허용 목록에 없으면 항상 거부한다(fail-closed).
+  function professionalRunStateFor(room) {
+    const state = room?.specialistState?.() || null;
+    const node = state?.node || null;
+    const status = state?.status || null;
+    if (!node && !status) return null;
+    return { node, status };
+  }
+
+  function enforceProfessionalPolicy(room, action) {
+    const runState = professionalRunStateFor(room);
+    if (!runState || !isActiveProfessionalRun(runState)) return;
+    if (isStateAllowed(runState, action)) return;
+    const allowed = allowedIpcFor(runState);
+    throw new Error(
+      `전문 실행 ${runState.node}/${runState.status} 상태에서는 이 동작을 할 수 없습니다.` +
+        (allowed.length ? ` 지금 가능한 동작: ${allowed.join(", ")}` : "")
+    );
+  }
+
   function registerIpcHandlers() {
     ipcMain.handle("chat:state", wrap(async (input) => fullState(input)));
 
@@ -1595,7 +1618,10 @@ function roomMeta(meta) {
       wrap(async ({ sessionId, text, attachmentIds, independent, professionalDraft }) => {
         requireSession(sessionId);
         const room = getRoom(sessionId);
-        if (room.isSpecialistLocked()) {
+        // 전문 실행 중 사용자 입력은 정책 테이블이 단일 기준이다.
+        // 드래프트(recordOnly)로 기록만 하는 경우와 실제 전송을 구분해 판정한다.
+        enforceProfessionalPolicy(room, professionalDraft ? "recordOnly-send" : "send");
+        if (!professionalDraft && room.isSpecialistLocked()) {
           throw new Error("전문 실행이 진행 중이거나 승인 대기 중입니다. 먼저 작업을 완료하거나 취소해 주세요.");
         }
         const pending = pendingFor(sessionId);
@@ -1631,7 +1657,9 @@ function roomMeta(meta) {
       "chat:turn:interject",
       wrap(async ({ sessionId }) => {
         requireSession(sessionId);
-        return getRoom(sessionId).interject();
+        const room = getRoom(sessionId);
+        enforceProfessionalPolicy(room, "interject");
+        return room.interject();
       })
     );
 
@@ -1651,6 +1679,7 @@ function roomMeta(meta) {
       wrap(async ({ sessionId, agentIds }) => {
         requireSession(sessionId);
         const room = getRoom(sessionId);
+        enforceProfessionalPolicy(room, "discussion");
         const cleanIds = Array.isArray(agentIds)
           ? agentIds.filter((id) => typeof id === "string")
           : undefined;
@@ -1829,6 +1858,8 @@ function roomMeta(meta) {
       wrap(async ({ sessionId, targetAgentId, messageId, intent }) => {
         requireSession(sessionId);
         const room = getRoom(sessionId);
+        // 쉽게 설명(SIMPLIFY)과 일반 Handoff는 정책상 별도 액션으로 판정한다.
+        enforceProfessionalPolicy(room, intent === "SIMPLIFY" ? "simplify" : "handoff");
         const result = room.handoffMessage(targetAgentId, messageId, intent);
         if (result.ok === false) throw new Error(result.error);
         return { meta: publicMeta(store.readMeta(sessionId)) };

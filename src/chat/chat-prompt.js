@@ -1,5 +1,5 @@
 const { buildConversationWindow } = require("./chat-summary-window");
-const { roleContextNotice } = require("./professional-role-context");
+const { roleContextNotice, includesPromptContext } = require("./professional-role-context");
 
 const DEFAULT_MAX_MESSAGES = 40;
 const MAX_SPECIALIST_PROMPT_CHARS = 24 * 1024;
@@ -73,6 +73,12 @@ function buildAgentPrompt({
   const isPlanReviewer = specialist?.stage === "plan_review";
   const isProfessionalRecorder = specialist?.stage === "recorder" && specialist?.professional === true;
   const isSpecialist = Boolean(specialist);
+  // 역할별 context 경계의 single source는 ROLE_CONTEXT_POLICY다.
+  // 아래 조립 분기는 이 판정 함수를 통해서만 context 포함 여부를 정한다.
+  // 정책이 없는 역할(일반 채팅/토론 요약 등)은 true를 돌려받아 기존 동작을 유지한다.
+  const specialistRole = specialist?.stage || null;
+  const roleAllows = (blockName) =>
+    specialistRole ? includesPromptContext(specialistRole, blockName) : true;
   const isDiscussionSummary = Boolean(discussionSummary);
   const isSimplify = Boolean(simplifyMeta);
   const agentsById = new Map(agents.map((entry) => [entry.id, entry]));
@@ -174,21 +180,22 @@ function buildAgentPrompt({
     lines.push("=== 프로젝트 현재 규칙 끝 ===");
     lines.push("- 이 규칙은 반드시 지키세요.");
   }
-  const context = isBuilder || isCleanReviewer || isProfessionalRecorder || isSimplify ? "" : String(projectContext || "").trim();
+  // 역할별 포함 여부는 ROLE_CONTEXT_POLICY가 결정한다(하드코딩 분기 아님).
+  const context = !roleAllows("projectContext") || isSimplify ? "" : String(projectContext || "").trim();
   if (context) {
     lines.push("");
     lines.push("=== 프로젝트 공통 맥락 ===");
     lines.push(context);
     lines.push("=== 프로젝트 공통 맥락 끝 ===");
   }
-  const workflow = isBuilder || isCleanReviewer || isProfessionalRecorder || isSimplify ? "" : String(workflowContext || "").trim();
+  const workflow = !roleAllows("workflowContext") || isSimplify ? "" : String(workflowContext || "").trim();
   if (workflow) {
     lines.push("");
     lines.push("=== 확정된 결정과 진행 중 작업 ===");
     lines.push(workflow);
     lines.push("=== 확정된 결정과 진행 중 작업 끝 ===");
   }
-  const memoryFull = isBuilder || isCleanReviewer || isPlanReviewer || isProfessionalRecorder || isSimplify ? "" : String(memoryContext || "").trim();
+  const memoryFull = !roleAllows("memoryContext") || isSimplify ? "" : String(memoryContext || "").trim();
   if (memoryFull) {
     const usedSoFar = rules.length + context.length + workflow.length;
     const budget = Math.max(0, MAX_CONTEXT_CHARS - usedSoFar);

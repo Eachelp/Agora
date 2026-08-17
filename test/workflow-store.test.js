@@ -135,8 +135,17 @@ test("reconcileProjectTasks는 디스크 상의 TASK 파일과 workflow 상태�
 
   fs.writeFileSync(file1, "Modified Task 1 content", "utf8");
   const res3 = store.reconcileProjectTasks("project-a", wsRoot);
-  assert.equal(res3.tasks[0].syncState, "ok");
-  assert.equal(res3.tasks[0].taskHash, require("node:crypto").createHash("sha256").update("Modified Task 1 content").digest("hex"));
+  // disk 내용이 바뀌면 과거 entry를 덮어쓰지 않고 새 canonical을 만들고,
+  // 과거 entry는 superseded로 내린다. 배열 순서에 의존하지 않고 검증한다.
+  const modifiedHash = require("node:crypto").createHash("sha256").update("Modified Task 1 content").digest("hex");
+  const visible3 = store.listTasks("project-a");
+  assert.equal(visible3.length, 1, "기본 목록에는 canonical 하나만 보여야 한다");
+  assert.equal(visible3[0].syncState, "ok");
+  assert.equal(visible3[0].taskHash, modifiedHash);
+  const stale3 = res3.tasks.filter((t) => t.taskHash !== modifiedHash);
+  for (const entry of stale3) {
+    assert.equal(entry.syncState, "superseded", "과거 hash entry는 superseded여야 한다");
+  }
 });
 
 test("listTasks 기본 목록에서 missing_file/superseded를 숨기고 includeAll로 전체를 볼 수 있다", () => {
@@ -304,6 +313,42 @@ test("reconcileProjectTasks는 disk hash와 일치하는 기존 항목이 없으
   const visible = store.listTasks("p1");
   assert.equal(visible.length, 1);
   assert.equal(visible[0].taskHash, newCanonical.taskHash);
+});
+
+test("reconcileProjectTasks는 기존 revision이 하나뿐이어도 disk hash가 다르면 superseded 처리한다", () => {
+  const root = makeRoot();
+  const wsRoot = makeRoot();
+  const tasksDir = path.join(wsRoot, ".project-memory", "tasks");
+  fs.mkdirSync(tasksDir, { recursive: true });
+  fs.writeFileSync(path.join(tasksDir, "TASK-889.md"), "외부에서 수정된 내용", "utf8");
+
+  const store = new WorkflowStore({ root }).init();
+  // 기존 revision이 정확히 1개뿐이고, 활성 Run 상태를 들고 있는 상황.
+  const stale = store.createTask({
+    projectId: "p1",
+    title: "TASK-889.md",
+    contentSource: "file",
+    taskPath: ".project-memory/tasks/TASK-889.md",
+    taskHash: "stale-hash-does-not-match",
+    status: "in_progress",
+  });
+  store.updateTask(stale.id, { activeRunId: "RUN-OLD-001", lastRunId: "RUN-OLD-001" });
+
+  const res = store.reconcileProjectTasks("p1", wsRoot);
+  assert.equal(res.ok, true);
+
+  const staleAfter = res.tasks.find((t) => t.id === stale.id);
+  assert.equal(staleAfter.syncState, "superseded", "단일 revision도 hash 불일치면 superseded여야 한다");
+
+  const newCanonical = res.tasks.find((t) => t.id !== stale.id && t.taskPath);
+  assert.ok(newCanonical, "새 canonical 항목이 생성되어야 한다");
+  assert.equal(newCanonical.syncState, "ok");
+  assert.ok(!newCanonical.activeRunId, "새 canonical에 과거 activeRunId가 붙으면 안 된다");
+
+  // 기본 목록에는 새 canonical만 보이고, 과거 활성 Run 상태는 노출되지 않는다.
+  const visible = store.listTasks("p1");
+  assert.equal(visible.length, 1);
+  assert.equal(visible[0].id, newCanonical.id);
 });
 
 test("migrateOrphanedTasks는 단일(unique) file-backed task도 디스크에 파일이 없으면 missing_file로 정리한다", () => {

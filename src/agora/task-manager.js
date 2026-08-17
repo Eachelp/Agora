@@ -450,6 +450,8 @@ class TaskManager {
         execution: evidence.execution || "UNAVAILABLE",
         sessionPersisted: evidence.sessionPersisted !== false,
         ...(evidence.checkpointProtection ? { checkpointProtection: evidence.checkpointProtection } : {}),
+        ...(evidence.checkpointFailReason ? { checkpointFailReason: evidence.checkpointFailReason } : {}),
+        ...(evidence.userApprovedUnprotectedExecution ? { userApprovedUnprotectedExecution: true } : {}),
         source: { kind: evidence.source?.kind || "provider-event", provider: evidence.source?.provider || null },
         provider: evidence.provider || evidence.source?.provider || null,
         commands,

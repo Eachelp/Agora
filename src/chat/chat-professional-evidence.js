@@ -19,7 +19,7 @@ function executionAxes({ builderResult = null, diff = null } = {}) {
   };
 }
 
-function buildProfessionalEvidencePayload({ builderResult = null, diff = null, round = 1, provider = null, checkpointProtection = null } = {}) {
+function buildProfessionalEvidencePayload({ builderResult = null, diff = null, round = 1, provider = null, checkpointProtection = null, checkpointFailReason = null, userApprovedUnprotectedExecution = false } = {}) {
   const axes = executionAxes({ builderResult, diff });
   const evidence = builderResult?.evidence || {};
   const allCommands = (Array.isArray(evidence.commands) ? evidence.commands : [])
@@ -48,6 +48,10 @@ function buildProfessionalEvidencePayload({ builderResult = null, diff = null, r
     sessionPersisted: builderResult?.evidencePersisted !== false,
     // checkpoint 무보호 실행 정보를 evidence에 end-to-end로 남긴다.
     checkpointProtection,
+    // 백업이 없었던 구체적 원인과 사용자 승인 사실까지 함께 보존해야
+    // Reviewer가 회귀 검증 신뢰도를 정확히 판단할 수 있다.
+    ...(checkpointFailReason ? { checkpointFailReason } : {}),
+    ...(userApprovedUnprotectedExecution ? { userApprovedUnprotectedExecution: true } : {}),
     commands,
     commandSummary: {
       total,

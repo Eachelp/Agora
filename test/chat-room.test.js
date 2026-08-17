@@ -1720,28 +1720,71 @@ test("이어 발언 모드(independent: false)에서는 같은 턴의 앞선 답
   assert.ok(secondCall.prompt.includes("의 순차 응답"));
 });
 
-test("handoffMessage의 SIMPLIFY intent는 simplifyMeta로 쉬운 말 번역을 요청한다", async () => {
+test("handoffMessage의 SIMPLIFY intent는 원문 작성자에게 simplifyMeta로 쉬운 말 번역을 요청한다", async () => {
   const calls = [];
   const room = new ChatRoom({
     agents: makeAgents(),
-    runAgent: fakeRunner({ codex: [{ ok: true, text: "쉽게 풀어서 설명한 내용입니다." }] }, calls),
+    runAgent: fakeRunner({ claude: [{ ok: true, text: "쉽게 풀어서 설명한 내용입니다." }] }, calls),
   });
   room.messages.push({ id: "msg-complex", authorType: "agent", author: "claude", text: "복잡한 아키텍처 및 뮤텍스 락 설명" });
 
-  const result = room.handoffMessage("codex", "msg-complex", "SIMPLIFY");
+  // 같은 저자 고정: 원문을 쓴 claude에게만 요청할 수 있다.
+  const result = room.handoffMessage("claude", "msg-complex", "SIMPLIFY");
   assert.equal(result.ok, true);
   await settle(room);
 
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].agentId, "codex");
+  assert.equal(calls[0].agentId, "claude");
   assert.match(calls[0].prompt, /비개발자도 이해하기 쉽게 풀어주는 통역가/);
   assert.match(calls[0].prompt, /풀어볼 원문 메시지/);
   assert.match(calls[0].prompt, /복잡한 아키텍처 및 뮤텍스 락 설명/);
 
   const responseMsg = room.messages.at(-1);
-  assert.equal(responseMsg.author, "codex");
+  assert.equal(responseMsg.author, "claude");
   assert.ok(responseMsg.simplifyMeta);
   assert.equal(responseMsg.simplifyMeta.messageId, "msg-complex");
+});
+
+test("handoffMessage의 SIMPLIFY는 원문 작성자가 아닌 에이전트로는 실행되지 않는다(fallback 금지)", async () => {
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({ codex: [{ ok: true, text: "대체 실행" }] }, calls),
+  });
+  room.messages.push({ id: "msg-x", authorType: "agent", author: "claude", text: "원문" });
+
+  const result = room.handoffMessage("codex", "msg-x", "SIMPLIFY");
+  assert.equal(result.ok, false, "다른 에이전트로 대체 실행되면 안 된다");
+  assert.match(result.error, /원문을 작성한 에이전트/);
+  await settle(room);
+  assert.equal(calls.length, 0, "대체 에이전트가 실행되면 안 된다");
+});
+
+test("handoffMessage의 SIMPLIFY는 원문 작성 당시 모델을 고정해 재실행한다", async () => {
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({ claude: [{ ok: true, text: "같은 모델로 쉬운 설명" }] }, calls),
+  });
+  // 원문은 과거에 sonnet-legacy 모델로 작성되었다.
+  room.messages.push({
+    id: "msg-model",
+    authorType: "agent",
+    author: "claude",
+    text: "원문",
+    agentMeta: { model: "sonnet-legacy", effort: "high" },
+  });
+
+  const result = room.handoffMessage("claude", "msg-model", "SIMPLIFY");
+  assert.equal(result.ok, true);
+  await settle(room);
+
+  assert.equal(calls.length, 1);
+  const responseMsg = room.messages.at(-1);
+  // 현재 설정이 아니라 원문 당시 모델/effort로 실행되어야 한다.
+  assert.equal(responseMsg.agentMeta.model, "sonnet-legacy");
+  assert.equal(responseMsg.agentMeta.effort, "high");
+  assert.equal(responseMsg.simplifyMeta.sourceModel, "sonnet-legacy");
 });
 
 test("handoffMessage는 다른 AI의 메시지를 대상 에이전트에게 전달해 이어서 답하게 한다", async () => {

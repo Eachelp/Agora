@@ -69,6 +69,9 @@ function createProfessionalRun(options = {}) {
     checkpointProtection: options.checkpointProtection || null,
     // checkpoint 생성 실패 원인(거버넌스 실패 taxonomy)을 보존한다.
     checkpointFailReason: options.checkpointFailReason || null,
+    // 사용자가 백업 없이 실행하겠다고 명시 승인했는지 여부를 영속 보존한다.
+    // checkpointProtection enum과 함께 evidence/Reviewer 판단 근거가 된다.
+    userApprovedUnprotectedExecution: Boolean(options.userApprovedUnprotectedExecution),
     stopReason: options.stopReason || null,
     blockReason: options.blockReason || null,
     createdAt: Number.isFinite(options.createdAt) ? options.createdAt : now,
@@ -316,9 +319,14 @@ function transitionProfessionalRun(current, event = {}) {
       next.node = "IMPLEMENTING";
       next.status = "RUNNING";
       next.stopReason = null;
-      next.checkpointFailReason = null;
+      // 사용자가 승인한 무보호 실행이라도 "왜 백업이 없었는지"는 남긴다.
+      // 이 값은 evidence/Reviewer까지 전달되어 회귀 검증 신뢰도 판단 근거가
+      // 되므로 여기서 지우면 provenance가 끊긴다.
+      next.checkpointFailReason = current.checkpointFailReason || event.checkpointFailReason || null;
       // 사용자가 무보호 실행을 명시 승인했음을 enum으로 기록한다.
       next.checkpointProtection = "unavailable_user_approved";
+      // 사용자 승인 사실 자체를 별도 영속 필드로 보존한다.
+      next.userApprovedUnprotectedExecution = true;
       break;
     }
     case "HOLD_BLOCKED": {
@@ -338,6 +346,7 @@ function transitionProfessionalRun(current, event = {}) {
       next.checkpointProtection = null;
       next.checkpointFailReason = null;
       next.planRound = 1;
+      next.userApprovedUnprotectedExecution = false;
       next.planRevisionCount = 0;
       next.implementationRound = 0;
       next.implementationRevisionCount = 0;
@@ -401,6 +410,7 @@ function publicProfessionalState(run, options = {}) {
     stopReason: run.stopReason || null,
     checkpointProtection: run.checkpointProtection || null,
     checkpointFailReason: run.checkpointFailReason || null,
+    userApprovedUnprotectedExecution: Boolean(run.userApprovedUnprotectedExecution),
   };
 }
 

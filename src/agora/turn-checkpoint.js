@@ -88,6 +88,46 @@ function atomicJson(file, value) {
   fs.renameSync(tmp, file);
 }
 
+// checkpoint 실패는 항상 CHECKPOINT_* enum으로만 표현합니다. OS/라이브러리의
+// raw error code(EACCES, ENOSPC, ENOENT 등)가 그대로 사용자·evidence까지
+// 새어나가지 않도록, 각 실패 지점에서 typed error를 만들어 던집니다.
+const CHECKPOINT_FAILURE_CODES = Object.freeze([
+  "CHECKPOINT_GIT_FAILED",
+  "CHECKPOINT_STORAGE_FAILED",
+  "CHECKPOINT_MANIFEST_FAILED",
+  "CHECKPOINT_COPY_FAILED",
+  "CHECKPOINT_UNTRACKED_NOT_REGULAR",
+  "CHECKPOINT_UNKNOWN",
+]);
+
+function checkpointError(code, message, cause) {
+  const err = new Error(message);
+  err.code = CHECKPOINT_FAILURE_CODES.includes(code) ? code : "CHECKPOINT_UNKNOWN";
+  // 원인 추적을 위해 OS 코드는 별도 필드로만 보존합니다(사용자 노출용 아님).
+  if (cause && typeof cause.code === "string") err.osCode = cause.code;
+  if (cause instanceof Error) err.cause = cause;
+  return err;
+}
+
+// 실패 지점별 typed 래퍼. 동기 fs 호출을 감싸 raw code 누출을 차단합니다.
+function guard(code, message, fn) {
+  try {
+    return fn();
+  } catch (error) {
+    if (typeof error?.code === "string" && CHECKPOINT_FAILURE_CODES.includes(error.code)) throw error;
+    throw checkpointError(code, message, error);
+  }
+}
+
+async function guardAsync(code, message, fn) {
+  try {
+    return await fn();
+  } catch (error) {
+    if (typeof error?.code === "string" && CHECKPOINT_FAILURE_CODES.includes(error.code)) throw error;
+    throw checkpointError(code, message, error);
+  }
+}
+
 function checkpointId() {
   return `cp-${crypto.randomBytes(12).toString("hex")}`;
 }
@@ -190,23 +230,36 @@ async function createCheckpoint(workspaceRoot, options = {}) {
   const id = checkpointId();
   const dir = path.join(storageRoot, id);
   try {
-    fs.mkdirSync(dir, { recursive: true });
-    const stashOutput = await git(repo, ["stash", "create"]);
+    guard("CHECKPOINT_STORAGE_FAILED", "checkpoint 저장 폴더를 만들 수 없습니다.", () =>
+      fs.mkdirSync(dir, { recursive: true })
+    );
+    const stashOutput = await guardAsync("CHECKPOINT_GIT_FAILED", "git stash create에 실패했습니다.", () =>
+      git(repo, ["stash", "create"])
+    );
     let baselineSha = String(stashOutput || "").trim();
-    if (!baselineSha) baselineSha = String(await git(repo, ["rev-parse", "HEAD"])).trim();
-    const diffOut = await git(repo, ["diff", "--binary", "HEAD"]);
-    fs.writeFileSync(path.join(dir, "tracked.patch"), diffOut, "utf8");
+    if (!baselineSha) {
+      const headOut = await guardAsync("CHECKPOINT_GIT_FAILED", "git rev-parse HEAD에 실패했습니다.", () =>
+        git(repo, ["rev-parse", "HEAD"])
+      );
+      baselineSha = String(headOut).trim();
+    }
+    const diffOut = await guardAsync("CHECKPOINT_GIT_FAILED", "git diff 수집에 실패했습니다.", () =>
+      git(repo, ["diff", "--binary", "HEAD"])
+    );
+    guard("CHECKPOINT_STORAGE_FAILED", "tracked.patch 저장에 실패했습니다.", () =>
+      fs.writeFileSync(path.join(dir, "tracked.patch"), diffOut, "utf8")
+    );
 
-    const untrackedOut = await git(repo, ["ls-files", "--others", "--exclude-standard", "-z"]);
+    const untrackedOut = await guardAsync("CHECKPOINT_GIT_FAILED", "untracked 목록 수집에 실패했습니다.", () =>
+      git(repo, ["ls-files", "--others", "--exclude-standard", "-z"])
+    );
     const untrackedPaths = String(untrackedOut || "").split("\0").filter(Boolean);
     const safePaths = [];
     const untrackedArtifacts = [];
     for (const rel of untrackedPaths) {
       const safe = safeRelativePath(rel);
       if (!safe || !isWithin(repo, path.resolve(repo, safe))) {
-        const err = new Error("checkpoint untracked 경로가 올바르지 않습니다.");
-        err.code = "CHECKPOINT_UNTRACKED_NOT_REGULAR";
-        throw err;
+        throw checkpointError("CHECKPOINT_UNTRACKED_NOT_REGULAR", "checkpoint untracked 경로가 올바르지 않습니다.");
       }
       const src = path.resolve(repo, safe);
       // 저장소가 자체 checkpoint 디렉터리를 ignore하지 않는 환경에서도
@@ -214,23 +267,31 @@ async function createCheckpoint(workspaceRoot, options = {}) {
       if (isWithin(storageRoot, src)) continue;
       const dest = path.resolve(dir, "untracked", safe);
       if (!isWithin(path.join(dir, "untracked"), dest)) {
-        const err = new Error("checkpoint 사본 경로가 올바르지 않습니다.");
-        err.code = "CHECKPOINT_COPY_FAILED";
-        throw err;
+        throw checkpointError("CHECKPOINT_COPY_FAILED", "checkpoint 사본 경로가 올바르지 않습니다.");
       }
       // lstat으로 symlink를 따라가지 않고 판별한다. symlink/디렉터리/특수 파일은
       // checkpoint 대상이 아니므로 생성을 실패시켜 Builder를 시작하지 않는다.
-      const stat = fs.lstatSync(src);
+      const stat = guard("CHECKPOINT_COPY_FAILED", "checkpoint 대상 파일 정보를 읽을 수 없습니다: " + safe, () =>
+        fs.lstatSync(src)
+      );
       if (!stat.isFile()) {
-        const err = new Error("checkpoint untracked 파일이 일반 파일이 아닙니다: " + safe);
-        err.code = "CHECKPOINT_UNTRACKED_NOT_REGULAR";
-        throw err;
+        throw checkpointError(
+          "CHECKPOINT_UNTRACKED_NOT_REGULAR",
+          "checkpoint untracked 파일이 일반 파일이 아닙니다: " + safe
+        );
       }
       safePaths.push(safe);
       if (fs.existsSync(src)) {
-        fs.mkdirSync(path.dirname(dest), { recursive: true });
-        fs.copyFileSync(src, dest);
+        guard("CHECKPOINT_COPY_FAILED", "checkpoint 사본 폴더를 만들 수 없습니다: " + safe, () =>
+          fs.mkdirSync(path.dirname(dest), { recursive: true })
+        );
+        guard("CHECKPOINT_COPY_FAILED", "checkpoint 사본 복사에 실패했습니다: " + safe, () =>
+          fs.copyFileSync(src, dest)
+        );
         const copyMeta = sha256File(dest);
+        if (!copyMeta) {
+          throw checkpointError("CHECKPOINT_COPY_FAILED", "checkpoint 사본을 검증할 수 없습니다: " + safe);
+        }
         untrackedArtifacts.push({
           path: safe,
           bytes: copyMeta.bytes,
@@ -241,7 +302,9 @@ async function createCheckpoint(workspaceRoot, options = {}) {
     const patchPath = path.join(dir, "tracked.patch");
     const trackedPatchMeta = sha256File(patchPath) || { bytes: 0, sha256: "" };
     const listPath = path.join(dir, "untracked-list.txt");
-    fs.writeFileSync(listPath, safePaths.join("\n"), "utf8");
+    guard("CHECKPOINT_STORAGE_FAILED", "untracked 목록 저장에 실패했습니다.", () =>
+      fs.writeFileSync(listPath, safePaths.join("\n"), "utf8")
+    );
     const untrackedListMeta = sha256File(listPath) || { bytes: 0, sha256: "" };
 
     const manifest = {
@@ -266,7 +329,9 @@ async function createCheckpoint(workspaceRoot, options = {}) {
         untracked: untrackedArtifacts,
       },
     };
-    atomicJson(path.join(dir, "manifest.json"), manifest);
+    guard("CHECKPOINT_MANIFEST_FAILED", "checkpoint manifest 저장에 실패했습니다.", () =>
+      atomicJson(path.join(dir, "manifest.json"), manifest)
+    );
     return {
       supported: true,
       checkpointId: id,
@@ -283,12 +348,16 @@ async function createCheckpoint(workspaceRoot, options = {}) {
     // 여기 도달했다는 것은 Git 저장소인데 백업 생성에 실패했다는 뜻이다.
     // non-Git(supported:false)과 구분해 호출자가 Builder를 무방비로 시작하지
     // 않도록 failed 플래그를 남긴다.
+    // reason은 항상 CHECKPOINT_* enum이다. 각 실패 지점에서 typed error를
+    // 만들기 때문에 OS raw code(EACCES/ENOSPC 등)는 여기까지 오지 않으며,
+    // 예기치 못한 경로는 CHECKPOINT_UNKNOWN으로 닫는다.
+    const code = typeof error?.code === "string" && CHECKPOINT_FAILURE_CODES.includes(error.code)
+      ? error.code
+      : "CHECKPOINT_UNKNOWN";
     return {
       supported: false,
       failed: true,
-      // git 명령 실패(exit code)처럼 코드가 없거나 숫자인 경우는
-      // enum으로 정규화한다. 그 외 라이브러리/시스템 에러만 원 코드 보존.
-      reason: typeof error?.code === "string" ? error.code : "CHECKPOINT_GIT_FAILED",
+      reason: code,
     };
   }
 }
@@ -369,6 +438,7 @@ module.exports = {
   validateCheckpoint,
   CHECKPOINT_SCHEMA_VERSION,
   CHECKPOINT_ID_PATTERN,
+  CHECKPOINT_FAILURE_CODES,
   createCheckpoint,
   inspectCheckpoint,
   resolveCheckpoint,

@@ -1,6 +1,6 @@
 # Agora — Managed Harness Runtime 개발일지 및 확장 기준
 
-> 상태: **Stage A/B 마감 완료 · Stage C 착수 전**
+> 상태: **Stage A/B 마감 완료 · Professional 안정화 Stage 1~5 및 검수 잔여사항 반영 완료 · Stage C 착수 전**
 > 최초 작성: 2026-08-16
 > 최근 갱신: 2026-08-17
 > 대상 브랜치: `feat/multi-harness-runtime`
@@ -925,6 +925,68 @@ GitHub Actions
 ```
 
 이 수정은 Stage C 기능 추가가 아니라 Stage C 착수 전에 실사용에서 발견된 **Professional Mode 입력/실행 경계 회귀를 닫는 baseline correction**이다. 상위 Professional FSM의 Planner → Plan Reviewer → Builder → Reviewer 흐름은 변경하지 않았다.
+
+### 2026-08-17 — Professional 안정화 Stage 1~5 및 외부 검수 잔여사항 반영
+
+Professional Mode 안정화 5단계(워크스페이스 통일 / Task Contract / Checkpoint 정책 / 입력 라우팅 / 메시지 액션 분리)를 구현한 뒤, 외부 검수에서 제기된 잔여 결함을 함께 닫았다.
+
+임시 장치 제거:
+
+- `.github/workflows/apply-professional-stabilization.yml`과 `scripts/apply-professional-stabilization.js`를 삭제했다.
+  이 workflow는 push마다 소스를 정규식으로 자가 변환한 뒤 스스로를 삭제하고 재푸시하는 일회성 장치였다.
+  최종 트리에 남기지 않기로 한 임시 구현이므로 제거했고, 앞으로 코드 변경은 항상 명시적 커밋으로만 반영한다.
+
+수정한 결함:
+
+- **workflow-store reconcile provenance** — 동일 `taskPath`의 기존 revision이 **하나뿐**일 때
+  disk hash가 어긋나도 `superseded` 처리를 건너뛰는 경로가 있었다(`group.length > 1` 조건).
+  과거 `activeRunId`를 가진 stale entry가 새 canonical과 함께 활성 목록에 남을 수 있었다.
+  그룹 크기와 무관하게 canonical이 아니면 `superseded`로 내리도록 고치고 단일 revision 회귀 테스트를 추가했다.
+- **Checkpoint failure taxonomy** — `fs`/`git` 실패 지점의 OS raw code(`EACCES`, `ENOSPC` 등)가
+  최종 `reason`으로 그대로 새어나갈 수 있었다. 각 failure site에서 typed error를 만들도록 바꾸고
+  (`CHECKPOINT_STORAGE_FAILED` / `CHECKPOINT_MANIFEST_FAILED` / `CHECKPOINT_COPY_FAILED` /
+  `CHECKPOINT_GIT_FAILED` / `CHECKPOINT_UNTRACKED_NOT_REGULAR` / `CHECKPOINT_UNKNOWN`),
+  catch는 enum 외의 값을 받지 않도록 fail-closed로 닫았다. 사용자 메시지에도 구체적 원인을 표시한다.
+- **Checkpoint retry provenance (신규 발견)** — checkpoint 실패 시 `specialistResume`에 `taskInfo`가
+  저장되지 않아, 재시도/무보호 재개가 `taskInfo: null`로 실행됐다. 그런데
+  `updateProfessionalTaskState`는 `taskPath`가 없으면 조용히 `true`(성공)를 반환했기 때문에
+  **workflow 인덱스가 전혀 갱신되지 않았는데도 실패가 감지되지 않았다.**
+  resume payload에 `taskInfo`/`feedback`/`maxAutoRevisions`를 보존하고,
+  Run 실행 상태(`activeRunId`/`lastRunId`)를 기록하려는 호출에서 `taskPath`가 비어 있으면
+  fail-closed로 거부하도록 바꿨다.
+- **무보호 실행 provenance** — `PROCEED_UNPROTECTED`가 `checkpointFailReason`을 지워
+  "왜 백업이 없었는지"가 사라졌다. 실패 사유를 보존하고 `userApprovedUnprotectedExecution`을
+  영속 필드로 추가해 evidence까지 end-to-end로 전달한다.
+- **Stage 5 쉽게 설명 계약** — 원문 작성 에이전트를 쓸 수 없을 때 다른 에이전트로 대체하던 fallback을 제거했다.
+  이제 **원문 작성자 고정 + 원문 작성 당시 model/effort 고정**이며, 사용할 수 없으면 버튼이 비활성화된다.
+  Handoff 팝오버의 `쉽게 설명` 옵션도 복원했고, 이 경로에서도 대상은 항상 원문 작성자로 강제된다.
+
+정책 모듈을 실제 authority로 승격:
+
+- `professional-ipc-policy.js`는 정의만 되어 있고 어디서도 import되지 않았다.
+  `chat-ipc.js`에 `enforceProfessionalPolicy()` 게이트를 추가해
+  `chat:send`, `chat:turn:interject`, `chat:discussion:start`, `chat:message:handoff`가
+  모두 이 정책 테이블을 통과하도록 연결했다. 정책에 없는 상태·액션 조합은 거부된다(fail-closed).
+- `ROLE_CONTEXT_POLICY`는 프롬프트 안내 문구 생성에만 쓰였고, 실제 context 포함/제외는
+  `isBuilder` / `isCleanReviewer` 같은 하드코딩 분기가 담당했다.
+  `includesPromptContext()`를 추가해 `chat-prompt.js`의 조립이 정책을 조회하도록 바꿨다.
+  교체 전 모든 역할에 대해 기존 분기와 판정 결과가 동일함을 대조 검증한 뒤 적용했으므로 동작 변화는 없다.
+
+두 모듈 모두 "정의만 있고 쓰이지 않는 상태"로 되돌아가지 않도록, 소스가 실제로 정책을 참조하는지
+검사하는 회귀 테스트를 추가했다.
+
+결과:
+
+```text
+npm test
+  645 PASS / 0 FAIL / 1 SKIP (플랫폼 의존 1건)
+```
+
+3-OS CI(ubuntu / macos / windows)는 push 이후 확인이 필요하다. 이 작업 환경은 네트워크가 차단되어
+GitHub Actions 결과를 직접 조회할 수 없었다.
+
+상위 Professional FSM의 `Frozen Task → Checkpoint → Builder → Actual Diff → Evidence →
+Clean Reviewer → Recovery` 흐름은 이번에도 변경하지 않았다.
 
 ---
 
