@@ -1002,7 +1002,7 @@ Clean Reviewer → Recovery` 흐름은 이번에도 변경하지 않았다.
    - 제어 키워드가 포함된 일반 설명 문장은 유효한 본문으로 정상 유지.
    - 제어 마커만 있는 필수 섹션 거부 및 설명 문장 통과 회귀 테스트 추가.
 3. **Stage 5 — 두 종류의 "쉽게 설명" 계약 분리**:
-   - 직접 버튼 [쉽게 설명] (`SIMPLIFY_SELF`): 원문 작성자 고정, 원문 작성 당시 model/effort 고정, fallback 금지.
+   - 직접 버튼 [쉽게 설명] (`SIMPLIFY_SELF`): 원문 작성자 고정, 원문 작성 당시 실제 모델(`resolvedModel` 또는 구체적 모델 ID) 고정, fallback 금지. `default` 문자열을 핀하는 대신 원문 생성 시점의 실제 실행 모델 ID를 메시지 메타데이터에 보존하며, 실제 모델을 확인할 수 없으면 버튼을 비활성화하고 fail-closed로 거부.
    - Handoff 팝오버 [다른 AI에게 전달 → 쉽게 설명] (`SIMPLIFY`): 사용자가 선택한 대상 AI가 자신의 현재 설정된 모델로 원문을 쉽게 설명(`simplifyMeta` 전달).
    - 두 계약 분리 및 검증 회귀 테스트 추가.
 4. **Stage 4 — Professional IPC fail-closed 강화**:
@@ -1015,14 +1015,15 @@ Clean Reviewer → Recovery` 흐름은 이번에도 변경하지 않았다.
 6. **Stage 3 — Checkpoint 자체 검증 후 descriptor 반환**:
    - `sha256File` 검증 실패 시 fallback 대신 `CHECKPOINT_STORAGE_FAILED` 에러 throw.
    - `manifest.json` 저장 직후 `inspectCheckpoint`를 호출해 descriptor와 artifact 무결성을 자체 검증 후 반환.
+   - macOS 환경의 `/var` 심볼릭 링크(`/private/var`) 경로 정합성을 위해 테스트에서 `fs.realpathSync` 표준화.
    - non-Git의 `{ supported: false }` 정상 경로는 보존하고 오류 발생 시 `{ supported: false, failed: true, reason: "CHECKPOINT_*" }`로 정리.
 
 최종 테스트 및 CI 기준:
 
 ```text
 node --test
-  658 PASS / 0 FAIL / 1 SKIP (Windows symlink EPERM 플랫폼 의존 1건)
-  총 659개 테스트
+  661 PASS / 0 FAIL / 1 SKIP (Windows symlink EPERM 플랫폼 의존 1건)
+  총 662개 테스트
 ```
 
 이로써 Stage 1~5 안정화 및 6개 잔여 결함 수정이 모두 완료되어 Stage C(Managed Harness Runtime)로 이행할 수 있는 확고한 baseline이 확립되었다.

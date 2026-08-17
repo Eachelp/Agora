@@ -586,6 +586,7 @@ class ChatRoom extends EventEmitter {
     };
     const responseAgentMeta = {
       model: agent.model || "default",
+      resolvedModel: agent.resolvedModel || (agent.model && agent.model !== "default" ? agent.model : null),
       effort: agent.effort || "default",
       version: agent.version || "",
       ...(context.specialist?.stage ? { specialistStage: context.specialist.stage } : {}),
@@ -866,11 +867,20 @@ class ChatRoom extends EventEmitter {
       if (target.id !== source.author) {
         return { ok: false, error: "쉽게 설명은 원문을 작성한 에이전트만 수행할 수 있습니다." };
       }
-      const sourceModel = source.agentMeta?.model || null;
+      const sourceModel =
+        source.agentMeta?.resolvedModel ||
+        (source.agentMeta?.model && source.agentMeta.model !== "default"
+          ? source.agentMeta.model
+          : null);
       if (!sourceModel) {
-        return { ok: false, error: "원문 작성 당시의 모델 정보가 없어 쉽게 설명을 실행할 수 없습니다." };
+        return {
+          ok: false,
+          error: "원문 작성 당시 실제 모델을 확인할 수 없어 같은 모델로 다시 설명할 수 없습니다.",
+        };
       }
-      const sourceEffort = source.agentMeta?.effort || null;
+      const sourceEffort = source.agentMeta?.effort && source.agentMeta.effort !== "default"
+        ? source.agentMeta.effort
+        : null;
       const simplifyMeta = {
         text: source.text || "",
         fromAgentId: source.author,
@@ -878,7 +888,6 @@ class ChatRoom extends EventEmitter {
         sourceModel,
         sourceEffort,
       };
-      // sourceModel이 "default"여도 현재 에이전트 설정으로 drift하지 않도록 명시적으로 pin한다.
       const agentConfig = {
         model: sourceModel,
         ...(sourceEffort ? { effort: sourceEffort } : {}),

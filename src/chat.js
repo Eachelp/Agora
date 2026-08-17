@@ -3445,14 +3445,18 @@ function renderMessage(message) {
     simplifyBtn.className = "message-simplify-button";
     simplifyBtn.textContent = "\u{1F4A1} 쉽게 설명";
     // 같은 저자 + 같은 모델 고정 계약: 원문 작성 에이전트만 수행할 수 있고
-    // 다른 에이전트로 대체하지 않습니다. 모델 정보가 없거나 사용할 수 없으면 버튼을 비활성화합니다.
+    // 다른 에이전트로 대체하지 않습니다. 실제 구체적 모델 정보가 없거나 사용할 수 없으면 버튼을 비활성화합니다.
     const simplifyAuthor = agentById(message.author);
-    const simplifyModel = message.agentMeta?.model || null;
+    const simplifyModel =
+      message.agentMeta?.resolvedModel ||
+      (message.agentMeta?.model && message.agentMeta.model !== "default"
+        ? message.agentMeta.model
+        : null);
     const simplifyAuthorUsable = Boolean(
       simplifyAuthor && simplifyAuthor.available && simplifyAuthor.enabled !== false && simplifyModel
     );
     simplifyBtn.title = !simplifyModel
-      ? "원문 작성 당시의 모델 정보를 확인할 수 없어 쉽게 설명을 실행할 수 없습니다"
+      ? "원문 작성 당시 실제 모델을 확인할 수 없어 쉽게 설명을 실행할 수 없습니다"
       : simplifyAuthorUsable
         ? "원문을 작성한 에이전트가 같은 모델로 알기 쉽게 다시 설명합니다"
         : "원문을 작성한 에이전트를 사용할 수 없어 쉽게 설명을 실행할 수 없습니다";
@@ -3463,10 +3467,15 @@ function renderMessage(message) {
     simplifyBtn.addEventListener("click", async (event) => {
       event.stopPropagation();
       if (specialistRunning || specialistLocksComposer()) return;
-      // fallback 금지: 원문 작성 에이전트나 모델 정보를 쓸 수 없으면 실행하지 않습니다.
+      // fallback 금지: 원문 작성 에이전트나 실제 모델 정보를 쓸 수 없으면 실행하지 않습니다.
       const target = agentById(message.author);
-      if (!target || !target.available || target.enabled === false || !message.agentMeta?.model) {
-        flashNotice("원문 작성 에이전트나 모델 정보를 확인할 수 없어 쉽게 설명을 실행할 수 없습니다.");
+      const targetModel =
+        message.agentMeta?.resolvedModel ||
+        (message.agentMeta?.model && message.agentMeta.model !== "default"
+          ? message.agentMeta.model
+          : null);
+      if (!target || !target.available || target.enabled === false || !targetModel) {
+        flashNotice("원문 작성 에이전트나 실제 모델 정보를 확인할 수 없어 쉽게 설명을 실행할 수 없습니다.");
         return;
       }
       await call(window.chatApi.handoffMessage(sessionMeta?.id, target.id, message.id, "SIMPLIFY_SELF"));

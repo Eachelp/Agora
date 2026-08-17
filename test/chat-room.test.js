@@ -1779,12 +1779,33 @@ test("handoffMessage의 SIMPLIFY_SELF는 원문 모델 메타데이터가 없으
 
   const result = room.handoffMessage("claude", "msg-nometa", "SIMPLIFY_SELF");
   assert.equal(result.ok, false, "모델 메타데이터가 없으면 실패해야 한다");
-  assert.match(result.error, /모델 정보가 없어/);
+  assert.match(result.error, /원문 작성 당시 실제 모델/);
   await settle(room);
   assert.equal(calls.length, 0, "fallback 실행되면 안 된다");
 });
 
-test("handoffMessage의 SIMPLIFY_SELF는 default 모델도 명시적으로 pin하여 현재 모델로 drift하지 않는다", async () => {
+test("handoffMessage의 SIMPLIFY_SELF는 default 모델만 있고 resolvedModel이 없으면 fail한다", async () => {
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({ claude: [{ ok: true, text: "fallback 실행" }] }, calls),
+  });
+  room.messages.push({
+    id: "msg-default-only",
+    authorType: "agent",
+    author: "claude",
+    text: "default 모델 원문",
+    agentMeta: { model: "default", effort: "default" },
+  });
+
+  const result = room.handoffMessage("claude", "msg-default-only", "SIMPLIFY_SELF");
+  assert.equal(result.ok, false, "resolvedModel이 없는 default 모델은 fail해야 한다");
+  assert.match(result.error, /원문 작성 당시 실제 모델/);
+  await settle(room);
+  assert.equal(calls.length, 0);
+});
+
+test("handoffMessage의 SIMPLIFY_SELF는 resolvedModel이 있으면 해당 실제 모델을 고정해 재실행한다", async () => {
   const calls = [];
   const agents = makeAgents();
   // 현재 claude의 설정은 opus로 변경된 상태
@@ -1793,15 +1814,15 @@ test("handoffMessage의 SIMPLIFY_SELF는 default 모델도 명시적으로 pin�
 
   const room = new ChatRoom({
     agents,
-    runAgent: fakeRunner({ claude: [{ ok: true, text: "default 모델로 실행" }] }, calls),
+    runAgent: fakeRunner({ claude: [{ ok: true, text: "resolved 모델로 실행" }] }, calls),
   });
-  // 원문 작성 당시에는 "default" 모델로 작성됨
+  // 원문 작성 당시에는 "default" 설정이었지만 실제로는 resolvedModel("claude-sonnet-legacy")로 실행됨
   room.messages.push({
     id: "msg-default-model",
     authorType: "agent",
     author: "claude",
     text: "default 모델 원문",
-    agentMeta: { model: "default", effort: "default" },
+    agentMeta: { model: "default", resolvedModel: "claude-sonnet-legacy", effort: "default" },
   });
 
   const result = room.handoffMessage("claude", "msg-default-model", "SIMPLIFY_SELF");
@@ -1809,9 +1830,9 @@ test("handoffMessage의 SIMPLIFY_SELF는 default 모델도 명시적으로 pin�
   await settle(room);
 
   assert.equal(calls.length, 1);
-  // 현재 설정(claude-opus-latest)으로 drift되지 않고 agentConfig에 원문 모델(default)이 pin되어야 한다
+  // 현재 설정(claude-opus-latest)으로 drift되지 않고 agentConfig에 실제 원문 모델(claude-sonnet-legacy)이 pin되어야 한다
   const responseMsg = room.messages.at(-1);
-  assert.equal(responseMsg.agentMeta.model, "default");
+  assert.equal(responseMsg.agentMeta.model, "claude-sonnet-legacy");
 });
 
 test("handoffMessage의 Handoff SIMPLIFY는 선택한 다른 AI가 자신의 모델로 원문을 쉽게 설명한다", async () => {
