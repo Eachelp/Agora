@@ -39,7 +39,7 @@ const {
 } = require("./chat-argv");
 const { createLineParser } = require("./chat-events");
 const { ProcessHarnessAdapter } = require("../harness/process-harness-adapter");
-const { HarnessRuntime } = require("../harness/harness-runtime");
+const { createDefaultHarnessRuntime } = require("../harness/create-default-harness-runtime");
 const { persistRunMetrics } = require("./chat-run-metrics-store");
 const {
   importAttachment,
@@ -289,7 +289,7 @@ function createChatFeature(options) {
   // 귀결된다(관측 실행 동작 = C-1). options seam은 backward-compatible하게 유지한다:
   // harnessRuntime 직접 주입 또는 harnessAdapter(=process adapter) 주입 모두 허용.
   const harnessRuntime = options.harnessRuntime
-    || new HarnessRuntime({ processAdapter: options.harnessAdapter || new ProcessHarnessAdapter() });
+    || createDefaultHarnessRuntime({ processAdapter: options.harnessAdapter || new ProcessHarnessAdapter() });
 
   function ensureStore() {
     if (store || storeError) return store;
@@ -584,6 +584,9 @@ function createChatFeature(options) {
         );
       }
 
+      // Stage C-3: effective auto-approval을 한 번만 계산해 process invocation과
+      // managed context(Codex turn approval policy)에서 동일하게 사용한다.
+      const effectiveAutoApprove = permissionMode === "workspace-write" && Boolean(config.autoApprove || autoApprove);
       const invocation = buildAgentInvocation({
         provider: record,
         permissionMode,
@@ -594,7 +597,7 @@ function createChatFeature(options) {
         chatCwd: store.runtimeChatDir(),
         attachmentsDir,
         outputFile,
-        autoApprove: permissionMode === "workspace-write" && Boolean(config.autoApprove || autoApprove),
+        autoApprove: effectiveAutoApprove,
       });
       if (!invocation.ok) {
         return {
@@ -625,6 +628,12 @@ function createChatFeature(options) {
 
       const hardOutputLimitBytes = resolveHardOutputLimit();
 
+      // Stage C-3: native local-image delivery metadata(control-plane 준비). ProcessHarnessAdapter는
+      // 이 필드를 무시하고 기존 argv --image 경로를 그대로 쓴다. CodexManagedAdapter만 사용한다.
+      const nativeImages = enriched
+        .filter((a, i) => invocation.deliveries?.[i]?.method === "native-image")
+        .map((a) => a.path)
+        .filter(Boolean);
       const harnessInvocation = {
         commandPath: record.commandPath,
         needsShell: record.needsShell,
@@ -644,6 +653,7 @@ function createChatFeature(options) {
           : {}),
         ...(hardOutputLimitBytes ? { hardOutputLimitBytes } : {}),
         onRawChunk: rawLog.write,
+        images: nativeImages,
       };
       // Stage C-2: 이미 계산된 authority 결과만 모아 ExecutionContext를 만든다.
       // (workspace/permission/provider invocation/prompt/Evidence 순서는 그대로 두고
@@ -662,6 +672,8 @@ function createChatFeature(options) {
         providerId: agent.id,
         modelKey: normalizeChoice(agent.model) || null,
         permissionMode,
+        // turn-level security setting. SessionKey 구성요소가 아니며 매 turn 명시 전달된다.
+        autoApprove: effectiveAutoApprove,
         effort: normalizeChoice(agent.effort) || null,
         provenance: {
           frozenRunId: specialistStage ? (runId || null) : null,
@@ -2209,6 +2221,8 @@ function roomMeta(meta) {
   // 앱 종료: 진행 중이던 세션은 interrupted로 남겨 다음 시작 때 안내합니다.
   function shutdown() {
     shuttingDown = true;
+    // Stage C-3: managed harness runtime의 long-lived child(App Server 등)를 정리한다.
+    try { if (typeof harnessRuntime.close === "function") harnessRuntime.close(); } catch {}
     for (const [sessionId, room] of rooms) {
       try {
         if (room.activeRuns > 0 && store && !store.readOnly) {

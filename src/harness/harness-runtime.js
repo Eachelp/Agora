@@ -76,6 +76,16 @@ class HarnessRuntime {
     return this;
   }
 
+  // Stage C-3: Agora 종료 시 등록된 persistent adapter의 long-lived child(예: Codex
+  // App Server)를 정리한다. health/restart 정책은 이후 Stage에서 다룬다.
+  close() {
+    for (const adapter of this._persistentAdapters.values()) {
+      if (adapter && typeof adapter.close === "function") {
+        try { adapter.close(); } catch {}
+      }
+    }
+  }
+
   // provider에 등록된 persistent-capable adapter가 있으면 반환한다. 없거나 capability를
   // 켜지 않았으면 null(→ sessionless 경로).
   _persistentAdapterFor(context) {

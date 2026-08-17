@@ -1,6 +1,6 @@
 # Agora — Managed Harness Runtime 개발일지 및 확장 기준
 
-> 상태: **Stage A/B 완료 · Professional 안정화 Stage 1~5 COMPLETE · Stage C-2 COMPLETE · Stage C-3 READY**
+> 상태: **Stage A/B 완료 · Professional 안정화 Stage 1~5 COMPLETE · Stage C-2 COMPLETE · Stage C-3 COMPLETE (Codex managed) · Stage C-4 READY**
 > 최초 작성: 2026-08-16
 > 최종 안정화 기준일: 2026-08-17
 > 대상 브랜치: `feat/multi-harness-runtime`
@@ -1250,6 +1250,89 @@ invalidation, cross-restart resume, one-writer lease governance, general chat pe
 
 ```text
 c85c1b94a505a10e01c51d6a0d1fa88ef76b93b9
+```
+
+---
+
+### 2026-08-17 — Stage C-3: Codex Managed Runtime / App Server adapter
+
+처음으로 provider-native persistent runtime(Codex App Server)을 Managed Harness Runtime에
+연결했다. native persistence를 적용하는 provider는 Codex 하나뿐이며, general chat / Claude /
+AGY / default-model Codex는 기존 ProcessHarnessAdapter one-shot을 그대로 유지한다.
+
+Source of truth: 사용자 머신에 설치된 codex-cli 0.147.0의 `codex app-server` generated JSON
+schema(app-server v2). recon 자료로 wire protocol을 확정한 뒤 구현했다(기억/문서 추측 아님).
+
+확정한 protocol(설치 스키마 기준):
+
+- envelope에 `jsonrpc` 필드 없음. request `{id,method,params}` / notification `{method,params}`
+  / response `{id,result}` / error `{id,error}`. newline-delimited JSON.
+- handshake: `initialize`(request) → result → `initialized`(notification) → READY.
+  capabilities.experimentalApi는 켜지 않는다(stable surface만).
+- `thread/start`(ephemeral:true) → `thread.id`. `turn/start`{threadId, input[], sandboxPolicy,
+  approvalPolicy, cwd, model, effort} → `turn.id`. `turn/interrupt`{threadId, turnId}.
+- 모든 turn notification(item/*, turn/*, error)이 threadId+turnId를 실어 정확한 turn 라우팅 가능.
+- 최종 답변 = item/completed의 agentMessage.text(trusted final). TurnStatus:
+  completed|interrupted|failed|inProgress.
+- approval은 server→client request(item/commandExecution|fileChange|permissions/requestApproval,
+  legacy execCommandApproval/applyPatchApproval). deny decision: command/fileChange=`cancel`,
+  legacy=`abort`, permissions=`{}`.
+- permission: turn/start.sandboxPolicy readOnly|workspaceWrite{writableRoots}|dangerFullAccess
+  + approvalPolicy `never`. codexArgv/`codex exec --help` sandbox enum과 대조해 equivalent-or-
+  more-restrictive임을 확인.
+
+도입한 파일:
+
+- `src/harness/codex/codex-app-server-client.js` — 하나의 long-lived `app-server --stdio` child.
+  handshake, request-id correlation(out-of-order 처리), chunk 경계 독립, notification/
+  server-request 라우팅, protocol desync fail-closed, unknown notification forward-compat,
+  자동 restart 없음, close().
+- `src/harness/codex/codex-app-server-events.js` — v2 notification→canonical event 정규화
+  (chat-events builder 재사용), turn permission 매핑(pure, fail-closed), approval deny 매핑.
+- `src/harness/codex/codex-managed-adapter.js` — logicalHandle(session.key#generation)→thread
+  매핑. thread/start 1회, turn/start마다 현재 prompt 전체 재전송, threadId 라우팅(role leakage
+  금지), canonical result(evidence/runMetrics 재사용), cancel=turn/interrupt, approval deny+
+  approvalRequired(compat replay, replay-required thread 재사용 금지), session loss fail-closed.
+- `src/harness/create-default-harness-runtime.js` — codex→CodexManagedAdapter 등록 조립.
+
+기존 파일 변경(최소):
+
+- chat-ipc: harnessRuntime을 createDefaultHarnessRuntime로 구성, effectiveAutoApprove 1회 계산
+  후 context.autoApprove(turn-level; SessionKey 아님)와 native image metadata 전달, shutdown에서
+  runtime.close(). authority 계산 순서는 그대로.
+- harness-runtime: close() 추가(orphan child 정리). chat-events: commandStarted/commandFinished
+  export(canonical event shape single-source 재사용).
+
+유지한 authority/invariant:
+
+- Requirements=Frozen Task, Execution=filesystem/Git, workspace=ProjectStore.workspace,
+  permission=control plane, role context=ROLE_CONTEXT_POLICY, Evidence/RunMetrics schema 불변.
+- SessionKey 계약 불변(autoApprove는 key 아님, turn마다 명시 전달).
+- native thread memory는 cache: 매 turn 현재 authoritative prompt 전체를 다시 보낸다.
+- provider-specific 코드는 src/harness/codex + composition에만. FSM/chat-ipc/specialist에
+  provider 분기 없음. adapter는 argv를 reverse-parse하지 않는다.
+- session loss/crash/desync → fail-closed(Process fallback 없음, 자동 restart 없음).
+
+C-3에서 하지 않은 것(이후 Stage): same-turn approval(C-6), native resume/thread-list/
+cross-restart, capability 기반 Case-A process fallback, runtime/auth fingerprint invalidation,
+health monitoring/restart/backoff, one-writer lease governance, Verification Runner.
+
+테스트 결과:
+
+- 신규: codex-app-server-client(13) · codex-app-server-events(12) · codex-managed-adapter(21,
+  role leakage / strict-final / command evidence / cancel race / approval deny+replay / session
+  loss / permission / image / runtime selection 포함). fake app-server transport만 사용(네트워크/
+  codex 계정 불필요).
+- 전체 로컬 테스트: 751 tests / 751 pass / 0 fail.
+
+검증 한계(sandbox): 이 세션은 클라우드 샌드박스라 설치된 codex를 직접 실행하지 못해, 실제
+app-server에 대한 live smoke test는 수행하지 못했다. 프로토콜은 설치 schema로 확정했고 테스트는
+fake transport로 검증했다. 실사용 전 로컬 live smoke(1 Codex professional turn) 권장.
+
+최종 commit SHA:
+
+```text
+__C3_SHA__
 ```
 
 ---

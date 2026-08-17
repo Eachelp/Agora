@@ -342,6 +342,8 @@ module.exports = {
   parseClaudeLine,
   parseCodexLine,
   parseAgyLine,
+  commandStarted,
+  commandFinished,
   toolStarted,
   toolFinished,
 };
