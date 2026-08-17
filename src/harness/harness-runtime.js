@@ -13,12 +13,26 @@ const { deriveSessionKey } = require("./harness-session-key");
 //   - 어떤 authority도 갖지 않는다(workspace/permission/Frozen Task/Evidence).
 //   - provider-specific 정책은 이 경계 아래에만 존재한다(Professional FSM /
 //     chat orchestration으로 새지 않는다).
-//   - persistent adapter가 없거나 context가 session 대상이 아니면 ProcessHarnessAdapter
-//     one-shot 경로로 그대로 실행한다(registry 미사용). → C-2 production 실행 = C-1.
+//   - persistent adapter가 없거나 context가 의도적으로 sessionless 대상이면
+//     ProcessHarnessAdapter one-shot 경로로 그대로 실행한다(registry 미사용).
+//   - persistent adapter가 선택된 Professional 실행에서 필수 session identity를
+//     만들 수 없으면 one-shot으로 우회하지 않고 fail-closed한다.
 //
 // C-2에는 실제 persistent adapter가 없어 register()로 등록된 adapter가 없다. 따라서
 // production 실행은 항상 sessionless ProcessHarnessAdapter로 귀결된다. persistent 경로는
 // 테스트용 fake adapter로만 검증한다.
+
+function failedRun(error, stopReason) {
+  return {
+    promise: Promise.resolve({ ok: false, error, stopReason }),
+    cancel: () => {},
+  };
+}
+
+function isUnresolvedModelKey(value) {
+  const modelKey = String(value || "").trim().toLowerCase();
+  return !modelKey || modelKey === "default";
+}
 
 class HarnessRuntime {
   constructor({ processAdapter, registry, now } = {}) {
@@ -54,26 +68,43 @@ class HarnessRuntime {
     }
 
     const persistentAdapter = this._persistentAdapterFor(context);
-    const key = persistentAdapter ? deriveSessionKey(context) : null;
 
-    // sessionless 경로: persistent adapter가 없거나 context가 session 대상이 아님.
-    // ProcessHarnessAdapter로 그대로 위임하고 registry는 절대 건드리지 않는다.
-    if (!persistentAdapter || !key) {
+    // provider-native persistent adapter가 없으면 C-1과 동일한 one-shot process 경로다.
+    if (!persistentAdapter) {
       return this._processAdapter.runTurn({ context, invocation });
+    }
+
+    // General chat은 C-2에서 의도적으로 sessionless다. role/professionalRunId가 모두
+    // 없으면 persistent-capable provider여도 registry를 만들지 않고 one-shot으로 실행한다.
+    const professionalIntent = Boolean(context?.role || context?.professionalRunId);
+    if (!professionalIntent) {
+      return this._processAdapter.runTurn({ context, invocation });
+    }
+
+    // resolved concrete model이 없으면 persistent identity를 고정할 수 없으므로 C-2 계약상
+    // sessionless process 경로를 사용한다. 이 경우는 identity 손상이 아니라 의도된 fallback이다.
+    if (isUnresolvedModelKey(context?.modelKey)) {
+      return this._processAdapter.runTurn({ context, invocation });
+    }
+
+    const key = deriveSessionKey(context);
+    if (!key) {
+      // persistent provider + Professional 실행에서 workspace/project/run/role/provider/model/
+      // permission identity 중 하나라도 빠졌다면 fresh process로 조용히 우회하면 안 된다.
+      return failedRun(
+        "Professional harness session identity를 안전하게 계산할 수 없습니다.",
+        "HARNESS_SESSION_IDENTITY_INVALID"
+      );
     }
 
     // persistent 경로: role-scoped logical session을 확보하고 single-flight로 보호한다.
     const entry = this._registry.acquire(key, { adapterId: persistentAdapter.id });
     if (!this._registry.tryBeginTurn(entry)) {
       // 같은 logical session에 동시 turn 금지(fail-closed). 새 scheduler를 만들지 않는다.
-      return {
-        promise: Promise.resolve({
-          ok: false,
-          error: "동일한 logical harness session에서 이미 실행 중입니다.",
-          stopReason: "SESSION_BUSY",
-        }),
-        cancel: () => {},
-      };
+      return failedRun(
+        "동일한 logical harness session에서 이미 실행 중입니다.",
+        "SESSION_BUSY"
+      );
     }
 
     let run;
