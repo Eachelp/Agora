@@ -25,6 +25,7 @@ function makeFakeClient(opts = {}) {
       }
       if (method === "turn/interrupt") {
         this.interrupts.push(params);
+        if (opts.interruptPending) return new Promise(() => {}); // 영원히 pending(resolve/reject 안 됨)
         if (opts.interruptFails) { const e = new Error("interrupt failed"); e.code = "CODEX_APP_SERVER_PROTOCOL_ERROR"; return Promise.reject(e); }
         return Promise.resolve({});
       }
@@ -246,4 +247,45 @@ test("B2-D: 정상 interrupt 성공 + 정상 흐름은 thread 재사용을 막�
   const r2 = await run2.promise;
   assert.equal(r2.text, "again");
   assert.equal(threadStarts(c), 1, "정상 cancel 후 같은 thread 재사용");
+});
+
+
+// interrupt Promise가 확정되기 전(pending)에 다음 turn이 native thread를 선점하지 못하는지 검증한다.
+// 이것이 진짜 BLOCKER 2 close 조건이다: forced local finalize 시 handle은 즉시 invalidate되어야 한다.
+
+test("B2-B2: timeout + interrupt Promise가 pending이어도 다음 turn이 같은 native thread에 turn/start를 보내지 않는다", async () => {
+  const { adapter, getClient } = makeAdapter({ interruptPending: true });
+  const run = adapter.runTurn({ context: ctx(), invocation: inv({ timeoutMs: 20 }), session: sess("k") });
+  await waitUntil(() => getClient() && getClient().turnsIssued.length >= 1);
+  const c = getClient();
+  // unref된 timeout(20ms)이 발화하도록 이벤트 루프를 잠깐 ref로 유지
+  await new Promise((r) => setTimeout(r, 60));
+  const r = await run.promise;
+  assert.equal(r.timedOut, true);
+  assert.equal(c.interrupts.length, 1, "best-effort interrupt는 보냈다");
+
+  // interrupt Promise는 여전히 pending(resolve/reject 안 됨). 그래도 handle은 이미 invalidate됨.
+  const run2 = adapter.runTurn({ context: ctx(), invocation: inv(), session: sess("k") });
+  const r2 = await run2.promise;
+  assert.equal(r2.ok, false);
+  assert.equal(r2.stopReason, "CODEX_TURN_INTERRUPT_FAILED");
+  assert.equal(turnStarts(c), 1, "pending interrupt 상태에서도 손상 native thread에 turn/start를 보내지 않는다");
+});
+
+test("B2-C2: output-limit + interrupt Promise pending도 동일하게 race 없이 fail-closed", async () => {
+  const { adapter, getClient } = makeAdapter({ interruptPending: true });
+  const run = adapter.runTurn({ context: ctx(), invocation: inv({ hardOutputLimitBytes: 10 }), session: sess("k") });
+  await waitUntil(() => getClient() && getClient().turnsIssued.length >= 1);
+  const c = getClient();
+  const t = c.turnsIssued[0];
+  c.emit("item/agentMessage/delta", { threadId: t.threadId, turnId: t.id, itemId: "x", delta: "x".repeat(200) });
+  const r = await run.promise;
+  assert.equal(r.outputLimited, true);
+  assert.equal(c.interrupts.length, 1);
+
+  const run2 = adapter.runTurn({ context: ctx(), invocation: inv(), session: sess("k") });
+  const r2 = await run2.promise;
+  assert.equal(r2.ok, false);
+  assert.equal(r2.stopReason, "CODEX_TURN_INTERRUPT_FAILED");
+  assert.equal(turnStarts(c), 1, "pending interrupt 상태에서도 손상 native thread에 turn/start를 보내지 않는다");
 });

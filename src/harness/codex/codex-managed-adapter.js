@@ -164,6 +164,10 @@ class CodexManagedAdapter extends HarnessAdapter {
       ts.timeoutTimer = setTimeout(() => {
         if (ts.settled) return;
         ts.timedOut = true;
+        // native completion을 확인하지 않고 로컬에서 강제 finalize한다. interrupt 결과(성공/
+        // 지연/실패/timeout)와 무관하게 이 handle을 "즉시" invalidate해, 다음 turn이 아직
+        // 살아있을 수 있는 native thread에 turn/start를 먼저 보내는 race를 원천 차단한다.
+        this._invalidateHandle(ts.logicalHandle, "CODEX_TURN_INTERRUPT_FAILED");
         this._interrupt(ts);
         this._finalize(ts, {
           ok: false,
@@ -381,6 +385,9 @@ class CodexManagedAdapter extends HarnessAdapter {
     const limit = ts.invocation.hardOutputLimitBytes;
     if (Number.isFinite(limit) && limit > 0 && ts.stdoutBytes > limit && !ts.settled && !ts.outputLimited) {
       ts.outputLimited = true;
+      // 강제 local finalize -> handle을 즉시 invalidate(위 timeout과 동일 이유: interrupt
+      // Promise가 pending/성공/실패 어느 쪽이든 다음 turn의 thread 선점 race를 없앤다).
+      this._invalidateHandle(ts.logicalHandle, "CODEX_TURN_INTERRUPT_FAILED");
       this._interrupt(ts);
       this._finalize(ts, {
         ok: false,

@@ -1351,7 +1351,11 @@ ae61eb33dfa529c175e02a06108ee7f617056599
   invalidated로 표시한다. 다음 turn은 손상된 native thread를 조용히 재사용하지 않고 fail-closed한다
   (Process fallback / 자동 restart / hidden fresh-thread 없음). 명시적 rpc error(서버가 turn을 시작
   하지 않고 거부)와 정상 interrupt 성공은 continuity를 유지한다. C7 health framework는 도입하지 않고
-  이 patch에 필요한 최소 상태(_invalidatedHandles)만 추가했다.
+  이 patch에 필요한 최소 상태(_invalidatedHandles)만 추가했다. 특히 timeout/output-limit처럼 native completion 확인 없이
+  로컬에서 강제 finalize하는 경우에는 interrupt 결과(성공/지연/실패/pending)와 무관하게 handle을
+  즉시(synchronous) invalidate해, 다음 turn이 아직 살아있을 수 있는 native thread에 turn/start를
+  먼저 보내는 race를 원천 차단한다(정상 사용자 cancel은 matching turn/completed(interrupted)로
+  finalize하므로 thread 재사용 가능).
 - BLOCKER 3 (model catalog probe handshake 미완성): probeCodexModelCatalog가 initialize 응답 후
   initialized notification을 먼저 보낸 뒤 model/list를 요청하도록 최소 수정했다(C3 client와 동일한
   handshake). 기존 timeout/cleanup/malformed fail-safe 성격은 유지. 테스트용 spawnFn 주입점만 추가.
