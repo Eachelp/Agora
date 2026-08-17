@@ -19,11 +19,12 @@ function git(root, args) {
 
 function makeTempRepo(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agora-checkpoint-test-"));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  git(dir, ["init", "-q"]);
-  git(dir, ["config", "user.email", "test@example.com"]);
-  git(dir, ["config", "user.name", "Test"]);
-  return dir;
+  const real = fs.realpathSync(dir);
+  t.after(() => fs.rmSync(real, { recursive: true, force: true }));
+  git(real, ["init", "-q"]);
+  git(real, ["config", "user.email", "test@example.com"]);
+  git(real, ["config", "user.name", "Test"]);
+  return real;
 }
 
 test("git이 아닌 폴더에서는 checkpoint를 지원하지 않는다", async (t) => {
@@ -189,7 +190,7 @@ test("정상 checkpoint는 생성 직후 자체 검증을 거쳐 supported:true�
   const checkpoint = await createCheckpoint(repo);
   assert.equal(checkpoint.supported, true);
   assert.equal(typeof checkpoint.checkpointId, "string");
-  assert.equal(checkpoint.workspace, repo);
+  assert.equal(checkpoint.workspace, fs.realpathSync(repo));
   cleanupCheckpoint(checkpoint);
 });
 

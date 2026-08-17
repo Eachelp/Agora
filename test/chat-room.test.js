@@ -1759,13 +1759,59 @@ test("handoffMessage의 SIMPLIFY_SELF는 원문 작성자가 아닌 에이전트
     agents: makeAgents(),
     runAgent: fakeRunner({ codex: [{ ok: true, text: "대체 실행" }] }, calls),
   });
-  room.messages.push({ id: "msg-x", authorType: "agent", author: "claude", text: "원문" });
+  room.messages.push({ id: "msg-x", authorType: "agent", author: "claude", text: "원문", agentMeta: { model: "sonnet-3.5" } });
 
   const result = room.handoffMessage("codex", "msg-x", "SIMPLIFY_SELF");
   assert.equal(result.ok, false, "다른 에이전트로 대체 실행되면 안 된다");
   assert.match(result.error, /원문을 작성한 에이전트/);
   await settle(room);
   assert.equal(calls.length, 0, "대체 에이전트가 실행되면 안 된다");
+});
+
+test("handoffMessage의 SIMPLIFY_SELF는 원문 모델 메타데이터가 없으면 fail한다(현재 모델 fallback 금지)", async () => {
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({ claude: [{ ok: true, text: "fallback 실행" }] }, calls),
+  });
+  // agentMeta가 없는 레거시 메시지
+  room.messages.push({ id: "msg-nometa", authorType: "agent", author: "claude", text: "원문" });
+
+  const result = room.handoffMessage("claude", "msg-nometa", "SIMPLIFY_SELF");
+  assert.equal(result.ok, false, "모델 메타데이터가 없으면 실패해야 한다");
+  assert.match(result.error, /모델 정보가 없어/);
+  await settle(room);
+  assert.equal(calls.length, 0, "fallback 실행되면 안 된다");
+});
+
+test("handoffMessage의 SIMPLIFY_SELF는 default 모델도 명시적으로 pin하여 현재 모델로 drift하지 않는다", async () => {
+  const calls = [];
+  const agents = makeAgents();
+  // 현재 claude의 설정은 opus로 변경된 상태
+  const claudeAgent = agents.find((a) => a.id === "claude");
+  claudeAgent.model = "claude-opus-latest";
+
+  const room = new ChatRoom({
+    agents,
+    runAgent: fakeRunner({ claude: [{ ok: true, text: "default 모델로 실행" }] }, calls),
+  });
+  // 원문 작성 당시에는 "default" 모델로 작성됨
+  room.messages.push({
+    id: "msg-default-model",
+    authorType: "agent",
+    author: "claude",
+    text: "default 모델 원문",
+    agentMeta: { model: "default", effort: "default" },
+  });
+
+  const result = room.handoffMessage("claude", "msg-default-model", "SIMPLIFY_SELF");
+  assert.equal(result.ok, true);
+  await settle(room);
+
+  assert.equal(calls.length, 1);
+  // 현재 설정(claude-opus-latest)으로 drift되지 않고 agentConfig에 원문 모델(default)이 pin되어야 한다
+  const responseMsg = room.messages.at(-1);
+  assert.equal(responseMsg.agentMeta.model, "default");
 });
 
 test("handoffMessage의 Handoff SIMPLIFY는 선택한 다른 AI가 자신의 모델로 원문을 쉽게 설명한다", async () => {

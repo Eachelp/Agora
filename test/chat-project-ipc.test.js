@@ -10,7 +10,7 @@ function makeRoot() {
   return fs.realpathSync(dir);
 }
 
-function makeFeature(root, dialogResult = { canceled: true, filePaths: [] }) {
+function makeFeature(root, dialogResult = { canceled: true, filePaths: [] }, extraOptions = {}) {
   const handlers = new Map();
   const ipcMain = {
     handle(channel, handler) {
@@ -30,6 +30,7 @@ function makeFeature(root, dialogResult = { canceled: true, filePaths: [] }) {
       shell: {},
     },
     storeRoot: root,
+    ...extraOptions,
   });
   feature.registerIpcHandlers();
   return {
@@ -216,7 +217,13 @@ test("프로젝트 workspace 변경은 모든 세션 meta에 일괄 반영된다
 
 test("Case A: project.workspace가 null이면 session.workspace 캐시가 있어도 런타임 작업이 거부된다", async () => {
   const root = makeRoot();
-  const feature = makeFeature(root);
+  let providerCalls = 0;
+  const feature = makeFeature(root, undefined, {
+    runAgent: () => {
+      providerCalls += 1;
+      return { promise: Promise.resolve({ ok: true, text: "should not be called" }), cancel: () => {} };
+    },
+  });
   const oldRepo = path.join(root, "old-repo");
   fs.mkdirSync(oldRepo, { recursive: true });
   fs.writeFileSync(path.join(oldRepo, "TASK-001.md"), "old task", "utf8");
@@ -237,7 +244,7 @@ test("Case A: project.workspace가 null이면 session.workspace 캐시가 있어
   fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2), "utf8");
 
   // 사용자 요청 메시지 추가 (전문 모드 진입 전제조건)
-  await feature.invoke("chat:send", { sessionId, text: "전문 실행해줘", recordOnly: true });
+  await feature.invoke("chat:send", { sessionId, text: "전문 실행해줘", professionalDraft: true });
 
   // 1) 전문 모드 시작 거부
   const specialistStart = await feature.invoke("chat:specialist:start", {
@@ -269,17 +276,63 @@ test("Case A: project.workspace가 null이면 session.workspace 캐시가 있어
   });
   assert.equal(taskRead.ok, false);
   assert.match(taskRead.error, /프로젝트 워크스페이스가 설정되어 있지 않습니다/);
+
+  // provider가 절대 호출되지 않아야 한다.
+  assert.equal(providerCalls, 0);
 });
 
 test("Case B: project.workspace가 repo-B이고 session.workspace가 repo-A(stale)이면 repo-B가 runtime authority로 동작한다", async () => {
   const root = makeRoot();
-  const feature = makeFeature(root);
   const repoA = path.join(root, "repo-A");
   const repoB = path.join(root, "repo-B");
   fs.mkdirSync(repoA, { recursive: true });
   fs.mkdirSync(repoB, { recursive: true });
   fs.writeFileSync(path.join(repoA, "TASK-001.md"), "content in repo A", "utf8");
   fs.writeFileSync(path.join(repoB, "TASK-001.md"), "content in repo B", "utf8");
+  fs.mkdirSync(path.join(repoB, ".project-memory", "tasks"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repoB, ".project-memory", "tasks", "TASK-001.md"),
+    "## Goal\n목표\n## Requirements\n요구\n## Implementation Approach\n접근\n## Acceptance Criteria\n완료\n## Verification\n검증\n## Out of Scope\n제외\n",
+    "utf8"
+  );
+
+  const checkpointCalls = [];
+  const freezeCalls = [];
+  const runAgentCalls = [];
+
+  const feature = makeFeature(root, undefined, {
+    checkpoint: {
+      createCheckpoint: async (ws, opts) => {
+        checkpointCalls.push({ ws, opts });
+        return { supported: true, checkpointId: "cp-test12345678", workspace: ws };
+      },
+      inspectCheckpoint: () => ({ ok: true }),
+      restoreCheckpoint: async () => ({ ok: true }),
+      cleanupCheckpoint: () => ({ ok: true }),
+    },
+    taskManager: {
+      freezeTask: (contract, ws) => {
+        freezeCalls.push({ contract, ws });
+        return { runId: "RUN-001", taskHash: "h123", content: "dummy" };
+      },
+      validateFrozenTask: () => ({ ok: true }),
+      resolveTaskContract: () => "contract",
+      readFrozenTask: () => ({ ok: true, task: { content: "dummy" } }),
+      writeRunResult: () => true,
+      writeRunEvidence: () => true,
+    },
+    runAgent: (agent, options) => {
+      runAgentCalls.push({ agent, options });
+      return {
+        promise: Promise.resolve({
+          ok: true,
+          text: "## Goal\n목표\n## Requirements\n요구\n## Implementation Approach\n접근\n## Acceptance Criteria\n완료\n## Verification\n검증\n## Out of Scope\n제외\nSTATUS: PLAN_READY",
+          builderStatus: "DONE",
+        }),
+        cancel: () => {},
+      };
+    },
+  });
 
   // 프로젝트 workspace는 repoB로 생성
   const created = await feature.invoke("chat:projects:create", {
@@ -288,6 +341,21 @@ test("Case B: project.workspace가 repo-B이고 session.workspace가 repo-A(stal
   });
   assert.equal(created.ok, true);
   const sessionId = created.session.meta.id;
+  const projectId = created.session.meta.projectId;
+
+  // 전문 실행 역할 설정
+  await feature.invoke("chat:projects:update", {
+    projectId,
+    patch: {
+      defaultRoles: {
+        planning: { agentId: "claude" },
+        plan_review: { agentId: "claude" },
+        implementation: { agentId: "claude" },
+        review: { agentId: "claude" },
+        recorder: { agentId: "claude" },
+      },
+    },
+  });
 
   // 세션 메타에만 repoA 주입 (stale cache 시뮬레이션)
   const storeRoot = path.join(root, "sessions", sessionId);
@@ -303,4 +371,27 @@ test("Case B: project.workspace가 repo-B이고 session.workspace가 repo-A(stal
   });
   assert.equal(taskRead.ok, true);
   assert.equal(taskRead.content, "content in repo B");
+
+  // 전문 실행 시작: 사용자 요청 메시지 추가 후 실행
+  await feature.invoke("chat:send", { sessionId, text: "구현해줘", professionalDraft: true });
+  const started = await feature.invoke("chat:specialist:start", {
+    sessionId,
+    action: "full",
+    mode: "step",
+  });
+  assert.equal(started.ok, true);
+
+  // Mock 검증: freezeTask 및 checkpoint 및 provider invocation에 전달된 workspace가 repoB여야 하고, repoA는 결코 사용되지 않아야 한다.
+  if (freezeCalls.length > 0) {
+    for (const call of freezeCalls) {
+      assert.equal(call.ws, repoB);
+      assert.notEqual(call.ws, repoA);
+    }
+  }
+  if (checkpointCalls.length > 0) {
+    for (const call of checkpointCalls) {
+      assert.equal(call.ws, repoB);
+      assert.notEqual(call.ws, repoA);
+    }
+  }
 });

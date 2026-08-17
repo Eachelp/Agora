@@ -866,24 +866,27 @@ class ChatRoom extends EventEmitter {
       if (target.id !== source.author) {
         return { ok: false, error: "쉽게 설명은 원문을 작성한 에이전트만 수행할 수 있습니다." };
       }
+      const sourceModel = source.agentMeta?.model || null;
+      if (!sourceModel) {
+        return { ok: false, error: "원문 작성 당시의 모델 정보가 없어 쉽게 설명을 실행할 수 없습니다." };
+      }
+      const sourceEffort = source.agentMeta?.effort || null;
       const simplifyMeta = {
         text: source.text || "",
         fromAgentId: source.author,
         messageId,
-        sourceModel: source.agentMeta?.model || null,
-        sourceEffort: source.agentMeta?.effort || null,
+        sourceModel,
+        sourceEffort,
       };
-      const agentConfig = {};
-      if (simplifyMeta.sourceModel && simplifyMeta.sourceModel !== "default") {
-        agentConfig.model = simplifyMeta.sourceModel;
-      }
-      if (simplifyMeta.sourceEffort && simplifyMeta.sourceEffort !== "default") {
-        agentConfig.effort = simplifyMeta.sourceEffort;
-      }
+      // sourceModel이 "default"여도 현재 에이전트 설정으로 drift하지 않도록 명시적으로 pin한다.
+      const agentConfig = {
+        model: sourceModel,
+        ...(sourceEffort ? { effort: sourceEffort } : {}),
+      };
       this.appendSystem(`@${target.id}에게 ${source.author}의 메시지를 알기 쉽게 풀어달라고 요청합니다.`);
       this.scheduleResponse(target, {
         simplifyMeta,
-        ...(Object.keys(agentConfig).length ? { agentConfig } : {}),
+        agentConfig,
       });
       return { ok: true };
     }
