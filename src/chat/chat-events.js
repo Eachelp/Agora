@@ -318,9 +318,20 @@ function parseAgyLine(line) {
   return null;
 }
 
-function instrumentParser(baseParser) {
+// instrumentParser는 baseParser의 정규화 이벤트에 run telemetry를 붙인다. Stage C
+// (Claude Resume)에서는 여기에 더해 provider CLI가 내보내는 top-level session_id를
+// harness-level metadata로만 추출한다. onSessionId는 옵션이며, 주어졌을 때만 각 줄을
+// 한 번 더 파싱해 session_id를 알린다(renderer/FSM/Evidence로는 노출하지 않는다).
+function instrumentParser(baseParser, { onSessionId = null } = {}) {
   const telemetry = createRunTelemetry();
+  const notifySessionId = typeof onSessionId === "function" ? onSessionId : null;
   const parser = (line) => {
+    if (notifySessionId) {
+      const raw = parseJsonLine(line);
+      if (raw && typeof raw.session_id === "string" && raw.session_id) {
+        try { notifySessionId(raw.session_id); } catch {}
+      }
+    }
     const event = baseParser(line);
     if (!event) return null;
     telemetry.observe(event);
@@ -330,10 +341,10 @@ function instrumentParser(baseParser) {
   return parser;
 }
 
-function createLineParser(providerId) {
-  if (providerId === "claude") return instrumentParser(createClaudeLineParser());
-  if (providerId === "codex") return instrumentParser(parseCodexLine);
-  if (providerId === "agy") return instrumentParser(parseAgyLine);
+function createLineParser(providerId, options = {}) {
+  if (providerId === "claude") return instrumentParser(createClaudeLineParser(), options);
+  if (providerId === "codex") return instrumentParser(parseCodexLine, options);
+  if (providerId === "agy") return instrumentParser(parseAgyLine, options);
   return null;
 }
 

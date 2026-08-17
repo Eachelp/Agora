@@ -408,6 +408,7 @@ test("37 runtime identity 변경은 fail-closed", async () => {
 
 function spyProcess() { const calls = []; return { id: "process", supportsPersistentSession: false, calls, runTurn(r) { calls.push(r); return { promise: Promise.resolve({ ok: true, tag: "process" }), cancel() {} }; } }; }
 function spyCodex() { const calls = []; return { id: "codex-managed", supportsPersistentSession: true, calls, runTurn({ context, session }) { calls.push({ context, session }); return { promise: Promise.resolve({ ok: true, tag: "codex", key: session && session.key }), cancel() {} }; } }; }
+function spyClaude() { const calls = []; return { id: "claude-managed", supportsPersistentSession: true, calls, runTurn({ context, session }) { calls.push({ context, session }); return { promise: Promise.resolve({ ok: true, tag: "claude", key: session && session.key }), cancel() {} }; } }; }
 function rctx(over = {}) {
   return { projectId: "p", workspaceId: "/ws", professionalRunId: "pr-1", role: "implementation", providerId: "codex", modelKey: "gpt-x", permissionMode: "workspace-write", ...over };
 }
@@ -441,11 +442,14 @@ test("49.8/49.9 general chat과 default/미해결 model은 Codex managed를 쓰�
   assert.equal(rt.registry.size(), 0, "registry entry 없음");
 });
 
-test("49.10/49.11 Claude/AGY는 Process 경로(등록된 persistent adapter 없음)", async () => {
-  const codex = spyCodex(); const proc = spyProcess();
-  const rt = createDefaultHarnessRuntime({ processAdapter: proc, codexAdapter: codex });
+test("49.10/49.11 AGY는 Process 경로; Claude는 등록된 managed adapter로 라우팅된다", async () => {
+  // Stage C(Claude Resume) 이후 Professional Claude 실행은 ClaudeManagedAdapter로 간다.
+  // AGY는 등록된 persistent adapter가 없어 그대로 Process 경로다.
+  const codex = spyCodex(); const claude = spyClaude(); const proc = spyProcess();
+  const rt = createDefaultHarnessRuntime({ processAdapter: proc, codexAdapter: codex, claudeAdapter: claude });
   await rt.runTurn({ context: rctx({ providerId: "claude" }), invocation: RINV }).promise;
   await rt.runTurn({ context: rctx({ providerId: "agy" }), invocation: RINV }).promise;
-  assert.equal(codex.calls.length, 0);
-  assert.equal(proc.calls.length, 2);
+  assert.equal(codex.calls.length, 0, "Codex managed 미사용");
+  assert.equal(claude.calls.length, 1, "Claude는 managed adapter로 라우팅");
+  assert.equal(proc.calls.length, 1, "AGY만 Process 경로");
 });
