@@ -636,3 +636,92 @@ test("Test E: Rehydration 시 constructor가 transcript에 새로운 시스템 �
   const systemMessages = room.messages.filter((m) => m.authorType === "system");
   assert.equal(systemMessages.length, 0, "constructor rehydration 시 새 시스템 메시지가 append되지 않아야 한다");
 });
+
+test("READY + empty TASK.md rehydration: 생성 즉시 planReady:false, Builder/Checkpoint 0, AI 자동 호출 없음", (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-rehydrate-empty-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const calls = [];
+  const checkpointCalls = [];
+
+  const tasksDir = path.join(workspace, ".project-memory", "tasks");
+  fs.mkdirSync(tasksDir, { recursive: true });
+  // 완전히 빈 TASK.md 파일 생성
+  fs.writeFileSync(path.join(tasksDir, "TASK-001.md"), "", "utf8");
+
+  const initialProfessionalRun = createProfessionalRun({
+    node: "READY",
+    status: "WAITING",
+    taskPath: ".project-memory/tasks/TASK-001.md",
+    stages: {
+      planner: { agent: { id: "claude", name: "Claude", available: true, enabled: true } },
+      review: { agent: { id: "codex", name: "Codex", available: true, enabled: true } },
+    },
+  });
+
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    initialProfessionalRun,
+    runAgent: fakeRunner({}, calls),
+    checkpoint: {
+      createCheckpoint: async (ws, opts) => {
+        checkpointCalls.push({ ws, opts });
+        return { supported: true, checkpointId: "cp-test" };
+      },
+      cleanupCheckpoint: () => ({ ok: true }),
+    },
+  });
+
+  const state = room.specialistState();
+  assert.equal(state.planReady, false, "빈 TASK.md는 생성 즉시 planReady가 false여야 한다");
+  assert.equal(state.needsInput, true, "사용자 입력 대기 상태여야 한다");
+  assert.equal(state.stopReason, "TASK_CONTRACT_INCOMPLETE");
+  assert.equal(state.missingSections.length, 6, "필수 6개 섹션이 모두 missing이어야 한다");
+  assert.equal(room.specialistResume?.phase, "task_contract_incomplete");
+  assert.equal(room.professionalPlan, null);
+  assert.equal(calls.length, 0, "AI 호출이 없어야 한다");
+  assert.equal(checkpointCalls.length, 0, "Checkpoint 호출이 없어야 한다");
+});
+
+test("READY + missing TASK.md rehydration: 파일 부재 시 생성 즉시 planReady:false, recovery 상태, Builder/Checkpoint 0, AI 자동 호출 없음", (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-rehydrate-missing-file-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const calls = [];
+  const checkpointCalls = [];
+
+  // TASK.md 파일을 생성하지 않음 (파일 부재)
+  const initialProfessionalRun = createProfessionalRun({
+    node: "READY",
+    status: "WAITING",
+    taskPath: ".project-memory/tasks/TASK-NOT-EXISTS.md",
+    stages: {
+      planner: { agent: { id: "claude", name: "Claude", available: true, enabled: true } },
+      review: { agent: { id: "codex", name: "Codex", available: true, enabled: true } },
+    },
+  });
+
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    initialProfessionalRun,
+    runAgent: fakeRunner({}, calls),
+    checkpoint: {
+      createCheckpoint: async (ws, opts) => {
+        checkpointCalls.push({ ws, opts });
+        return { supported: true, checkpointId: "cp-test" };
+      },
+      cleanupCheckpoint: () => ({ ok: true }),
+    },
+  });
+
+  const state = room.specialistState();
+  assert.equal(state.planReady, false, "존재하지 않는 TASK.md는 생성 즉시 planReady가 false여야 한다");
+  assert.equal(state.needsInput, true, "사용자 입력 대기 상태여야 한다");
+  assert.equal(state.stopReason, "TASK_CONTRACT_INCOMPLETE");
+  assert.equal(room.specialistResume?.phase, "task_contract_incomplete");
+  assert.equal(room.professionalPlan, null);
+  assert.equal(calls.length, 0, "AI 호출이 없어야 한다");
+  assert.equal(checkpointCalls.length, 0, "Checkpoint 호출이 없어야 한다");
+});

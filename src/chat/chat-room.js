@@ -11,7 +11,7 @@ const {
   phaseForNode,
 } = require("../agora/professional-run");
 const { TaskManager, hashText } = require("../agora/task-manager");
-const { validateTaskContract } = require("../agora/task-contract-validator");
+const { REQUIRED_SECTIONS, validateTaskContract } = require("../agora/task-contract-validator");
 const { describeWorkspaceChanges } = require("../agora/workspace-diff");
 const {
   installSpecialistMethods,
@@ -143,11 +143,15 @@ class ChatRoom extends EventEmitter {
     }
     this.specialistStages = this.professionalRun?.stages || null;
     if (this.professionalRun?.node === "READY" && this.professionalRun.taskPath) {
-      const contract = this.taskManager.resolveTaskContract(
-        { contentSource: "file", taskPath: this.professionalRun.taskPath },
-        this.meta.workspace
-      );
-      if (contract?.content?.trim()) {
+      let contract = null;
+      try {
+        contract = this.taskManager.resolveTaskContract(
+          { contentSource: "file", taskPath: this.professionalRun.taskPath },
+          this.meta.workspace
+        );
+      } catch {}
+
+      if (contract) {
         const contractCheck = validateTaskContract(contract.content);
         if (contractCheck.valid) {
           this.professionalPlan = {
@@ -182,15 +186,44 @@ class ChatRoom extends EventEmitter {
             taskInfo: {
               relativePath: this.professionalRun.taskPath,
               filename: path.basename(this.professionalRun.taskPath),
-              content: contract.content,
-              hash: hashText(contract.content),
+              content: contract.content || "",
+              hash: hashText(contract.content || ""),
             },
-            feedback: contract.content,
+            feedback: contract.content || "",
             missingSections: contractCheck.missing,
             taskError: `실행 계약(Task)에 필수 섹션이 빠졌습니다: ${contractCheck.missing.join(", ")}`,
             maxAutoRevisions: this.professionalRun.policy?.implementationAutoRevisions || 0,
           };
         }
+      } else {
+        // resolveTaskContract가 null인 경우 (파일 누락 또는 읽기 불가)
+        // READY 상태로 방치하지 않고 fail-closed recovery 상태로 전환한다.
+        const allMissing = [...REQUIRED_SECTIONS];
+        const transition = transitionProfessionalRun(this.professionalRun, {
+          type: "TASK_CONTRACT_INCOMPLETE",
+          missingSections: allMissing,
+        });
+        if (transition.ok) {
+          this.professionalRun = transition.state;
+          try {
+            this.persistProfessionalRun?.(this.professionalRun);
+          } catch {}
+        }
+        this.specialistResume = {
+          stages: this.professionalRun.stages || {},
+          mode: "auto",
+          phase: "task_contract_incomplete",
+          taskInfo: {
+            relativePath: this.professionalRun.taskPath,
+            filename: path.basename(this.professionalRun.taskPath),
+            content: "",
+            hash: hashText(""),
+          },
+          feedback: "",
+          missingSections: allMissing,
+          taskError: "작업 지시서(TASK.md) 파일을 찾을 수 없거나 읽을 수 없습니다.",
+          maxAutoRevisions: this.professionalRun.policy?.implementationAutoRevisions || 0,
+        };
       }
     }
     // v3의 실행 상태는 professionalRun이 기준이다. v2의 pendingRecovery는
