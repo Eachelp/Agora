@@ -1,4 +1,5 @@
 const { buildConversationWindow } = require("./chat-summary-window");
+const { roleContextNotice } = require("./professional-role-context");
 
 const DEFAULT_MAX_MESSAGES = 40;
 const MAX_SPECIALIST_PROMPT_CHARS = 24 * 1024;
@@ -231,6 +232,8 @@ function buildAgentPrompt({
     lines.push("");
     lines.push(`=== 전문 모드: ${stageLabels[specialist.stage] || specialist.stage} ===`);
     lines.push(`현재 단계: ${stageLabels[specialist.stage] || specialist.stage} · 반복 ${specialist.round || 1}/${specialist.maxRounds || 3}`);
+    const ctxNotice = roleContextNotice(specialist.stage);
+    if (ctxNotice) lines.push(`[context 경계] ${ctxNotice}`);
     if (specialist.feedback) {
       if (specialist.stage === "plan_review") {
         lines.push("=== 현재 TASK ===");

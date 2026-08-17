@@ -391,6 +391,8 @@ function setSpecialistState(state = {}) {
 }
 
 function specialistLocksComposer() {
+  // READY 상태에서는 기획 수정을 허용하기 위해 composer를 잠그지 않는다.
+  if (specialistNode === "READY" && !specialistActive) return false;
   return Boolean(specialistActive || specialistBlockedAvailable || (specialistResumeAvailable && !specialistNeedsInput));
 }
 
@@ -1633,10 +1635,7 @@ function openHandoffPopover(anchor, messageId, sourceAuthor) {
     const intentReview = document.createElement("option");
     intentReview.value = "REVIEW_OPINION";
     intentReview.textContent = "검토 요청";
-    const intentSimplify = document.createElement("option");
-    intentSimplify.value = "SIMPLIFY";
-    intentSimplify.textContent = "쉽게 설명";
-    intentSelect.append(intentContinue, intentReview, intentSimplify);
+    intentSelect.append(intentContinue, intentReview);
     root.append(makeField("전달 목적", intentSelect));
 
     const actions = document.createElement("div");
@@ -3433,6 +3432,32 @@ function renderMessage(message) {
     );
     actions.append(copyMarkdownBtn, copyPlainBtn);
 
+    // 쉽게 설명 독립 버튼: 원문 작성 에이전트를 기본 대상으로 즉시 실행
+    const simplifyBtn = document.createElement("button");
+    simplifyBtn.type = "button";
+    simplifyBtn.className = "message-simplify-button";
+    simplifyBtn.textContent = "\u{1F4A1} 쉽게 설명";
+    simplifyBtn.title = "이 메시지를 비개발자도 이해할 수 있게 풀어줍니다";
+    if (specialistRunning || specialistLocksComposer()) {
+      simplifyBtn.disabled = true;
+      simplifyBtn.classList.add("is-disabled");
+    }
+    simplifyBtn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      if (specialistRunning || specialistLocksComposer()) return;
+      // 기본 대상: 원문 작성 에이전트 -> 사용 가능한 첫 번째 에이전트 -> 없으면 중단
+      let target = agentById(message.author);
+      if (!target || !target.available || target.enabled === false) {
+        target = agents.find(a => a.available && a.enabled !== false);
+      }
+      if (!target) {
+        flashNotice("사용 가능한 에이전트가 없습니다.");
+        return;
+      }
+      await call(window.chatApi.handoffMessage(sessionMeta?.id, target.id, message.id, "SIMPLIFY"));
+    });
+    actions.append(simplifyBtn);
+
     const handoffBtn = document.createElement("button");
     handoffBtn.type = "button";
     handoffBtn.className = "message-handoff-button";
@@ -3903,6 +3928,25 @@ async function sendCurrentMessage() {
     composerInput.focus();
     return;
   }
+  // READY 상태에서 텍스트 입력은 기획 수정으로 라우팅한다.
+  if (specialistNode === "READY" && !specialistActive && text) {
+    const draftText = composerInput.value;
+    composerInput.value = "";
+    closeMentionPopup();
+    autoresize();
+    const result = await call(window.chatApi.specialistPlanAnswer(activeSessionId, text));
+    if (!result) {
+      composerInput.value = draftText;
+      autoresize();
+    } else {
+      if (result.meta) sessionMeta = result.meta;
+      if (result.specialist) setSpecialistState(result.specialist);
+    }
+    syncComposerLock();
+    renderHeader();
+    composerInput.focus();
+    return;
+  }
   if (specialistLocksComposer()) {
     flashNotice("전문 실행이 진행 중이거나 승인 대기 중입니다. 먼저 작업을 완료하거나 취소해 주세요.");
     return;
@@ -4149,8 +4193,19 @@ function lockComposer(locked) {
   sendButton.disabled = locked;
   attachButton.disabled = locked || specialistNeedsInput;
   if (specialistNeedsInput) {
-    composerInput.placeholder = "기획자의 Open Question에 답하세요 (Enter 전송)";
-    sendButton.textContent = "답변 보내기";
+    if (specialistStopReason === "CHECKPOINT_FAILED") {
+      composerInput.placeholder = "아래에서 다음 처리를 선택하세요";
+      composerInput.disabled = true;
+      sendButton.textContent = "선택 대기";
+    } else {
+      composerInput.placeholder = "기획자의 Open Question에 답하세요 (Enter 전송)";
+      sendButton.textContent = "답변 보내기";
+    }
+  } else if (specialistNode === "READY" && !specialistActive) {
+    composerInput.disabled = false;
+    sendButton.disabled = false;
+    composerInput.placeholder = "기획을 수정하려면 변경사항을 입력하세요. '실행' 버튼으로 시작합니다 (Enter 전송)";
+    sendButton.textContent = "기획 수정";
   } else {
     composerInput.placeholder = locked ? "전문 실행이 끝난 뒤 입력할 수 있습니다" : "질문이나 작업을 입력하세요  (@로 대상 지정 · Enter 전송)";
     sendButton.textContent = "전송";

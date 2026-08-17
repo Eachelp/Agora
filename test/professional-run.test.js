@@ -222,3 +222,24 @@ test("REPLAN_RESET은 checkpoint 보호·실패 사유를 리셋한다", () => {
   assert.equal(res.state.checkpointProtection, null);
   assert.equal(res.state.checkpointFailReason, null);
 });
+
+test("READY에서 USER_ANSWER_PLAN은 PLANNING으로 복귀하고 approvedTaskHash를 리셋한다", () => {
+  const run = createProfessionalRun({
+    node: "READY",
+    status: "WAITING",
+    approvedTaskHash: "hash-999",
+    planRound: 2,
+  });
+  const res = transitionProfessionalRun(run, { type: "USER_ANSWER_PLAN" });
+  assert.equal(res.ok, true);
+  assert.equal(res.state.node, "PLANNING");
+  assert.equal(res.state.status, "RUNNING");
+  assert.equal(res.state.approvedTaskHash, null);
+  assert.equal(res.state.planRound, 3);
+});
+
+test("IMPLEMENTING에서 USER_ANSWER_PLAN은 거부된다", () => {
+  const run = createProfessionalRun({ node: "IMPLEMENTING", status: "RUNNING" });
+  const res = transitionProfessionalRun(run, { type: "USER_ANSWER_PLAN" });
+  assert.equal(res.ok, false);
+});

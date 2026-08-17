@@ -119,3 +119,33 @@ test("resumeCheckpointFailure는 action에 따라 재시도/무보호 진행을 
   assert.equal(execCalls[0].allowUnprotected, true);
   assert.equal(execCalls[0].resumedRun.runId, "RUN-009");
 });
+
+test("READY 상태에서 answerPlanQuestion이 기획 수정으로 동작한다", async () => {
+  const room = Object.create(ChatRoom.prototype);
+  const transitions = [];
+  room.professionalRun = { node: "READY", status: "WAITING", approvedTaskHash: "hash-123" };
+  room.transitionProfessional = (event) => {
+    transitions.push(event);
+    room.professionalRun = { ...room.professionalRun, node: "PLANNING", status: "RUNNING", approvedTaskHash: null };
+    return { ok: true, state: room.professionalRun };
+  };
+  room.professionalTransitionFailure = () => ({ ok: false });
+  room.specialistResume = { phase: "plan_ready", stages: {}, feedback: "" };
+  room.specialistActive = false;
+  room.messages = [];
+  room.appendMessage = (msg) => room.messages.push(msg);
+  room.appendSystem = () => {};
+  room.emitSpecialistState = () => {};
+  room.setProfessionalRun = () => true;
+  room.onProfessionalTaskState = null;
+  const planCalls = [];
+  room.runPlanBlock = async (opts) => { planCalls.push(opts); return { ok: true }; };
+  room.withProfessionalAuthorization = async (cap, fn) => fn();
+
+  const result = await room.answerPlanQuestion("이 기획서에 테스트 절차를 추가해 주세요");
+  assert.equal(result.ok, true);
+  assert.equal(transitions[0].type, "USER_ANSWER_PLAN");
+  assert.ok(room.messages[0].text.includes("[기획 수정]"));
+  assert.ok(planCalls[0].feedback.includes("기획 수정 요청"));
+  assert.equal(room.specialistResume, null);
+});

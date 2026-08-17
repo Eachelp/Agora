@@ -467,6 +467,19 @@ Retry 또는 Restore 시:
 - 사용자에게 3선택지를 제시한다: ① 재시도(CHECKPOINT_RETRY, 기존 Frozen Run 재사용) ② 무보호 진행(PROCEED_UNPROTECTED, checkpoint 없이 시작하되 checkpointProtection:unavailable_user_approved) ③ 취소(별도 cancel IPC).
 - checkpoint 보호 상태를 evidence/Reviewer/UI까지 end-to-end로 전달한다. checkpointProtection enum: protected | unavailable_non_git | unavailable_checkpoint_failed | unavailable_user_approved. 무보호 실행이면 Reviewer 프롬프트가 사전 workspace snapshot 없음 경고를 붙인다.
 
+**Stage 4 — 전문모드 입력 라우팅 + UI 명확화**
+
+- professional-ipc-policy.js: 상태별 허용 IPC를 fail-closed 정책 테이블로 정의한다. 정책에 없는 IPC는 거부된다. 상태는 (node, status) 조합으로 식별한다.
+- READY 기획 수정: USER_ANSWER_PLAN이 READY+WAITING에서도 허용되며, PLANNING으로 복귀하고 approvedTaskHash를 리셋한다. chat-specialist.js의 answerPlanQuestion이 plan_ready phase에서도 동작하며, 기획 수정 요청으로 구분 표시한다.
+- professional-role-context.js: 역할별 context 경계(sees/excludes)를 중앙 정책으로 정의한다. chat-prompt.js가 이를 import해 각 stage 프롬프트에 context 경계 안내를 자동 생성한다.
+- 상태별 Composer UX: READY에서 composer가 잠기지 않고 기획 수정 입력이 가능하다. CHECKPOINT_FAILED에서는 선택 대기 안내를 표시한다. 텍스트 전송은 READY에서 specialistPlanAnswer로 라우팅된다.
+
+**Stage 5 — 쉽게 설명 독립 버튼**
+
+- 메시지 액션 영역에 독립 "쉽게 설명" 버튼을 추가한다. 원문 작성 에이전트를 기본 대상으로 팝오버 없이 즉시 SIMPLIFY intent를 실행한다.
+- Handoff 팝오버에서 SIMPLIFY 옵션을 제거하고, 이어서 작업 / 검토 요청 2개만 남긴다.
+- 백엔드(chat-room.js의 simplifyMeta 경로, chat-prompt.js의 통역가 역할)는 변경 없음.
+
 ---
 
 ## 9. Capability 분리 (현재 permission cap)

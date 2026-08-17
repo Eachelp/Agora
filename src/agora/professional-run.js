@@ -141,12 +141,17 @@ function transitionProfessionalRun(current, event = {}) {
       break;
     }
     case "USER_ANSWER_PLAN": {
-      if (current.status !== "WAITING" || (current.node !== "PLANNING" && current.node !== "PLAN_REVIEW")) {
-        return { ok: false, reason: "답변 가능한 대기 상태가 아닙니다." };
+      if (current.status !== "WAITING" || (current.node !== "PLANNING" && current.node !== "PLAN_REVIEW" && current.node !== "READY")) {
+        return { ok: false, reason: "답변/기획 수정 가능한 대기 상태가 아닙니다." };
       }
       next.node = "PLANNING";
       next.status = "RUNNING";
       next.stopReason = null;
+      // READY에서 기획 수정으로 복귀하면 승인된 기획 해시를 리셋한다.
+      if (current.node === "READY") {
+        next.approvedTaskHash = null;
+        next.planRound = (current.planRound || 1) + 1;
+      }
       break;
     }
     case "USER_EXECUTE": {

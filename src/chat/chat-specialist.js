@@ -830,16 +830,20 @@ class SpecialistMixin {
 
   async _answerPlanQuestion(answer) {
     const resume = this.specialistResume;
-    if (!resume || !["needs_decision", "plan_review_fix_required"].includes(resume.phase)) {
-      return { ok: false, error: "답변을 기다리는 기획 질문이 없습니다." };
+    // READY(plan_ready) 상태에서도 기획 수정을 허용한다.
+    if (!resume || !["needs_decision", "plan_review_fix_required", "plan_ready"].includes(resume.phase)) {
+      return { ok: false, error: "답변을 기다리는 기획 질문이 없거나 기획 수정 가능한 상태가 아닙니다." };
     }
+    const isReadyEdit = resume.phase === "plan_ready";
     const text = String(answer || "").trim();
-    if (!text) return { ok: false, error: "기획자에게 보낼 답변을 입력해 주세요." };
+    if (!text) return { ok: false, error: isReadyEdit ? "기획 수정 내용을 입력해 주세요." : "기획자에게 보낼 답변을 입력해 주세요." };
     const transition = this.transitionProfessional({ type: "USER_ANSWER_PLAN" });
     if (!transition.ok) return this.professionalTransitionFailure("planner", transition);
     this.specialistResume = null;
-    this.appendMessage({ authorType: "user", author: "user", text: `[기획 답변] ${text}` });
-    const feedback = `${resume.feedback || ""}\n\n=== 사용자 답변 ===\n${text}\n=== 사용자 답변 끝 ===`;
+    this.appendMessage({ authorType: "user", author: "user", text: isReadyEdit ? `[기획 수정] ${text}` : `[기획 답변] ${text}` });
+    const editPrefix = isReadyEdit ? "\n\n=== 기획 수정 요청 ===\n" : "\n\n=== 사용자 답변 ===\n";
+    const editSuffix = isReadyEdit ? "\n=== 기획 수정 요청 끝 ===" : "\n=== 사용자 답변 끝 ===";
+    const feedback = `${resume.feedback || ""}${editPrefix}${text}${editSuffix}`;
     const result = await this.runPlanBlock({ ...resume, feedback, taskInfo: resume.taskInfo || null });
     if (resume.action === "full" && result?.ok) {
       return this.runProfessionalImplementation({

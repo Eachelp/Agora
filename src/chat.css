@@ -423,6 +423,30 @@ textarea:focus-visible {
   border-color: var(--line);
 }
 
+.message-simplify-button {
+  justify-self: start;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, opacity 0.15s;
+}
+
+.message-simplify-button:hover:not(:disabled) {
+  color: var(--ink-soft);
+  border-color: var(--accent);
+}
+
+.message-simplify-button:disabled,
+.message-simplify-button.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  border-color: var(--line);
+}
+
 /* 말풍선 단위 복사 버튼 (마크다운 원본 / 서식 없이) */
 .message-actions {
   justify-self: start;
