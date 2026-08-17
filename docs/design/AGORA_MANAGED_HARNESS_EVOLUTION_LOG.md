@@ -1,6 +1,6 @@
 # Agora — Managed Harness Runtime 개발일지 및 확장 기준
 
-> 상태: **Stage A/B 완료 · Professional 안정화 Stage 1~5 COMPLETE · Stage C READY**
+> 상태: **Stage A/B 완료 · Professional 안정화 Stage 1~5 COMPLETE · Stage C-1 COMPLETE · Stage C-2 READY**
 > 최초 작성: 2026-08-16
 > 최종 안정화 기준일: 2026-08-17
 > 대상 브랜치: `feat/multi-harness-runtime`
@@ -1131,6 +1131,63 @@ windows  PASS
 ```
 
 이 기준점에서 Stage 1~5는 종료한다.
+
+---
+
+### 2026-08-17 — Stage C-1: HarnessAdapter process compatibility boundary
+
+Stage C의 첫 단계(C-1)로 provider CLI 실행 transport를 HarnessAdapter 경계 뒤로 옮겼다.
+목표는 새 runtime 기능 추가가 아니라 순수 transport abstraction 도입이며, 성공 기준은
+observable behavior change = 0 이었다.
+
+도입한 abstraction:
+
+- `src/harness/harness-adapter.js` — HarnessAdapter 기반 클래스. C-1에 필요한 최소 contract는
+  `runTurn(request) → { promise, cancel }` 하나이며, 기본 구현은 fail-closed로 오류를 던진다.
+  startSession/resumeSession/invalidateSession/approve/health/shutdown 등 §10 장기 interface는
+  아직 도입하지 않는다(세션 semantics 조기 도입 금지).
+- `src/harness/process-harness-adapter.js` — ProcessHarnessAdapter. 기존 process-per-invocation
+  실행(chat-agent-runner의 runAgentProcess)을 그대로 위임하는 compatibility 구현. runProcess는
+  테스트 주입이 가능하지만 기본값은 실제 runAgentProcess다.
+
+기존 process runner와의 compatibility 방식:
+
+- CLI spawn source of truth는 여전히 chat-agent-runner 한 곳뿐이다(production logic 복제 없음).
+- chat-ipc.js의 makeRunAgent는 확정된 실행 요청 객체를 그대로 `harnessAdapter.runTurn()`에
+  전달하고 반환된 `{ promise, cancel }` handle을 변형 없이 사용한다.
+- 어댑터는 요청의 권한/모델/effort/argv/promptTransport/fail-closed semantics를 재해석하거나
+  바꾸지 않는다.
+
+변경하지 않은 authority/invariant:
+
+- ProjectStore.workspace > session.workspace: workspace authority는 makeRunAgent가 그대로 유지.
+- permission 계산, canonicalWorkspace fail-closed, invocation 빌드는 control plane에 그대로 남음.
+- Frozen Task / checkpoint / recovery / Evidence / RunMetrics 전달 경로 불변.
+- Professional FSM 상태 전이 semantics 불변. 어댑터는 provider 이름을 policy로 알지 않는다.
+- 새 fallback / 새 duplicate execution path 없음. fail-closed → fail-open 전환 없음.
+
+테스트 결과:
+
+- 신규 `test/harness-adapter.test.js` 6건 통과(기본 어댑터 fail-closed, 위임 identity,
+  cancel 통과, 실제 프로세스 one-shot 실행 보존).
+- 전체 로컬 테스트(node --test): 670 tests / 670 pass / 0 fail
+  (기존 664 + 신규 6; Linux 실행 환경이라 Windows symlink EPERM skip 1건은 발생하지 않음).
+
+최종 commit SHA:
+
+```text
+__COMMIT_SHA__
+```
+
+아직 구현하지 않은 Stage C 후속(이번 범위 밖):
+
+- C-2 Role-scoped Harness Session Registry
+- C-3 Codex App Server adapter
+- C-4 Claude session/resume adapter
+- C-5 AGY conversation/resume adapter
+- C-6 same-turn approval
+- C-7 runtime profile / child environment
+- C-8 session invalidation / health / shutdown
 
 ---
 

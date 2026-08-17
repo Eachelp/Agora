@@ -37,7 +37,7 @@ const {
   specialistPermissionMode,
 } = require("./chat-argv");
 const { createLineParser } = require("./chat-events");
-const { runAgentProcess } = require("./chat-agent-runner");
+const { ProcessHarnessAdapter } = require("../harness/process-harness-adapter");
 const { persistRunMetrics } = require("./chat-run-metrics-store");
 const {
   importAttachment,
@@ -278,6 +278,11 @@ function createChatFeature(options) {
   const rooms = new Map();
   // 세션별 "아직 전송 전" 첨부: id → 내부 레코드(fileName 포함)
   const pendingAttachments = new Map();
+  // Stage C-1: 프로바이더 실행 transport를 HarnessAdapter 경계 뒤로 옮긴다.
+  // ProcessHarnessAdapter는 기존 process-per-invocation 실행(runAgentProcess)을
+  // 그대로 위임하는 compatibility 구현이며, workspace/permission/Evidence 등
+  // control-plane 권한은 makeRunAgent에 그대로 남는다. 테스트는 options로 주입한다.
+  const harnessAdapter = options.harnessAdapter || new ProcessHarnessAdapter();
 
   function ensureStore() {
     if (store || storeError) return store;
@@ -613,7 +618,7 @@ function createChatFeature(options) {
 
       const hardOutputLimitBytes = resolveHardOutputLimit();
 
-      const run = runAgentProcess({
+      const run = harnessAdapter.runTurn({
         commandPath: record.commandPath,
         needsShell: record.needsShell,
         argv: invocation.argv,
