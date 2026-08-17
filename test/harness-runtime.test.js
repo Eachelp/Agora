@@ -77,6 +77,38 @@ test("등록된 persistent adapter는 role-scoped session을 만든다", async (
   assert.ok(res.session.key.startsWith("hsk1:"));
 });
 
+test("persistent provider의 Professional identity가 불완전하면 one-shot으로 우회하지 않고 fail-closed한다", async () => {
+  const spy = spyProcessAdapter();
+  const fake = new FakePersistentAdapter();
+  const rt = new HarnessRuntime({ processAdapter: spy });
+  rt.register("claude", fake);
+
+  const res = await rt.runTurn({ context: ctx({ workspaceId: null }), invocation: INV }).promise;
+
+  assert.equal(res.ok, false);
+  assert.equal(res.stopReason, "HARNESS_SESSION_IDENTITY_INVALID");
+  assert.equal(spy.calls.length, 0);
+  assert.equal(fake.calls.length, 0);
+  assert.equal(rt.registry.size(), 0);
+});
+
+test("persistent-capable provider여도 general chat은 의도적으로 sessionless one-shot이다", async () => {
+  const spy = spyProcessAdapter();
+  const fake = new FakePersistentAdapter();
+  const rt = new HarnessRuntime({ processAdapter: spy });
+  rt.register("claude", fake);
+
+  const res = await rt.runTurn({
+    context: ctx({ professionalRunId: null, role: null }),
+    invocation: INV,
+  }).promise;
+
+  assert.equal(res.tag, "process");
+  assert.equal(spy.calls.length, 1);
+  assert.equal(fake.calls.length, 0);
+  assert.equal(rt.registry.size(), 0);
+});
+
 test("role이 다르면 다른 session이다(Builder ≠ Reviewer)", async () => {
   const fake = new FakePersistentAdapter();
   const rt = new HarnessRuntime({ processAdapter: spyProcessAdapter() });
