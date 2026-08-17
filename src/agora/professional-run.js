@@ -115,6 +115,7 @@ function transitionProfessionalRun(current, event = {}) {
       next.status = "WAITING";
       next.lastVerdict = "PASS";
       next.stopReason = "PLAN_READY";
+      next.missingSections = null;
       if (event.approvedTaskHash) next.approvedTaskHash = event.approvedTaskHash;
       if (event.taskPath) next.taskPath = event.taskPath;
       break;
@@ -151,6 +152,7 @@ function transitionProfessionalRun(current, event = {}) {
       next.node = "PLANNING";
       next.status = "RUNNING";
       next.stopReason = null;
+      next.missingSections = null;
       // READY에서 기획 수정으로 복귀하면 승인된 기획 해시를 리셋한다.
       if (current.node === "READY") {
         next.approvedTaskHash = null;
@@ -378,6 +380,7 @@ function transitionProfessionalRun(current, event = {}) {
       next.approvedTaskHash = null;
       next.checkpointProtection = null;
       next.checkpointFailReason = null;
+      next.missingSections = null;
       next.planRound = 1;
       next.userApprovedUnprotectedExecution = false;
       next.planRevisionCount = 0;

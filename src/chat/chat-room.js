@@ -11,6 +11,7 @@ const {
   phaseForNode,
 } = require("../agora/professional-run");
 const { TaskManager, hashText } = require("../agora/task-manager");
+const { validateTaskContract } = require("../agora/task-contract-validator");
 const { describeWorkspaceChanges } = require("../agora/workspace-diff");
 const {
   installSpecialistMethods,
@@ -147,18 +148,49 @@ class ChatRoom extends EventEmitter {
         this.meta.workspace
       );
       if (contract?.content?.trim()) {
-        this.professionalPlan = {
-          stages: this.professionalRun.stages || {},
-          mode: "auto",
-          implementationAutoRevisions: this.professionalRun.policy?.implementationAutoRevisions || 0,
-          taskInfo: {
-            relativePath: this.professionalRun.taskPath,
-            filename: path.basename(this.professionalRun.taskPath),
-            content: contract.content,
-            hash: this.professionalRun.approvedTaskHash || hashText(contract.content),
-          },
-          feedback: contract.content,
-        };
+        const contractCheck = validateTaskContract(contract.content);
+        if (contractCheck.valid) {
+          this.professionalPlan = {
+            stages: this.professionalRun.stages || {},
+            mode: "auto",
+            implementationAutoRevisions: this.professionalRun.policy?.implementationAutoRevisions || 0,
+            taskInfo: {
+              relativePath: this.professionalRun.taskPath,
+              filename: path.basename(this.professionalRun.taskPath),
+              content: contract.content,
+              hash: this.professionalRun.approvedTaskHash || hashText(contract.content),
+            },
+            feedback: contract.content,
+          };
+        } else {
+          // Rehydration 시 Task 계약이 불완전하면 정상 READY로 복원하지 않고
+          // TASK_CONTRACT_INCOMPLETE 복구 대기 상태로 전환한다.
+          const transition = transitionProfessionalRun(this.professionalRun, {
+            type: "TASK_CONTRACT_INCOMPLETE",
+            missingSections: contractCheck.missing,
+          });
+          if (transition.ok) {
+            this.professionalRun = transition.state;
+            try {
+              this.persistProfessionalRun?.(this.professionalRun);
+            } catch {}
+          }
+          this.specialistResume = {
+            stages: this.professionalRun.stages || {},
+            mode: "auto",
+            phase: "task_contract_incomplete",
+            taskInfo: {
+              relativePath: this.professionalRun.taskPath,
+              filename: path.basename(this.professionalRun.taskPath),
+              content: contract.content,
+              hash: hashText(contract.content),
+            },
+            feedback: contract.content,
+            missingSections: contractCheck.missing,
+            taskError: `실행 계약(Task)에 필수 섹션이 빠졌습니다: ${contractCheck.missing.join(", ")}`,
+            maxAutoRevisions: this.professionalRun.policy?.implementationAutoRevisions || 0,
+          };
+        }
       }
     }
     // v3의 실행 상태는 professionalRun이 기준이다. v2의 pendingRecovery는

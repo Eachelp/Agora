@@ -135,6 +135,7 @@ let specialistPlanTaskPath = null;
 let specialistPlanTaskId = null;
 let specialistStopReason = null;
 let specialistCheckpointProtection = null;
+let specialistMissingSections = null;
 
 const SIDEBAR_WIDTH_KEY = "agora.chat.sidebarWidth";
 const SIDEBAR_COLLAPSED_KEY = "agora.chat.sidebarCollapsed";
@@ -388,6 +389,9 @@ function setSpecialistState(state = {}) {
   specialistPlanTaskId = state.planTaskId || null;
   specialistStopReason = state.stopReason || null;
   specialistCheckpointProtection = state.checkpointProtection || null;
+  specialistMissingSections = Array.isArray(state.missingSections) && state.missingSections.length > 0
+    ? [...state.missingSections]
+    : null;
 }
 
 function specialistLocksComposer() {
@@ -1415,12 +1419,14 @@ function renderProfessionalStatusDetail() {
   if (!box) return;
   const parts = [];
   if (specialistStopReason) {
-    const label =
-      specialistStopReason === "CHECKPOINT_FAILED"
-        ? "Checkpoint 실패"
-        : specialistStopReason === "TASK_CONTRACT_INCOMPLETE"
-          ? "Task 계약 불완전"
-          : specialistStopReason;
+    let label = specialistStopReason;
+    if (specialistStopReason === "CHECKPOINT_FAILED") {
+      label = "Checkpoint 실패";
+    } else if (specialistStopReason === "TASK_CONTRACT_INCOMPLETE") {
+      label = specialistMissingSections && specialistMissingSections.length > 0
+        ? `Task 계약 불완전 (누락: ${specialistMissingSections.join(", ")})`
+        : "Task 계약 불완전";
+    }
     parts.push("Stop: " + label);
   }
   if (specialistCheckpointProtection) {
