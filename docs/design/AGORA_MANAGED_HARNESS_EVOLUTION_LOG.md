@@ -1176,7 +1176,7 @@ observable behavior change = 0 이었다.
 최종 commit SHA:
 
 ```text
-__COMMIT_SHA__
+8bc4c34126c1f84f64286250bc723ff903cb2673
 ```
 
 아직 구현하지 않은 Stage C 후속(이번 범위 밖):
