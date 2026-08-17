@@ -318,18 +318,23 @@ function parseAgyLine(line) {
   return null;
 }
 
-// instrumentParser는 baseParser의 정규화 이벤트에 run telemetry를 붙인다. Stage C
-// (Claude Resume)에서는 여기에 더해 provider CLI가 내보내는 top-level session_id를
-// harness-level metadata로만 추출한다. onSessionId는 옵션이며, 주어졌을 때만 각 줄을
-// 한 번 더 파싱해 session_id를 알린다(renderer/FSM/Evidence로는 노출하지 않는다).
-function instrumentParser(baseParser, { onSessionId = null } = {}) {
+// instrumentParser는 baseParser의 정규화 이벤트에 run telemetry를 붙인다. Stage C에서는
+// 여기에 더해 provider CLI가 내보내는 native session/conversation id를 harness-level
+// metadata로만 추출한다. 작은 provider-neutral seam이다: extractNativeId(각 provider가
+// 실환경에서 확인된 위치만 읽는 추출기)가 값을 주면 onNativeId로 알린다(renderer/FSM/
+// generic Evidence로는 노출하지 않는다). 추출기가 없으면 sniff 자체를 하지 않는다.
+function instrumentParser(baseParser, { onNativeId = null, extractNativeId = null } = {}) {
   const telemetry = createRunTelemetry();
-  const notifySessionId = typeof onSessionId === "function" ? onSessionId : null;
+  const notifyNativeId = typeof onNativeId === "function" ? onNativeId : null;
+  const extract = typeof extractNativeId === "function" ? extractNativeId : null;
   const parser = (line) => {
-    if (notifySessionId) {
+    if (notifyNativeId && extract) {
       const raw = parseJsonLine(line);
-      if (raw && typeof raw.session_id === "string" && raw.session_id) {
-        try { notifySessionId(raw.session_id); } catch {}
+      if (raw) {
+        const id = extract(raw);
+        if (typeof id === "string" && id) {
+          try { notifyNativeId(id); } catch {}
+        }
       }
     }
     const event = baseParser(line);
@@ -341,10 +346,33 @@ function instrumentParser(baseParser, { onSessionId = null } = {}) {
   return parser;
 }
 
+// provider-native id 추출기(harness metadata 전용). 실환경에서 확인된 위치만 읽고,
+// JSON 전체를 임의 recursive search하지 않는다.
+function extractClaudeSessionId(raw) {
+  return typeof raw.session_id === "string" ? raw.session_id : null;
+}
+function extractAgyConversationId(raw) {
+  // 실환경 AGY 1.1.13 stream-json에서 conversation_id가 관찰된 세 위치만 읽는다.
+  if (raw.event === "init") {
+    return typeof raw.conversation_id === "string" ? raw.conversation_id : null;
+  }
+  if (raw.event === "step_update" && raw.step_update) {
+    return typeof raw.step_update.conversation_id === "string" ? raw.step_update.conversation_id : null;
+  }
+  if (raw.event === "result" && raw.result) {
+    return typeof raw.result.conversation_id === "string" ? raw.result.conversation_id : null;
+  }
+  return null;
+}
+
 function createLineParser(providerId, options = {}) {
-  if (providerId === "claude") return instrumentParser(createClaudeLineParser(), options);
-  if (providerId === "codex") return instrumentParser(parseCodexLine, options);
-  if (providerId === "agy") return instrumentParser(parseAgyLine, options);
+  if (providerId === "claude") {
+    return instrumentParser(createClaudeLineParser(), { onNativeId: options.onSessionId, extractNativeId: extractClaudeSessionId });
+  }
+  if (providerId === "codex") return instrumentParser(parseCodexLine);
+  if (providerId === "agy") {
+    return instrumentParser(parseAgyLine, { onNativeId: options.onConversationId, extractNativeId: extractAgyConversationId });
+  }
   return null;
 }
 
