@@ -44,6 +44,8 @@ class CodexManagedAdapter extends HarnessAdapter {
     this._threads = new Map();    // logicalHandle -> { threadId }
     this._activeTurns = new Map(); // threadId -> turnState
     this._replayRequired = new Set(); // logicalHandle: approval 발생 후 재사용 금지
+    // BLOCKER 2: native continuity가 손상된 logicalHandle -> 다음 turn에서 재사용 fail-closed.
+    this._invalidatedHandles = new Map(); // logicalHandle -> reason
   }
 
   // ---- HarnessAdapter.runTurn ----
@@ -207,18 +209,32 @@ class CodexManagedAdapter extends HarnessAdapter {
       turnResult = await this._client.request("turn/start", turnParams);
     } catch (error) {
       if (ts.settled) return; // 이미 session-loss 등으로 종료됨
-      this._finalize(ts, { ok: false, error: error?.message, stopReason: error?.code || "CODEX_TURN_START_FAILED" });
+      const code = error && error.code;
+      if (code === "CODEX_APP_SERVER_PROTOCOL_ERROR") {
+        // ambiguous: 서버가 turn을 시작했는지 알 수 없다(응답 유실/timeout). native
+        // continuity를 신뢰할 수 없으므로 이 handle을 재사용 불가로 표시한다(BLOCKER 2).
+        this._invalidateHandle(ts.logicalHandle, "CODEX_TURN_START_AMBIGUOUS");
+        this._finalize(ts, { ok: false, error: error?.message, stopReason: "CODEX_TURN_START_AMBIGUOUS" });
+      } else {
+        // 명시적 rpc error 등(서버가 turn을 시작하지 않고 거부): turn은 시작되지 않았으므로
+        // thread continuity는 유지된다. handle을 invalidate하지 않는다.
+        this._finalize(ts, { ok: false, error: error?.message, stopReason: code || "CODEX_TURN_START_FAILED" });
+      }
       return;
     }
     if (ts.settled) return;
-    const turnId = turnResult && turnResult.turn && turnResult.turn.id;
-    if (turnId) ts.turnId = turnId;
-    // turn/start 응답이 오기 전에 취소가 요청됐다면 즉시 interrupt.
+    // turn/start 응답의 turn.id는 authoritative turnId source다. 이미 turn/started가
+    // 다른 id로 확정했다면 protocol mismatch로 fail-closed한다(BLOCKER 1 principle 5).
+    const rpcTurn = turnResult && turnResult.turn;
+    if (this._correlateTurn(ts, rpcTurn && rpcTurn.id, true) === "mismatch") {
+      this._protocolMismatch(ts, "turn/start 응답과 turn/started의 turnId 충돌");
+      return;
+    }
+    // turn/start 응답 전에 취소가 요청됐다면 즉시 interrupt.
     if (ts.cancelRequested && ts.turnId) this._interrupt(ts);
     // 응답에 이미 완료 상태가 실려 온 경우(빠른 turn) 즉시 finalize.
-    if (turnResult && turnResult.turn && turnResult.turn.status
-      && turnResult.turn.status !== "inProgress") {
-      this._finalizeFromTurn(ts, turnResult.turn);
+    if (rpcTurn && rpcTurn.status && rpcTurn.status !== "inProgress") {
+      this._finalizeFromTurn(ts, rpcTurn);
     }
     // 그 외에는 turn/completed notification을 기다린다(_finalizeFromTurn).
   }
@@ -258,6 +274,13 @@ class CodexManagedAdapter extends HarnessAdapter {
   }
 
   async _ensureThread(logicalHandle, { context, invocation, policy }) {
+    // BLOCKER 2: native continuity가 손상된 handle은 재사용하지 않고 fail-closed한다
+    // (조용한 재사용/새 thread 생성/Process fallback/자동 restart 없음).
+    if (this._invalidatedHandles.has(logicalHandle)) {
+      const err = new Error("이 logical Codex session은 native continuity가 손상되어 재사용할 수 없습니다.");
+      err.code = this._invalidatedHandles.get(logicalHandle) || "CODEX_SESSION_LOST";
+      throw err;
+    }
     // approval로 replay-required가 된 handle은 기존 thread를 재사용하지 않고 새로 만든다.
     if (this._replayRequired.has(logicalHandle)) {
       this._threads.delete(logicalHandle);
@@ -294,9 +317,52 @@ class CodexManagedAdapter extends HarnessAdapter {
   }
 
   _interrupt(ts) {
-    if (!ts.turnId || !this._client || !this._client.isReady()) return;
-    // best-effort. interrupt 실패로 turn 결과를 성공으로 바꾸지 않는다.
-    this._client.request("turn/interrupt", { threadId: ts.threadId, turnId: ts.turnId }).catch(() => {});
+    if (!ts.turnId || !this._client || !this._client.isReady()) {
+      // interrupt를 보내야 하는데 보낼 수 없다(turnId 미확보/연결 불가). turn이 실제로
+      // 멈췄는지 확인 불가 -> native continuity 손상으로 표시(다음 turn 재사용 fail-closed).
+      this._invalidateHandle(ts.logicalHandle, "CODEX_TURN_INTERRUPT_FAILED");
+      return;
+    }
+    // active turn만 interrupt한다(shared App Server process는 죽이지 않는다).
+    this._client.request("turn/interrupt", { threadId: ts.threadId, turnId: ts.turnId })
+      .catch(() => {
+        // interrupt 실패/timeout -> turn이 실제로 중단됐는지 확인 불가 -> 재사용 금지.
+        this._invalidateHandle(ts.logicalHandle, "CODEX_TURN_INTERRUPT_FAILED");
+      });
+  }
+
+  // turnId 상관관계. 반환: "match" | "stale" | "mismatch".
+  // authoritative source(turn/start RPC 응답, turn/started notification)만 최초 turnId를
+  // 확정하며, 확정 후 authoritative source가 다른 id를 주장하면 "mismatch"(protocol 위반)다.
+  // 비-authoritative message(item/*, turn/completed, error, approval)가 확정 turnId와 다르면
+  // "stale"(이전 turn의 지연 도착)로 보고 버린다.
+  _correlateTurn(ts, observedTurnId, authoritative) {
+    if (observedTurnId == null) return authoritative ? "match" : "stale";
+    if (ts.turnId == null) {
+      if (authoritative) { ts.turnId = String(observedTurnId); return "match"; }
+      return "stale";
+    }
+    if (ts.turnId === String(observedTurnId)) return "match";
+    return authoritative ? "mismatch" : "stale";
+  }
+
+  // native continuity를 신뢰할 수 없게 된 logical thread를 재사용 불가로 표시한다.
+  // C7 health framework가 아니라 이 patch에 필요한 최소 상태만 둔다.
+  _invalidateHandle(logicalHandle, reason) {
+    if (!logicalHandle) return;
+    if (!this._invalidatedHandles.has(logicalHandle)) {
+      this._invalidatedHandles.set(logicalHandle, reason || "CODEX_SESSION_LOST");
+    }
+    this._threads.delete(logicalHandle);
+  }
+
+  _protocolMismatch(ts, detail) {
+    this._invalidateHandle(ts.logicalHandle, "CODEX_APP_SERVER_PROTOCOL_ERROR");
+    this._finalize(ts, {
+      ok: false,
+      error: `Codex 프로토콜 불일치: ${detail}`,
+      stopReason: "CODEX_APP_SERVER_PROTOCOL_ERROR",
+    });
   }
 
   _noteActivity(ts, method, params) {
@@ -332,17 +398,25 @@ class CodexManagedAdapter extends HarnessAdapter {
     if (!ts || ts.settled) return;
 
     if (method === "turn/started") {
-      if (!ts.turnId && params.turn && params.turn.id) ts.turnId = params.turn.id;
+      // authoritative turnId source. 확정 id와 충돌하면 protocol mismatch로 fail-closed.
+      if (this._correlateTurn(ts, params.turn && params.turn.id, true) === "mismatch") {
+        this._protocolMismatch(ts, "turn/started turnId 충돌");
+        return;
+      }
       if (ts.cancelRequested && ts.turnId) this._interrupt(ts);
       this._noteActivity(ts, method, params);
       return;
     }
     if (method === "turn/completed") {
+      // 이전 turn의 지연 turn/completed가 현재 turn을 finalize하면 안 된다(BLOCKER 1-B).
+      if (this._correlateTurn(ts, params.turn && params.turn.id, false) !== "match") return;
       this._noteActivity(ts, method, params);
       this._finalizeFromTurn(ts, params.turn);
       return;
     }
-    // per-turn event
+    // per-turn event(item/*, error 등): turnId가 현재 active turn과 일치할 때만 수용.
+    // 이전 turn의 지연 delta/evidence가 현재 turn에 유입되면 안 된다(BLOCKER 1-A).
+    if (this._correlateTurn(ts, params.turnId, false) !== "match") return;
     this._noteActivity(ts, method, params);
     ts.collector.ingest(method, params);
   }
@@ -356,6 +430,9 @@ class CodexManagedAdapter extends HarnessAdapter {
     const threadId = params && params.threadId;
     const ts = threadId ? this._activeTurns.get(threadId) : null;
     if (!ts || ts.settled) return;
+    // 이전 turn의 지연 approval request가 현재 turn을 approvalRequired로 만들면 안 된다(BLOCKER 1-C).
+    // (위에서 이미 deny 응답은 보냈으므로 서버는 unblock된다.)
+    if (this._correlateTurn(ts, params.turnId, false) !== "match") return;
     // approval 발생: 이 thread를 replay-required로 표시하고 turn을 종료한다.
     ts.approval = approvalSummaryFrom(method, params);
     this._replayRequired.add(ts.logicalHandle);

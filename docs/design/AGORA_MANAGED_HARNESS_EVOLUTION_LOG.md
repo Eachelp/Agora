@@ -1337,6 +1337,33 @@ ae61eb33dfa529c175e02a06108ee7f617056599
 
 ---
 
+### 2026-08-17 — Stage C-3 보정: Codex managed turn continuity 강화
+
+독립 검수에서 발견된 3개 blocker를 C3 아키텍처 재설계 없이 수정했다(범위 확장/불필요 refactor 없음).
+
+- BLOCKER 1 (turn event routing이 threadId만 검증): notification/server-request를 threadId뿐 아니라
+  turnId까지 현재 active turn과 일치할 때만 수용한다. 이전 turn의 지연 delta/evidence/turn-completed/
+  approval이 다음 turn에 유입되지 않는다(stale은 drop). authoritative turnId source(turn/start RPC
+  응답, turn/started)가 서로 다른 id를 주장하면 protocol mismatch로 fail-closed한다. turnId 확보 전의
+  정상 race(turn/started가 RPC 응답보다 먼저)는 지원한다.
+- BLOCKER 2 (ambiguous mutating RPC 후에도 native continuity 신뢰): turn/start의 ambiguous
+  timeout(CODEX_APP_SERVER_PROTOCOL_ERROR)과 turn/interrupt 실패/미전송을 구분해, 해당 logicalHandle을
+  invalidated로 표시한다. 다음 turn은 손상된 native thread를 조용히 재사용하지 않고 fail-closed한다
+  (Process fallback / 자동 restart / hidden fresh-thread 없음). 명시적 rpc error(서버가 turn을 시작
+  하지 않고 거부)와 정상 interrupt 성공은 continuity를 유지한다. C7 health framework는 도입하지 않고
+  이 patch에 필요한 최소 상태(_invalidatedHandles)만 추가했다.
+- BLOCKER 3 (model catalog probe handshake 미완성): probeCodexModelCatalog가 initialize 응답 후
+  initialized notification을 먼저 보낸 뒤 model/list를 요청하도록 최소 수정했다(C3 client와 동일한
+  handshake). 기존 timeout/cleanup/malformed fail-safe 성격은 유지. 테스트용 spawnFn 주입점만 추가.
+
+유지: thread/start least-privilege baseline(read-only, approvalPolicy never) + turn/start override,
+approval defensive deny + whole-turn replay, ProcessHarnessAdapter compatibility path, Professional FSM.
+same-turn approval/resume(C-6)와 Claude/AGY resource는 이번 범위 밖이다.
+
+테스트: 신규 codex-managed-continuity(9) · codex-model-probe(7). 전체 767 tests / 767 pass / 0 fail.
+
+---
+
 ## 16. 새 Agent Harness 추가 시 규칙
 
 새 하네스는 자신의 capability를 명시한다.

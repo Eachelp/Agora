@@ -12,7 +12,7 @@ const { selectCommandPath, commandNeedsShell } = require("../command-resolution"
 const PROBE_TIMEOUT_MS = 5000;
 const MODEL_PROBE_TIMEOUT_MS = 15000;
 
-function probeCodexModelCatalog(commandPath, needsShell, timeoutMs = 8000) {
+function probeCodexModelCatalog(commandPath, needsShell, timeoutMs = 8000, deps = {}) {
   return new Promise((resolve) => {
     let child;
     let settled = false;
@@ -26,8 +26,9 @@ function probeCodexModelCatalog(commandPath, needsShell, timeoutMs = 8000) {
     };
     const timer = setTimeout(() => finish(null), timeoutMs);
     if (typeof timer.unref === "function") timer.unref();
+    const spawnFn = deps.spawnFn || spawn;
     try {
-      child = spawn(needsShell ? `"${commandPath}"` : commandPath, ["app-server", "--stdio"], {
+      child = spawnFn(needsShell ? `"${commandPath}"` : commandPath, ["app-server", "--stdio"], {
         shell: Boolean(needsShell),
         windowsHide: true,
         stdio: ["pipe", "pipe", "ignore"],
@@ -46,6 +47,9 @@ function probeCodexModelCatalog(commandPath, needsShell, timeoutMs = 8000) {
         let message;
         try { message = JSON.parse(line); } catch { continue; }
         if (message.id === 1 && message.result) {
+          // C3 App Server client와 동일한 handshake: initialize 응답 후 initialized
+          // notification을 먼저 보낸 뒤 model/list를 요청한다(BLOCKER 3).
+          child.stdin.write(`${JSON.stringify({ method: "initialized" })}\n`);
           child.stdin.write(`${JSON.stringify({ id: 2, method: "model/list", params: { includeHidden: false, limit: 100 } })}\n`);
         }
         if (message.id === 2 && Array.isArray(message.result?.data)) {
