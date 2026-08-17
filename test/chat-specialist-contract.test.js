@@ -5,9 +5,10 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { TaskManager } = require("../src/agora/task-manager");
+const { TaskManager, hashText } = require("../src/agora/task-manager");
 const { ChatRoom } = require("../src/chat/chat-room");
 const { createProfessionalRun, transitionProfessionalRun } = require("../src/agora/professional-run");
+const { WorkflowStore } = require("../src/agora/workflow-store");
 
 function makeAgents() {
   return [
@@ -496,8 +497,9 @@ test("Test B: Rehydration 시 valid READY Task는 정상적으로 professionalPl
   const initialProfessionalRun = createProfessionalRun({
     node: "READY",
     status: "WAITING",
+    stopReason: "PLAN_READY",
     taskPath: ".project-memory/tasks/TASK-001.md",
-    approvedTaskHash: "hash-valid-123",
+    approvedTaskHash: hashText(validTask),
   });
 
   const room = new ChatRoom({
@@ -682,6 +684,289 @@ test("READY + empty TASK.md rehydration: 생성 즉시 planReady:false, Builder/
   assert.equal(room.professionalPlan, null);
   assert.equal(calls.length, 0, "AI 호출이 없어야 한다");
   assert.equal(checkpointCalls.length, 0, "Checkpoint 호출이 없어야 한다");
+});
+
+test("Integration Test 1: missing_file 상태의 Workflow task가 기획 보완 recovery를 통해 정상 갱신 및 완료된다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-int1-missing-recovery-"));
+  const wfRoot = fs.mkdtempSync(path.join(os.tmpdir(), "agora-int1-wf-"));
+  t.after(() => {
+    fs.rmSync(workspace, { recursive: true, force: true });
+    fs.rmSync(wfRoot, { recursive: true, force: true });
+  });
+
+  const projectId = "proj-int-1";
+  const sessionId = "sess-int-1";
+  const tasksDir = path.join(workspace, ".project-memory", "tasks");
+  fs.mkdirSync(tasksDir, { recursive: true });
+  const taskFilePath = path.join(tasksDir, "TASK-001.md");
+  const relTaskPath = path.join(".project-memory", "tasks", "TASK-001.md");
+  const oldContent = makeValidContract("과거 목표");
+  const oldHash = hashText(oldContent);
+  fs.writeFileSync(taskFilePath, oldContent, "utf8");
+
+  // 1) WorkflowStore 초기화 및 file-backed task 등록
+  const workflow = new WorkflowStore({ root: wfRoot }).init();
+  const createdEntry = workflow.createTask({
+    projectId,
+    title: "TASK-001.md",
+    description: "",
+    contentSource: "file",
+    taskPath: relTaskPath,
+    taskHash: oldHash,
+    status: "todo",
+    role: "implementation",
+    chatId: sessionId,
+    origin: "planner",
+  });
+  assert.ok(createdEntry);
+  assert.equal(createdEntry.syncState, "ok");
+
+  // 2) TASK-001.md 삭제 후 reconcile
+  fs.unlinkSync(taskFilePath);
+  workflow.reconcileProjectTasks(projectId, workspace);
+  const missingTask = workflow.listTasks(projectId, { includeMissing: true }).find((t) => t.taskPath === relTaskPath);
+  assert.ok(missingTask);
+  assert.equal(missingTask.syncState, "missing_file", "파일 삭제 후 syncState가 missing_file이어야 한다");
+
+  // 3) READY professionalRun으로 ChatRoom rehydrate
+  const initialProfessionalRun = createProfessionalRun({
+    node: "READY",
+    status: "WAITING",
+    taskPath: relTaskPath,
+    approvedTaskHash: oldHash,
+    stages: {
+      planner: { agent: { id: "claude", name: "Claude", available: true, enabled: true } },
+      planReview: { agent: { id: "codex", name: "Codex", available: true, enabled: true } },
+      implementation: { agent: { id: "claude", name: "Claude", available: true, enabled: true } },
+      review: { agent: { id: "codex", name: "Codex", available: true, enabled: true } },
+    },
+  });
+
+  const calls = [];
+  const newValidContent = makeValidContract("보완된 새 목표");
+  const replies = {
+    claude: [
+      { ok: true, text: newValidContent },
+    ],
+    codex: [
+      { ok: true, text: "기획 검수 통과\nVERDICT: PASS" },
+    ],
+  };
+
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    initialProfessionalRun,
+    runAgent: fakeRunner(replies, calls),
+    onTaskCreated: (task) => {
+      return Boolean(workflow.createTask({
+        projectId,
+        title: task.title || "Planner Task",
+        description: task.description || "",
+        contentSource: task.contentSource || "file",
+        taskPath: task.taskPath || null,
+        taskHash: task.taskHash || null,
+        status: task.status || "todo",
+        role: task.role || "implementation",
+        chatId: sessionId,
+        origin: "planner",
+      }));
+    },
+    onTaskUpdated: ({ taskPath, taskHash, status }) => {
+      let target = workflow.listTasks(projectId).find((t) => t.taskPath === taskPath);
+      if (!target) {
+        target = workflow.listTasks(projectId, { includeMissing: true }).find((t) => t.taskPath === taskPath);
+      }
+      if (!target) return false;
+      workflow.updateTask(target.id, { taskHash, status, syncState: "ok" });
+      return true;
+    },
+  });
+
+  // Rehydration 직후 검증
+  const state = room.specialistState();
+  assert.equal(state.planReady, false, "missing task는 rehydration 즉시 planReady false여야 한다");
+  assert.equal(state.stopReason, "TASK_CONTRACT_INCOMPLETE");
+  assert.equal(room.specialistResume?.phase, "task_contract_incomplete");
+
+  // 4) 사용자 기획 보완 실행
+  const replanResult = await room.answerPlanQuestion("작업 지시서를 다시 작성해서 계속 진행해줘");
+  assert.equal(replanResult.ok, true, "기획 보완이 성공해야 한다");
+  assert.equal(replanResult.planReady, true);
+
+  // 5) 결과 검증
+  assert.ok(fs.existsSync(taskFilePath), "TASK.md 파일이 다시 생성되어 있어야 한다");
+  const rehydratedState = room.specialistState();
+  assert.equal(rehydratedState.planReady, true);
+  assert.equal(rehydratedState.stopReason, "PLAN_READY");
+  assert.notEqual(room.professionalRun.approvedTaskHash, oldHash);
+  assert.equal(rehydratedState.missingSections, null);
+
+  // Workflow 상태 검증: canonical task가 syncState: "ok", taskHash: newHash
+  const updatedTask = workflow.listTasks(projectId).find((t) => t.taskPath === relTaskPath);
+  assert.ok(updatedTask, "workflow에 활성 태스크로 존재해야 한다");
+  assert.equal(updatedTask.syncState, "ok");
+  assert.equal(updatedTask.taskHash, room.professionalRun.approvedTaskHash);
+});
+
+test("Integration Test 2: .project-memory/tasks 디렉터리 자체가 삭제된 경우에도 안전하게 디렉터리를 재생성하여 복구된다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-int2-tasks-dir-deleted-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+
+  const relTaskPath = path.join(".project-memory", "tasks", "TASK-001.md");
+  const initialProfessionalRun = createProfessionalRun({
+    node: "READY",
+    status: "WAITING",
+    taskPath: relTaskPath,
+    stages: {
+      planner: { agent: { id: "claude", name: "Claude", available: true, enabled: true } },
+      planReview: { agent: { id: "codex", name: "Codex", available: true, enabled: true } },
+    },
+  });
+
+  // .project-memory 디렉터리 자체가 없는 상태에서 시작
+  const validTask = makeValidContract("디렉터리 재생성 목표");
+  const replies = {
+    claude: [{ ok: true, text: validTask }],
+    codex: [{ ok: true, text: "기획 검수 통과\nVERDICT: PASS" }],
+  };
+
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    initialProfessionalRun,
+    runAgent: fakeRunner(replies),
+  });
+
+  assert.equal(room.specialistState().planReady, false);
+  const result = await room.answerPlanQuestion("디렉터리와 작업 지시서를 새로 생성해줘");
+  assert.equal(result.ok, true);
+  assert.equal(result.planReady, true);
+  assert.ok(fs.existsSync(path.join(workspace, relTaskPath)), "tasks 디렉터리와 TASK.md 파일이 안전하게 생성되어야 한다");
+});
+
+test("Integration Test 3: persisted TASK_CONTRACT_INCOMPLETE 상태에서 외부에서 TASK.md를 valid하게 수정해도 자동 승인되지 않고 re-review recovery를 거친다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-int3-external-repair-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+
+  const tasksDir = path.join(workspace, ".project-memory", "tasks");
+  fs.mkdirSync(tasksDir, { recursive: true });
+  const taskPath = path.join(tasksDir, "TASK-001.md");
+  const validContent = makeValidContract("외부에서 수정한 유효한 목표");
+  // 파일 내용은 외부에서 유효하게 수정됨
+  fs.writeFileSync(taskPath, validContent, "utf8");
+
+  // professionalRun은 이전 실패로 인해 TASK_CONTRACT_INCOMPLETE 상태로 persist됨
+  const initialProfessionalRun = createProfessionalRun({
+    node: "READY",
+    status: "WAITING",
+    stopReason: "TASK_CONTRACT_INCOMPLETE",
+    approvedTaskHash: null,
+    missingSections: ["Out of Scope"],
+    taskPath: ".project-memory/tasks/TASK-001.md",
+    stages: {
+      planner: { agent: { id: "claude", name: "Claude", available: true, enabled: true } },
+      planReview: { agent: { id: "codex", name: "Codex", available: true, enabled: true } },
+    },
+  });
+
+  const calls = [];
+  const replies = {
+    claude: [{ ok: true, text: validContent }],
+    codex: [{ ok: true, text: "기획 검수 통과\nVERDICT: PASS" }],
+  };
+
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    initialProfessionalRun,
+    runAgent: fakeRunner(replies, calls),
+  });
+
+  // Rehydrate 직후: 자동 승인 금지 확인
+  const state = room.specialistState();
+  assert.equal(state.planReady, false, "외부 수정이 valid하더라도 자동 승인되면 안 된다");
+  assert.equal(state.needsInput, true, "재검수/보완 대기 상태여야 한다");
+  assert.equal(room.professionalRun.approvedTaskHash, null);
+  assert.equal(room.specialistResume?.phase, "task_contract_incomplete");
+  assert.equal(calls.length, 0, "앱 시작 시 AI 자동 호출이 없어야 한다");
+
+  // 사용자 기획 보완 / 재검수 실행
+  const replanResult = await room.answerPlanQuestion("현재 작성된 내용으로 기획 검수를 진행해줘");
+  assert.equal(replanResult.ok, true);
+  assert.equal(replanResult.planReady, true);
+  assert.equal(room.specialistState().planReady, true);
+  assert.ok(room.professionalRun.approvedTaskHash);
+  assert.equal(room.specialistState().missingSections, null);
+});
+
+test("Integration Test 4: 정상 approved READY Task는 Rehydration 시 professionalPlan이 복원되고 planReady가 true이다", (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-int4-normal-approved-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+
+  const tasksDir = path.join(workspace, ".project-memory", "tasks");
+  fs.mkdirSync(tasksDir, { recursive: true });
+  const validContent = makeValidContract("정상 승인된 목표");
+  const taskHash = hashText(validContent);
+  fs.writeFileSync(path.join(tasksDir, "TASK-001.md"), validContent, "utf8");
+
+  const initialProfessionalRun = createProfessionalRun({
+    node: "READY",
+    status: "WAITING",
+    stopReason: "PLAN_READY",
+    approvedTaskHash: taskHash,
+    taskPath: ".project-memory/tasks/TASK-001.md",
+  });
+
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    initialProfessionalRun,
+    runAgent: fakeRunner({}),
+  });
+
+  const state = room.specialistState();
+  assert.equal(state.planReady, true, "정상 승인된 Task는 planReady가 true여야 한다");
+  assert.equal(state.stopReason, "PLAN_READY");
+  assert.ok(room.professionalPlan);
+  assert.equal(room.specialistResume, null, "정상 READY 상태에서는 recovery resume이 없어야 한다");
+});
+
+test("Integration Test 5: valid Task지만 approvedTaskHash가 없는 READY 상태는 자동 승인되지 않고 recovery 대기로 복원된다", (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-int5-no-hash-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+
+  const tasksDir = path.join(workspace, ".project-memory", "tasks");
+  fs.mkdirSync(tasksDir, { recursive: true });
+  const validContent = makeValidContract("해시 없는 유효 목표");
+  fs.writeFileSync(path.join(tasksDir, "TASK-001.md"), validContent, "utf8");
+
+  const initialProfessionalRun = createProfessionalRun({
+    node: "READY",
+    status: "WAITING",
+    stopReason: "PLAN_READY",
+    approvedTaskHash: null, // 해시 누락/미승인
+    taskPath: ".project-memory/tasks/TASK-001.md",
+  });
+
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    initialProfessionalRun,
+    runAgent: fakeRunner({}),
+  });
+
+  const state = room.specialistState();
+  assert.equal(state.planReady, false, "approvedTaskHash가 없으면 자동 승인되지 않아야 한다");
+  assert.equal(state.needsInput, true);
+  assert.equal(state.stopReason, "TASK_CONTRACT_INCOMPLETE");
+  assert.equal(room.specialistResume?.phase, "task_contract_incomplete");
+  assert.equal(room.professionalPlan, null);
 });
 
 test("READY + missing TASK.md rehydration: 파일 부재 시 생성 즉시 planReady:false, recovery 상태, Builder/Checkpoint 0, AI 자동 호출 없음", (t) => {

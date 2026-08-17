@@ -295,6 +295,7 @@ class TaskManager {
     if (!content.trim()) {
       throw new Error("Planner 결과가 비어 있어 TASK.md를 갱신할 수 없습니다.");
     }
+    ensureDir(path.dirname(absPath));
     writeTextAtomic(absPath, content);
     return {
       ...taskInfo,

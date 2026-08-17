@@ -153,7 +153,13 @@ class ChatRoom extends EventEmitter {
 
       if (contract) {
         const contractCheck = validateTaskContract(contract.content);
-        if (contractCheck.valid) {
+        const hasValidApproval =
+          contractCheck.valid &&
+          this.professionalRun.stopReason !== "TASK_CONTRACT_INCOMPLETE" &&
+          Boolean(this.professionalRun.approvedTaskHash) &&
+          this.professionalRun.approvedTaskHash === hashText(contract.content);
+
+        if (hasValidApproval) {
           this.professionalPlan = {
             stages: this.professionalRun.stages || {},
             mode: "auto",
@@ -162,16 +168,17 @@ class ChatRoom extends EventEmitter {
               relativePath: this.professionalRun.taskPath,
               filename: path.basename(this.professionalRun.taskPath),
               content: contract.content,
-              hash: this.professionalRun.approvedTaskHash || hashText(contract.content),
+              hash: this.professionalRun.approvedTaskHash,
             },
             feedback: contract.content,
           };
         } else {
-          // Rehydration 시 Task 계약이 불완전하면 정상 READY로 복원하지 않고
-          // TASK_CONTRACT_INCOMPLETE 복구 대기 상태로 전환한다.
+          // Task 계약이 불완전하거나, 외부 수정/이전 실패로 승인 상태가 무효화된 경우
+          // 정상 READY로 복원하지 않고 TASK_CONTRACT_INCOMPLETE 복구 대기 상태로 전환한다.
+          const missingSections = contractCheck.valid ? [] : contractCheck.missing;
           const transition = transitionProfessionalRun(this.professionalRun, {
             type: "TASK_CONTRACT_INCOMPLETE",
-            missingSections: contractCheck.missing,
+            missingSections,
           });
           if (transition.ok) {
             this.professionalRun = transition.state;
@@ -190,8 +197,10 @@ class ChatRoom extends EventEmitter {
               hash: hashText(contract.content || ""),
             },
             feedback: contract.content || "",
-            missingSections: contractCheck.missing,
-            taskError: `실행 계약(Task)에 필수 섹션이 빠졌습니다: ${contractCheck.missing.join(", ")}`,
+            missingSections,
+            taskError: contractCheck.valid
+              ? "작업 지시서 내용은 현재 필수 계약을 만족하지만, 승인 상태가 무효화되어 재검수가 필요합니다."
+              : `실행 계약(Task)에 필수 섹션이 빠졌습니다: ${contractCheck.missing.join(", ")}`,
             maxAutoRevisions: this.professionalRun.policy?.implementationAutoRevisions || 0,
           };
         }

@@ -934,9 +934,12 @@ function roomMeta(meta) {
           const workflow = ensureWorkflowStore();
           const project = projectForSession(store.readMeta(sessionId));
           if (!workflow || !project) return false;
-          const target = workflow.listTasks(project.id).find((task) => task.taskPath === taskPath);
+          let target = workflow.listTasks(project.id).find((task) => task.taskPath === taskPath);
+          if (!target) {
+            target = workflow.listTasks(project.id, { includeMissing: true }).find((task) => task.taskPath === taskPath);
+          }
           if (!target) return false;
-          workflow.updateTask(target.id, { taskHash, status });
+          workflow.updateTask(target.id, { taskHash, status, syncState: "ok" });
           refreshWorkflowForProject(project.id);
           broadcast("chat:workflow-changed", {
             projectId: project.id,
@@ -953,12 +956,16 @@ function roomMeta(meta) {
           const workflow = ensureWorkflowStore();
           const project = projectForSession(store.readMeta(sessionId));
           if (!workflow || !project || !taskPath) return false;
-          const task = workflow.listTasks(project.id).find((entry) => entry.taskPath === taskPath);
-          if (!task || task.syncState !== "ok") return false;
+          let task = workflow.listTasks(project.id).find((entry) => entry.taskPath === taskPath);
+          if (!task) {
+            task = workflow.listTasks(project.id, { includeMissing: true }).find((entry) => entry.taskPath === taskPath);
+          }
+          if (!task) return false;
           const updated = workflow.updateTask(task.id, {
             status,
             activeRunId,
             lastRunId,
+            syncState: "ok",
           });
           if (!updated) return false;
           refreshWorkflowForProject(project.id);
