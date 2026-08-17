@@ -109,6 +109,35 @@ test("persistent-capable provider여도 general chat은 의도적으로 sessionl
   assert.equal(rt.registry.size(), 0);
 });
 
+test("transport runId가 frozenRunId로 잘못 들어오면 persistent adapter에 전달하지 않는다", async () => {
+  const fake = new FakePersistentAdapter();
+  const rt = new HarnessRuntime({ processAdapter: spyProcessAdapter() });
+  rt.register("claude", fake);
+
+  const res = await rt.runTurn({
+    context: ctx({ provenance: { frozenRunId: "rsession-12" } }),
+    invocation: INV,
+  }).promise;
+
+  assert.equal(res.ok, true);
+  assert.equal(fake.calls.length, 1);
+  assert.equal(Object.hasOwn(fake.calls[0].context.provenance, "frozenRunId"), false);
+});
+
+test("canonical Frozen Task RUN-### provenance는 persistent adapter에 그대로 전달한다", async () => {
+  const fake = new FakePersistentAdapter();
+  const rt = new HarnessRuntime({ processAdapter: spyProcessAdapter() });
+  rt.register("claude", fake);
+
+  const res = await rt.runTurn({
+    context: ctx({ provenance: { frozenRunId: "RUN-007" } }),
+    invocation: INV,
+  }).promise;
+
+  assert.equal(res.ok, true);
+  assert.equal(fake.calls[0].context.provenance.frozenRunId, "RUN-007");
+});
+
 test("role이 다르면 다른 session이다(Builder ≠ Reviewer)", async () => {
   const fake = new FakePersistentAdapter();
   const rt = new HarnessRuntime({ processAdapter: spyProcessAdapter() });
