@@ -53,9 +53,20 @@ test("Linux smoke test treats only timeout's exit code 124 as success", () => {
   assert.doesNotMatch(releaseWorkflow, /-ne 124.*-ne 0/);
 });
 
-test("CI는 모든 push와 pull request에서 세 OS 테스트를 실행한다", () => {
+test("CI는 main push와 수동 dispatch에서만 자동 실행되고 3-OS matrix를 유지한다", () => {
+  // 운영정책: main branch push에서만 자동 실행하고, feature branch push나 pull_request로는
+  // 자동 실행하지 않으며, 필요 시 workflow_dispatch로 수동 실행한다(Actions 사용량 절감).
+  assert.match(ciWorkflow, /on:/);
   assert.match(ciWorkflow, /push:/);
-  assert.match(ciWorkflow, /pull_request:/);
+  // 자동 push 대상은 main branch 뿐이다.
+  assert.match(ciWorkflow, /push:\s*\n\s*branches:\s*\n\s*-\s*main\s*\n/);
+  // 모든 branch(와일드카드) 자동 push는 사용하지 않는다(feature branch 자동 실행 없음).
+  assert.doesNotMatch(ciWorkflow, /branches:\s*\n\s*-\s*["']?\*\*["']?/);
+  // 수동 실행(workflow_dispatch)을 지원한다.
+  assert.match(ciWorkflow, /workflow_dispatch:/);
+  // pull_request 자동 trigger는 사용하지 않는다.
+  assert.doesNotMatch(ciWorkflow, /pull_request:/);
+  // 수동 실행에서도 Windows / Ubuntu / macOS 3-OS 테스트 + npm ci + npm test를 유지한다.
   assert.match(ciWorkflow, /windows-latest/);
   assert.match(ciWorkflow, /ubuntu-latest/);
   assert.match(ciWorkflow, /macos-latest/);
