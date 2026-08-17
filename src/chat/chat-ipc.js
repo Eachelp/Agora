@@ -35,9 +35,11 @@ const {
   INLINE_TEXT_LIMIT,
   minPermissionMode,
   specialistPermissionMode,
+  normalizeChoice,
 } = require("./chat-argv");
 const { createLineParser } = require("./chat-events");
 const { ProcessHarnessAdapter } = require("../harness/process-harness-adapter");
+const { HarnessRuntime } = require("../harness/harness-runtime");
 const { persistRunMetrics } = require("./chat-run-metrics-store");
 const {
   importAttachment,
@@ -282,7 +284,12 @@ function createChatFeature(options) {
   // ProcessHarnessAdapter는 기존 process-per-invocation 실행(runAgentProcess)을
   // 그대로 위임하는 compatibility 구현이며, workspace/permission/Evidence 등
   // control-plane 권한은 makeRunAgent에 그대로 남는다. 테스트는 options로 주입한다.
-  const harnessAdapter = options.harnessAdapter || new ProcessHarnessAdapter();
+  // Stage C-2: HarnessRuntime이 실행 adapter 선택과 role-scoped logical session을 소유한다.
+  // C-2에는 persistent adapter가 없어 모든 실행이 sessionless ProcessHarnessAdapter로
+  // 귀결된다(관측 실행 동작 = C-1). options seam은 backward-compatible하게 유지한다:
+  // harnessRuntime 직접 주입 또는 harnessAdapter(=process adapter) 주입 모두 허용.
+  const harnessRuntime = options.harnessRuntime
+    || new HarnessRuntime({ processAdapter: options.harnessAdapter || new ProcessHarnessAdapter() });
 
   function ensureStore() {
     if (store || storeError) return store;
@@ -618,7 +625,7 @@ function createChatFeature(options) {
 
       const hardOutputLimitBytes = resolveHardOutputLimit();
 
-      const run = harnessAdapter.runTurn({
+      const harnessInvocation = {
         commandPath: record.commandPath,
         needsShell: record.needsShell,
         argv: invocation.argv,
@@ -637,7 +644,30 @@ function createChatFeature(options) {
           : {}),
         ...(hardOutputLimitBytes ? { hardOutputLimitBytes } : {}),
         onRawChunk: rawLog.write,
-      });
+      };
+      // Stage C-2: 이미 계산된 authority 결과만 모아 ExecutionContext를 만든다.
+      // (workspace/permission/provider invocation/prompt/Evidence 순서는 그대로 두고
+      //  결과만 전달한다. authority는 위에 남고 runtime/adapter로 이동하지 않는다.)
+      // workspaceId는 session identity 전용이다: authority는 project.workspace이고,
+      // 여기서 realpath로 identity만 계산한다(실패 시 null → persistent 대상 아님).
+      let workspaceId = null;
+      if (canonicalWorkspace) {
+        try { workspaceId = fs.realpathSync(canonicalWorkspace); } catch { workspaceId = null; }
+      }
+      const context = {
+        projectId: projectIdForMeta(meta),
+        workspaceId,
+        professionalRunId: room?.professionalRun?.professionalRunId || null,
+        role: specialistStage || null,
+        providerId: agent.id,
+        modelKey: normalizeChoice(agent.model) || null,
+        permissionMode,
+        effort: normalizeChoice(agent.effort) || null,
+        provenance: {
+          frozenRunId: specialistStage ? (runId || null) : null,
+        },
+      };
+      const run = harnessRuntime.runTurn({ context, invocation: harnessInvocation });
       return {
         promise: run.promise.then((result) => {
           const logPath = rawLog.close();

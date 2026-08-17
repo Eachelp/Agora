@@ -1,6 +1,6 @@
 # Agora — Managed Harness Runtime 개발일지 및 확장 기준
 
-> 상태: **Stage A/B 완료 · Professional 안정화 Stage 1~5 COMPLETE · Stage C-1 COMPLETE · Stage C-2 READY**
+> 상태: **Stage A/B 완료 · Professional 안정화 Stage 1~5 COMPLETE · Stage C-2 COMPLETE · Stage C-3 READY**
 > 최초 작성: 2026-08-16
 > 최종 안정화 기준일: 2026-08-17
 > 대상 브랜치: `feat/multi-harness-runtime`
@@ -1188,6 +1188,69 @@ observable behavior change = 0 이었다.
 - C-6 same-turn approval
 - C-7 runtime profile / child environment
 - C-8 session invalidation / health / shutdown
+
+---
+
+### 2026-08-17 — Stage C-2: role-scoped harness session runtime
+
+Role-scoped Harness Session Registry 기반을 추가했다. 실제 실행은 여전히 ProcessHarnessAdapter
+one-shot이며(persistent provider 미연결), 성공 기준은 observable production execution behavior = 0.
+
+도입한 구조:
+
+- `src/harness/harness-session-key.js` — 순수 deriveSessionKey(context). SessionKey =
+  projectId + workspaceId + professionalRunId + role + providerId + modelKey + permissionMode.
+  model이 default/미해결이거나 identity 필드가 하나라도 없으면 null(→ sessionless).
+  effort/frozenRunId/taskHash는 identity가 아니다.
+- `src/harness/harness-session-registry.js` — memory-only registry. entry =
+  {key, adapterId, generation, lifecycle(active|invalidated|retired), invalidationReason,
+  inflight, createdAt, lastUsedAt}. invalidated/retired 재사용 금지(재획득 시 generation++),
+  single-flight(tryBeginTurn/endTurn). disk 영속·health·nativeSessionId·fingerprint·writer
+  lease·idle GC는 넣지 않았다.
+- `src/harness/harness-runtime.js` — HarnessRuntime. { context, invocation }을 받아 provider별
+  persistent-capable adapter를 선택(register)한다. persistent adapter가 없거나 key가 null이면
+  sessionless ProcessHarnessAdapter 경로(registry 미사용). persistent 경로는 acquire +
+  single-flight로 보호하고, 동시 turn은 SESSION_BUSY로 fail-closed한다.
+
+adapter 계약 확장:
+
+- HarnessAdapter: runTurn({context, invocation}) canonical + capability hook
+  supportsPersistentSession(기본 false). ProcessHarnessAdapter는 false이고 invocation만
+  runAgentProcess에 위임한다(flat 최소 호환 bridge 유지). CLI spawn source of truth는 여전히
+  chat-agent-runner 한 곳.
+
+chat-ipc 배선:
+
+- makeRunAgent가 기존 authority(permission/workspace/invocation/prompt/Evidence 순서)를 그대로
+  계산한 뒤 그 결과만 ExecutionContext로 모아 harnessRuntime.runTurn에 전달한다. workspaceId =
+  realpath(project.workspace)로 identity만 계산(ProjectStore에 재저장하지 않음). professionalRunId
+  = room.professionalRun.professionalRunId, role = specialistStage. seam은 backward-compatible:
+  options.harnessRuntime 또는 options.harnessAdapter 주입 모두 허용.
+
+유지한 authority/invariant:
+
+- Requirements=Frozen Task, Execution=filesystem/Git, workspace=ProjectStore.workspace,
+  permission=control plane, role context=ROLE_CONTEXT_POLICY. registry/adapter는 이 중 어떤
+  authority도 갖지 않는다.
+- Professional FSM(professional-run.js)은 registry/runtime을 모르며 변경하지 않았다.
+- provider 이름 분기를 FSM/orchestration에 추가하지 않았다(등록은 HarnessRuntime 아래).
+- Builder/Reviewer는 role이 SessionKey에 포함되어 persistent memory를 공유할 수 없다.
+- general chat은 role=null → sessionless one-shot 유지. 새 fallback/fail-open 없음.
+
+C-2에서 하지 않은 것(C-3+): provider-native 연결, resume/close/health, same-turn approval,
+runtime/auth fingerprint, native session-not-found/crash recovery, Project Rules hash
+invalidation, cross-restart resume, one-writer lease governance, general chat persistence.
+
+테스트 결과:
+
+- 신규: harness-session-key(10) · harness-session-registry(7) · harness-runtime(13) ·
+  harness-adapter 계약 확장(7). 전체 로컬 테스트 701 tests / 701 pass / 0 fail.
+
+최종 commit SHA:
+
+```text
+__C2_SHA__
+```
 
 ---
 
