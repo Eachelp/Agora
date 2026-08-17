@@ -268,6 +268,9 @@ class ChatRoom extends EventEmitter {
       frozenRunId: professional?.frozenRunId || null,
       planRound: professional?.planRound || 1,
       implementationRound: professional?.implementationRound || 0,
+      stopReason: professional?.stopReason || null,
+      checkpointProtection: professional?.checkpointProtection || null,
+      checkpointFailReason: professional?.checkpointFailReason || null,
     };
   }
 

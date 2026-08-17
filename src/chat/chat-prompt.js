@@ -301,6 +301,27 @@ function buildAgentPrompt({
         }
         lines.push("=== 실행 상태 축 끝 ===");
       }
+      // TASK: checkpoint 보호 상태가 열려 있으면(사전 스냅샷 없음) 회귀 신뢰도를 경고한다.
+      {
+        let protection = specialist.checkpointProtection ?? null;
+        if (protection == null && specialist.evidence) {
+          if (typeof specialist.evidence === "string") {
+            try { protection = JSON.parse(specialist.evidence)?.checkpointProtection ?? null; } catch {}
+          } else if (typeof specialist.evidence === "object") {
+            protection = specialist.evidence.checkpointProtection ?? null;
+          }
+        }
+        if (protection && String(protection).startsWith("unavailable_")) {
+          const reason = protection === "unavailable_non_git"
+            ? "non-Git workspace"
+            : protection === "unavailable_checkpoint_failed"
+              ? "checkpoint 생성 실패 후 사용자 승인"
+              : protection === "unavailable_user_approved"
+                ? "사용자가 백업 없이 실행을 승인"
+                : String(protection);
+          lines.push("⚠ 이 실행은 사전 workspace snapshot이 없습니다 (" + reason + "). 회귀 검증 신뢰도가 제한됩니다.");
+        }
+      }
       // TASK-008: Builder가 실제로 만든 변경(Diff)을 주입합니다.
       if (Object.prototype.hasOwnProperty.call(specialist, "reviewDiff")) {
         lines.push("");

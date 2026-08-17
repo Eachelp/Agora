@@ -19,7 +19,7 @@ function executionAxes({ builderResult = null, diff = null } = {}) {
   };
 }
 
-function buildProfessionalEvidencePayload({ builderResult = null, diff = null, round = 1, provider = null } = {}) {
+function buildProfessionalEvidencePayload({ builderResult = null, diff = null, round = 1, provider = null, checkpointProtection = null } = {}) {
   const axes = executionAxes({ builderResult, diff });
   const evidence = builderResult?.evidence || {};
   const allCommands = (Array.isArray(evidence.commands) ? evidence.commands : [])
@@ -46,6 +46,8 @@ function buildProfessionalEvidencePayload({ builderResult = null, diff = null, r
     source: { kind: "provider-event", provider: provider || null },
     ...axes,
     sessionPersisted: builderResult?.evidencePersisted !== false,
+    // checkpoint 무보호 실행 정보를 evidence에 end-to-end로 남긴다.
+    checkpointProtection,
     commands,
     commandSummary: {
       total,

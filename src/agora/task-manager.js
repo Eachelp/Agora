@@ -449,6 +449,7 @@ class TaskManager {
         changes: evidence.changes || "NO_CHANGES",
         execution: evidence.execution || "UNAVAILABLE",
         sessionPersisted: evidence.sessionPersisted !== false,
+        ...(evidence.checkpointProtection ? { checkpointProtection: evidence.checkpointProtection } : {}),
         source: { kind: evidence.source?.kind || "provider-event", provider: evidence.source?.provider || null },
         provider: evidence.provider || evidence.source?.provider || null,
         commands,

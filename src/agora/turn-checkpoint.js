@@ -203,17 +203,29 @@ async function createCheckpoint(workspaceRoot, options = {}) {
     const untrackedArtifacts = [];
     for (const rel of untrackedPaths) {
       const safe = safeRelativePath(rel);
-      if (!safe || !isWithin(repo, path.resolve(repo, safe))) throw new Error("checkpoint untracked 경로가 올바르지 않습니다.");
+      if (!safe || !isWithin(repo, path.resolve(repo, safe))) {
+        const err = new Error("checkpoint untracked 경로가 올바르지 않습니다.");
+        err.code = "CHECKPOINT_UNTRACKED_NOT_REGULAR";
+        throw err;
+      }
       const src = path.resolve(repo, safe);
       // 저장소가 자체 checkpoint 디렉터리를 ignore하지 않는 환경에서도
       // checkpoint가 자기 자신의 patch/manifest를 baseline으로 복사하지 않게 한다.
       if (isWithin(storageRoot, src)) continue;
       const dest = path.resolve(dir, "untracked", safe);
-      if (!isWithin(path.join(dir, "untracked"), dest)) throw new Error("checkpoint 사본 경로가 올바르지 않습니다.");
+      if (!isWithin(path.join(dir, "untracked"), dest)) {
+        const err = new Error("checkpoint 사본 경로가 올바르지 않습니다.");
+        err.code = "CHECKPOINT_COPY_FAILED";
+        throw err;
+      }
       // lstat으로 symlink를 따라가지 않고 판별한다. symlink/디렉터리/특수 파일은
       // checkpoint 대상이 아니므로 생성을 실패시켜 Builder를 시작하지 않는다.
       const stat = fs.lstatSync(src);
-      if (!stat.isFile()) throw new Error("checkpoint untracked 파일이 일반 파일이 아닙니다: " + safe);
+      if (!stat.isFile()) {
+        const err = new Error("checkpoint untracked 파일이 일반 파일이 아닙니다: " + safe);
+        err.code = "CHECKPOINT_UNTRACKED_NOT_REGULAR";
+        throw err;
+      }
       safePaths.push(safe);
       if (fs.existsSync(src)) {
         fs.mkdirSync(path.dirname(dest), { recursive: true });
@@ -264,14 +276,20 @@ async function createCheckpoint(workspaceRoot, options = {}) {
       storageRoot,
       baselineSha,
     };
-  } catch {
+  } catch (error) {
     try {
       if (isWithin(storageRoot, dir)) fs.rmSync(dir, { recursive: true, force: true });
     } catch {}
     // 여기 도달했다는 것은 Git 저장소인데 백업 생성에 실패했다는 뜻이다.
     // non-Git(supported:false)과 구분해 호출자가 Builder를 무방비로 시작하지
     // 않도록 failed 플래그를 남긴다.
-    return { supported: false, failed: true };
+    return {
+      supported: false,
+      failed: true,
+      // git 명령 실패(exit code)처럼 코드가 없거나 숫자인 경우는
+      // enum으로 정규화한다. 그 외 라이브러리/시스템 에러만 원 코드 보존.
+      reason: typeof error?.code === "string" ? error.code : "CHECKPOINT_GIT_FAILED",
+    };
   }
 }
 

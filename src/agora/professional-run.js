@@ -64,6 +64,11 @@ function createProfessionalRun(options = {}) {
     implementationRevisionCount: Number.isInteger(options.implementationRevisionCount) ? Math.max(0, options.implementationRevisionCount) : 0,
     feedbackMessageId: options.feedbackMessageId || null,
     lastVerdict: options.lastVerdict || null,
+    // checkpoint 무보호 실행 여부를 evidence/Reviewer/UI까지 end-to-end로 전달한다.
+    // enum: "protected" | "unavailable_non_git" | "unavailable_checkpoint_failed" | "unavailable_user_approved"
+    checkpointProtection: options.checkpointProtection || null,
+    // checkpoint 생성 실패 원인(거버넌스 실패 taxonomy)을 보존한다.
+    checkpointFailReason: options.checkpointFailReason || null,
     stopReason: options.stopReason || null,
     blockReason: options.blockReason || null,
     createdAt: Number.isFinite(options.createdAt) ? options.createdAt : now,
@@ -151,6 +156,9 @@ function transitionProfessionalRun(current, event = {}) {
       next.stopReason = null;
       if (event.frozenRunId) next.frozenRunId = event.frozenRunId;
       if (event.checkpointId) next.checkpointId = event.checkpointId;
+      // checkpoint 보호 상태 기록: 성공 시 protected, non-Git/예외 사유가 주어지면 그 enum으로 기록.
+      next.checkpointProtection = event.checkpointProtection || "protected";
+      next.checkpointFailReason = event.checkpointFailReason || null;
       next.implementationRound = 1;
       break;
     }
@@ -272,6 +280,42 @@ function transitionProfessionalRun(current, event = {}) {
       next.blockReason = next.stopReason;
       break;
     }
+    case "CHECKPOINT_FAILED": {
+      if (current.node !== "READY" && current.node !== "IMPLEMENTING") {
+        return { ok: false, reason: `checkpoint 실패 전이는 READY/IMPLEMENTING에서만 가능합니다: ${current.node}` };
+      }
+      // 상태 노드는 그대로 두고 WAITING으로만 전환한다(재시도 시 동일 노드 복귀).
+      next.status = "WAITING";
+      next.stopReason = "CHECKPOINT_FAILED";
+      next.checkpointFailReason = event.checkpointFailReason || null;
+      // frozenRunId는 유지해 Frozen Run 재사용/복구가 가능하게 한다.
+      next.checkpointProtection = "unavailable_checkpoint_failed";
+      break;
+    }
+    case "CHECKPOINT_RETRY": {
+      if (current.status !== "WAITING" || current.stopReason !== "CHECKPOINT_FAILED") {
+        return { ok: false, reason: "checkpoint 재시도는 CHECKPOINT_FAILED 대기 상태에서만 가능합니다." };
+      }
+      // CHECKPOINT_FAILED는 READY/IMPLEMENTING에서만 진입하므로 node는 그대로 유지한다.
+      next.status = "RUNNING";
+      next.stopReason = null;
+      next.checkpointFailReason = null;
+      // 재시도는 기존 Frozen Run을 재사용한다(frozenRunId 유지).
+      next.checkpointProtection = null;
+      break;
+    }
+    case "PROCEED_UNPROTECTED": {
+      if (current.status !== "WAITING" || current.stopReason !== "CHECKPOINT_FAILED") {
+        return { ok: false, reason: "무보호 실행은 CHECKPOINT_FAILED 대기 상태에서만 가능합니다." };
+      }
+      next.node = "IMPLEMENTING";
+      next.status = "RUNNING";
+      next.stopReason = null;
+      next.checkpointFailReason = null;
+      // 사용자가 무보호 실행을 명시 승인했음을 enum으로 기록한다.
+      next.checkpointProtection = "unavailable_user_approved";
+      break;
+    }
     case "HOLD_BLOCKED": {
       next.status = "BLOCKED";
       next.stopReason = event.stopReason || "BLOCKED";
@@ -286,6 +330,8 @@ function transitionProfessionalRun(current, event = {}) {
       next.checkpointId = null;
       next.frozenRunId = null;
       next.approvedTaskHash = null;
+      next.checkpointProtection = null;
+      next.checkpointFailReason = null;
       next.planRound = 1;
       next.planRevisionCount = 0;
       next.implementationRound = 0;
@@ -324,7 +370,9 @@ function publicProfessionalState(run, options = {}) {
   const phase = phaseForNode(run.node);
   const active = run.status === "RUNNING";
   const blocked = run.status === "BLOCKED" || run.status === "INVALID";
-  const needsInput = run.status === "WAITING" && ["PLANNING", "PLAN_REVIEW"].includes(run.node);
+  const needsInput =
+    run.status === "WAITING" &&
+    (["PLANNING", "PLAN_REVIEW"].includes(run.node) || run.stopReason === "CHECKPOINT_FAILED");
   const planReady = run.node === "READY" && run.status === "WAITING";
   const hasTask = Boolean(run.taskPath);
   const taskId = run.taskPath ? run.taskPath.replace(/^.*[\\/]/, "").replace(/\.md$/i, "") : null;
@@ -346,6 +394,8 @@ function publicProfessionalState(run, options = {}) {
     planRound: run.planRound || 1,
     implementationRound: run.implementationRound || 0,
     stopReason: run.stopReason || null,
+    checkpointProtection: run.checkpointProtection || null,
+    checkpointFailReason: run.checkpointFailReason || null,
   };
 }
 

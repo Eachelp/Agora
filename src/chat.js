@@ -133,6 +133,8 @@ let professionalModeEnabled = false;
 // 승인된 기획안(TASK.md) 경로/제목. "기획안 보기" 버튼으로 열람합니다.
 let specialistPlanTaskPath = null;
 let specialistPlanTaskId = null;
+let specialistStopReason = null;
+let specialistCheckpointProtection = null;
 
 const SIDEBAR_WIDTH_KEY = "agora.chat.sidebarWidth";
 const SIDEBAR_COLLAPSED_KEY = "agora.chat.sidebarCollapsed";
@@ -384,6 +386,8 @@ function setSpecialistState(state = {}) {
   specialistStatus = state.status || null;
   specialistPlanTaskPath = state.planTaskPath || null;
   specialistPlanTaskId = state.planTaskId || null;
+  specialistStopReason = state.stopReason || null;
+  specialistCheckpointProtection = state.checkpointProtection || null;
 }
 
 function specialistLocksComposer() {
@@ -1401,6 +1405,22 @@ function renderHeader() {
       item.classList.toggle("is-complete", current >= 0 && index < current);
     });
   }
+  renderProfessionalStatusDetail();
+}
+
+function renderProfessionalStatusDetail() {
+  const box = document.getElementById("professional-status-detail");
+  if (!box) return;
+  const parts = [];
+  if (specialistStopReason) {
+    const label = specialistStopReason === "CHECKPOINT_FAILED" ? "Checkpoint 실패" : specialistStopReason;
+    parts.push("Stop: " + label);
+  }
+  if (specialistCheckpointProtection) {
+    const icon = specialistCheckpointProtection === "protected" ? "✓" : "✗";
+    parts.push("Checkpoint " + icon);
+  }
+  box.textContent = parts.join(" · ");
 }
 
 // --- 에이전트 칩 + 팝오버 ---

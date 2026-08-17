@@ -460,6 +460,15 @@ Retry 또는 Restore 시:
 
 ---
 
+**Stage 3 — checkpoint 실패 taxonomy와 3선택지 UX**
+
+- 실패 원인을 enum으로 드러낸다. git 명령 실패 등 코드가 없거나 exit-code인 에러는 CHECKPOINT_GIT_FAILED로, 경로·일반 파일 무결성 위반은 CHECKPOINT_UNTRACKED_NOT_REGULAR/CHECKPOINT_COPY_FAILED로 정규화한다. createCheckpoint 실패 시 보호 실패(사유 포함)를 반환한다.
+- 실패 시 반드시 Builder를 시작하지 않고 멈춘다. CHECKPOINT_FAILED 전이는 READY/IMPLEMENTING에서만 가능하며, 상태 노드는 유지한 채 WAITING + stopReason:CHECKPOINT_FAILED로 전환하고 frozenRunId는 유지해 기존 Frozen Run을 재사용한다.
+- 사용자에게 3선택지를 제시한다: ① 재시도(CHECKPOINT_RETRY, 기존 Frozen Run 재사용) ② 무보호 진행(PROCEED_UNPROTECTED, checkpoint 없이 시작하되 checkpointProtection:unavailable_user_approved) ③ 취소(별도 cancel IPC).
+- checkpoint 보호 상태를 evidence/Reviewer/UI까지 end-to-end로 전달한다. checkpointProtection enum: protected | unavailable_non_git | unavailable_checkpoint_failed | unavailable_user_approved. 무보호 실행이면 Reviewer 프롬프트가 사전 workspace snapshot 없음 경고를 붙인다.
+
+---
+
 ## 9. Capability 분리 (현재 permission cap)
 
 Agora 에이전트는 실행 가능 능력이 서로 다르다(CLI 워크스페이스 vs 채팅 응답). 모델 유형(CLI/Chat)으로 고정하지 않고 **Capability**로 분리한다.

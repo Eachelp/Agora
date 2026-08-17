@@ -1756,12 +1756,12 @@ function roomMeta(meta) {
 
     ipcMain.handle(
       "chat:specialist:resume",
-      wrap(async ({ sessionId }) => {
+      wrap(async ({ sessionId, action }) => {
         requireSession(sessionId);
         const room = getRoom(sessionId);
         const project = projectForSession(store.readMeta(sessionId));
         const recorderAgentId = room.specialistResume?.stages?.recorder?.agent?.id || null;
-        const started = room.resumeSpecialist();
+        const started = room.resumeSpecialist(action);
         const result = await Promise.race([
           started,
           new Promise((resolve) => setImmediate(() => resolve({ ok: true, pending: true }))),

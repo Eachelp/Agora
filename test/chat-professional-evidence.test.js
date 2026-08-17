@@ -92,3 +92,12 @@ test("탐색 telemetry만 있고 명령 실행이 없으면 execution 축은 별
   assert.equal(payload.execution, "UNAVAILABLE");
   assert.equal(payload.exploration.status, "LOOP_DETECTED");
 });
+
+test("checkpoint 보호 상태가 evidence payload에 end-to-end로 포함된다", () => {
+  const payload = buildProfessionalEvidencePayload({
+    builderResult: { transport: "COMPLETED", builderStatus: "DONE" },
+    diff: { status: "NO_CHANGES" },
+    checkpointProtection: "unavailable_user_approved",
+  });
+  assert.equal(payload.checkpointProtection, "unavailable_user_approved");
+});

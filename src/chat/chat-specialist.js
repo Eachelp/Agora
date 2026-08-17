@@ -516,7 +516,14 @@ class SpecialistMixin {
   }
 
   evidencePayload(options = {}) {
-    const payload = buildProfessionalEvidencePayload(options);
+    const payload = buildProfessionalEvidencePayload({
+      ...options,
+      // options에 명시가 없으면 현재 실행의 checkpoint 보호 상태를 end-to-end로 넘긴다.
+      checkpointProtection:
+        options.checkpointProtection !== undefined
+          ? options.checkpointProtection
+          : this.professionalRun?.checkpointProtection || null,
+    });
     const runInfo = options.runInfo || null;
     if (!runInfo || !this.taskManager?.writeRunEvidence) return { ok: true, payload };
     const ok = this.taskManager.writeRunEvidence(runInfo, payload);
@@ -1180,11 +1187,11 @@ class SpecialistMixin {
   }
 
   // 기획 승인 후 이어서 진행합니다. step/auto에서 PLAN_READY로 멈춘 상태만 재개합니다.
-  async resumeSpecialist() {
-    return this.withProfessionalAuthorization("workspace-write", () => this._resumeSpecialist());
+  async resumeSpecialist(checkpointAction) {
+    return this.withProfessionalAuthorization("workspace-write", () => this._resumeSpecialist(checkpointAction));
   }
 
-  async _resumeSpecialist() {
+  async _resumeSpecialist(checkpointAction) {
     if (this.discussionRequested || this.discussionActive || this.specialistActive) {
       return { ok: false, error: "이미 다른 전문 작업이나 토론이 진행 중입니다." };
     }
@@ -1211,6 +1218,10 @@ class SpecialistMixin {
     if (resume.mode === "step") {
       return this.resumeStepPhase(resume, requestedGeneration);
     }
+    // checkpoint 실패 후 사용자 선택 처리: 재시도 / 무보호 진행 / 취소.
+    if (resume.phase === "checkpoint_failed") {
+      return this.resumeCheckpointFailure(resume, requestedGeneration, checkpointAction);
+    }
     this.appendSystem("기획이 승인되었습니다. 구현을 이어서 진행합니다.");
     try {
       return await this.runExecutionBlock({
@@ -1229,6 +1240,36 @@ class SpecialistMixin {
       this.emitTurnState();
       this.pumpTurnQueue();
     }
+  }
+
+  // checkpoint 생성 실패 후 사용자 선택(재시도/무보호 진행/취소)을 처리한다.
+  // 취소(cancel)는 별도 IPC(chat:specialist:cancel)로 요청된다. 이 메서드는
+  // 재시도 및 무보호 진행 두 선택지만 처리한다.
+  async resumeCheckpointFailure(resume, requestedGeneration, checkpointAction) {
+    const allowUnprotected = String(checkpointAction || "").toLowerCase() === "proceed_unprotected";
+    const transition = this.transitionProfessional({
+      type: allowUnprotected ? "PROCEED_UNPROTECTED" : "CHECKPOINT_RETRY",
+    });
+    if (!transition.ok) return this.professionalTransitionFailure("implementation", transition);
+    if (allowUnprotected) {
+      this.appendSystem("사용자가 백업 없이 실행을 승인했습니다. 사전 작업 상태 스냅샷이 없는 채로 Builder를 시작합니다.");
+    } else {
+      this.appendSystem("작업 전 상태 백업(checkpoint)을 다시 시도합니다.");
+    }
+    this.emitSpecialistState();
+    const stages = resume.phases || resume.stages;
+    return await this.runExecutionBlock({
+      stages,
+      mode: resume.mode,
+      maxAutoRevisions: 0,
+      feedback: resume.feedback || "",
+      taskInfo: resume.taskInfo || null,
+      round: 1,
+      requestedGeneration,
+      allowUnprotected,
+      checkpointFailReason: resume.checkpointFailReason || null,
+      resumedRun: resume.runInfo || null,
+    });
   }
 
   // 기존 step / 제한 자동 / 빠른 실행 호출 호환용 경로입니다.
@@ -1898,7 +1939,7 @@ class SpecialistMixin {
   }
 
   // Builder → Reviewer → (auto면 자동 보완) → 기록관(블록 끝) 실행 블록.
-  async runExecutionBlock({ stages, mode, maxAutoRevisions, feedback, taskInfo, round, requestedGeneration, recordAfter = true }) {
+  async runExecutionBlock({ stages, mode, maxAutoRevisions, feedback, taskInfo, round, requestedGeneration, recordAfter = true, allowUnprotected = false, checkpointFailReason = null, resumedRun = null }) {
     const implementation = stages.implementation;
     const review = stages.review;
     const recorder = stages.recorder;
@@ -1919,9 +1960,9 @@ class SpecialistMixin {
     // - runInfo가 이미 있으면(같은 Run의 자동 보완) 재freeze하지 않고 재사용합니다.
     // - Planner Task(inline 포함)든 수동 Task든 하나의 RUN/task.md로 정규화합니다.
     // - Frozen Task 누락/손상 시 현재 TASK.md로 fallback 하지 않고 중단합니다.
-    let runInfo = null;
+    let runInfo = resumedRun || null;
     const workspace = this.meta.workspace;
-    if (taskInfo) {
+    if (taskInfo && !resumedRun) {
       try {
         runInfo = this.taskManager.freezeTask(
           { contentSource: "file", taskPath: taskInfo.relativePath || null, description: "" },
@@ -1982,19 +2023,47 @@ class SpecialistMixin {
         stopReason: "RECOVERY_JOURNAL_WRITE_FAILED",
       };
     }
-    const checkpoint = this.checkpointEngine
-      ? await this.checkpointEngine.createCheckpoint(this.meta.workspace, {
-          storageRoot: this.checkpointRoot,
-          sessionId: this.sessionId,
-          runId: runInfo?.runId || null,
-        })
-      : null;
+    // 무보호 실행(사용자 승인)이면 checkpoint 생성을 건너뛰고 그대로 진행한다.
+    const checkpoint = allowUnprotected
+      ? null
+      : this.checkpointEngine
+        ? await this.checkpointEngine.createCheckpoint(this.meta.workspace, {
+            storageRoot: this.checkpointRoot,
+            sessionId: this.sessionId,
+            runId: runInfo?.runId || null,
+          })
+        : null;
     // Git 저장소인데 백업 생성에 실패한 경우(failed)에는 non-Git처럼 그냥
     // 진행하지 않는다. 복원 수단 없이 Builder가 파일을 바꾸는 것을 막고,
     // 변경 없이 안전하게 멈춰 사용자에게 알린다.
     if (checkpoint?.failed === true) {
-      this.clearRecoveryState();
-      this.appendSystem("작업 전 상태 백업(checkpoint)을 만들지 못해 전문 실행을 시작하지 않았습니다. 워크스페이스의 Git 상태를 확인해 주세요.");
+      // checkpoint 생성 실패 시 사용자에게 3가지 선택지를 제시하고 대기한다.
+      // 1) 재시도(retry) 2) 무보호 진행(proceed_unprotected) 3) 취소(cancel)
+      const checkpointReason = checkpoint.reason || "CHECKPOINT_GIT_FAILED";
+      const failedTransition = this.transitionProfessional({
+        type: "CHECKPOINT_FAILED",
+        checkpointFailReason: checkpointReason,
+      });
+      if (!failedTransition.ok) return this.professionalTransitionFailure("implementation", failedTransition);
+      // recovery 저널은 checkpointing 상태로 남긴다(사용자 선택 후 재시도/정리).
+      this.specialistResume = {
+        phases: stages,
+        mode,
+        phase: "checkpoint_failed",
+        runInfo,
+        checkpoint,
+        checkpointFailReason: checkpointReason,
+        round,
+        requestedGeneration,
+      };
+      this.emitSpecialistState();
+      this.appendSystem(
+        `작업 전 상태 백업(checkpoint)을 만들지 못했습니다. 워크스페이스의 Git 상태를 확인해 주세요.
+아래에서 다음 처리를 선택해 주세요.
+1) 재시도 — 백업을 다시 만든 뒤 Builder를 시작합니다
+2) 무보호 진행 — 백업 없이 실행합니다(사전 스냅샷이 없어 회귀 검증 신뢰도가 제한됩니다)
+3) 취소 — 전문 실행을 중단합니다`
+      );
       return {
         ok: false,
         stage: "implementation",
@@ -2021,6 +2090,14 @@ class SpecialistMixin {
       type: "USER_EXECUTE",
       frozenRunId: runInfo?.runId || null,
       checkpointId: checkpoint?.checkpointId || null,
+      // checkpoint가 없는(비-Git 등) 비보호 실행 사유를 record 한다.
+      // supported=true면 protected, supported=false(비-Git)면 unavailable_non_git.
+      // allowUnprotected(사용자 명시 승인)면 unavailable_user_approved를 우선한다.
+      checkpointProtection: allowUnprotected
+        ? "unavailable_user_approved"
+        : checkpoint?.supported === true
+          ? "protected"
+          : "unavailable_non_git",
     });
     if (!executeTransition.ok) {
       if (checkpoint?.supported && this.checkpointEngine) {

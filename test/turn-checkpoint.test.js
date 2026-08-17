@@ -37,6 +37,23 @@ test("workspace가 없으면 checkpoint를 지원하지 않는다", async () => 
   assert.equal(checkpoint.supported, false);
 });
 
+test("Git 저장소인데 백업 생성에 실패하면 failed:true와 taxonomy reason을 반환한다", async (t) => {
+  // 커밋이 없는 리포: git rev-parse HEAD가 실패해 catch 블록에서
+  // supported:false + failed:true + reason(taxonomy)를 반환한다.
+  let dir;
+  try { dir = fs.mkdtempSync(path.join(os.tmpdir(), "agora-checkpoint-fail-")); }
+  catch { throw new Error("tempdir"); }
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  git(dir, ["init", "-q"]);
+  git(dir, ["config", "user.email", "test@example.com"]);
+  git(dir, ["config", "user.name", "Test"]);
+
+  const checkpoint = await createCheckpoint(dir);
+  assert.equal(checkpoint.supported, false);
+  assert.equal(checkpoint.failed, true);
+  assert.equal(checkpoint.reason, "CHECKPOINT_GIT_FAILED");
+});
+
 test("checkpoint 생성 후 Builder 변경만 되돌리고 사용자 사전 변경은 보존한다", async (t) => {
   const repo = makeTempRepo(t);
   const userFile = path.join(repo, "user.txt");
