@@ -1870,7 +1870,11 @@ function roomMeta(meta) {
         requireSession(sessionId);
         const room = getRoom(sessionId);
         // 쉽게 설명(SIMPLIFY)과 일반 Handoff는 정책상 별도 액션으로 판정한다.
-        enforceProfessionalPolicy(room, intent === "SIMPLIFY" ? "simplify" : "handoff");
+        const policyAction =
+          intent === "SIMPLIFY" || intent === "SIMPLIFY_SELF"
+            ? "simplify"
+            : "handoff";
+        enforceProfessionalPolicy(room, policyAction);
         const result = room.handoffMessage(targetAgentId, messageId, intent);
         if (result.ok === false) throw new Error(result.error);
         return { meta: publicMeta(store.readMeta(sessionId)) };

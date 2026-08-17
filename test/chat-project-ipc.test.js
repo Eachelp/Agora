@@ -4,6 +4,49 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { createChatFeature } = require("../src/chat/chat-ipc");
+const { TaskManager } = require("../src/agora/task-manager");
+
+// Deterministic capability service so CI results do not depend on locally installed CLIs.
+function fakeRecord(id) {
+  return {
+    id,
+    name: id,
+    color: "#333333",
+    aliases: [id],
+    status: "cli",
+    reason: "",
+    commandPath: null,
+    needsShell: false,
+    version: "1.0.0",
+    models: ["default", "test-model"],
+    modelOptions: [
+      { id: "default", label: "default", efforts: ["medium"] },
+      { id: "test-model", label: "test-model", efforts: ["medium"] },
+    ],
+    efforts: ["medium"],
+    allowCustomModel: false,
+    supportsImages: false,
+    permissions: {
+      chat: { supported: true, enforcement: "tool-policy" },
+      "workspace-read": { supported: true, enforcement: "tool-policy" },
+      "workspace-write": { supported: true, enforcement: "sandbox" },
+    },
+    guiInstalled: false,
+    authStatus: "authenticated",
+    authReason: "",
+    installUrl: null,
+    loginCommand: null,
+  };
+}
+
+function fakeCapabilities() {
+  const records = [fakeRecord("claude"), fakeRecord("codex"), fakeRecord("agy")];
+  return {
+    defs: records.map((record) => ({ id: record.id })),
+    getRecord: (id) => records.find((record) => record.id === id) || null,
+    discover: async () => records,
+  };
+}
 
 function makeRoot() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agora-project-ipc-"));
@@ -301,6 +344,7 @@ test("Case B: project.workspace가 repo-B이고 session.workspace가 repo-A(stal
   const runAgentCalls = [];
 
   const feature = makeFeature(root, undefined, {
+    capabilities: fakeCapabilities(),
     checkpoint: {
       createCheckpoint: async (ws, opts) => {
         checkpointCalls.push({ ws, opts });
@@ -310,25 +354,32 @@ test("Case B: project.workspace가 repo-B이고 session.workspace가 repo-A(stal
       restoreCheckpoint: async () => ({ ok: true }),
       cleanupCheckpoint: () => ({ ok: true }),
     },
-    taskManager: {
-      freezeTask: (contract, ws) => {
+    taskManager: (() => {
+      const real = new TaskManager();
+      const wrapped = Object.create(real);
+      wrapped.freezeTask = (contract, ws) => {
         freezeCalls.push({ contract, ws });
-        return { runId: "RUN-001", taskHash: "h123", content: "dummy" };
-      },
-      validateFrozenTask: () => ({ ok: true }),
-      resolveTaskContract: () => "contract",
-      readFrozenTask: () => ({ ok: true, task: { content: "dummy" } }),
-      writeRunResult: () => true,
-      writeRunEvidence: () => true,
-    },
-    runAgent: (agent, options) => {
-      runAgentCalls.push({ agent, options });
+        return real.freezeTask(contract, ws);
+      };
+      return wrapped;
+    })(),
+    runAgent: ({ agent, specialistStage, prompt, runId, permissionMode }) => {
+      runAgentCalls.push({ agent, specialistStage, prompt, runId, permissionMode });
+      const stage = specialistStage || "";
+      let text = "";
+      if (stage === "planner") {
+        text = "## Goal\n목표\n## Requirements\n요구\n## Implementation Approach\n접근\n## Acceptance Criteria\n완료\n## Verification\n검증\n## Out of Scope\n제외\nSTATUS: PLAN_READY";
+      } else if (stage === "plan_review") {
+        text = "[[CODEPET_REVIEW:PASS]]";
+      } else if (stage === "implementation") {
+        text = "STATUS: DONE";
+      } else if (stage === "review") {
+        text = "VERDICT: PASS";
+      } else if (stage === "recorder") {
+        text = JSON.stringify({ summary: "done", decisions: [], nextActions: [] });
+      }
       return {
-        promise: Promise.resolve({
-          ok: true,
-          text: "## Goal\n목표\n## Requirements\n요구\n## Implementation Approach\n접근\n## Acceptance Criteria\n완료\n## Verification\n검증\n## Out of Scope\n제외\nSTATUS: PLAN_READY",
-          builderStatus: "DONE",
-        }),
+        promise: Promise.resolve({ ok: true, text, builderStatus: "DONE" }),
         cancel: () => {},
       };
     },
@@ -381,17 +432,53 @@ test("Case B: project.workspace가 repo-B이고 session.workspace가 repo-A(stal
   });
   assert.equal(started.ok, true);
 
+  // chat:specialist:start는 실행 완료를 기다리지 않고 pending을 먼저 반환하므로,
+  // background 실행이 Freeze/Checkpoint 단계에 도달할 때까지 기다린 뒤 검증한다.
+  for (let i = 0; i < 300 && (freezeCalls.length === 0 || checkpointCalls.length === 0); i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
   // Mock 검증: freezeTask 및 checkpoint 및 provider invocation에 전달된 workspace가 repoB여야 하고, repoA는 결코 사용되지 않아야 한다.
-  if (freezeCalls.length > 0) {
-    for (const call of freezeCalls) {
-      assert.equal(call.ws, repoB);
-      assert.notEqual(call.ws, repoA);
-    }
+  assert.ok(freezeCalls.length > 0, "freezeTask should be invoked during the specialist run");
+  for (const call of freezeCalls) {
+    assert.equal(call.ws, repoB, "freezeTask workspace must be the project workspace repoB");
+    assert.notEqual(call.ws, repoA, "stale session workspace repoA must never be used");
   }
-  if (checkpointCalls.length > 0) {
-    for (const call of checkpointCalls) {
-      assert.equal(call.ws, repoB);
-      assert.notEqual(call.ws, repoA);
-    }
+  assert.ok(checkpointCalls.length > 0, "createCheckpoint should be invoked during the specialist run");
+  for (const call of checkpointCalls) {
+    assert.equal(call.ws, repoB, "createCheckpoint workspace must be the project workspace repoB");
+    assert.notEqual(call.ws, repoA, "stale session workspace repoA must never be used");
   }
+
+  // provider가 실제로 호출되었는지 확인한다. runAgent seam은 workspace를 전달하지
+  // 않으므로 provider workspace 자체는 이 seam으로 주장하지 않고, canonical
+  // workspace → provider invocation builder 경로는 파일 끝의 별도 결정적 테스트로
+  // 검증한다.
+  assert.ok(runAgentCalls.length > 0, "provider should be invoked during the specialist run");
+});
+
+// chat-ipc.js의 makeRunAgent는 canonicalWorkspaceForMeta(meta)를 메타에서 계산해
+// buildAgentInvocation({ workspace: canonicalWorkspace })로 전달한다. 이 경로는
+// runAgent seam과 별개로 provider invocation builder까지 canonical workspace가
+// 전달됨을 결정적으로 검증한다.
+test("makeRunAgent passes canonical workspace to provider invocation builder", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "src", "chat", "chat-ipc.js"),
+    "utf8"
+  );
+  assert.match(
+    source,
+    /const canonicalWorkspace = canonicalWorkspaceForMeta\(meta\)/,
+    "canonical workspace must be computed from the canonical meta authority"
+  );
+  assert.match(
+    source,
+    /buildAgentInvocation/,
+    "buildAgentInvocation must receive the canonical workspace"
+  );
+  const builderCall = source.slice(source.indexOf("buildAgentInvocation"));
+  assert.ok(
+    builderCall.includes("workspace: canonicalWorkspace"),
+    "buildAgentInvocation must receive the canonical workspace"
+  );
 });

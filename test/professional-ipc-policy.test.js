@@ -83,3 +83,19 @@ test("chat-ipc는 정책 모듈을 실제 runtime authority로 사용한다", ()
   const gateCalls = source.match(/enforceProfessionalPolicy\(/g) || [];
   assert.ok(gateCalls.length >= 5, `정책 게이트 호출이 충분해야 한다(실제: ${gateCalls.length})`);
 });
+
+test("chat:message:handoff는 SIMPLIFY/SIMPLIFY_SELF를 simplify 액션으로 분류한다", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "src", "chat", "chat-ipc.js"), "utf8");
+  const handoffSection = source.slice(
+    source.indexOf("chat:message:handoff"),
+    source.indexOf("chat:specialist:blocked")
+  );
+  assert.ok(
+    handoffSection.includes('intent === "SIMPLIFY" || intent === "SIMPLIFY_SELF"'),
+    "handoff는 SIMPLIFY와 SIMPLIFY_SELF를 simplify intent로 분류해야 한다"
+  );
+  const ternary = handoffSection.match(/\? "([a-z-]+)"\s*:\s*"([a-z-]+)"/);
+  assert.ok(ternary, "policyAction 분류식이 존재해야 한다");
+  assert.equal(ternary[1], "simplify", "SIMPLIFY/SIMPLIFY_SELF는 simplify 액션이어야 한다");
+  assert.equal(ternary[2], "handoff", "일반 intent는 handoff 액션이어야 한다");
+});
