@@ -990,26 +990,42 @@ Clean Reviewer → Recovery` 흐름은 이번에도 변경하지 않았다.
 
 ### 2026-08-17 — Professional 안정화 최종 검수 및 FSM 재진입 가드 강화
 
-최종 검수 잔여 항목을 모두 반영해 Professional Mode의 거버넌스와 FSM 상태 안전성을 완결했다.
+최종 검수 잔여 6개 결함을 모두 반영해 Professional Mode의 거버넌스, 런타임 authority, FSM 상태 안전성을 완결했다.
 
-1. **USER_EXECUTE FSM 재진입 가드 엄격화**:
-   - `PROCEED_UNPROTECTED` 후 `runExecutionBlock`이 무보호 실행을 시작할 때 `USER_EXECUTE`가 `checkpointFailReason`을 덮어쓰지 않도록 수정.
-   - 단순히 `IMPLEMENTING/RUNNING` 노드라는 이유만으로 재진입을 허용하지 않고, 실제 `PROCEED_UNPROTECTED`를 거친 명시적 무보호 승인 상태(`checkpointProtection === "unavailable_user_approved"` 및 `userApprovedUnprotectedExecution === true`)에서만 재진입을 허용하도록 fail-closed 제한.
-   - 일반 `IMPLEMENTING/RUNNING` 실행 중의 중복 `USER_EXECUTE` 호출이 거부되는 회귀 테스트 추가.
-2. **체크포인트 재시도 정책 보존**:
-   - `resumeCheckpointFailure`에서 `maxAutoRevisions: 0` 고정을 제거하고 원래 지정된 `resume.maxAutoRevisions` 값을 그대로 보존.
-3. **프롬프트 transcript 정책 authority 단일화**:
-   - `chat-prompt.js`의 최근 대화 및 sourceMessages 포함 여부를 역할별 하드코딩 대신 `ROLE_CONTEXT_POLICY`(`roleSees`)를 단일 authority로 사용하도록 전환.
+1. **Stage 1 — Project workspace 런타임 authority 통일**:
+   - `chat-ipc.js`에 `canonicalWorkspaceForMeta(meta)` 도입.
+   - `roomMeta`, `makeRunAgent`, `resolveTaskFilePath`, `chat:specialist:start`, `chat:permission:set`, `getRoom`의 task reconciliation 모두 `project.workspace`를 유일한 runtime authority로 사용.
+   - `session.workspace`는 UI/마이그레이션 호환 캐시로만 유지.
+   - Case A (`project.workspace = null` 시 세션 캐시 무시 및 모든 런타임 작업 거부) 및 Case B (`project.workspace = repoB`일 때 stale 세션 캐시 무시하고 repoB 사용) 회귀 테스트 추가.
+2. **Stage 2 — Task Contract 단독 제어 라인 empty 판정 강화**:
+   - `task-contract-validator.js`의 의미 있는 본문 검사에서 `STATUS:`, `VERDICT:`, `[[CODEPET_...]]` 단독 제어 라인을 모두 제거.
+   - 제어 키워드가 포함된 일반 설명 문장은 유효한 본문으로 정상 유지.
+   - 제어 마커만 있는 필수 섹션 거부 및 설명 문장 통과 회귀 테스트 추가.
+3. **Stage 5 — 두 종류의 "쉽게 설명" 계약 분리**:
+   - 직접 버튼 [쉽게 설명] (`SIMPLIFY_SELF`): 원문 작성자 고정, 원문 작성 당시 model/effort 고정, fallback 금지.
+   - Handoff 팝오버 [다른 AI에게 전달 → 쉽게 설명] (`SIMPLIFY`): 사용자가 선택한 대상 AI가 자신의 현재 설정된 모델로 원문을 쉽게 설명(`simplifyMeta` 전달).
+   - 두 계약 분리 및 검증 회귀 테스트 추가.
+4. **Stage 4 — Professional IPC fail-closed 강화**:
+   - 활성 Professional Run 중 (`PLANNING:WAITING`, `PLAN_REVIEW:WAITING`, `READY:WAITING`) `recordOnly-send` 허용 제거.
+   - `isActiveProfessionalRun`을 `COMPLETED/COMPLETED` 외의 모든 일관되지 않은 상태까지 활성으로 간주해 fail-closed 하도록 수정.
+5. **Role Context — Project Rules 중앙 정책 authority 적용**:
+   - `PROMPT_CONTEXT_KINDS`에 `rulesContext: "projectRules"` 매핑 추가.
+   - `chat-prompt.js`에서 `roleAllows("rulesContext")`를 단일 authority로 사용.
+   - Planner, Plan Reviewer, Builder, Reviewer는 Project Rules를 포함하고, Recorder 및 쉽게 설명은 제외함을 프롬프트 레벨에서 검증하는 테스트 추가.
+6. **Stage 3 — Checkpoint 자체 검증 후 descriptor 반환**:
+   - `sha256File` 검증 실패 시 fallback 대신 `CHECKPOINT_STORAGE_FAILED` 에러 throw.
+   - `manifest.json` 저장 직후 `inspectCheckpoint`를 호출해 descriptor와 artifact 무결성을 자체 검증 후 반환.
+   - non-Git의 `{ supported: false }` 정상 경로는 보존하고 오류 발생 시 `{ supported: false, failed: true, reason: "CHECKPOINT_*" }`로 정리.
 
 최종 테스트 및 CI 기준:
 
 ```text
 node --test
-  649 PASS / 0 FAIL / 1 SKIP (Windows symlink EPERM 플랫폼 의존 1건)
-  총 650개 테스트
+  658 PASS / 0 FAIL / 1 SKIP (Windows symlink EPERM 플랫폼 의존 1건)
+  총 659개 테스트
 ```
 
-이로써 Stage 1~5 안정화 및 모든 잔여 결함 수정이 완료되어 Stage C(Managed Harness Runtime)로 이행할 수 있는 확고한 baseline이 확립되었다.
+이로써 Stage 1~5 안정화 및 6개 잔여 결함 수정이 모두 완료되어 Stage C(Managed Harness Runtime)로 이행할 수 있는 확고한 baseline이 확립되었다.
 
 ---
 

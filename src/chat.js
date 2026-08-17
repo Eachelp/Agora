@@ -1593,12 +1593,8 @@ function makeField(labelText, control) {
 
 // 다른 에이전트의 메시지를 선택한 에이전트에게 전달(Handoff)해 이어서 답하게 합니다.
 function openHandoffPopover(anchor, messageId, sourceAuthor) {
-  const source = agentById(sourceAuthor);
   const options = agents.filter((agent) => agent.available && agent.enabled !== false && agent.id !== sourceAuthor);
-  // 쉽게 설명은 원문 작성자 본인만 수행하므로, 다른 에이전트가 없더라도
-  // 원문 작성자를 쓸 수 있으면 팝오버를 열 수 있습니다.
-  const simplifyAvailable = Boolean(source && source.available && source.enabled !== false);
-  if (options.length === 0 && !simplifyAvailable) {
+  if (options.length === 0) {
     openPopover(anchor, (root) => {
       const head = document.createElement("div");
       head.className = "popover-head";
@@ -1638,30 +1634,11 @@ function openHandoffPopover(anchor, messageId, sourceAuthor) {
     const intentReview = document.createElement("option");
     intentReview.value = "REVIEW_OPINION";
     intentReview.textContent = "검토 요청";
-    intentSelect.append(intentContinue, intentReview);
-    // 쉽게 설명 옵션 복원. 단 대상은 항상 원문 작성자로 고정됩니다.
-    if (simplifyAvailable) {
-      const intentSimplify = document.createElement("option");
-      intentSimplify.value = "SIMPLIFY";
-      intentSimplify.textContent = "쉽게 설명 (원문 작성자가 같은 모델로)";
-      intentSelect.append(intentSimplify);
-    }
-    if (options.length === 0) {
-      // 다른 에이전트가 없으면 쉽게 설명만 가능합니다.
-      intentContinue.disabled = true;
-      intentReview.disabled = true;
-      intentSelect.value = "SIMPLIFY";
-    }
+    const intentSimplify = document.createElement("option");
+    intentSimplify.value = "SIMPLIFY";
+    intentSimplify.textContent = "쉽게 설명";
+    intentSelect.append(intentContinue, intentReview, intentSimplify);
     root.append(makeField("전달 목적", intentSelect));
-
-    // SIMPLIFY는 원문 작성자 고정이라 대상 선택이 의미가 없습니다.
-    const targetField = targetSelect.closest(".popover-field");
-    const syncTargetVisibility = () => {
-      const isSimplify = intentSelect.value === "SIMPLIFY";
-      if (targetField) targetField.hidden = isSimplify;
-    };
-    intentSelect.addEventListener("change", syncTargetVisibility);
-    syncTargetVisibility();
 
     const actions = document.createElement("div");
     actions.className = "popover-actions";
@@ -1673,20 +1650,19 @@ function openHandoffPopover(anchor, messageId, sourceAuthor) {
     confirm.type = "button";
     confirm.className = "button-primary";
     confirm.textContent = "전달";
-      confirm.addEventListener("click", async () => {
-        const intent = intentSelect.value;
-        // 쉽게 설명은 원문 작성자에게만 보냅니다(fallback 금지).
-        const target = intent === "SIMPLIFY" ? sourceAuthor : targetSelect.value;
-        if (!target) {
-          closePopover();
-          flashNotice("전달 대상 에이전트를 찾을 수 없습니다.");
-          return;
-        }
+    confirm.addEventListener("click", async () => {
+      const intent = intentSelect.value;
+      const target = targetSelect.value;
+      if (!target) {
         closePopover();
-        await call(
-          window.chatApi.handoffMessage(sessionMeta?.id, target, messageId, intent)
-        );
-      });
+        flashNotice("전달 대상 에이전트를 찾을 수 없습니다.");
+        return;
+      }
+      closePopover();
+      await call(
+        window.chatApi.handoffMessage(sessionMeta?.id, target, messageId, intent)
+      );
+    });
     actions.append(cancel, confirm);
     root.append(actions);
   });
@@ -3490,7 +3466,7 @@ function renderMessage(message) {
         flashNotice("원문을 작성한 에이전트를 사용할 수 없어 쉽게 설명을 실행할 수 없습니다.");
         return;
       }
-      await call(window.chatApi.handoffMessage(sessionMeta?.id, target.id, message.id, "SIMPLIFY"));
+      await call(window.chatApi.handoffMessage(sessionMeta?.id, target.id, message.id, "SIMPLIFY_SELF"));
     });
     actions.append(simplifyBtn);
 

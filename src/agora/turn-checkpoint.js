@@ -300,12 +300,18 @@ async function createCheckpoint(workspaceRoot, options = {}) {
       }
     }
     const patchPath = path.join(dir, "tracked.patch");
-    const trackedPatchMeta = sha256File(patchPath) || { bytes: 0, sha256: "" };
+    const trackedPatchMeta = sha256File(patchPath);
+    if (!trackedPatchMeta) {
+      throw checkpointError("CHECKPOINT_STORAGE_FAILED", "tracked.patch를 저장 후 검증할 수 없습니다.");
+    }
     const listPath = path.join(dir, "untracked-list.txt");
     guard("CHECKPOINT_STORAGE_FAILED", "untracked 목록 저장에 실패했습니다.", () =>
       fs.writeFileSync(listPath, safePaths.join("\n"), "utf8")
     );
-    const untrackedListMeta = sha256File(listPath) || { bytes: 0, sha256: "" };
+    const untrackedListMeta = sha256File(listPath);
+    if (!untrackedListMeta) {
+      throw checkpointError("CHECKPOINT_STORAGE_FAILED", "untracked-list.txt를 저장 후 검증할 수 없습니다.");
+    }
 
     const manifest = {
       schemaVersion: CHECKPOINT_SCHEMA_VERSION,
@@ -332,7 +338,7 @@ async function createCheckpoint(workspaceRoot, options = {}) {
     guard("CHECKPOINT_MANIFEST_FAILED", "checkpoint manifest 저장에 실패했습니다.", () =>
       atomicJson(path.join(dir, "manifest.json"), manifest)
     );
-    return {
+    const descriptor = {
       supported: true,
       checkpointId: id,
       sessionId: manifest.sessionId,
@@ -341,6 +347,15 @@ async function createCheckpoint(workspaceRoot, options = {}) {
       storageRoot,
       baselineSha,
     };
+    // protected라고 선언하기 전에 artifact 무결성과 manifest descriptor를 자체 검증한다.
+    const inspected = inspectCheckpoint(descriptor);
+    if (!inspected.ok) {
+      throw checkpointError(
+        "CHECKPOINT_MANIFEST_FAILED",
+        `checkpoint 자체 검증 실패: ${inspected.reason}`
+      );
+    }
+    return descriptor;
   } catch (error) {
     try {
       if (isWithin(storageRoot, dir)) fs.rmSync(dir, { recursive: true, force: true });

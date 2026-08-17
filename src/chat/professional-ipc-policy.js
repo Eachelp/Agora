@@ -31,10 +31,10 @@ const nodeStatusKey = ({ node, status }) => `${node || "?"}:${status || "?"}`;
 
 const POLICY_TABLE = {
   "PLANNING:RUNNING": ["cancel"],
-  "PLANNING:WAITING": ["planAnswer", "cancel", "recordOnly-send"],
+  "PLANNING:WAITING": ["planAnswer", "cancel"],
   "PLAN_REVIEW:RUNNING": ["cancel"],
-  "PLAN_REVIEW:WAITING": ["planAnswer", "cancel", "recordOnly-send"],
-  "READY:WAITING": ["startImpl", "startFull", "planEdit", "cancel", "recordOnly-send"],
+  "PLAN_REVIEW:WAITING": ["planAnswer", "cancel"],
+  "READY:WAITING": ["startImpl", "startFull", "planEdit", "cancel"],
   "IMPLEMENTING:RUNNING": ["cancel"],
   "IMPLEMENTING:WAITING": ["resume", "cancel"],
   "IMPLEMENTING:BLOCKED": ["blockedAction", "blockDetails", "cancel"],
@@ -52,9 +52,15 @@ function allowedIpcFor(runState = {}) {
   return [];
 }
 
-// runState가 활성 전문 실행을 나타내는지(COMPLETED 아님) 여부.
-function isActiveProfessionalRun(runState = {}) {
-  return runState != null && runState.node !== "COMPLETED" && runState.status !== "COMPLETED";
+// runState가 활성 전문 실행을 나타내는지(COMPLETED/COMPLETED가 아님) 여부.
+// 일관되지 않은 상태(COMPLETED/WAITING, READY/COMPLETED 등)도 모두 활성으로 보아
+// fail-closed로 차단한다.
+function isActiveProfessionalRun(runState = null) {
+  if (!runState) return false;
+  return !(
+    runState.node === "COMPLETED" &&
+    runState.status === "COMPLETED"
+  );
 }
 
 function isStateAllowed(runState, action) {

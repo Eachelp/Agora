@@ -547,8 +547,7 @@ function createChatFeature(options) {
       }
       // 실행 authority는 프로젝트 workspace가 canonical이다. 세션 workspace는
       // 마이그레이션 호환 캐시일 뿐이며, 프로젝트 workspace를 덮어쓰지 않는다.
-      const project = projectForSession(meta);
-      const canonicalWorkspace = project?.workspace || null;
+      const canonicalWorkspace = canonicalWorkspaceForMeta(meta);
       // workspace를 필요로 하는 권한(workspace-read/write)인데 프로젝트 workspace가
       // 없으면 fail-closed로 차단한다. (migration conflict로 프로젝트 workspace가
       // null인 경우가 대표적이며, 이때 세션별 workspace로 실행되면 같은 프로젝트의
@@ -576,7 +575,7 @@ function createChatFeature(options) {
       const invocation = buildAgentInvocation({
         provider: record,
         permissionMode,
-        workspace: canonicalWorkspace || meta.workspace || null,
+        workspace: canonicalWorkspace,
         model: agent.model,
         effort: agent.effort,
         attachments: enriched,
@@ -700,15 +699,20 @@ const TASK_STATUS_LABELS = Object.freeze({
   blocked: "막힘",
 });
 
+function canonicalWorkspaceForMeta(meta) {
+  const project = projectForSession(meta);
+  return project?.workspace || null;
+}
+
 function roomMeta(meta) {
   const project = projectForSession(meta);
   const memory = ensureMemoryStore();
   return {
     permissionMode: meta?.permissionMode || "chat",
-    workspace: meta?.workspace || null,
+    workspace: canonicalWorkspaceForMeta(meta),
     projectContext: project?.context || "",
-      memoryContext: memory && project ? memory.readForPrompt(project.id) : "",
-      rulesContext: memory && project ? memory.readRules(project.id) : "",
+    memoryContext: memory && project ? memory.readForPrompt(project.id) : "",
+    rulesContext: memory && project ? memory.readRules(project.id) : "",
       workflowContext: project ? buildWorkflowContext(project.id) : "",
     };
   }
@@ -819,9 +823,9 @@ function roomMeta(meta) {
     if (!session) return null;
     const sessionProject = projectForSession(session.meta);
     const workflow = ensureWorkflowStore();
-    if (workflow && sessionProject && session.meta.workspace && !workflow.readOnly) {
+    if (workflow && sessionProject && sessionProject.workspace && !workflow.readOnly) {
       try {
-        workflow.reconcileProjectTasks(sessionProject.id, session.meta.workspace);
+        workflow.reconcileProjectTasks(sessionProject.id, sessionProject.workspace);
       } catch {}
     }
 
@@ -1095,7 +1099,13 @@ function roomMeta(meta) {
   function resolveTaskFilePath(sessionId, taskPath) {
     requireSession(sessionId);
     const meta = store.readMeta(sessionId);
-    return resolveTaskFileBoundary(meta?.workspace, taskPath, {
+    const workspace = canonicalWorkspaceForMeta(meta);
+    if (!workspace) {
+      const error = new Error("프로젝트 워크스페이스가 설정되어 있지 않습니다.");
+      error.code = "TASK_WORKSPACE_MISSING";
+      throw error;
+    }
+    return resolveTaskFileBoundary(workspace, taskPath, {
       maxBytes: MAX_TASK_READ_BYTES,
     }).target;
   }
@@ -1727,6 +1737,13 @@ function roomMeta(meta) {
         if (!room.messages.some((message) => message.authorType === "user")) {
           throw new Error("전문 실행을 시작하려면 먼저 이 대화에 작업 요청을 남겨 주세요.");
         }
+        const meta = store.readMeta(sessionId);
+        const workspace = canonicalWorkspaceForMeta(meta);
+        if (!workspace) {
+          throw new Error(
+            "전문 모드는 워크스페이스가 필요합니다. 프로젝트 워크스페이스 폴더를 먼저 선택해 주세요."
+          );
+        }
         const project = projectForSession(store.readMeta(sessionId));
         const selectedAction = ["plan", "implementation", "record", "full"].includes(action)
           ? action
@@ -1736,12 +1753,6 @@ function roomMeta(meta) {
         // 전문 실행은 워크스페이스가 있어야 하지만, 세션 권한(meta.permissionMode)은
         // 영구히 바꾸지 않는다. 실행 동안만 유효한 run-scoped 권한은 ChatRoom이
         // withProfessionalAuthorization로 관리하므로 일반 대화 권한은 그대로 유지된다.
-        const meta = store.readMeta(sessionId);
-        if (!meta.workspace) {
-          throw new Error(
-            "전문 모드는 워크스페이스가 필요합니다. 채팅 상단의 워크스페이스 버튼으로 폴더를 먼저 선택해 주세요."
-          );
-        }
         const started = room.startSpecialist({
           stages: planned.stages,
           ...(selectedAction ? { action: selectedAction } : {}),
@@ -1993,7 +2004,8 @@ function roomMeta(meta) {
         requireSession(sessionId);
         if (!PERMISSION_MODES.includes(mode)) throw new Error("알 수 없는 권한 모드입니다.");
         const meta = store.readMeta(sessionId);
-        if (mode !== "chat" && !meta.workspace) {
+        const workspace = canonicalWorkspaceForMeta(meta);
+        if (mode !== "chat" && !workspace) {
           throw new Error("먼저 워크스페이스 폴더를 선택해 주세요.");
         }
         store.updateMeta(sessionId, { permissionMode: mode });

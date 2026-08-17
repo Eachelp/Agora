@@ -213,3 +213,94 @@ test("프로젝트 workspace 변경은 모든 세션 meta에 일괄 반영된다
     assert.equal(session.workspace, root);
   }
 });
+
+test("Case A: project.workspace가 null이면 session.workspace 캐시가 있어도 런타임 작업이 거부된다", async () => {
+  const root = makeRoot();
+  const feature = makeFeature(root);
+  const oldRepo = path.join(root, "old-repo");
+  fs.mkdirSync(oldRepo, { recursive: true });
+  fs.writeFileSync(path.join(oldRepo, "TASK-001.md"), "old task", "utf8");
+
+  // 프로젝트 workspace는 null이지만 세션 메타에 과거 workspace 캐시가 남아있는 상태를 구성
+  const created = await feature.invoke("chat:projects:create", {
+    name: "프로젝트 workspace 없음",
+    workspace: null,
+  });
+  assert.equal(created.ok, true);
+  const sessionId = created.session.meta.id;
+
+  // 세션 메타에만 과거 workspace 직접 주입 (stale cache 시뮬레이션)
+  const storeRoot = path.join(root, "sessions", sessionId);
+  const metaPath = path.join(storeRoot, "meta.json");
+  const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+  meta.workspace = oldRepo;
+  fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2), "utf8");
+
+  // 사용자 요청 메시지 추가 (전문 모드 진입 전제조건)
+  await feature.invoke("chat:send", { sessionId, text: "전문 실행해줘", recordOnly: true });
+
+  // 1) 전문 모드 시작 거부
+  const specialistStart = await feature.invoke("chat:specialist:start", {
+    sessionId,
+    mode: "step",
+  });
+  assert.equal(specialistStart.ok, false);
+  assert.match(specialistStart.error, /워크스페이스가 필요합니다/);
+
+  // 2) workspace-read/write 권한 설정 거부
+  const permRead = await feature.invoke("chat:permission:set", {
+    sessionId,
+    mode: "workspace-read",
+  });
+  assert.equal(permRead.ok, false);
+  assert.match(permRead.error, /워크스페이스 폴더를 선택/);
+
+  const permWrite = await feature.invoke("chat:permission:set", {
+    sessionId,
+    mode: "workspace-write",
+  });
+  assert.equal(permWrite.ok, false);
+  assert.match(permWrite.error, /워크스페이스 폴더를 선택/);
+
+  // 3) Task read 거부
+  const taskRead = await feature.invoke("chat:task:read-file", {
+    sessionId,
+    taskPath: "TASK-001.md",
+  });
+  assert.equal(taskRead.ok, false);
+  assert.match(taskRead.error, /프로젝트 워크스페이스가 설정되어 있지 않습니다/);
+});
+
+test("Case B: project.workspace가 repo-B이고 session.workspace가 repo-A(stale)이면 repo-B가 runtime authority로 동작한다", async () => {
+  const root = makeRoot();
+  const feature = makeFeature(root);
+  const repoA = path.join(root, "repo-A");
+  const repoB = path.join(root, "repo-B");
+  fs.mkdirSync(repoA, { recursive: true });
+  fs.mkdirSync(repoB, { recursive: true });
+  fs.writeFileSync(path.join(repoA, "TASK-001.md"), "content in repo A", "utf8");
+  fs.writeFileSync(path.join(repoB, "TASK-001.md"), "content in repo B", "utf8");
+
+  // 프로젝트 workspace는 repoB로 생성
+  const created = await feature.invoke("chat:projects:create", {
+    name: "repo-B 프로젝트",
+    workspace: repoB,
+  });
+  assert.equal(created.ok, true);
+  const sessionId = created.session.meta.id;
+
+  // 세션 메타에만 repoA 주입 (stale cache 시뮬레이션)
+  const storeRoot = path.join(root, "sessions", sessionId);
+  const metaPath = path.join(storeRoot, "meta.json");
+  const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+  meta.workspace = repoA;
+  fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2), "utf8");
+
+  // Task 읽기는 repoB의 파일을 읽어야 한다 (repoA 내용이 아님)
+  const taskRead = await feature.invoke("chat:task:read-file", {
+    sessionId,
+    taskPath: "TASK-001.md",
+  });
+  assert.equal(taskRead.ok, true);
+  assert.equal(taskRead.content, "content in repo B");
+});

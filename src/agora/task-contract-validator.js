@@ -64,6 +64,13 @@ function isFenceLine(trimmed) {
   return trimmed.startsWith(String.fromCharCode(96, 96, 96)) || trimmed.startsWith("~~~");
 }
 
+function isProtocolControlLine(trimmed) {
+  if (/^STATUS:\s*[A-Z_]+(?:\s.*)?$/i.test(trimmed)) return true;
+  if (/^VERDICT:\s*[A-Z_]+(?:\s.*)?$/i.test(trimmed)) return true;
+  if (/^\[\[CODEPET_[A-Z0-9_]+(?::[^\]]*)?\]\]$/i.test(trimmed)) return true;
+  return false;
+}
+
 // Accept ## and ### only. Returns the heading text or null.
 function parseHeading(trimmed) {
   let idx = 0;
@@ -83,14 +90,15 @@ function stripFences(lines) {
   let inFence = false;
   for (const line of lines) {
     const trimmed = line.trim();
-    // Drop protocol control markers so a heading whose body only contains
-    // "STATUS: PLAN_READY" is treated as empty content.
-    if (/^STATUS:\s*[A-Z_]+$/i.test(trimmed)) continue;
     if (isFenceLine(trimmed)) {
       inFence = !inFence;
       continue;
     }
-    if (!inFence) out.push(line);
+    if (inFence) continue;
+    // Drop standalone protocol control lines outside code fences so a heading whose body only
+    // contains control markers is treated as empty content.
+    if (isProtocolControlLine(trimmed)) continue;
+    out.push(line);
   }
   return out.join(String.fromCharCode(10));
 }

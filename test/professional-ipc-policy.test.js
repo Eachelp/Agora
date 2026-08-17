@@ -10,14 +10,22 @@ const {
   isStateAllowed,
 } = require("../src/chat/professional-ipc-policy");
 
-test("READY 상태에서는 startImpl·planEdit·cancel·recordOnly-send만 허용한다", () => {
+test("READY 상태에서는 startImpl·startFull·planEdit·cancel만 허용한다 (recordOnly-send 제외)", () => {
   const allowed = allowedIpcFor({ node: "READY", status: "WAITING" });
   assert.ok(allowed.includes("startImpl"));
+  assert.ok(allowed.includes("startFull"));
   assert.ok(allowed.includes("planEdit"));
   assert.ok(allowed.includes("cancel"));
-  assert.ok(allowed.includes("recordOnly-send"));
+  assert.ok(!allowed.includes("recordOnly-send"));
   assert.ok(!allowed.includes("send"));
   assert.ok(!allowed.includes("discussion"));
+});
+
+test("PLANNING WAITING 및 PLAN_REVIEW WAITING에서도 recordOnly-send는 제외된다", () => {
+  const planningAllowed = allowedIpcFor({ node: "PLANNING", status: "WAITING" });
+  assert.deepEqual(planningAllowed, ["planAnswer", "cancel"]);
+  const reviewAllowed = allowedIpcFor({ node: "PLAN_REVIEW", status: "WAITING" });
+  assert.deepEqual(reviewAllowed, ["planAnswer", "cancel"]);
 });
 
 test("IMPLEMENTING RUNNING에서는 cancel만 허용한다", () => {
@@ -37,10 +45,15 @@ test("알 수 없는 상태 조합은 빈 배열을 반환한다 (fail-closed)",
   assert.deepEqual(allowed, []);
 });
 
-test("isActiveProfessionalRun은 COMPLETED가 아닌 활성 실행을 식별한다", () => {
+test("isActiveProfessionalRun은 COMPLETED/COMPLETED만 비활성으로 보고 나머지는 활성(fail-closed)으로 식별한다", () => {
   assert.equal(isActiveProfessionalRun({ node: "IMPLEMENTING", status: "RUNNING" }), true);
   assert.equal(isActiveProfessionalRun({ node: "COMPLETED", status: "COMPLETED" }), false);
   assert.equal(isActiveProfessionalRun(null), false);
+
+  // 일관되지 않은 상태 조합도 모두 활성으로 판단(fail-closed)
+  assert.equal(isActiveProfessionalRun({ node: "COMPLETED", status: "WAITING" }), true);
+  assert.equal(isActiveProfessionalRun({ node: "READY", status: "COMPLETED" }), true);
+  assert.equal(isActiveProfessionalRun({ node: "UNKNOWN", status: "UNKNOWN" }), true);
 });
 
 test("isStateAllowed는 활성 실행 없으면 모든 액션을 허용한다", () => {

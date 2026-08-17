@@ -180,3 +180,30 @@ test("checkpoint schema v2: untracked 사본이 변조되면 복원을 거부한
   assert.equal(fs.readFileSync(userNote, "utf8"), "original note\n");
   cleanupCheckpoint(checkpoint);
 });
+
+test("정상 checkpoint는 생성 직후 자체 검증을 거쳐 supported:true를 반환한다", async (t) => {
+  const repo = makeTempRepo(t);
+  git(repo, ["commit", "--allow-empty", "-qm", "init"]);
+  fs.writeFileSync(path.join(repo, "sample.txt"), "hello world\n", "utf8");
+
+  const checkpoint = await createCheckpoint(repo);
+  assert.equal(checkpoint.supported, true);
+  assert.equal(typeof checkpoint.checkpointId, "string");
+  assert.equal(checkpoint.workspace, repo);
+  cleanupCheckpoint(checkpoint);
+});
+
+test("생성 시 artifact 저장이 실패하면 failed:true와 CHECKPOINT_* taxonomy reason을 반환한다", async (t) => {
+  const repo = makeTempRepo(t);
+  git(repo, ["commit", "--allow-empty", "-qm", "init"]);
+  fs.writeFileSync(path.join(repo, "sample.txt"), "test content\n", "utf8");
+
+  // storageRoot를 파일로 만들어 디렉터리 생성이 실패하도록 유도
+  const badRoot = path.join(repo, "bad-storage-root");
+  fs.writeFileSync(badRoot, "blocker", "utf8");
+
+  const checkpoint = await createCheckpoint(repo, { storageRoot: badRoot });
+  assert.equal(checkpoint.supported, false);
+  assert.equal(checkpoint.failed, true);
+  assert.equal(checkpoint.reason, "CHECKPOINT_STORAGE_FAILED");
+});

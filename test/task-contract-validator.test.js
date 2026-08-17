@@ -199,3 +199,63 @@ test("control marker만 있는 섹션 body는 empty로 취급된다", () => {
   assert.equal(result.valid, false);
   assert.ok(result.missing.includes("Out of Scope"));
 });
+
+test("VERDICT 제어 마커만 있는 섹션 body는 empty로 취급된다", () => {
+  const contract = [
+    "## Goal",
+    "목표",
+    "## Requirements",
+    "요구사항",
+    "## Implementation Approach",
+    "접근",
+    "## Acceptance Criteria",
+    "완료",
+    "## Verification",
+    "검증",
+    "## Out of Scope",
+    "VERDICT: PASS",
+  ].join(NL);
+  const result = validateTaskContract(contract);
+  assert.equal(result.valid, false);
+  assert.ok(result.missing.includes("Out of Scope"));
+});
+
+test("[[CODEPET_...]] 제어 마커만 있는 섹션 body는 empty로 취급된다", () => {
+  const contract = [
+    "## Goal",
+    "목표",
+    "## Requirements",
+    "요구사항",
+    "## Implementation Approach",
+    "접근",
+    "## Acceptance Criteria",
+    "완료",
+    "## Verification",
+    "검증",
+    "## Out of Scope",
+    "[[CODEPET_DISCUSSION:PASS]]",
+  ].join(NL);
+  const result = validateTaskContract(contract);
+  assert.equal(result.valid, false);
+  assert.ok(result.missing.includes("Out of Scope"));
+});
+
+test("제어 단어(VERDICT 등)가 포함된 일반 설명 문장은 유효한 본문으로 취급된다", () => {
+  const contract = [
+    "## Goal",
+    "목표",
+    "## Requirements",
+    "요구사항",
+    "## Implementation Approach",
+    "접근",
+    "## Acceptance Criteria",
+    "완료",
+    "## Verification",
+    "검증",
+    "## Out of Scope",
+    "VERDICT 결과는 구현 범위에 포함되지 않는다.",
+  ].join(NL);
+  const result = validateTaskContract(contract);
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.missing, []);
+});

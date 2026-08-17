@@ -66,6 +66,7 @@ const PROMPT_CONTEXT_KINDS = Object.freeze({
   conversationContext: "conversationContext",
   conversationTranscript: "conversationTranscript",
   projectContext: "conversationContext",
+  rulesContext: "projectRules",
   workflowContext: "taskList",
   // 누적 대화 요약(memory)은 대화 전문에 준하는 입력이므로
   // conversationTranscript 경계를 따른다.

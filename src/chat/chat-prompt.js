@@ -188,7 +188,7 @@ function buildAgentPrompt({
     lines.push("- 대화에서 쓰인 언어로 답하세요.");
   }
   const MAX_CONTEXT_CHARS = 16000;
-  const rules = String(rulesContext || "").trim();
+  const rules = !roleAllows("rulesContext") || isSimplify ? "" : String(rulesContext || "").trim();
   if (rules) {
     lines.push("");
     lines.push("=== 프로젝트 현재 규칙 ===");

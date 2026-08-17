@@ -859,11 +859,10 @@ class ChatRoom extends EventEmitter {
     if (!source || source.authorType === "system" || source.authorType === "user") {
       return { ok: false, error: "전달할 메시지를 찾을 수 없습니다." };
     }
-    if (intent === "SIMPLIFY") {
-      // 쉽게 설명은 "같은 저자 + 같은 모델" 고정 계약입니다. 원문을 작성한
-      // 에이전트가 아닌 다른 에이전트로 대체(fallback)하지 않으며, 원문 작성
-      // 당시의 model/effort를 그대로 재사용해 사용자가 그 사이 모델 설정을
-      // 바꿨더라도 다른 모델로 재설명되지 않게 합니다.
+    if (intent === "SIMPLIFY_SELF") {
+      // 메시지 바로 아래 직접 버튼 [쉽게 설명]: "같은 저자 + 같은 모델" 고정 계약.
+      // 원문을 작성한 에이전트만 수행할 수 있고 다른 에이전트로 대체(fallback)하지
+      // 않으며, 원문 작성 당시의 model/effort를 그대로 재사용한다.
       if (target.id !== source.author) {
         return { ok: false, error: "쉽게 설명은 원문을 작성한 에이전트만 수행할 수 있습니다." };
       }
@@ -874,7 +873,6 @@ class ChatRoom extends EventEmitter {
         sourceModel: source.agentMeta?.model || null,
         sourceEffort: source.agentMeta?.effort || null,
       };
-      // 원문 작성 당시 모델을 고정합니다. 기록이 없으면 현재 설정을 사용합니다.
       const agentConfig = {};
       if (simplifyMeta.sourceModel && simplifyMeta.sourceModel !== "default") {
         agentConfig.model = simplifyMeta.sourceModel;
@@ -887,6 +885,18 @@ class ChatRoom extends EventEmitter {
         simplifyMeta,
         ...(Object.keys(agentConfig).length ? { agentConfig } : {}),
       });
+      return { ok: true };
+    }
+    if (intent === "SIMPLIFY") {
+      // Handoff 팝오버의 [다른 AI에게 전달 → 쉽게 설명]: 사용자가 선택한 대상 AI가
+      // 자신의 현재/설정된 model을 사용하여 원문을 알기 쉽게 풀어 설명한다.
+      const simplifyMeta = {
+        text: source.text || "",
+        fromAgentId: source.author,
+        messageId,
+      };
+      this.appendSystem(`@${target.id}에게 ${source.author}의 메시지를 알기 쉽게 풀어달라고 요청합니다.`);
+      this.scheduleResponse(target, { simplifyMeta });
       return { ok: true };
     }
     const handoff = {
