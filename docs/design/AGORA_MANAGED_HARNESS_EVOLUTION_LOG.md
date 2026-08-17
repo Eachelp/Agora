@@ -988,6 +988,29 @@ GitHub Actions 결과를 직접 조회할 수 없었다.
 상위 Professional FSM의 `Frozen Task → Checkpoint → Builder → Actual Diff → Evidence →
 Clean Reviewer → Recovery` 흐름은 이번에도 변경하지 않았다.
 
+### 2026-08-17 — Professional 안정화 최종 검수 및 FSM 재진입 가드 강화
+
+최종 검수 잔여 항목을 모두 반영해 Professional Mode의 거버넌스와 FSM 상태 안전성을 완결했다.
+
+1. **USER_EXECUTE FSM 재진입 가드 엄격화**:
+   - `PROCEED_UNPROTECTED` 후 `runExecutionBlock`이 무보호 실행을 시작할 때 `USER_EXECUTE`가 `checkpointFailReason`을 덮어쓰지 않도록 수정.
+   - 단순히 `IMPLEMENTING/RUNNING` 노드라는 이유만으로 재진입을 허용하지 않고, 실제 `PROCEED_UNPROTECTED`를 거친 명시적 무보호 승인 상태(`checkpointProtection === "unavailable_user_approved"` 및 `userApprovedUnprotectedExecution === true`)에서만 재진입을 허용하도록 fail-closed 제한.
+   - 일반 `IMPLEMENTING/RUNNING` 실행 중의 중복 `USER_EXECUTE` 호출이 거부되는 회귀 테스트 추가.
+2. **체크포인트 재시도 정책 보존**:
+   - `resumeCheckpointFailure`에서 `maxAutoRevisions: 0` 고정을 제거하고 원래 지정된 `resume.maxAutoRevisions` 값을 그대로 보존.
+3. **프롬프트 transcript 정책 authority 단일화**:
+   - `chat-prompt.js`의 최근 대화 및 sourceMessages 포함 여부를 역할별 하드코딩 대신 `ROLE_CONTEXT_POLICY`(`roleSees`)를 단일 authority로 사용하도록 전환.
+
+최종 테스트 및 CI 기준:
+
+```text
+node --test
+  649 PASS / 0 FAIL / 1 SKIP (Windows symlink EPERM 플랫폼 의존 1건)
+  총 650개 테스트
+```
+
+이로써 Stage 1~5 안정화 및 모든 잔여 결함 수정이 완료되어 Stage C(Managed Harness Runtime)로 이행할 수 있는 확고한 baseline이 확립되었다.
+
 ---
 
 ## 14. 문서 유지 규칙

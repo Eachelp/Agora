@@ -159,10 +159,16 @@ function transitionProfessionalRun(current, event = {}) {
     }
     case "USER_EXECUTE": {
       // 정상 경로는 READY에서 시작한다. 그러나 checkpoint 실패 → PROCEED_UNPROTECTED
-      // 로 무보호 실행을 승인하면 node가 이미 IMPLEMENTING/JUNNING으로 전이된 뒤
-      // runExecutionBlock이 USER_EXECUTE를 다시 호출한다. 이때는 구현 시작을
-      // 재확인하는 재개 호출로 간주하고 허용한다.
-      const unprotectedResume = current.node === "IMPLEMENTING" && current.status === "RUNNING";
+      // 로 무보호 실행을 승인하면 node가 이미 IMPLEMENTING/RUNNING으로 전이된 뒤
+      // runExecutionBlock이 USER_EXECUTE를 다시 호출한다.
+      // 단순히 IMPLEMENTING/RUNNING이라는 이유만으로 재진입을 열지 않고,
+      // 실제 PROCEED_UNPROTECTED를 거친 상태(checkpointProtection === "unavailable_user_approved" + userApprovedUnprotectedExecution === true)
+      // 에서만 무보호 재개로 허용한다.
+      const unprotectedResume =
+        current.node === "IMPLEMENTING" &&
+        current.status === "RUNNING" &&
+        current.checkpointProtection === "unavailable_user_approved" &&
+        current.userApprovedUnprotectedExecution === true;
       if (current.node !== "READY" && !unprotectedResume) {
         return { ok: false, reason: `실행 가능한 상태가 아닙니다: ${current.node}` };
       }

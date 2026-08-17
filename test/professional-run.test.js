@@ -241,6 +241,7 @@ test("USER_EXECUTE는 checkpointProtection 미지정 시 기존 보호 상태를
     node: "IMPLEMENTING",
     status: "RUNNING",
     checkpointProtection: "unavailable_user_approved",
+    userApprovedUnprotectedExecution: true,
     checkpointFailReason: "CHECKPOINT_COPY_FAILED",
     frozenRunId: "RUN-011",
   });
@@ -248,6 +249,31 @@ test("USER_EXECUTE는 checkpointProtection 미지정 시 기존 보호 상태를
   assert.equal(res.ok, true);
   assert.equal(res.state.checkpointProtection, "unavailable_user_approved");
   assert.equal(res.state.checkpointFailReason, "CHECKPOINT_COPY_FAILED");
+});
+
+test("일반 IMPLEMENTING/RUNNING 상태에서는 중복 USER_EXECUTE가 거부된다", () => {
+  // 1) 일반 protected 실행 중에는 재진입 거부
+  const protectedRun = createProfessionalRun({
+    node: "IMPLEMENTING",
+    status: "RUNNING",
+    checkpointProtection: "protected",
+    frozenRunId: "RUN-012",
+  });
+  const resProtected = transitionProfessionalRun(protectedRun, { type: "USER_EXECUTE" });
+  assert.equal(resProtected.ok, false);
+  assert.match(resProtected.reason, /실행 가능한 상태가 아닙니다/);
+
+  // 2) userApprovedUnprotectedExecution 플래그가 없으면 unavailable_user_approved enum이어도 거부
+  const partialRun = createProfessionalRun({
+    node: "IMPLEMENTING",
+    status: "RUNNING",
+    checkpointProtection: "unavailable_user_approved",
+    userApprovedUnprotectedExecution: false,
+    frozenRunId: "RUN-013",
+  });
+  const resPartial = transitionProfessionalRun(partialRun, { type: "USER_EXECUTE" });
+  assert.equal(resPartial.ok, false);
+  assert.match(resPartial.reason, /실행 가능한 상태가 아닙니다/);
 });
 
 test("CHECKPOINT_FAILED 상태의 public state는 needsInput과 checkpoint 정보를 노출한다", () => {
