@@ -101,6 +101,7 @@ test("resumeCheckpointFailure는 action에 따라 재시도/무보호 진행을 
   const resume = {
     phases: { implementation: { agent: { id: "claude" } } },
     mode: "step",
+    maxAutoRevisions: 2,
     runInfo: { runId: "RUN-009" },
     checkpointFailReason: "CHECKPOINT_GIT_FAILED",
   };
@@ -110,6 +111,9 @@ test("resumeCheckpointFailure는 action에 따라 재시도/무보호 진행을 
   assert.equal(transitions[0].type, "CHECKPOINT_RETRY");
   assert.equal(execCalls[0].allowUnprotected, false);
   assert.equal(execCalls[0].resumedRun.runId, "RUN-009");
+  // checkpoint 재시도가 원래 실행 정책(자동 보완 횟수)을 잃지 않아야 한다.
+  assert.equal(execCalls[0].maxAutoRevisions, 2);
+  assert.equal(execCalls[0].checkpointFailReason, "CHECKPOINT_GIT_FAILED");
 
   // 무보호 진행
   transitions.length = 0;
@@ -118,6 +122,8 @@ test("resumeCheckpointFailure는 action에 따라 재시도/무보호 진행을 
   assert.equal(transitions[0].type, "PROCEED_UNPROTECTED");
   assert.equal(execCalls[0].allowUnprotected, true);
   assert.equal(execCalls[0].resumedRun.runId, "RUN-009");
+  assert.equal(execCalls[0].maxAutoRevisions, 2);
+  assert.equal(execCalls[0].checkpointFailReason, "CHECKPOINT_GIT_FAILED");
 });
 
 test("READY 상태에서 answerPlanQuestion이 기획 수정으로 동작한다", async () => {

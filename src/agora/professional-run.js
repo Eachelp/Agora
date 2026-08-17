@@ -158,15 +158,30 @@ function transitionProfessionalRun(current, event = {}) {
       break;
     }
     case "USER_EXECUTE": {
-      if (current.node !== "READY") return { ok: false, reason: `실행 가능한 상태가 아닙니다: ${current.node}` };
+      // 정상 경로는 READY에서 시작한다. 그러나 checkpoint 실패 → PROCEED_UNPROTECTED
+      // 로 무보호 실행을 승인하면 node가 이미 IMPLEMENTING/JUNNING으로 전이된 뒤
+      // runExecutionBlock이 USER_EXECUTE를 다시 호출한다. 이때는 구현 시작을
+      // 재확인하는 재개 호출로 간주하고 허용한다.
+      const unprotectedResume = current.node === "IMPLEMENTING" && current.status === "RUNNING";
+      if (current.node !== "READY" && !unprotectedResume) {
+        return { ok: false, reason: `실행 가능한 상태가 아닙니다: ${current.node}` };
+      }
       next.node = "IMPLEMENTING";
       next.status = "RUNNING";
       next.stopReason = null;
       if (event.frozenRunId) next.frozenRunId = event.frozenRunId;
       if (event.checkpointId) next.checkpointId = event.checkpointId;
-      // checkpoint 보호 상태 기록: 성공 시 protected, non-Git/예외 사유가 주어지면 그 enum으로 기록.
-      next.checkpointProtection = event.checkpointProtection || "protected";
-      next.checkpointFailReason = event.checkpointFailReason || null;
+      // checkpoint 보호 상태 기록: 성공 시 protected, non-Git/무보호 승인 등
+      // enum이 명시되면 그 값을 쓴다. 명시가 없으면 현재 값을 보존해
+      // PROCEED_UNPROTECTED가 기록한 unavailable_user_approved를 덮어쓰지 않는다.
+      next.checkpointProtection = event.checkpointProtection !== undefined
+        ? event.checkpointProtection
+        : (current.checkpointProtection || "protected");
+      // checkpoint 실패 원인은 무보호 실행 재개 시 덮어쓰지 않고 유지한다.
+      // 이벤트에 명시적으로 주어지면 그 값, 아니면 현재 값(또는 null)을 보존한다.
+      next.checkpointFailReason = event.checkpointFailReason !== undefined
+        ? event.checkpointFailReason
+        : (current.checkpointFailReason || null);
       next.implementationRound = 1;
       break;
     }

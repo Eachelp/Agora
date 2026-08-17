@@ -1303,7 +1303,7 @@ class SpecialistMixin {
     return await this.runExecutionBlock({
       stages,
       mode: resume.mode,
-      maxAutoRevisions: 0,
+      maxAutoRevisions: Number.isInteger(resume.maxAutoRevisions) ? resume.maxAutoRevisions : 0,
       feedback: resume.feedback || "",
       taskInfo: resume.taskInfo || null,
       round: 1,
@@ -2138,6 +2138,9 @@ class SpecialistMixin {
       type: "USER_EXECUTE",
       frozenRunId: runInfo?.runId || null,
       checkpointId: checkpoint?.checkpointId || null,
+      // 무보호/비정상 실행의 실패 원인을 구분해 넘긴다. FSM은 이 값을
+      // evidence까지 이어가므로 여기서 빠지면 실패 원인이 null로 덮인다.
+      checkpointFailReason: checkpointFailReason || null,
       // checkpoint가 없는(비-Git 등) 비보호 실행 사유를 record 한다.
       // supported=true면 protected, supported=false(비-Git)면 unavailable_non_git.
       // allowUnprotected(사용자 명시 승인)면 unavailable_user_approved를 우선한다.

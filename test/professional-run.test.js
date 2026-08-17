@@ -206,6 +206,50 @@ test("PROCEED_UNPROTECTED는 무보호 진행 시 IMPLEMENTING으로 전이하�
   assert.equal(res.state.frozenRunId, "RUN-010");
 });
 
+test("PROCEED_UNPROTECTED 후 재개 runExecutionBlock의 USER_EXECUTE는 checkpointFailReason과 보호 enum을 보존한다", () => {
+  const run = createProfessionalRun({
+    node: "IMPLEMENTING",
+    status: "WAITING",
+    stopReason: "CHECKPOINT_FAILED",
+    checkpointFailReason: "CHECKPOINT_GIT_FAILED",
+    checkpointProtection: "unavailable_checkpoint_failed",
+    frozenRunId: "RUN-010",
+  });
+  const unprotected = transitionProfessionalRun(run, { type: "PROCEED_UNPROTECTED" });
+  assert.equal(unprotected.ok, true);
+  assert.equal(unprotected.state.checkpointFailReason, "CHECKPOINT_GIT_FAILED");
+
+  // runExecutionBlock이 무보호 실행을 재개하면서 USER_EXECUTE를 다시 호출한다.
+  // 이때 checkpoint 생성 실패 원인과 unavailable_user_approved enum을 명시해
+  // 증거/리뷰어 판단 근거가 끊기지 않아야 한다.
+  const ex = transitionProfessionalRun(unprotected.state, {
+    type: "USER_EXECUTE",
+    checkpointFailReason: "CHECKPOINT_GIT_FAILED",
+    checkpointProtection: "unavailable_user_approved",
+    frozenRunId: "RUN-010",
+  });
+  assert.equal(ex.ok, true);
+  assert.equal(ex.state.node, "IMPLEMENTING");
+  assert.equal(ex.state.status, "RUNNING");
+  assert.equal(ex.state.checkpointFailReason, "CHECKPOINT_GIT_FAILED");
+  assert.equal(ex.state.checkpointProtection, "unavailable_user_approved");
+  assert.equal(ex.state.frozenRunId, "RUN-010");
+});
+
+test("USER_EXECUTE는 checkpointProtection 미지정 시 기존 보호 상태를 덮어쓰지 않는다", () => {
+  const run = createProfessionalRun({
+    node: "IMPLEMENTING",
+    status: "RUNNING",
+    checkpointProtection: "unavailable_user_approved",
+    checkpointFailReason: "CHECKPOINT_COPY_FAILED",
+    frozenRunId: "RUN-011",
+  });
+  const res = transitionProfessionalRun(run, { type: "USER_EXECUTE", frozenRunId: "RUN-011" });
+  assert.equal(res.ok, true);
+  assert.equal(res.state.checkpointProtection, "unavailable_user_approved");
+  assert.equal(res.state.checkpointFailReason, "CHECKPOINT_COPY_FAILED");
+});
+
 test("CHECKPOINT_FAILED 상태의 public state는 needsInput과 checkpoint 정보를 노출한다", () => {
   const run = createProfessionalRun({ node: "IMPLEMENTING", status: "WAITING", stopReason: "CHECKPOINT_FAILED", checkpointProtection: "unavailable_checkpoint_failed", checkpointFailReason: "CHECKPOINT_COPY_FAILED", frozenRunId: "RUN-011" });
   const view = publicProfessionalState(run, { canRestore: true });

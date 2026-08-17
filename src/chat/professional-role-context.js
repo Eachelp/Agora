@@ -61,6 +61,9 @@ function roleSees(role, contextKind) {
 // 프롬프트 조립에서 쓰는 context 종류를 역할 정책 어휘로 잇는 매핑.
 // 조립 코드가 하드코딩 분기 대신 이 표를 통해 정책을 조회한다.
 const PROMPT_CONTEXT_KINDS = Object.freeze({
+  // 최근 대화 최소 윈도우(transcript) 포함 여부도 중앙 정책이 결정한다.
+  // conversationContext kind 자체는 identity로 매핑해 roleSees 판정을 태운다.
+  conversationContext: "conversationContext",
   conversationTranscript: "conversationTranscript",
   projectContext: "conversationContext",
   workflowContext: "taskList",

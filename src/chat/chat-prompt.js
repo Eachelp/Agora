@@ -1,5 +1,5 @@
 const { buildConversationWindow } = require("./chat-summary-window");
-const { roleContextNotice, includesPromptContext } = require("./professional-role-context");
+const { roleContextNotice, includesPromptContext, roleSees } = require("./professional-role-context");
 
 const DEFAULT_MAX_MESSAGES = 40;
 const MAX_SPECIALIST_PROMPT_CHARS = 24 * 1024;
@@ -83,14 +83,30 @@ function buildAgentPrompt({
   const isSimplify = Boolean(simplifyMeta);
   const agentsById = new Map(agents.map((entry) => [entry.id, entry]));
   const others = agents.filter((entry) => entry.id !== agent.id);
-  const sourceMessages = isPlanReviewer
-    ? messages.filter((message) => message?.authorType === "user")
+  // 최근 대화 전달 범위도 ROLE_CONTEXT_POLICY가 결정한다(single source).
+  // - conversationTranscript 허용(planner) → 전체 메시지
+  // - conversationContext만 허용(plan_review) → 사용자 메시지(user-only)
+  // - 둘 다 차단(implementation/review/recorder) → 빈 목록
+  // 정책이 없는 역할(일반 채팅/토론)은 기존대로 전체를 쓴다.
+  const transcriptAllowed = specialistRole ? roleSees(specialistRole, "conversationTranscript") : true;
+  const contextAllowed = specialistRole ? roleSees(specialistRole, "conversationContext") : true;
+  const sourceMessages = specialistRole
+    ? transcriptAllowed
+      ? messages
+      : contextAllowed
+        ? messages.filter((message) => message?.authorType === "user")
+        : []
     : messages;
   const useGeneralSummaryWindow = !isSpecialist && !isDiscussionSummary && !isSimplify && !discussion;
+  // 최근 대화(recent)를 그릴지 여부: transcript 또는 context를 보는
+  // 역할만 그린다. 둘 다 차단된 역할은 대화 블록 전체를 생략한다.
+  const useTranscriptWindow = specialistRole
+    ? transcriptAllowed || contextAllowed
+    : true;
   const conversationWindow = useGeneralSummaryWindow
     ? buildConversationWindow(sourceMessages, { maxMessages })
     : null;
-  const recent = isBuilder || isCleanReviewer || isProfessionalRecorder || isSimplify
+  const recent = !useTranscriptWindow || isSimplify
     ? []
     : isDiscussionSummary
       ? sourceMessages
@@ -400,7 +416,7 @@ function buildAgentPrompt({
     lines.push("=== 원문 메시지 끝 ===");
     lines.push("- 위 메시지를 작성 규칙에 맞게 쉬운 말로 다시 작성해 주세요.");
   }
-  if (!isBuilder && !isCleanReviewer && !isProfessionalRecorder && !isSimplify) {
+  if (useTranscriptWindow && !isSimplify) {
     lines.push("");
     lines.push("=== 대화 ===");
     if (omitted > 0) lines.push(`(이전 메시지 ${omitted}개 생략)`);

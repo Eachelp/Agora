@@ -9,6 +9,7 @@ const {
   roleContextFor,
   roleContextNotice,
   includesPromptContext,
+  roleSees,
 } = require("../src/chat/professional-role-context");
 
 test("모든 정의된 역할에 sees와 excludes가 있다", () => {
@@ -71,4 +72,20 @@ test("chat-prompt는 context 조립에 역할 정책을 실제로 사용한다",
   assert.match(source, /roleAllows\("projectContext"\)/, "프로젝트 맥락은 정책으로 판정해야 한다");
   assert.match(source, /roleAllows\("workflowContext"\)/, "작업 목록은 정책으로 판정해야 한다");
   assert.match(source, /roleAllows\("memoryContext"\)/, "누적 요약은 정책으로 판정해야 한다");
+});
+
+// transcript(최근 대화) 포함 여부도 중앙 정책이 결정하도록 한다.
+// 기존 하드코딩(isBuilder/isCleanReviewer/isProfessionalRecorder 등)을 걷어내고
+// roleSees(specialistStage, "conversationTranscript")를 단일 authority로 쓴다.
+test("chat-prompt는 최근 대화(transcript) 포함 여부를 roleSees로 판정한다", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "src", "chat", "chat-prompt.js"), "utf8");
+  assert.match(source, /roleSees\(specialistRole, "conversationTranscript"\)/, "transcript 포함은 정책으로 판정해야 한다");
+  // planner는 전체 transcript를 보지만 implementation/review/recorder는 보지 않는다.
+  for (const role of ["implementation", "review", "recorder"]) {
+    assert.equal(roleSees(role, "conversationTranscript"), false, role);
+  }
+  assert.equal(roleSees("planner", "conversationTranscript"), true);
+  // plan_review는 transcript는 보지 않지만 conversationContext(사용자 메시지)는 본다.
+  assert.equal(roleSees("plan_review", "conversationTranscript"), false);
+  assert.equal(roleSees("plan_review", "conversationContext"), true);
 });
