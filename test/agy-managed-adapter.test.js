@@ -77,6 +77,12 @@ function makeAdapter(script) {
       if (e && e.id != null && typeof invocation.parseLine === "function") invocation.parseLine(agyLine(e.kind, e.id));
     }
     calls.push({ argv: invocation.argv, prompt: invocation.prompt, parseLine: invocation.parseLine });
+    if (beh.deferUntilCancel) {
+      // run.cancel()이 호출될 때 비로소 result로 resolve된다(mismatch 관측 즉시 취소를 모델).
+      let resolveFn;
+      const promise = new Promise((res) => { resolveFn = res; });
+      return { promise, cancel: () => { cancels += 1; if (beh.onCancel) beh.onCancel(); resolveFn(beh.result || { ok: false, cancelled: true, error: "중지됨" }); } };
+    }
     const promise = beh.pending ? new Promise(() => {}) : Promise.resolve(beh.result || { ok: true, text: "answer" });
     return { promise, cancel: () => { cancels += 1; if (beh.onCancel) beh.onCancel(); } };
   };
@@ -409,4 +415,78 @@ test("close(). close()는 provider-local binding/invalidation 상태를 비운�
   adapter.close();
   await adapter.runTurn({ context: ctx(), invocation: inv(), session: session("kA") }).promise;
   assert.equal(convIndex(calls[1].argv), -1, "close 후에는 binding이 없어 새 conversation(첫 turn)");
+});
+
+
+// ================= C-review safety fix: immediate mismatch termination + argv authority =================
+
+test("P2. [REVIEW] resume 중 native id mismatch 관측 즉시 run cancel; verdict는 MISMATCH(CANCELLED/LOST 아님) + partial telemetry 보존", async () => {
+  // turn0 정상 -> binding A. turn1: init이 B를 동기 emit, provider result는 run.cancel() 전까지 미결.
+  const evidence = {
+    commandSummary: { total: 2, failed: 0, truncated: 0 },
+    toolSummary: { started: 1, finished: 1, failed: 0, truncated: 0, outputBytes: 10, uniqueTargets: 1, repeatedCalls: 0, maxRepeatCount: 1 },
+    exploration: { status: "NORMAL" },
+  };
+  const output = { stdoutBytes: 128, captureTruncated: false };
+  const partial = {
+    ok: false, cancelled: true, error: "중지됨", evidence, output,
+    runMetrics: buildRunMetrics({ provider: "agy", model: "gemini-3.7-flash-low", effort: "low", stage: "implementation", startedAt: 100, finishedAt: 900, promptChars: 5, result: { ok: false, cancelled: true, evidence, output } }),
+  };
+  const { adapter, calls, cancels } = makeAdapter((i) => i === 0
+    ? { conversationId: ID_A, result: { ok: true, text: "one" } }
+    : { emit: [{ kind: "init", id: ID_B }], deferUntilCancel: true, result: partial });
+  await adapter.runTurn({ context: ctx(), invocation: inv(), session: session("kA") }).promise;
+  const r2 = await adapter.runTurn({ context: ctx(), invocation: inv(), session: session("kA") }).promise;
+
+  // mismatch 관측 즉시 하부 run을 취소했다(동기 emit race 포함).
+  assert.equal(cancels(), 1, "mismatch 관측 즉시 run.cancel() 호출");
+  // 최종 verdict는 MISMATCH — CANCELLED/LOST로 강등되지 않는다.
+  assert.equal(r2.ok, false);
+  assert.equal(r2.stopReason, "AGY_CONVERSATION_ID_MISMATCH");
+  assert.equal(r2.cancelled, undefined, "cancelled verdict로 강등되지 않음");
+  assert.equal(r2.runMetrics.stopReason, "AGY_CONVERSATION_ID_MISMATCH");
+  // 종료 전까지 나온 Evidence/output/RunMetrics(duration·tool) 보존.
+  assert.equal(r2.output, output, "종료 전 output 보존");
+  assert.equal(r2.evidence, evidence, "종료 전 evidence 보존");
+  assert.equal(r2.runMetrics.durationMs, 800, "종료 전 duration 보존(zero 아님)");
+  assert.equal(r2.runMetrics.tools.started, 1, "종료 전 tool metrics 보존");
+  assert.equal(r2.runMetrics.stdoutBytes, 128, "종료 전 output metrics 보존");
+  // B 채택 금지 + poison + 다음 same-handle turn은 프로세스를 띄우지 않는다.
+  const ci = calls[1].argv.indexOf("--conversation");
+  assert.ok(ci >= 0 && calls[1].argv[ci + 1] === ID_A, "요청은 정확히 bound A(B로 바꾸지 않음)");
+  const r3 = await adapter.runTurn({ context: ctx(), invocation: inv(), session: session("kA") }).promise;
+  assert.equal(r3.ok, false);
+  assert.equal(r3.stopReason, "AGY_CONVERSATION_ID_MISMATCH", "poison된 handle은 MISMATCH로 fail-closed");
+  assert.equal(calls.length, 2, "poison된 handle은 새 AGY 프로세스를 띄우지 않는다");
+});
+
+test("P3. [REVIEW] mismatch 후 run이 결국 SUCCESS로 끝나도(취소 미반영) verdict는 여전히 MISMATCH", async () => {
+  // 하부 run이 cancel을 무시하고 SUCCESS(ok:true, 새 conversation B)로 resolve되는 defense-in-depth.
+  const { adapter, calls, cancels } = makeAdapter((i) => i === 0
+    ? { conversationId: ID_A, result: { ok: true, text: "one" } }
+    : { emit: [{ kind: "init", id: ID_B }, { kind: "step", id: ID_B }, { kind: "result", id: ID_B }], result: { ok: true, text: "INVALID (provider SUCCESS with B)" } });
+  await adapter.runTurn({ context: ctx(), invocation: inv(), session: session("kA") }).promise;
+  const r2 = await adapter.runTurn({ context: ctx(), invocation: inv(), session: session("kA") }).promise;
+  assert.equal(cancels(), 1, "SUCCESS로 끝나더라도 mismatch 관측 즉시 cancel은 시도된다");
+  assert.equal(r2.ok, false, "provider SUCCESS여도 Agora FAIL");
+  assert.equal(r2.stopReason, "AGY_CONVERSATION_ID_MISMATCH");
+  assert.equal(r2.text, undefined, "B의 답변을 성공으로 채택하지 않음");
+  const r3 = await adapter.runTurn({ context: ctx(), invocation: inv(), session: session("kA") }).promise;
+  assert.equal(r3.stopReason, "AGY_CONVERSATION_ID_MISMATCH");
+  assert.equal(calls.length, 2, "poison된 handle 재실행 없음");
+});
+
+test("AB2. [REVIEW] base argv가 이미 --conversation을 가지면 실행 전에 fail-closed(adapter가 유일한 conversation authority)", async () => {
+  // 공백 형식
+  const a = makeAdapter([{ conversationId: ID_A, result: { ok: true } }]);
+  const r = await a.adapter.runTurn({ context: ctx(), invocation: inv({ argv: ["--sandbox", "--conversation", "injected-id", "--output-format", "stream-json"] }), session: session("kX") }).promise;
+  assert.equal(r.ok, false);
+  assert.equal(r.stopReason, "AGY_TURN_START_FAILED");
+  assert.equal(a.calls.length, 0, "위험 argv는 실행 전에 거부");
+  // attached(=value) 형식
+  const b = makeAdapter([{ conversationId: ID_A, result: { ok: true } }]);
+  const r2 = await b.adapter.runTurn({ context: ctx(), invocation: inv({ argv: ["--sandbox", "--conversation=injected", "--output-format", "stream-json"] }), session: session("kY") }).promise;
+  assert.equal(r2.ok, false);
+  assert.equal(r2.stopReason, "AGY_TURN_START_FAILED");
+  assert.equal(b.calls.length, 0, "attached --conversation=도 실행 전 거부");
 });

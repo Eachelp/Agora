@@ -16,10 +16,13 @@ const { buildRunMetrics } = require("../../chat/chat-run-metrics");
 //
 // AGY-specific hazard(실환경 1.1.13에서 확인):
 //   invalid --conversation A → "not found" warning → 자동으로 fresh conversation B 생성
-//   → status SUCCESS → exit 0. 즉 exit 0 / status SUCCESS는 continuity 증거가 아니다.
-//   반드시 returned conversation_id === requested id (exact equality)만 continuity success다.
-//   어긋나면 provider가 SUCCESS여도 AGY_CONVERSATION_ID_MISMATCH로 fail-closed하고, 새
-//   conversation B를 절대 binding/채택하지 않으며, 기존 handle을 poison한다.
+//   → prompt/tool을 계속 실행 → status SUCCESS → exit 0. 즉 exit 0 / status SUCCESS는
+//   continuity 증거가 아니다. 반드시 returned conversation_id === requested id (exact
+//   equality)만 continuity success다. 더욱이 fresh B는 workspace-write turn에서 side effect를
+//   일으킬 수 있으므로, resume turn에서 bound A와 다른 유효 conversation_id가 관측되는 즉시
+//   fatal mismatch로 표시하고 진행 중인 run을 best-effort로 취소한다(원치 않은 B의 side effect
+//   최소화). 취소/완료와 무관하게 최종 verdict는 AGY_CONVERSATION_ID_MISMATCH로 유지하고, 종료
+//   전까지 나온 Evidence/output/RunMetrics는 보존하며, B는 절대 채택하지 않고 handle을 poison한다.
 //
 // 확정 계약(Claude/Codex managed와 동일 방향):
 //   - control-plane authority 없음. Frozen Task/workspace/permission/Evidence/RunMetrics/
@@ -27,7 +30,8 @@ const { buildRunMetrics } = require("../../chat/chat-run-metrics");
 //   - authoritative prompt는 매 turn 전체 재전송한다(resume이라고 축약하지 않는다).
 //   - AGY resume 의미(--conversation/conversation_id 검증/invalid-resume 차단)는 오직 이
 //     adapter 아래에만 둔다. chat-ipc/chat-argv는 관여하지 않는다. adapter는 control plane이
-//     만든 기존 one-shot AGY argv를 받아 최소 변환(=--conversation 추가)만 한다.
+//     만든 기존 one-shot AGY argv를 받아 최소 변환(=--conversation 추가)만 한다. native
+//     conversation 선택 authority는 오직 이 adapter다(§ base argv의 --conversation 거부).
 //   - CLI spawn/parse/streaming/evidence/telemetry/strict-final/timeout/output-limit/cancel은
 //     기존 runAgentProcess를 그대로 재사용한다(로직 복제 없음).
 //   - SILENT FALLBACK 금지: adapter가 선택된 뒤 conversation missing/mismatch/resume 실패/
@@ -92,8 +96,9 @@ class AGYManagedAdapter extends HarnessAdapter {
     // (3) control plane이 만든 기존 one-shot AGY argv를 최소 변환한다.
     const sessionArgv = this._sessionArgv(invocation.argv, boundId);
     if (!sessionArgv) {
-      // argv를 만들 수 없다(빈 argv / --continue 존재 / 손상된 conversation id). 조용히 새
-      // conversation으로 우회하지 않고 fail-closed한다. 살아있던 binding은 재사용 불가로 만든다.
+      // argv를 만들 수 없다(빈 argv / --continue 또는 base --conversation 존재 / 손상된
+      // conversation id). 조용히 새 conversation으로 우회하지 않고 fail-closed한다. 살아있던
+      // binding은 재사용 불가로 만든다.
       if (boundId != null) this._invalidateHandle(logicalHandle, "AGY_CONVERSATION_RESUME_FAILED");
       return this._staticFail(context, invocation, {
         error: boundId != null ? "AGY resume argv를 생성하지 못했습니다." : "AGY 실행 argv가 유효하지 않습니다.",
@@ -101,7 +106,19 @@ class AGYManagedAdapter extends HarnessAdapter {
       });
     }
 
-    // (4) native conversation_id 캡처 seam. harness-level metadata로만 쓰고 renderer/FSM/
+    // (4) run 취소 배선. resume turn에서 bound와 다른 conversation_id를 관측하는 즉시 fatal
+    // mismatch로 표시하고 진행 중인 run을 best-effort로 취소한다. run 확보 전(fake/실 transport의
+    // 동기 emit)이면 여기서 취소하지 못하고 아래에서 재시도한다(§ synchronous emit race).
+    const control = { run: null, mismatch: false, cancelInvoked: false };
+    const requestCancel = () => {
+      if (control.cancelInvoked) return;
+      if (control.run && typeof control.run.cancel === "function") {
+        control.cancelInvoked = true;
+        try { control.run.cancel(); } catch {}
+      }
+    };
+
+    // (5) native conversation_id 캡처 seam. harness-level metadata로만 쓰고 renderer/FSM/
     // Evidence로는 노출하지 않는다. 한 turn에서 서로 다른 id가 관측되면 conflict로 본다.
     let capturedId = null;
     let capturedConflict = false;
@@ -110,10 +127,15 @@ class AGYManagedAdapter extends HarnessAdapter {
       if (!value || !CONVERSATION_ID_PATTERN.test(value)) return;
       if (capturedId && capturedId !== value) capturedConflict = true;
       capturedId = value;
+      // resume turn에서 bound conversation과 다른 유효 id를 관측하면 즉시 fatal mismatch.
+      if (boundId != null && value !== boundId) {
+        control.mismatch = true;
+        requestCancel();
+      }
     };
     const sessionParseLine = createLineParser("agy", { onConversationId });
 
-    // (5) 기존 process runner를 그대로 재사용한다. argv/parseLine만 managed 값으로 교체하고
+    // (6) 기존 process runner를 그대로 재사용한다. argv/parseLine만 managed 값으로 교체하고
     // 나머지(prompt/transport(argv,--print)/cwd/onEvent/onRawChunk/timeout/limit 등)는 보존.
     const procInvocation = { ...invocation, argv: sessionArgv, parseLine: sessionParseLine };
 
@@ -127,9 +149,13 @@ class AGYManagedAdapter extends HarnessAdapter {
       });
     }
 
+    control.run = run;
+    // synchronous emit race: 콜백이 run 확보 전에 mismatch를 표시했다면 지금 취소한다.
+    if (control.mismatch) requestCancel();
+
     const promise = Promise.resolve(run && run.promise).then((result) =>
       this._afterRun(
-        { logicalHandle, boundId, getCaptured: () => ({ capturedId, capturedConflict }) },
+        { logicalHandle, boundId, isMismatch: () => control.mismatch, getCaptured: () => ({ capturedId, capturedConflict }) },
         result
       )
     );
@@ -138,12 +164,18 @@ class AGYManagedAdapter extends HarnessAdapter {
 
   // 기존 one-shot AGY argv를 managed conversation argv로 최소 변환한다:
   //   - --continue/-c가 들어 있으면 fail-closed(null). managed AGY는 exact --conversation만 쓴다.
+  //   - base argv가 이미 --conversation(공백/attached 형식)을 갖고 있으면 fail-closed(null).
+  //     native conversation 선택 authority는 오직 이 adapter다(외부 주입 거부).
   //   - resume 대상이 있으면 정확히 그 conversation만 --conversation <id>로 잇는다(형식 검증).
   // 그 외 argv(model/effort/mode/sandbox/add-dir/print-timeout/auto-approve 등 control plane
   // 결정)는 그대로 둔다. 원본 배열은 mutate하지 않는다.
   _sessionArgv(baseArgv, conversationId) {
     if (!Array.isArray(baseArgv) || baseArgv.length === 0) return null;
-    if (baseArgv.some((arg) => CONTINUE_FLAGS.includes(arg))) return null;
+    for (const arg of baseArgv) {
+      const a = String(arg);
+      if (CONTINUE_FLAGS.includes(a)) return null;
+      if (a === "--conversation" || a.startsWith("--conversation=")) return null;
+    }
     const argv = [...baseArgv];
     if (conversationId != null) {
       if (!CONVERSATION_ID_PATTERN.test(String(conversationId))) return null;
@@ -152,18 +184,30 @@ class AGYManagedAdapter extends HarnessAdapter {
     return argv;
   }
 
-  _afterRun({ logicalHandle, boundId, getCaptured }, result) {
+  _afterRun({ logicalHandle, boundId, isMismatch, getCaptured }, result) {
     const r = result && typeof result === "object"
       ? result
       : { ok: false, error: "빈 실행 결과입니다.", stopReason: "AGY_TURN_FAILED" };
     const { capturedId, capturedConflict } = getCaptured();
+
+    // (최우선) resume turn에서 관측 즉시 감지된 native conversation mismatch. 실행이 (우리가
+    // 유발한) 취소로 끝났든 provider가 SUCCESS로 끝났든 최종 verdict는 반드시
+    // AGY_CONVERSATION_ID_MISMATCH다(CANCELLED/LOST로 강등 금지). 종료 전까지 나온 Evidence/
+    // output/RunMetrics는 보존하고, fresh conversation은 절대 채택하지 않으며 handle을 poison한다.
+    if (isMismatch()) {
+      this._invalidateHandle(logicalHandle, "AGY_CONVERSATION_ID_MISMATCH");
+      return this._continuityFail(r, {
+        stopReason: "AGY_CONVERSATION_ID_MISMATCH",
+        error: "resume가 이어받으려던 것과 다른 native AGY conversation_id를 반환했습니다.",
+      });
+    }
+
     // 정상 종료 = 최종 답변 확정(ok) 또는 exit 0인데 strict-final만 누락(protocolFailed).
-    // 두 경우 native conversation은 살아있다. 그 외는 비정상 종료다.
     const normal = r.ok === true || r.protocolFailed === true;
 
     if (!normal) {
       if (boundId != null) {
-        // 살아있던 conversation을 이어받던 turn이 애매하게 끝났다 → binding 즉시 재사용 불가.
+        // 살아있던 conversation을 이어받던 turn이 애매하게 끝났다(mismatch 아님) → 재사용 불가.
         if (r.cancelled || r.timedOut || r.outputLimited) {
           this._invalidateHandle(logicalHandle, "AGY_CONVERSATION_LOST");
           return r;
@@ -174,17 +218,13 @@ class AGYManagedAdapter extends HarnessAdapter {
           error: r.error || "이전 AGY conversation을 이어받지 못했습니다.",
         });
       }
-      // 첫 turn 비정상 종료: 아직 확정된 conversation이 없어 보호할 continuity가 없다.
-      // handle을 poison하지 않고 결과를 그대로 반환한다(다음 turn 새 conversation으로 재시도).
+      // 첫 turn 비정상 종료: 보호할 continuity가 없다. 결과 그대로 반환(재시도 허용).
       return r;
     }
 
     // 정상 종료: native conversation_id로 continuity를 확정/확인해야 한다.
-    // (AGY는 invalid resume에서도 SUCCESS+새 conversation을 반환하므로 exit/status가 아니라
-    //  반드시 conversation_id equality로 판정한다.)
     if (boundId == null) {
       // 첫 turn: 이후 resume을 위해 반드시 하나의 안정적인 conversation_id가 필요하다.
-      // 확정하지 못하면 이 turn만 fail-closed한다(살아있는 conversation이 없으므로 poison 안 함).
       if (capturedConflict) {
         return this._continuityFail(r, {
           stopReason: "AGY_CONVERSATION_ID_MISMATCH",
@@ -201,9 +241,8 @@ class AGYManagedAdapter extends HarnessAdapter {
       return r;
     }
 
-    // resume turn: 캡처된 id가 정확히 이어붙이려던 conversation과 같아야 한다. 어긋나면(=AGY가
-    // not-found 후 새 conversation을 만들어 SUCCESS로 반환한 경우 포함) continuity가 깨진
-    // 것이므로 살아있던 binding을 즉시 재사용 불가로 만들고 fail-closed한다. 새 id는 채택하지 않는다.
+    // resume turn(mismatch 미관측): 모든 관측 id가 boundId와 같아야 한다. (이중 안전망: 위
+    // isMismatch()에서 이미 다루지만, 관측 없이 완료된 경우의 missing도 여기서 판정한다.)
     if (capturedConflict || (capturedId && capturedId !== boundId)) {
       this._invalidateHandle(logicalHandle, "AGY_CONVERSATION_ID_MISMATCH");
       return this._continuityFail(r, {
@@ -230,9 +269,11 @@ class AGYManagedAdapter extends HarnessAdapter {
     this._bindings.delete(logicalHandle);
   }
 
-  // 실제 provider 실행이 끝난 뒤의 continuity 실패. 실행이 남긴 output/evidence/
-  // RunMetrics(실 duration·tool metrics)를 보존하고 실패 판정(ok/stopReason/error)만
-  // 덮어쓴다. 신뢰할 수 없는 최종 답변은 partialText로 강등한다(성공 답변으로 오인 금지).
+  // 실제 provider 실행이 끝난 뒤(취소 포함)의 continuity 실패. 실행이 남긴 output/evidence/
+  // RunMetrics(실 duration·tool metrics)를 보존하고 실패 판정(ok/stopReason/error)만 덮어쓴다.
+  // continuity 판정이 최종 verdict이므로, (우리가 유발한) 종료 형태 플래그(cancelled/timedOut/
+  // outputLimited)는 제거해 CANCELLED/LOST로 오인되지 않게 한다. 신뢰할 수 없는 최종 답변은
+  // partialText로 강등한다(성공 답변으로 오인 금지).
   _continuityFail(result, { stopReason, error }) {
     const next = {
       ...result,
@@ -241,13 +282,14 @@ class AGYManagedAdapter extends HarnessAdapter {
       error: error || result.error || "native AGY conversation continuity를 확인하지 못했습니다.",
     };
     delete next.protocolFailed;
+    delete next.cancelled;
+    delete next.timedOut;
+    delete next.outputLimited;
     if (typeof next.text === "string") {
       const trimmed = next.text.trim();
       if (trimmed && !next.partialText) next.partialText = trimmed;
       delete next.text;
     }
-    // RunMetrics 판정도 새 실패에 맞추되 실 timing/telemetry는 유지한다(재계산 입력이 실
-    // startedAt/finishedAt/output/evidence이므로 duration·tool·stdout metrics가 보존된다).
     next.runMetrics = this._reverdictRunMetrics(result.runMetrics, next);
     return next;
   }
