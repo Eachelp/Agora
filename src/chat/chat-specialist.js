@@ -191,8 +191,13 @@ class SpecialistMixin {
       if (carriesRunState) return false;
       return true;
     }
+    const taskHash =
+      patch.taskHash ||
+      this.professionalRun?.approvedTaskHash ||
+      this.professionalPlan?.taskInfo?.hash ||
+      null;
     try {
-      return this.onProfessionalTaskState(patch) !== false;
+      return this.onProfessionalTaskState({ ...patch, taskHash }) !== false;
     } catch {
       return false;
     }
@@ -393,6 +398,7 @@ class SpecialistMixin {
     }) !== false;
     const workflowSaved = this.updateProfessionalTaskState({
       taskPath: taskInfo?.relativePath || null,
+      taskHash: runInfo?.taskHash || taskInfo?.hash || null,
       status: "blocked",
       // 사용자가 keep/restore/replan을 아직 고르지 않았으므로 이 Run은
       // workflow 상에서도 계속 활성 상태다. 선택이 끝난 뒤 lastRunId로
@@ -1056,6 +1062,7 @@ class SpecialistMixin {
           }
           if (!this.updateProfessionalTaskState({
             taskPath: taskInfo?.relativePath || null,
+            taskHash: runInfo?.taskHash || null,
             status: "done",
             activeRunId: null,
             lastRunId: runInfo?.runId || null,
@@ -2220,6 +2227,7 @@ class SpecialistMixin {
     }
     if (!this.updateProfessionalTaskState({
       taskPath: taskInfo?.relativePath || null,
+      taskHash: runInfo?.taskHash || null,
       status: "in_progress",
       activeRunId: runInfo?.runId || null,
       lastRunId: null,
@@ -2439,6 +2447,7 @@ class SpecialistMixin {
     }
     if (!this.updateProfessionalTaskState({
       taskPath: taskInfo?.relativePath || null,
+      taskHash: runInfo?.taskHash || null,
       status: "review",
       activeRunId: runInfo?.runId || null,
       lastRunId: null,
@@ -2851,6 +2860,7 @@ class SpecialistMixin {
     }
     if (!this.updateProfessionalTaskState({
       taskPath: taskInfo?.relativePath || null,
+      taskHash: runInfo?.taskHash || null,
       status: "done",
       activeRunId: null,
       lastRunId: runInfo?.runId || null,

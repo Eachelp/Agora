@@ -934,12 +934,42 @@ function roomMeta(meta) {
           const workflow = ensureWorkflowStore();
           const project = projectForSession(store.readMeta(sessionId));
           if (!workflow || !project) return false;
-          let target = workflow.listTasks(project.id).find((task) => task.taskPath === taskPath);
-          if (!target) {
-            target = workflow.listTasks(project.id, { includeMissing: true }).find((task) => task.taskPath === taskPath);
+          const normPath = String(taskPath || "").replace(/[\\/]+/g, path.sep);
+
+          // 1) taskPath + taskHash + syncState === "ok" 인 canonical record를 찾는다.
+          let target = workflow
+            .listTasks(project.id)
+            .find(
+              (task) =>
+                task.taskPath &&
+                task.taskPath.replace(/[\\/]+/g, path.sep) === normPath &&
+                task.taskHash === taskHash &&
+                task.syncState === "ok"
+            );
+
+          // 2) 정확한 canonical record가 없으면(새 revision 또는 missing recovery)
+          // disk state를 reconcileProjectTasks로 동기화한다.
+          // (old revision -> superseded 보존, new disk hash -> new canonical task 생성)
+          if (!target && project.workspace) {
+            workflow.reconcileProjectTasks(project.id, project.workspace);
+            target = workflow
+              .listTasks(project.id)
+              .find(
+                (task) =>
+                  task.taskPath &&
+                  task.taskPath.replace(/[\\/]+/g, path.sep) === normPath &&
+                  task.taskHash === taskHash &&
+                  task.syncState === "ok"
+              );
           }
+
           if (!target) return false;
-          workflow.updateTask(target.id, { taskHash, status, syncState: "ok" });
+
+          // 3) canonical record에 필요한 상태(status 등)만 갱신한다. (hash/syncState overwrite 금지)
+          if (status && status !== target.status) {
+            workflow.updateTask(target.id, { status });
+          }
+
           refreshWorkflowForProject(project.id);
           broadcast("chat:workflow-changed", {
             projectId: project.id,
@@ -951,21 +981,36 @@ function roomMeta(meta) {
           return false;
         }
       },
-      onProfessionalTaskState: ({ taskPath, status, activeRunId = null, lastRunId = null }) => {
+      onProfessionalTaskState: ({ taskPath, taskHash, status, activeRunId = null, lastRunId = null }) => {
         try {
           const workflow = ensureWorkflowStore();
           const project = projectForSession(store.readMeta(sessionId));
           if (!workflow || !project || !taskPath) return false;
-          let task = workflow.listTasks(project.id).find((entry) => entry.taskPath === taskPath);
-          if (!task) {
-            task = workflow.listTasks(project.id, { includeMissing: true }).find((entry) => entry.taskPath === taskPath);
+          const normPath = taskPath.replace(/[\\/]+/g, path.sep);
+
+          // syncState === "ok" 인 활성 canonical task만 대상으로 한다.
+          // missing_file 또는 superseded 태스크는 부활시키지 않는다 (fail-closed).
+          const activeTasks = workflow
+            .listTasks(project.id)
+            .filter(
+              (entry) =>
+                entry.taskPath &&
+                entry.taskPath.replace(/[\\/]+/g, path.sep) === normPath &&
+                entry.syncState === "ok"
+            );
+
+          let task = null;
+          if (taskHash) {
+            task = activeTasks.find((entry) => entry.taskHash === taskHash) || null;
+          } else if (activeTasks.length === 1) {
+            task = activeTasks[0];
           }
+
           if (!task) return false;
           const updated = workflow.updateTask(task.id, {
             status,
             activeRunId,
             lastRunId,
-            syncState: "ok",
           });
           if (!updated) return false;
           refreshWorkflowForProject(project.id);

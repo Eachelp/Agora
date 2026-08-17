@@ -686,6 +686,235 @@ test("READY + empty TASK.md rehydration: 생성 즉시 planReady:false, Builder/
   assert.equal(checkpointCalls.length, 0, "Checkpoint 호출이 없어야 한다");
 });
 
+test("Regression Test B: 여러 historical revision이 존재하는 taskPath에 새 Task가 복구될 때 이전 revision들이 superseded로 보존된다", () => {
+  const wfRoot = fs.mkdtempSync(path.join(os.tmpdir(), "agora-reg-b-wf-"));
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-reg-b-ws-"));
+  const projectId = "proj-reg-b";
+  const relPath = path.join(".project-memory", "tasks", "TASK-001.md");
+  const tasksDir = path.join(workspace, ".project-memory", "tasks");
+  fs.mkdirSync(tasksDir, { recursive: true });
+
+  const workflow = new WorkflowStore({ root: wfRoot }).init();
+  // Revision A: superseded
+  const revA = workflow.createTask({
+    projectId,
+    title: "TASK-001.md",
+    contentSource: "file",
+    taskPath: relPath,
+    taskHash: "hash-A",
+    status: "done",
+    lastRunId: "RUN-A",
+    syncState: "superseded",
+  });
+  // Revision B: missing_file
+  const revB = workflow.createTask({
+    projectId,
+    title: "TASK-001.md",
+    contentSource: "file",
+    taskPath: relPath,
+    taskHash: "hash-B",
+    status: "done",
+    lastRunId: "RUN-B",
+    syncState: "missing_file",
+  });
+
+  // 디스크에 새 파일 content (hash C) 생성
+  const contentC = makeValidContract("새 목표 C");
+  const hashC = hashText(contentC);
+  fs.writeFileSync(path.join(tasksDir, "TASK-001.md"), contentC, "utf8");
+
+  // reconcile
+  workflow.reconcileProjectTasks(projectId, workspace);
+
+  const all = workflow.listTasks(projectId, { includeAll: true });
+  const entryA = all.find((t) => t.id === revA.id);
+  const entryB = all.find((t) => t.id === revB.id);
+  const canonical = workflow.listTasks(projectId).find((t) => t.taskPath === relPath);
+
+  assert.equal(entryA.syncState, "superseded");
+  assert.equal(entryA.taskHash, "hash-A");
+  assert.equal(entryA.lastRunId, "RUN-A");
+
+  assert.equal(entryB.syncState, "superseded");
+  assert.equal(entryB.taskHash, "hash-B");
+  assert.equal(entryB.lastRunId, "RUN-B");
+
+  assert.ok(canonical);
+  assert.equal(canonical.syncState, "ok");
+  assert.equal(canonical.taskHash, hashC);
+  assert.equal(canonical.lastRunId, null);
+});
+
+test("Regression Test C/D: onProfessionalTaskState는 missing_file 또는 superseded 태스크를 ok로 부활시키지 않고 거부한다", () => {
+  const wfRoot = fs.mkdtempSync(path.join(os.tmpdir(), "agora-reg-cd-wf-"));
+  const projectId = "proj-reg-cd";
+  const relPath = path.join(".project-memory", "tasks", "TASK-001.md");
+
+  const workflow = new WorkflowStore({ root: wfRoot }).init();
+  const missingEntry = workflow.createTask({
+    projectId,
+    title: "TASK-001.md",
+    contentSource: "file",
+    taskPath: relPath,
+    taskHash: "hash-old",
+    status: "todo",
+    syncState: "missing_file",
+  });
+  const supersededEntry = workflow.createTask({
+    projectId,
+    title: "TASK-001.md",
+    contentSource: "file",
+    taskPath: relPath,
+    taskHash: "hash-older",
+    status: "done",
+    syncState: "superseded",
+  });
+
+  // IPC onProfessionalTaskState 로직 시뮬레이션
+  function applyProfessionalState({ taskPath, taskHash, status, activeRunId, lastRunId }) {
+    const p = taskPath.replace(/[\\/]+/g, path.sep);
+    const activeTasks = workflow
+      .listTasks(projectId)
+      .filter(
+        (entry) =>
+          entry.taskPath &&
+          entry.taskPath.replace(/[\\/]+/g, path.sep) === p &&
+          entry.syncState === "ok"
+      );
+    let task = null;
+    if (taskHash) {
+      task = activeTasks.find((entry) => entry.taskHash === taskHash) || null;
+    } else if (activeTasks.length === 1) {
+      task = activeTasks[0];
+    }
+    if (!task) return false;
+    return Boolean(workflow.updateTask(task.id, { status, activeRunId, lastRunId }));
+  }
+
+  // missing_file 또는 superseded 태스크는 active 목록(ok)에 없으므로 fail-closed (false)
+  assert.equal(applyProfessionalState({ taskPath: relPath, taskHash: "hash-old", status: "in_progress" }), false);
+  assert.equal(applyProfessionalState({ taskPath: relPath, taskHash: "hash-older", status: "in_progress" }), false);
+
+  // syncState가 변경되지 않고 유지됨
+  assert.equal(workflow.getTask(missingEntry.id).syncState, "missing_file");
+  assert.equal(workflow.getTask(supersededEntry.id).syncState, "superseded");
+});
+
+test("Regression Test E: exact canonical revision에만 실행 상태가 갱신되고 과거 revision은 영향받지 않는다", () => {
+  const wfRoot = fs.mkdtempSync(path.join(os.tmpdir(), "agora-reg-e-wf-"));
+  const projectId = "proj-reg-e";
+  const relPath = path.join(".project-memory", "tasks", "TASK-001.md");
+
+  const workflow = new WorkflowStore({ root: wfRoot }).init();
+  const oldEntry = workflow.createTask({
+    projectId,
+    title: "TASK-001.md",
+    contentSource: "file",
+    taskPath: relPath,
+    taskHash: "hash-OLD",
+    status: "done",
+    lastRunId: "RUN-OLD",
+    syncState: "superseded",
+  });
+  const newEntry = workflow.createTask({
+    projectId,
+    title: "TASK-001.md",
+    contentSource: "file",
+    taskPath: relPath,
+    taskHash: "hash-NEW",
+    status: "todo",
+    lastRunId: null,
+    syncState: "ok",
+  });
+
+  function applyProfessionalState({ taskPath, taskHash, status, activeRunId, lastRunId }) {
+    const p = taskPath.replace(/[\\/]+/g, path.sep);
+    const activeTasks = workflow
+      .listTasks(projectId)
+      .filter(
+        (entry) =>
+          entry.taskPath &&
+          entry.taskPath.replace(/[\\/]+/g, path.sep) === p &&
+          entry.syncState === "ok"
+      );
+    let task = null;
+    if (taskHash) {
+      task = activeTasks.find((entry) => entry.taskHash === taskHash) || null;
+    } else if (activeTasks.length === 1) {
+      task = activeTasks[0];
+    }
+    if (!task) return false;
+    return Boolean(workflow.updateTask(task.id, { status, activeRunId, lastRunId }));
+  }
+
+  const updated = applyProfessionalState({
+    taskPath: relPath,
+    taskHash: "hash-NEW",
+    status: "in_progress",
+    activeRunId: "RUN-NEW",
+    lastRunId: null,
+  });
+  assert.equal(updated, true);
+
+  // NEW만 갱신됨
+  const newRecord = workflow.getTask(newEntry.id);
+  assert.equal(newRecord.status, "in_progress");
+  assert.equal(newRecord.activeRunId, "RUN-NEW");
+  assert.equal(newRecord.taskHash, "hash-NEW");
+  assert.equal(newRecord.syncState, "ok");
+
+  // OLD는 전혀 변경되지 않음
+  const oldRecord = workflow.getTask(oldEntry.id);
+  assert.equal(oldRecord.status, "done");
+  assert.equal(oldRecord.lastRunId, "RUN-OLD");
+  assert.equal(oldRecord.taskHash, "hash-OLD");
+  assert.equal(oldRecord.syncState, "superseded");
+  assert.equal(oldRecord.activeRunId, null);
+});
+
+test("Regression Test F: normal Planner revision provenance: 기존 파일 수정 시에도 old는 superseded되고 new가 canonical이 된다", () => {
+  const wfRoot = fs.mkdtempSync(path.join(os.tmpdir(), "agora-reg-f-wf-"));
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-reg-f-ws-"));
+  const projectId = "proj-reg-f";
+  const relPath = path.join(".project-memory", "tasks", "TASK-001.md");
+  const tasksDir = path.join(workspace, ".project-memory", "tasks");
+  fs.mkdirSync(tasksDir, { recursive: true });
+
+  const workflow = new WorkflowStore({ root: wfRoot }).init();
+  const oldContent = makeValidContract("초기 목표");
+  const oldHash = hashText(oldContent);
+  fs.writeFileSync(path.join(tasksDir, "TASK-001.md"), oldContent, "utf8");
+
+  const oldTask = workflow.createTask({
+    projectId,
+    title: "TASK-001.md",
+    contentSource: "file",
+    taskPath: relPath,
+    taskHash: oldHash,
+    status: "todo",
+    syncState: "ok",
+  });
+
+  // Planner가 같은 파일에 새 내용 작성
+  const newContent = makeValidContract("재기획된 목표");
+  const newHash = hashText(newContent);
+  fs.writeFileSync(path.join(tasksDir, "TASK-001.md"), newContent, "utf8");
+
+  // reconcileProjectTasks 호출
+  workflow.reconcileProjectTasks(projectId, workspace);
+
+  const all = workflow.listTasks(projectId, { includeAll: true });
+  const oldRecord = all.find((t) => t.id === oldTask.id);
+  const canonical = workflow.listTasks(projectId).find((t) => t.taskPath === relPath);
+
+  assert.equal(oldRecord.syncState, "superseded", "과거 task는 superseded 처리되어야 한다");
+  assert.equal(oldRecord.taskHash, oldHash, "과거 taskHash는 보존되어야 한다");
+
+  assert.ok(canonical, "새 canonical task가 존재해야 한다");
+  assert.equal(canonical.syncState, "ok");
+  assert.equal(canonical.taskHash, newHash);
+});
+
 test("Integration Test 1: missing_file 상태의 Workflow task가 기획 보완 recovery를 통해 정상 갱신 및 완료된다", async (t) => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-int1-missing-recovery-"));
   const wfRoot = fs.mkdtempSync(path.join(os.tmpdir(), "agora-int1-wf-"));
@@ -713,13 +942,15 @@ test("Integration Test 1: missing_file 상태의 Workflow task가 기획 보완 
     contentSource: "file",
     taskPath: relTaskPath,
     taskHash: oldHash,
-    status: "todo",
+    status: "done",
+    lastRunId: "RUN-OLD",
     role: "implementation",
     chatId: sessionId,
     origin: "planner",
   });
   assert.ok(createdEntry);
   assert.equal(createdEntry.syncState, "ok");
+  assert.equal(createdEntry.lastRunId, "RUN-OLD");
 
   // 2) TASK-001.md 삭제 후 reconcile
   fs.unlinkSync(taskFilePath);
@@ -727,6 +958,8 @@ test("Integration Test 1: missing_file 상태의 Workflow task가 기획 보완 
   const missingTask = workflow.listTasks(projectId, { includeMissing: true }).find((t) => t.taskPath === relTaskPath);
   assert.ok(missingTask);
   assert.equal(missingTask.syncState, "missing_file", "파일 삭제 후 syncState가 missing_file이어야 한다");
+  assert.equal(missingTask.taskHash, oldHash);
+  assert.equal(missingTask.lastRunId, "RUN-OLD");
 
   // 3) READY professionalRun으로 ChatRoom rehydrate
   const initialProfessionalRun = createProfessionalRun({
@@ -774,13 +1007,33 @@ test("Integration Test 1: missing_file 상태의 Workflow task가 기획 보완 
       }));
     },
     onTaskUpdated: ({ taskPath, taskHash, status }) => {
-      let target = workflow.listTasks(projectId).find((t) => t.taskPath === taskPath);
-      if (!target) {
-        target = workflow.listTasks(projectId, { includeMissing: true }).find((t) => t.taskPath === taskPath);
+      const normPath = String(taskPath || "").replace(/[\\/]+/g, path.sep);
+      let target = workflow
+        .listTasks(projectId)
+        .find(
+          (t) =>
+            t.taskPath &&
+            t.taskPath.replace(/[\\/]+/g, path.sep) === normPath &&
+            t.taskHash === taskHash &&
+            t.syncState === "ok"
+        );
+      if (!target && workspace) {
+        workflow.reconcileProjectTasks(projectId, workspace);
+        target = workflow
+          .listTasks(projectId)
+          .find(
+            (t) =>
+              t.taskPath &&
+              t.taskPath.replace(/[\\/]+/g, path.sep) === normPath &&
+              t.taskHash === taskHash &&
+              t.syncState === "ok"
+          );
       }
       if (!target) return false;
-      workflow.updateTask(target.id, { taskHash, status, syncState: "ok" });
-      return true;
+      if (status && status !== target.status) {
+        workflow.updateTask(target.id, { status });
+      }
+      return Boolean(target);
     },
   });
 
@@ -803,11 +1056,22 @@ test("Integration Test 1: missing_file 상태의 Workflow task가 기획 보완 
   assert.notEqual(room.professionalRun.approvedTaskHash, oldHash);
   assert.equal(rehydratedState.missingSections, null);
 
-  // Workflow 상태 검증: canonical task가 syncState: "ok", taskHash: newHash
-  const updatedTask = workflow.listTasks(projectId).find((t) => t.taskPath === relTaskPath);
-  assert.ok(updatedTask, "workflow에 활성 태스크로 존재해야 한다");
-  assert.equal(updatedTask.syncState, "ok");
-  assert.equal(updatedTask.taskHash, room.professionalRun.approvedTaskHash);
+  // Workflow Provenance 검증:
+  // 1) OLD revision: superseded, taskHash: oldHash, lastRunId: "RUN-OLD" 보존
+  const allTasks = workflow.listTasks(projectId, { includeAll: true });
+  const oldTaskEntry = allTasks.find((t) => t.id === createdEntry.id);
+  assert.ok(oldTaskEntry, "과거 task record가 보존되어야 한다");
+  assert.equal(oldTaskEntry.syncState, "superseded", "과거 task는 superseded여야 한다");
+  assert.equal(oldTaskEntry.taskHash, oldHash, "과거 task의 hash는 덮어쓰여지지 않아야 한다");
+  assert.equal(oldTaskEntry.lastRunId, "RUN-OLD", "과거 run metadata가 보존되어야 한다");
+
+  // 2) NEW canonical revision: syncState: "ok", taskHash: newHash, clean run metadata
+  const canonicalTask = workflow.listTasks(projectId).find((t) => t.taskPath === relTaskPath);
+  assert.ok(canonicalTask, "workflow에 활성 태스크로 존재해야 한다");
+  assert.equal(canonicalTask.syncState, "ok");
+  assert.equal(canonicalTask.taskHash, room.professionalRun.approvedTaskHash);
+  assert.equal(canonicalTask.lastRunId, null, "새 canonical 태스크는 과거 lastRunId를 상속하지 않아야 한다");
+  assert.equal(canonicalTask.activeRunId, null, "새 canonical 태스크는 과거 activeRunId를 상속하지 않아야 한다");
 });
 
 test("Integration Test 2: .project-memory/tasks 디렉터리 자체가 삭제된 경우에도 안전하게 디렉터리를 재생성하여 복구된다", async (t) => {
