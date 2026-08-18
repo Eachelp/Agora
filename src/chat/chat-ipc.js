@@ -2112,6 +2112,9 @@ function roomMeta(meta) {
         const workspace = await chooseWorkspace("프로젝트 워크스페이스 선택");
         if (!workspace) return { canceled: true };
         ensureProjectStore().updateProject(project.id, { workspace });
+        // legacy 세션 경로도 동일한 authoritative ProjectStore.workspace를 바꾸므로
+        // project 경로와 같은 lifecycle boundary를 지나야 한다(mutation당 정확히 1회).
+        harnessRuntime.workspaceChanged({ projectId: project.id });
         syncProjectWorkspaceToSessions(project.id, workspace);
         return { meta: publicMeta(store.readMeta(sessionId)), ...sessionsPayload() };
       })
@@ -2134,6 +2137,7 @@ function roomMeta(meta) {
         const project = projectForSession(store.readMeta(sessionId));
         if (project) {
           ensureProjectStore().updateProject(project.id, { workspace: null });
+          harnessRuntime.workspaceChanged({ projectId: project.id });
           syncProjectWorkspaceToSessions(project.id, null);
         }
         return { meta: publicMeta(store.readMeta(sessionId)), ...sessionsPayload() };

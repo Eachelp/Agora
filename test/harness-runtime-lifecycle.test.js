@@ -232,6 +232,100 @@ test("J2. Git HEAD를 판독할 수 없으면(HARNESS_SESSION_LIFECYCLE_INVALID)
   assert.equal(b2.session.generation, b1.session.generation);
 });
 
+// ---- 리뷰 F4. freshness 관측 상태: known→unknown→known / Git 환경 status 전이 ----
+//
+// unknown/unsupported 구간에 만들어진 fresh 세션은 authority가 (같은 값으로라도)
+// 복귀하는 전이를 절대 살아서 건너지 못한다.
+
+const gh = (sha) => ({ status: "ok", sha });
+
+test("RF-A. pre-freeze null → 최초 hash A는 확립이며 불필요한 retire가 없다", async () => {
+  const { rt } = makeRuntime();
+  const p1 = await rt.runTurn({ context: ctx({ provenance: prov() }), invocation: INV }).promise;
+  const p2 = await rt.runTurn({ context: ctx({ provenance: prov({ taskHash: "hashA" }) }), invocation: INV }).promise;
+  assert.equal(p2.session.generation, p1.session.generation, "최초 확립은 boundary가 아니다");
+});
+
+test("RF-B. hash A → null → A: 양쪽 전이 모두 RETIRE(unknown 세대는 authoritative로 못 넘어온다)", async () => {
+  const { rt } = makeRuntime();
+  const g1 = await rt.runTurn({ context: ctx({ provenance: prov({ taskHash: "hashA" }) }), invocation: INV }).promise;
+  const g2 = await rt.runTurn({ context: ctx({ provenance: prov({ taskHash: null }) }), invocation: INV }).promise;
+  assert.equal(g2.session.generation, g1.session.generation + 1, "known→unknown RETIRE");
+  // unknown 구간에 만들어진 다른 role 세션 — authoritative 복귀를 살아서 넘으면 안 된다.
+  await rt.runTurn({ context: ctx({ role: "review", provenance: prov({ taskHash: null }) }), invocation: INV }).promise;
+  // 반복 unknown은 같은 fresh unknown 세대를 유지한다.
+  const g2b = await rt.runTurn({ context: ctx({ provenance: prov({ taskHash: null }) }), invocation: INV }).promise;
+  assert.equal(g2b.session.generation, g2.session.generation, "unknown→unknown은 trigger가 아니다");
+  const g3 = await rt.runTurn({ context: ctx({ provenance: prov({ taskHash: "hashA" }) }), invocation: INV }).promise;
+  assert.equal(g3.session.generation, g2.session.generation + 1, "같은 hash 복귀도 unknown 세대를 RETIRE");
+  const reviewer = rt.registry.entries().find((e) => e.identity.role === "review");
+  assert.equal(reviewer.lifecycle, LIFECYCLE.RETIRED, "unknown 구간 세션은 복귀 전이에서 run-wide RETIRE");
+  assert.equal(reviewer.invalidationReason, "FROZEN_TASK_CHANGED");
+});
+
+test("RF-C. hash A → null → B: unknown 세대는 B로도 상속되지 않는다", async () => {
+  const { rt } = makeRuntime();
+  await rt.runTurn({ context: ctx({ provenance: prov({ taskHash: "hashA" }) }), invocation: INV }).promise;
+  const g2 = await rt.runTurn({ context: ctx({ provenance: prov({ taskHash: null }) }), invocation: INV }).promise;
+  await rt.runTurn({ context: ctx({ role: "review", provenance: prov({ taskHash: null }) }), invocation: INV }).promise;
+  const g3 = await rt.runTurn({ context: ctx({ provenance: prov({ taskHash: "hashB" }) }), invocation: INV }).promise;
+  assert.equal(g3.session.generation, g2.session.generation + 1);
+  const reviewer = rt.registry.entries().find((e) => e.identity.role === "review");
+  assert.equal(reviewer.lifecycle, LIFECYCLE.RETIRED);
+  assert.equal(reviewer.invalidationReason, "FROZEN_TASK_CHANGED");
+});
+
+test("RF-D. Git unsupported → unsupported는 continuity다", async () => {
+  const { rt } = makeRuntime();
+  const b1 = await rt.runTurn({ context: ctx({ provenance: prov({ gitHead: { status: "unsupported" } }) }), invocation: INV }).promise;
+  const b2 = await rt.runTurn({ context: ctx({ provenance: prov({ gitHead: { status: "unsupported" } }) }), invocation: INV }).promise;
+  assert.equal(b2.session.generation, b1.session.generation);
+});
+
+test("RF-E. Git unsupported → ok(A)는 환경 전이로서 RETIRE + fresh generation이다", async () => {
+  const { rt } = makeRuntime();
+  const b1 = await rt.runTurn({ context: ctx({ provenance: prov({ gitHead: { status: "unsupported" } }) }), invocation: INV }).promise;
+  await rt.runTurn({ context: ctx({ role: "review", provenance: prov({ gitHead: { status: "unsupported" } }) }), invocation: INV }).promise;
+  const b2 = await rt.runTurn({ context: ctx({ provenance: prov({ gitHead: gh("abc111") }) }), invocation: INV }).promise;
+  assert.equal(b2.session.generation, b1.session.generation + 1, "unsupported 구간 세대는 Git 복귀를 못 넘는다");
+  const reviewer = rt.registry.entries().find((e) => e.identity.role === "review");
+  assert.equal(reviewer.lifecycle, LIFECYCLE.RETIRED);
+  assert.equal(reviewer.invalidationReason, "GIT_HEAD_CHANGED");
+});
+
+test("RF-F. Git ok(A) → unsupported → ok(A): 양쪽 전이 모두 RETIRE된다", async () => {
+  const { rt } = makeRuntime();
+  const g1 = await rt.runTurn({ context: ctx({ provenance: prov({ gitHead: gh("abc111") }) }), invocation: INV }).promise;
+  const g2 = await rt.runTurn({ context: ctx({ provenance: prov({ gitHead: { status: "unsupported" } }) }), invocation: INV }).promise;
+  assert.equal(g2.session.generation, g1.session.generation + 1, "ok→unsupported RETIRE");
+  const g3 = await rt.runTurn({ context: ctx({ provenance: prov({ gitHead: gh("abc111") }) }), invocation: INV }).promise;
+  assert.equal(g3.session.generation, g2.session.generation + 1, "같은 HEAD로 복귀해도 unsupported 세대 RETIRE");
+});
+
+test("RF-G. Git ok(A) → unsupported → ok(B): 양쪽 전이 모두 RETIRE된다", async () => {
+  const { rt } = makeRuntime();
+  const g1 = await rt.runTurn({ context: ctx({ provenance: prov({ gitHead: gh("abc111") }) }), invocation: INV }).promise;
+  const g2 = await rt.runTurn({ context: ctx({ provenance: prov({ gitHead: { status: "unsupported" } }) }), invocation: INV }).promise;
+  assert.equal(g2.session.generation, g1.session.generation + 1);
+  const g3 = await rt.runTurn({ context: ctx({ provenance: prov({ gitHead: gh("def222") }) }), invocation: INV }).promise;
+  assert.equal(g3.session.generation, g2.session.generation + 1);
+});
+
+test("RF-H. git status:error는 typed fail-closed이며 마지막 신뢰 관측 상태를 조용히 바꾸지 않는다", async () => {
+  const { rt, fake } = makeRuntime();
+  const b1 = await rt.runTurn({ context: ctx({ provenance: prov({ gitHead: gh("abc111") }) }), invocation: INV }).promise;
+  const failed = await rt.runTurn({ context: ctx({ provenance: prov({ gitHead: { status: "error" } }) }), invocation: INV }).promise;
+  assert.equal(failed.ok, false);
+  assert.equal(failed.stopReason, "HARNESS_SESSION_LIFECYCLE_INVALID");
+  assert.equal(fake.calls.length, 1, "실행 없음");
+  // error가 관측 상태를 지웠다면 (1) 같은 HEAD 복귀가 continuity를 잃거나
+  // (2) 다른 HEAD가 '최초 확립'으로 잘못 통과한다. 둘 다 아니어야 한다.
+  const same = await rt.runTurn({ context: ctx({ provenance: prov({ gitHead: gh("abc111") }) }), invocation: INV }).promise;
+  assert.equal(same.session.generation, b1.session.generation, "error 이후 같은 HEAD는 continuity");
+  const moved = await rt.runTurn({ context: ctx({ provenance: prov({ gitHead: gh("def222") }) }), invocation: INV }).promise;
+  assert.equal(moved.session.generation, b1.session.generation + 1, "error 이후에도 이전 신뢰 상태와 비교해 RETIRE");
+});
+
 // ---- L. workspace restore ----
 
 test("L. workspaceRestored는 HEAD가 같아도 explicit INVALIDATE(WORKSPACE_RESTORED)다", async () => {

@@ -74,7 +74,9 @@ class HarnessRuntime {
     this._processAdapter = processAdapter || new ProcessHarnessAdapter();
     this._registry = registry || new HarnessSessionRegistry({ now });
     this._persistentAdapters = new Map(); // providerId -> adapter
-    // professionalRunId -> { taskHash, headSha } — run-wide freshness fact 추적.
+    // professionalRunId -> { task, git } — run-wide freshness observation 상태.
+    // nullable 값이 아니라 명시적 관측 상태(state)를 저장해 known→unknown→known
+    // switch-back에서도 unknown 구간에 만들어진 세션이 살아남지 못하게 한다.
     // memory-only이며 run 종료(professionalRunEnded)나 close에서 정리된다.
     this._runFreshness = new Map();
     // entry -> cancel — lifecycle event에서 active turn을 best-effort로 취소하기
@@ -193,8 +195,17 @@ class HarnessRuntime {
   // ---- run-wide freshness (Frozen Task hash · Git HEAD) ----
   //
   // 상위 control plane이 매 Professional managed turn에 전달한 facts를 같은
-  // professionalRunId의 직전 값과 비교한다. authority가 바뀐 흔적이 보이면 그 run의
-  // 모든 managed session을 RETIRE해 과거 native cache가 다시 선택되지 못하게 한다.
+  // professionalRunId의 명시적 관측 상태와 비교한다. authority가 바뀐 흔적이 보이면
+  // 그 run의 모든 managed session을 RETIRE해 과거 native cache가 다시 선택되지
+  // 못하게 한다. 관측 상태:
+  //   task: { state: "none" } | { state: "known", hash } | { state: "unknown" }
+  //     - "none"    = 아직 authoritative hash를 본 적 없음(pre-freeze 정상 구간).
+  //     - "known"   = authoritative hash 확립.
+  //     - "unknown" = known 이후 authority를 잃음. 이 구간에 만들어진 fresh 세션은
+  //       authoritative hash가 (같은 값이어도) 복귀하는 순간 다시 RETIRE된다.
+  //   git: { state: "none" } | { state: "ok", sha } | { state: "unsupported" }
+  //     - 환경 status 전이(ok↔unsupported)도 sha 변경과 동일한 boundary다.
+  //       unsupported 구간에 만들어진 세션은 Git 환경 복귀 시 살아남지 못한다.
   // 반환: null(진행 가능) 또는 fail-closed 사유 문자열.
   _checkRunFreshness(context) {
     const runId = context.professionalRunId == null ? null : String(context.professionalRunId);
@@ -210,49 +221,78 @@ class HarnessRuntime {
       : null;
     if (gitHead && gitHead.status === "error") {
       // Git 저장소로 확인된 workspace에서 HEAD를 읽지 못했다: freshness를 판단할 수
-      // 없으므로 stale native resume 대신 typed fail-closed한다(세션 상태는 유지).
+      // 없으므로 stale native resume 대신 typed fail-closed한다. 마지막으로 신뢰한
+      // 관측 상태는 절대 여기서 바꾸지 않는다(세션 상태도 유지).
       return "GIT_HEAD_UNAVAILABLE";
     }
 
-    const tracked = this._runFreshness.get(runId) || { taskHash: null, headSha: null };
-    let nextTaskHash = tracked.taskHash;
-    let nextHeadSha = tracked.headSha;
+    const tracked = this._runFreshness.get(runId) || {
+      task: { state: "none" },
+      git: { state: "none" },
+    };
 
-    // Frozen Task hash: pre-freeze 단계의 null은 정상이다. 그러나 같은 run에서 이미
-    // authoritative hash를 알고 있었는데 다른 값(또는 unknown/null)이 되면 run-wide
-    // RETIRE로 과거 세션 재사용을 막는다(conservative retire → 이번 turn은 fresh
-    // generation으로 진행).
+    // Frozen Task hash 관측 전이.
     const taskHash = provenance.taskHash == null || provenance.taskHash === ""
       ? null
       : String(provenance.taskHash);
-    if (tracked.taskHash != null && taskHash !== tracked.taskHash) {
+    let nextTask = tracked.task;
+    if (tracked.task.state === "none") {
+      // pre-freeze null은 trigger가 아니고, 최초 authoritative hash는 확립이다.
+      if (taskHash != null) nextTask = { state: "known", hash: taskHash };
+    } else if (tracked.task.state === "known") {
+      if (taskHash == null) {
+        // known → unknown: authority 상실. RETIRE 후 unknown 상태로 전이해,
+        // 이 구간에 만들어질 fresh 세션이 authoritative 복귀를 넘지 못하게 한다.
+        this._applyLifecycle(
+          "retire",
+          { professionalRunId: runId },
+          RETIRE_REASONS.FROZEN_TASK_CHANGED
+        );
+        nextTask = { state: "unknown" };
+      } else if (taskHash !== tracked.task.hash) {
+        this._applyLifecycle(
+          "retire",
+          { professionalRunId: runId },
+          RETIRE_REASONS.FROZEN_TASK_CHANGED
+        );
+        nextTask = { state: "known", hash: taskHash };
+      }
+    } else if (taskHash != null) {
+      // unknown → authoritative 복귀(같은 hash여도): unknown 구간 세션은 authoritative
+      // 상태로 건너올 수 없다. RETIRE 후 복귀한 hash를 확립한다.
       this._applyLifecycle(
         "retire",
         { professionalRunId: runId },
         RETIRE_REASONS.FROZEN_TASK_CHANGED
       );
-      nextTaskHash = taskHash;
-    } else if (taskHash != null) {
-      nextTaskHash = taskHash;
+      nextTask = { state: "known", hash: taskHash };
     }
+    // unknown → unknown: 같은 fresh unknown 세대가 유지된다(trigger 없음).
 
-    // Git HEAD: working-tree-only 변경은 trigger가 아니다(HEAD 동일 → 유지).
-    // HEAD가 실제로 바뀐 경우(commit 등)만 run-wide RETIRE한다. non-Git(unsupported)
-    // 은 정상 지원 상태이며, 이전에 HEAD를 추적하던 run이 unsupported로 바뀌면
-    // 환경이 이동한 것이므로 동일하게 RETIRE 후 추적을 중단한다.
+    // Git HEAD 관측 전이. working-tree-only 변경은 trigger가 아니다(ok + 같은 sha).
+    let nextGit = tracked.git;
     if (gitHead) {
-      const headSha = gitHead.status === "ok" ? String(gitHead.sha || "") : null;
-      if (tracked.headSha != null && headSha !== tracked.headSha) {
+      const observed = gitHead.status === "ok"
+        ? { state: "ok", sha: String(gitHead.sha || "") }
+        : { state: "unsupported" };
+      if (tracked.git.state === "none") {
+        // 최초 관측은 확립이다(unsupported든 ok든 trigger 없음).
+        nextGit = observed;
+      } else if (
+        tracked.git.state !== observed.state ||
+        (observed.state === "ok" && tracked.git.sha !== observed.sha)
+      ) {
+        // sha 변경 + 환경 status 전이(ok→unsupported, unsupported→ok) 모두 boundary다.
         this._applyLifecycle(
           "retire",
           { professionalRunId: runId },
           RETIRE_REASONS.GIT_HEAD_CHANGED
         );
+        nextGit = observed;
       }
-      nextHeadSha = headSha;
     }
 
-    this._runFreshness.set(runId, { taskHash: nextTaskHash, headSha: nextHeadSha });
+    this._runFreshness.set(runId, { task: nextTask, git: nextGit });
     return null;
   }
 

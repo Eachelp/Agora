@@ -112,13 +112,26 @@ class AntigravityAccountSwitcher {
     } catch {
       // 첫 로그인처럼 live 자격 증명이 없으면 저장 단계만 건너뜁니다.
     }
-    if (current?.token?.refresh_token) {
-      this.store.save({ secret: current, email: meta.email, plan: meta.plan, active: true });
+    try {
+      if (current?.token?.refresh_token) {
+        this.store.save({ secret: current, email: meta.email, plan: meta.plan, active: true });
+      }
+    } catch (error) {
+      // clear() 시작 전 실패: live credential이 확실히 그대로다(accountSwitchSafe).
+      error.accountSwitchSafe = true;
+      throw error;
     }
-    await this.clear();
-    this.clearAccountHint();
-    this.store.clearActive();
-    await this.restart();
+    try {
+      await this.clear();
+      this.clearAccountHint();
+      this.store.clearActive();
+      await this.restart();
+    } catch (error) {
+      // clear()가 시도된 이후의 모든 실패(restart 실패 포함)는 live 계정 상태가
+      // 부분 변경됐을 수 있으므로 accountSwitchSafe를 절대 갖지 않는다.
+      if (error && typeof error === "object") error.accountSwitchSafe = false;
+      throw error;
+    }
     return true;
   }
 }

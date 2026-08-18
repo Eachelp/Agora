@@ -839,7 +839,18 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
       } catch {
         // 처음 로그인하는 PC라면 저장할 현재 계정이 없습니다.
       }
-      await antigravityAccountSwitcher.prepareLogin(meta);
+      try {
+        await antigravityAccountSwitcher.prepareLogin(meta);
+      } catch (error) {
+        // clear/restart가 시작된 뒤의 실패는 live credential이 부분 변경됐을 수 있는
+        // ambiguous 상태다: stale managed AGY 세션을 신뢰하는 대신 보수적으로
+        // invalidation한다. clear 이전(무변경 증명, accountSwitchSafe) 실패는 그대로 둔다.
+        if (!isCredentialUnchangedFailure(error)) notifyAccountLifecycle("agy");
+        throw error;
+      }
+      // 성공한 prepareLogin은 live credential을 비우고 AGY를 재시작한 상태다:
+      // old managed AGY conversation binding은 더 이상 계정 신뢰 경계 안에 없다.
+      notifyAccountLifecycle("agy");
       clearUsageCache("agy");
       refreshTrayMenu();
       return true;
@@ -858,6 +869,12 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
       const scriptPath = writeClaudeLoginScript();
       const error = await openLoginScript(scriptPath);
       if (error) throw new Error(error);
+      // 외부 `claude auth login` 터미널은 완료 콜백이 없다. launcher가 성공적으로
+      // 열렸다면 로그인이 실제로 끝났는지 알 수 없으므로 보수적으로 old managed
+      // Claude 세션을 INVALIDATE한다(사용자가 취소해도 continuity 비용뿐이며,
+      // 완료된 로그인 후 old-account 세션이 남는 것보다 안전하다). launcher 실패는
+      // live credential 환경이 그대로이므로 통지하지 않는다.
+      notifyAccountLifecycle("claude");
       clearUsageCache("claude");
       return true;
     }

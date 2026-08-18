@@ -248,6 +248,48 @@ test("chat-ipc: project workspace choose/clear는 WORKSPACE_CHANGED lifecycle을
   assert.equal(spy.events.length, 2);
 });
 
+// 리뷰 F1: legacy 세션 경로(chat:workspace:choose/clear)도 같은 authoritative
+// ProjectStore.workspace를 바꾸므로 lifecycle boundary를 우회할 수 없다.
+test("리뷰 F1-N/O: legacy chat:workspace:choose/clear는 실제 mutation당 lifecycle을 정확히 1회 부른다", async (t) => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-legacy-ws-ipc-")));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const ws = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-legacy-ws-dir-")));
+  t.after(() => fs.rmSync(ws, { recursive: true, force: true }));
+
+  const { spy, invoke } = makeFeature(root, { canceled: false, filePaths: [ws] });
+  const created = await invoke("chat:projects:create", { name: "P" });
+  assert.equal(created.ok, true);
+  const projectId = created.activeProjectId;
+  const session = await invoke("chat:sessions:create", {});
+  assert.equal(session.ok, true);
+  const sessionId = session.session.meta.id;
+
+  const chosen = await invoke("chat:workspace:choose", { sessionId });
+  assert.equal(chosen.ok, true);
+  assert.deepEqual(spy.events, [{ kind: "workspaceChanged", projectId }], "choose는 정확히 1회");
+
+  const cleared = await invoke("chat:workspace:clear", { sessionId });
+  assert.equal(cleared.ok, true);
+  assert.deepEqual(spy.events.at(-1), { kind: "workspaceChanged", projectId }, "clear도 정확히 1회");
+  assert.equal(spy.events.length, 2);
+});
+
+test("리뷰 F1-P: 취소된 legacy choose는 mutation이 없으므로 lifecycle 이벤트도 없다", async (t) => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-legacy-ws-cancel-")));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  const { spy, invoke } = makeFeature(root, { canceled: true, filePaths: [] });
+  const created = await invoke("chat:projects:create", { name: "P" });
+  assert.equal(created.ok, true);
+  const session = await invoke("chat:sessions:create", {});
+  const sessionId = session.session.meta.id;
+
+  const chosen = await invoke("chat:workspace:choose", { sessionId });
+  assert.equal(chosen.ok, true);
+  assert.equal(chosen.canceled, true);
+  assert.deepEqual(spy.events, [], "취소된 choose는 어떤 lifecycle 통지도 만들지 않는다");
+});
+
 test("chatFeature.notifyProviderAccountChanged는 provider account lifecycle로 위임한다", async (t) => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-lifecycle-acct-")));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -277,6 +319,12 @@ test("account-switching source: 전환 성공/ambiguous 실패 경로가 lifecyc
   assert.ok(successCalls.length >= 3, "codex proxy/desktop/auto-switch 경로");
   assert.match(source, /notifyAccountLifecycle\(provider\)/);
   assert.match(source, /isCredentialUnchangedFailure/);
+  // 리뷰 F2/F3: add-login 흐름도 lifecycle boundary를 지난다(AGY prepareLogin의
+  // 성공/ambiguous 실패, Claude 외부 launcher 성공).
+  const agyCalls = source.match(/notifyAccountLifecycle\("agy"\)/g) || [];
+  assert.ok(agyCalls.length >= 2, "agy prepareLogin 성공 + ambiguous 실패 경로");
+  const claudeCalls = source.match(/notifyAccountLifecycle\("claude"\)/g) || [];
+  assert.ok(claudeCalls.length >= 1, "claude launcher 성공 경로");
 });
 
 // ---- turn-checkpoint restore mutated fact ----
