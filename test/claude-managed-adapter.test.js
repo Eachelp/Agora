@@ -139,26 +139,56 @@ test("C. authoritative prompt는 매 turn 전체 재전송된다(resume이라고
   assert.equal(calls[1].prompt, P, "resume turn도 프롬프트 전체 재전송");
 });
 
-test("E. role/run/model/permission/workspace가 다르면 다른 native 세션(교차 resume 없음, 같은 키는 resume)", async () => {
+test("E. role/run/workspace가 다르면 다른 native 세션이다(교차 resume 없음)", async () => {
+  // 다른 lineage(role/run)는 old 세션이 살아 있으므로 switch-back 시 resume된다.
+  // workspaceId는 project-wide WORKSPACE_CHANGED 이벤트가 lifecycle boundary이므로
+  // (harness-runtime lifecycle 테스트에서 검증) 여기서는 키 격리만 확인한다.
   const dims = [
-    ["role", { role: "implementation" }, { role: "review" }],
-    ["professionalRunId", { professionalRunId: "pr-1" }, { professionalRunId: "pr-2" }],
-    ["modelKey", { modelKey: "sonnet" }, { modelKey: "opus" }],
-    ["permissionMode", { permissionMode: "workspace-write" }, { permissionMode: "workspace-read" }],
-    ["workspaceId", { workspaceId: "/wsA" }, { workspaceId: "/wsB" }],
+    ["role", { role: "implementation" }, { role: "review" }, "resume"],
+    ["professionalRunId", { professionalRunId: "pr-1" }, { professionalRunId: "pr-2" }, "resume"],
+    ["workspaceId", { workspaceId: "/wsA" }, { workspaceId: "/wsB" }, null],
   ];
-  for (const [label, A, B] of dims) {
+  for (const [label, A, B, switchBack] of dims) {
     const { adapter, calls } = makeAdapter((i) =>
       i === 1 ? { sessionId: ID_B, result: { ok: true, text: "B1" } }
               : { sessionId: ID_A, result: { ok: true, text: "A" } });
     const rt = createDefaultHarnessRuntime({ claudeAdapter: adapter });
     await rt.runTurn({ context: ctx(A), invocation: inv() }).promise;
     await rt.runTurn({ context: ctx(B), invocation: inv() }).promise;
-    await rt.runTurn({ context: ctx(A), invocation: inv() }).promise;
     assert.equal(resumeIndex(calls[0].argv), -1, `${label}: A 첫 turn`);
     assert.equal(resumeIndex(calls[1].argv), -1, `${label}: B는 다른 세션(첫 turn)`);
-    const ri = resumeIndex(calls[2].argv);
-    assert.ok(ri >= 0 && calls[2].argv[ri + 1] === ID_A, `${label}: 같은 키 A는 resume ID_A`);
+    if (switchBack === "resume") {
+      await rt.runTurn({ context: ctx(A), invocation: inv() }).promise;
+      const ri = resumeIndex(calls[2].argv);
+      assert.ok(ri >= 0 && calls[2].argv[ri + 1] === ID_A, `${label}: 같은 키 A는 resume ID_A`);
+    }
+  }
+});
+
+test("E2. model/permission 전환 뒤 switch-back은 old native 세션을 부활시키지 않는다(fresh 세대)", async () => {
+  // Stage C lifecycle: 같은 lineage에서 modelKey/permissionMode가 바뀌면 old
+  // sibling이 RETIRE되므로, A로 되돌아와도 old A 세션을 --resume하지 않는다.
+  const dims = [
+    ["modelKey", { modelKey: "sonnet" }, { modelKey: "opus" }],
+    ["permissionMode", { permissionMode: "workspace-write" }, { permissionMode: "workspace-read" }],
+  ];
+  for (const [label, A, B] of dims) {
+    const { adapter, calls } = makeAdapter((i) =>
+      i === 1 ? { sessionId: ID_B, result: { ok: true, text: "B1" } }
+              : { sessionId: ID_A, result: { ok: true, text: "A" } });
+    const rt = createDefaultHarnessRuntime({ claudeAdapter: adapter });
+    const r1 = await rt.runTurn({ context: ctx(A), invocation: inv() }).promise;
+    await rt.runTurn({ context: ctx(B), invocation: inv() }).promise;
+    const r3 = await rt.runTurn({ context: ctx(A), invocation: inv() }).promise;
+    assert.equal(resumeIndex(calls[0].argv), -1, `${label}: A 첫 turn`);
+    assert.equal(resumeIndex(calls[1].argv), -1, `${label}: B는 다른 세션(첫 turn)`);
+    assert.equal(resumeIndex(calls[2].argv), -1, `${label}: switch-back A는 old resume 금지(fresh)`);
+    assert.equal(r1.ok, true);
+    assert.equal(r3.ok, true);
+    const aEntry = rt.registry.entries().find((e) =>
+      e.identity?.modelKey === (A.modelKey || "sonnet")
+      && e.identity?.permissionMode === (A.permissionMode || "workspace-write"));
+    assert.equal(aEntry?.generation, 2, `${label}: switch-back A는 fresh generation`);
   }
 });
 

@@ -40,6 +40,7 @@ const {
 const { createLineParser } = require("./chat-events");
 const { ProcessHarnessAdapter } = require("../harness/process-harness-adapter");
 const { createDefaultHarnessRuntime } = require("../harness/create-default-harness-runtime");
+const { probeGitHead } = require("../harness/harness-session-lifecycle");
 const { persistRunMetrics } = require("./chat-run-metrics-store");
 const {
   importAttachment,
@@ -284,9 +285,10 @@ function createChatFeature(options) {
   // ProcessHarnessAdapter는 기존 process-per-invocation 실행(runAgentProcess)을
   // 그대로 위임하는 compatibility 구현이며, workspace/permission/Evidence 등
   // control-plane 권한은 makeRunAgent에 그대로 남는다. 테스트는 options로 주입한다.
-  // Stage C-2: HarnessRuntime이 실행 adapter 선택과 role-scoped logical session을 소유한다.
-  // C-2에는 persistent adapter가 없어 모든 실행이 sessionless ProcessHarnessAdapter로
-  // 귀결된다(관측 실행 동작 = C-1). options seam은 backward-compatible하게 유지한다:
+  // Stage C: HarnessRuntime이 실행 adapter 선택 · role-scoped logical session ·
+  // session lifecycle(RETIRE/INVALIDATE) 결정을 소유한다. Codex/Claude/AGY managed
+  // adapter가 등록되어 있으며, general chat과 default/unresolved model은 여전히
+  // sessionless ProcessHarnessAdapter one-shot이다. options seam은 backward-compatible:
   // harnessRuntime 직접 주입 또는 harnessAdapter(=process adapter) 주입 모두 허용.
   const harnessRuntime = options.harnessRuntime
     || createDefaultHarnessRuntime({ processAdapter: options.harnessAdapter || new ProcessHarnessAdapter() });
@@ -517,6 +519,10 @@ function createChatFeature(options) {
       // Stage C — provider-neutral same-turn approval 콜백. harness가 지원하면 실행 중 action
       // 승인을 요청한다. 여기서는 provider를 구분하지 않고 그대로 전달만 한다(codex 분기 없음).
       requestApproval = null,
+      // Stage C — canonical Frozen Task provenance({ runId: RUN-###, taskHash }).
+      // ChatRoom이 frozenTask 실행 context에서 전달한다. transport runId(r...)와
+      // 무관한 lifecycle fact이며 pre-freeze 단계에서는 null일 수 있다(정상).
+      frozenTask = null,
     }) => {
       const record = ensureCapabilityService().getRecord(agent.id);
       const meta = store?.readMeta(sessionId);
@@ -669,6 +675,12 @@ function createChatFeature(options) {
       if (canonicalWorkspace) {
         try { workspaceId = fs.realpathSync(canonicalWorkspace); } catch { workspaceId = null; }
       }
+      // Stage C lifecycle facts(Professional managed turn 전용):
+      //   - frozenRunId/taskHash: TaskManager가 만든 canonical Frozen provenance만
+      //     전달한다. chat transport runId(r...)는 provenance가 아니다.
+      //   - gitHead: 실행 직전 authoritative workspace(ProjectStore.workspace)의
+      //     현재 HEAD fact. non-Git은 unsupported(정상), 판독 불가는 error로
+      //     전달되어 HarnessRuntime이 fail-closed한다. adapter는 HEAD를 계산하지 않는다.
       const context = {
         projectId: projectIdForMeta(meta),
         workspaceId,
@@ -681,7 +693,11 @@ function createChatFeature(options) {
         autoApprove: effectiveAutoApprove,
         effort: normalizeChoice(agent.effort) || null,
         provenance: {
-          frozenRunId: specialistStage ? (runId || null) : null,
+          frozenRunId: specialistStage ? (frozenTask?.runId || null) : null,
+          taskHash: specialistStage ? (frozenTask?.taskHash || null) : null,
+          ...(specialistStage
+            ? { gitHead: canonicalWorkspace ? probeGitHead(canonicalWorkspace) : { status: "unsupported" } }
+            : {}),
         },
       };
       const run = harnessRuntime.runTurn({ context, invocation: harnessInvocation });
@@ -900,6 +916,18 @@ function roomMeta(meta) {
       persistProfessionalRun: (professionalRun) => {
         const updated = store.updateMeta(sessionId, { professionalRun: professionalRun || null });
         return Boolean(updated);
+      },
+      // Stage C — provider-neutral harness lifecycle seam. room은 restore/run 종료
+      // fact만 전달하고, project 범위 해석과 registry/adapter 반영은 여기(control
+      // plane)와 HarnessRuntime이 맡는다.
+      harnessLifecycle: {
+        workspaceRestored: () => {
+          const projectId = projectIdForMeta(store?.readMeta(sessionId));
+          harnessRuntime.workspaceRestored({ projectId });
+        },
+        professionalRunEnded: ({ professionalRunId, invalid = false } = {}) => {
+          harnessRuntime.professionalRunEnded({ professionalRunId, invalid });
+        },
       },
       taskManager: options.taskManager || new TaskManager(),
       // TASK-007: Planner가 TASK.md를 만들면 workflow.json에 metadata를 등록합니다.
@@ -1355,6 +1383,10 @@ function roomMeta(meta) {
         const workspace = await chooseWorkspace("프로젝트 워크스페이스 선택");
         if (!workspace) return { canceled: true, ...sessionsPayload() };
         const project = ensureProjectStore().updateProject(projectId, { workspace });
+        // Stage C — ProjectStore.workspace가 authority다. 바뀌는 즉시 이 project의
+        // managed harness session 전체를 RETIRE해 old workspace native cache의
+        // switch-back 부활을 막는다.
+        harnessRuntime.workspaceChanged({ projectId });
         syncProjectWorkspaceToSessions(projectId, workspace);
         const payload = sessionsPayload();
         broadcast("chat:sessions-changed", payload);
@@ -1367,6 +1399,7 @@ function roomMeta(meta) {
       wrap(async ({ projectId }) => {
         requireProject(projectId);
         const project = ensureProjectStore().updateProject(projectId, { workspace: null });
+        harnessRuntime.workspaceChanged({ projectId });
         syncProjectWorkspaceToSessions(projectId, null);
         const payload = sessionsPayload();
         broadcast("chat:sessions-changed", payload);
@@ -2294,7 +2327,27 @@ function roomMeta(meta) {
     }
   }
 
-  return { registerIpcHandlers, openWindow, getWindow, shutdown, showSystemNotice };
+  // Stage C — provider account trust boundary seam. account-switching 모듈이 실제
+  // 계정 전환 성공(또는 partial-mutation 가능성이 있는 ambiguous 실패) 시 호출한다.
+  // adapter internals는 여기서도 만지지 않는다: HarnessRuntime이 logical INVALIDATE와
+  // provider-native cache cleanup(및 Codex resident runtime의 deliberate reset)을 결정한다.
+  function notifyProviderAccountChanged(providerId) {
+    if (!providerId) return;
+    try {
+      harnessRuntime.providerAccountChanged({ providerId: String(providerId) });
+    } catch (error) {
+      console.warn("[agora] provider account lifecycle 반영 실패:", error?.message || error);
+    }
+  }
+
+  return {
+    registerIpcHandlers,
+    openWindow,
+    getWindow,
+    shutdown,
+    showSystemNotice,
+    notifyProviderAccountChanged,
+  };
 }
 
 module.exports = {

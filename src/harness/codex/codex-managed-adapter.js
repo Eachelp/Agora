@@ -682,6 +682,40 @@ class CodexManagedAdapter extends HarnessAdapter {
     return { ...base, runMetrics };
   }
 
+  // Stage C lifecycle cleanup hook: HarnessRuntime의 RETIRE/INVALIDATE 결정을 native
+  // cache에 반영한다. normal retire boundary(MODEL/PERMISSION/TASK/HEAD/RUN_END 등)
+  // 에서는 logicalHandle → thread binding만 잊고 resident App Server는 유지한다.
+  forgetSession(session) {
+    if (!session || !session.key) return;
+    const logicalHandle = `${session.key}#${session.generation != null ? session.generation : 0}`;
+    this._threads.delete(logicalHandle);
+    this._invalidatedHandles.delete(logicalHandle);
+  }
+
+  // Stage C deliberate runtime reset(account/runtime trust boundary 전용).
+  // resident App Server가 old account context를 들고 있을 수 있으므로, 명시적
+  // account change에서는 (runtime이 logical invalidation + active turn cancel을
+  // 이미 지시한 뒤) old server를 닫고 다음 managed turn이 fresh App Server +
+  // fresh thread로 시작하게 한다.
+  //
+  // provider continuity failure(CODEX_SESSION_LOST)의 자동 restart와는 다르다:
+  // 실패 경로에서는 client가 lost/closed 상태로 남아 fail-closed되지만, 이
+  // deliberate reset만 client 참조를 비워 fresh start를 허용한다.
+  resetRuntime() {
+    if (this._client) {
+      // close는 남아 있던 active turn을 fail-closed로 종료하고(pending approval
+      // dismiss 포함) _onClose에서 turn/thread 상태를 정리한다.
+      try { this._client.close(); } catch {}
+    }
+    this._client = null;
+    this._clientStart = null;
+    this._runtimeIdentity = null;
+    this._activeTurns.clear();
+    this._threads.clear();
+    // old generation은 registry가 다시 선택하지 않으므로 poison 기록도 함께 비운다.
+    this._invalidatedHandles.clear();
+  }
+
   // Agora 종료 시 orphan child 방지(section 40). health/restart는 이후 Stage.
   close() {
     if (this._client) {

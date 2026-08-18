@@ -386,15 +386,20 @@ function inspectCheckpoint(checkpoint, options = {}) {
   return { ok: resolved.ok, reason: resolved.reason || null, manifest: resolved.manifest || null };
 }
 
+// 실패 결과의 mutated 필드는 "workspace 변경(rewind)이 시작되었을 가능성"을 뜻한다.
+// 첫 git 변경 명령(git checkout) 이전에 명확히 끝난 실패만 mutated:false이며, 그 외
+// (부분 적용/원인 불명 실패)는 모두 mutated:true로 보수적으로 보고한다. 상위
+// lifecycle 소비자는 이 fact로 "무변경 실패 → 세션 유지"와 "ambiguous/partial →
+// conservative invalidate"를 구분한다. 이 모듈은 lifecycle 결정을 하지 않는다.
 async function restoreCheckpoint(workspaceRoot, checkpoint, options = {}) {
   const resolved = resolveCheckpoint(checkpoint, options);
-  if (!resolved.ok) return { ok: false, reason: resolved.reason };
+  if (!resolved.ok) return { ok: false, reason: resolved.reason, mutated: false };
   const repo = resolveWorkspace(workspaceRoot);
-  if (!repo || repo !== resolved.manifest.workspace) return { ok: false, reason: "workspace-mismatch" };
+  if (!repo || repo !== resolved.manifest.workspace) return { ok: false, reason: "workspace-mismatch", mutated: false };
   try {
     const listPath = path.join(resolved.dir, "untracked-list.txt");
     const checkpointList = parseRelativeList(fs.existsSync(listPath) ? fs.readFileSync(listPath, "utf8") : "");
-    if (!checkpointList) return { ok: false, reason: "untracked-list-invalid" };
+    if (!checkpointList) return { ok: false, reason: "untracked-list-invalid", mutated: false };
     const checkpointSet = new Set(checkpointList.map(pathKey));
     const preserveSet = new Set(
       (Array.isArray(options.preservePaths) ? options.preservePaths : [])
@@ -412,9 +417,9 @@ async function restoreCheckpoint(workspaceRoot, checkpoint, options = {}) {
     const currentPaths = String(currentOut || "").split("\0").filter(Boolean);
     for (const rel of currentPaths) {
       const safe = safeRelativePath(rel);
-      if (!safe) return { ok: false, reason: "current-untracked-invalid" };
+      if (!safe) return { ok: false, reason: "current-untracked-invalid", mutated: true };
       const target = path.resolve(repo, safe);
-      if (!isWithin(repo, target)) return { ok: false, reason: "current-untracked-outside-workspace" };
+      if (!isWithin(repo, target)) return { ok: false, reason: "current-untracked-outside-workspace", mutated: true };
       // 테스트/구형 저장소가 .agora를 ignore하지 않아도 현재 checkpoint
       // 자체를 Builder 산출물로 오인해 삭제하지 않는다.
       if (isWithin(resolved.checkpointRoot, target)) continue;
@@ -426,7 +431,7 @@ async function restoreCheckpoint(workspaceRoot, checkpoint, options = {}) {
     for (const safe of checkpointList) {
       const src = path.resolve(baselineRoot, safe);
       const dest = path.resolve(repo, safe);
-      if (!isWithin(baselineRoot, src) || !isWithin(repo, dest)) return { ok: false, reason: "untracked-copy-outside-root" };
+      if (!isWithin(baselineRoot, src) || !isWithin(repo, dest)) return { ok: false, reason: "untracked-copy-outside-root", mutated: true };
       if (fs.existsSync(src)) {
         fs.mkdirSync(path.dirname(dest), { recursive: true });
         fs.copyFileSync(src, dest);
@@ -434,7 +439,8 @@ async function restoreCheckpoint(workspaceRoot, checkpoint, options = {}) {
     }
     return { ok: true };
   } catch {
-    return { ok: false, reason: "restore-failed" };
+    // git checkout/apply 도중의 실패는 부분 적용 여부를 알 수 없다 → 보수적으로 mutated.
+    return { ok: false, reason: "restore-failed", mutated: true };
   }
 }
 

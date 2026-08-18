@@ -287,6 +287,17 @@ class ClaudeManagedAdapter extends HarnessAdapter {
     return { ...base, runMetrics };
   }
 
+  // Stage C lifecycle cleanup hook: HarnessRuntime이 "이 logical generation은 더 이상
+  // 사용할 수 없다"고 결정하면 native cache 반영만 한다(RETIRE/INVALIDATE 판단은
+  // runtime 소유). logicalHandle → nativeSessionId binding과 poison 기록을 제거한다.
+  // remote Claude native session 삭제는 하지 않는다(cache 참조만 폐기).
+  forgetSession(session) {
+    if (!session || !session.key) return;
+    const logicalHandle = `${session.key}#${session.generation != null ? session.generation : 0}`;
+    this._bindings.delete(logicalHandle);
+    this._invalidatedHandles.delete(logicalHandle);
+  }
+
   // Agora 종료 시 provider-local 상태 정리. process-per-turn이라 죽일 resident child는 없다.
   close() {
     this._bindings.clear();

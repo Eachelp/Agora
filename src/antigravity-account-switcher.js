@@ -86,7 +86,11 @@ class AntigravityAccountSwitcher {
   async switchToProfile(key) {
     const profile = this.store.get(key);
     if (!profile?.secret?.token?.refresh_token) {
-      throw new Error("저장된 AGY 계정을 찾지 못했습니다.");
+      // live credential 변경 전 검증 실패: credential이 그대로임을 호출자에게 알린다
+      // (Stage C account lifecycle이 불필요한 invalidation을 만들지 않도록).
+      const error = new Error("저장된 AGY 계정을 찾지 못했습니다.");
+      error.accountSwitchSafe = true;
+      throw error;
     }
     try {
       await this.snapshotCurrent();

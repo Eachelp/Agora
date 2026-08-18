@@ -335,6 +335,17 @@ class AGYManagedAdapter extends HarnessAdapter {
     return { ...base, runMetrics };
   }
 
+  // Stage C lifecycle cleanup hook: HarnessRuntime의 RETIRE/INVALIDATE 결정을 native
+  // cache에 반영한다. logicalHandle → nativeConversationId binding과 poison 기록을
+  // 제거한다. remote AGY conversation 삭제는 하지 않으며, strict mismatch/no-fallback
+  // 계약(실행 중 continuity 검증)은 그대로 유지된다.
+  forgetSession(session) {
+    if (!session || !session.key) return;
+    const logicalHandle = `${session.key}#${session.generation != null ? session.generation : 0}`;
+    this._bindings.delete(logicalHandle);
+    this._invalidatedHandles.delete(logicalHandle);
+  }
+
   // Agora 종료 시 provider-local 상태 정리. process-per-turn이라 죽일 resident child는 없다.
   close() {
     this._bindings.clear();

@@ -582,6 +582,28 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
     return profile.active ? `${label} (현재)` : label;
   }
 
+  // Stage C — provider account trust boundary를 harness lifecycle에 알립니다.
+  // 실제 계정 전환이 성공했을 때, 그리고 live credential이 부분 변경됐을 수 있는
+  // ambiguous 실패에서 보수적으로 호출합니다(전환 시작 전 검증 실패처럼 credential이
+  // 확실히 그대로인 실패는 불필요한 invalidation을 만들지 않습니다). 이 모듈은
+  // adapter internals를 만지지 않고 chatFeature의 provider-neutral seam만 부릅니다.
+  function notifyAccountLifecycle(provider) {
+    try {
+      const chatFeature = getChatFeature();
+      if (chatFeature && typeof chatFeature.notifyProviderAccountChanged === "function") {
+        chatFeature.notifyProviderAccountChanged(provider);
+      }
+    } catch (error) {
+      appendDebugLog(`account lifecycle notify failed (${provider}): ${error?.message || String(error)}`);
+    }
+  }
+
+  // switchToProfile 실패가 live credential 무변경(사전 검증 실패)임이 확실한지.
+  // 스위처가 mutation 시작 전에 던지는 오류에만 accountSwitchSafe 표식이 있습니다.
+  function isCredentialUnchangedFailure(error) {
+    return error?.accountSwitchSafe === true;
+  }
+
   // 계정 프로필 실행/전환 결과를 펫 말풍선으로 알려줍니다.
   function showCodexAccountBubble(text) {
     // When the pet is off, surface account errors in the chat window instead of a pet bubble.
@@ -680,12 +702,16 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
       try {
         const result = codexAccountSwitcher.switchToProfile(profileKey);
         invalidateProxyAccountsCache();
+        // Stage C: 성공한 Codex 계정 전환은 managed session 전체 INVALIDATE +
+        // resident App Server deliberate reset 대상이다(다음 turn은 fresh server/thread).
+        notifyAccountLifecycle("codex");
         refreshTrayMenu();
         showCodexAccountBubble(
           `"${result.profile.label}" 계정으로 전환했습니다.\n프록시 모드: 재시작 없이 다음 요청부터 바로 적용됩니다.`
         );
         return true;
       } catch (error) {
+        if (!isCredentialUnchangedFailure(error)) notifyAccountLifecycle("codex");
         showCodexAccountBubble(`Codex auth 전환에 실패했습니다.\n${error.message || String(error)}`);
         return false;
       }
@@ -706,6 +732,7 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
 
       try {
         const result = codexAccountSwitcher.switchToProfile(profileKey);
+        notifyAccountLifecycle("codex");
         refreshTrayMenu();
 
         let launchText = "Codex Desktop App 재실행을 요청했습니다.";
@@ -728,6 +755,7 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
         );
         return true;
       } catch (switchError) {
+        if (!isCredentialUnchangedFailure(switchError)) notifyAccountLifecycle("codex");
         showCodexAccountBubble(
           `Codex auth 전환에 실패했습니다.\n${switchError.message || String(switchError)}`
         );
@@ -755,7 +783,16 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
   async function switchProviderAccount(provider, profileKey) {
     if (provider === "codex") return switchCodexAccount(profileKey);
     const switcher = provider === "agy" ? antigravityAccountSwitcher : claudeAccountSwitcher;
-    await switcher.switchToProfile(profileKey);
+    try {
+      await switcher.switchToProfile(profileKey);
+    } catch (error) {
+      // credential이 부분 변경됐을 수 있는 ambiguous 실패는 stale native 세션을
+      // 신뢰하기보다 보수적으로 invalidation한다. 무변경 검증 실패는 그대로 둔다.
+      if (!isCredentialUnchangedFailure(error)) notifyAccountLifecycle(provider);
+      throw error;
+    }
+    // Stage C: 성공한 계정 전환 → 해당 provider의 managed session 전체 INVALIDATE.
+    notifyAccountLifecycle(provider);
     clearUsageCache(provider);
     refreshTrayMenu();
     return true;
@@ -1043,6 +1080,10 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
       // 프록시는 이미 이 계정으로 응답을 스트리밍하는 중입니다. 활성 프로필 영속화(디스크 백업 복사 등
       // 무거운 동기 작업)와 UI 갱신은 응답 중계를 지연시키지 않도록 다음 tick으로 미룹니다.
       setImmediate(() => {
+        // Stage C: 프록시 auto-switch는 이 시점에 이미 실제 계정이 바뀐 상태다
+        // (영속화 성공 여부와 무관). managed Codex 세션 invalidation + resident
+        // App Server reset을 즉시 알린다.
+        notifyAccountLifecycle("codex");
         try {
           if (account.key !== "live") {
             codexAccountSwitcher.switchToProfile(account.key);

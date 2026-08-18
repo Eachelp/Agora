@@ -74,12 +74,18 @@ class ClaudeAccountSwitcher {
   async switchToProfile(key) {
     const profile = this.store.get(key);
     if (!ClaudeAccountSwitcher.hasClaudeToken(profile?.secret)) {
-      throw new Error("저장된 Claude 계정을 찾지 못했습니다.");
+      // live credential 변경 전 검증 실패: credential이 그대로임을 호출자에게 알린다
+      // (Stage C account lifecycle이 불필요한 invalidation을 만들지 않도록).
+      const error = new Error("저장된 Claude 계정을 찾지 못했습니다.");
+      error.accountSwitchSafe = true;
+      throw error;
     }
     if (!ClaudeAccountSwitcher.isProfileUsable(profile.secret)) {
-      throw new Error(
+      const error = new Error(
         "이 계정의 저장된 로그인 정보가 만료됐습니다. 해당 계정으로 다시 로그인한 뒤 전환해 주세요."
       );
+      error.accountSwitchSafe = true;
+      throw error;
     }
     const liveNow = this.current();
     if (ClaudeAccountSwitcher.hasClaudeToken(liveNow)) this.snapshotCurrent();

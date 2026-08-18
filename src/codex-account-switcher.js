@@ -512,7 +512,11 @@ class CodexAccountSwitcher {
   switchToProfile(profileKey) {
     const profile = this.getProfile(profileKey);
     if (!profile) {
-      throw new Error("저장된 Codex 계정을 찾지 못했습니다.");
+      // live auth 변경 전 검증 실패: credential이 그대로임을 호출자에게 알린다
+      // (Stage C account lifecycle이 불필요한 invalidation을 만들지 않도록).
+      const error = new Error("저장된 Codex 계정을 찾지 못했습니다.");
+      error.accountSwitchSafe = true;
+      throw error;
     }
 
     // 전환 전 현재 계정도 저장소에 갱신합니다. 그래야 되돌아갈 계정이 사라지지 않습니다.
@@ -520,7 +524,9 @@ class CodexAccountSwitcher {
 
     const source = this.profileAuthPath(profile.key);
     if (!fs.existsSync(source)) {
-      throw new Error(`선택한 프로필에 auth.json이 없습니다: ${profile.key}`);
+      const error = new Error(`선택한 프로필에 auth.json이 없습니다: ${profile.key}`);
+      error.accountSwitchSafe = true;
+      throw error;
     }
 
     const backupId = this.createBackup(new Date());

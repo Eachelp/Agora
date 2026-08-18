@@ -86,6 +86,10 @@ class ChatRoom extends EventEmitter {
     this.onProfessionalTaskState = typeof options.onProfessionalTaskState === "function"
       ? options.onProfessionalTaskState
       : null;
+    // Stage C — provider-neutral harness lifecycle seam(chat-ipc가 주입).
+    // { workspaceRestored(), professionalRunEnded({ professionalRunId, invalid }) }
+    // 형태이며, room은 lifecycle facts만 전달하고 세션/adapter 내부는 모른다.
+    this.harnessLifecycle = options.harnessLifecycle || null;
     this.meta = {
       permissionMode: "chat",
       ...(options.meta || {}),
@@ -801,6 +805,14 @@ class ChatRoom extends EventEmitter {
           emitEvent,
           permissionMode,
           specialistStage,
+          // Stage C — canonical Frozen Task provenance(RUN-### + taskHash). transport
+          // runId(r...)와 구분되는 lifecycle fact로, TaskManager가 만든 값만 전달한다.
+          frozenTask: context.specialist?.frozenTask
+            ? {
+                runId: context.specialist.frozenTask.runId || null,
+                taskHash: context.specialist.frozenTask.taskHash || null,
+              }
+            : null,
           // IPC 경계에서 최종 permissionMode를 다시 계산해 실제 invocation을 제한합니다.
           // 여기서는 기존 승인 재시도 계약을 유지한 요청값만 전달합니다.
           // 일반 채팅의 승인 재시도 계약은 유지한다. 실제 provider argv에서는

@@ -126,26 +126,52 @@ test("D. authoritative prompt는 매 turn 전체 재전송된다(resume이라고
   assert.equal(calls[1].prompt, P, "resume turn도 프롬프트 전체 재전송");
 });
 
-test("E. role/run/model/permission/workspace가 다르면 다른 native conversation(교차 resume 없음, 같은 키는 resume)", async () => {
+test("E. role/run/workspace가 다르면 다른 native conversation이다(교차 resume 없음)", async () => {
+  // 다른 lineage(role/run)는 old conversation이 살아 있으므로 switch-back 시 resume된다.
+  // workspaceId는 project-wide WORKSPACE_CHANGED 이벤트가 lifecycle boundary이므로
+  // (harness-runtime lifecycle 테스트에서 검증) 여기서는 키 격리만 확인한다.
   const dims = [
-    ["role", { role: "implementation" }, { role: "review" }],
-    ["professionalRunId", { professionalRunId: "pr-1" }, { professionalRunId: "pr-2" }],
-    ["modelKey", { modelKey: "gemini-3.7-flash-low" }, { modelKey: "gemini-3.6-flash-low" }],
-    ["permissionMode", { permissionMode: "workspace-write" }, { permissionMode: "workspace-read" }],
-    ["workspaceId", { workspaceId: "/wsA" }, { workspaceId: "/wsB" }],
+    ["role", { role: "implementation" }, { role: "review" }, "resume"],
+    ["professionalRunId", { professionalRunId: "pr-1" }, { professionalRunId: "pr-2" }, "resume"],
+    ["workspaceId", { workspaceId: "/wsA" }, { workspaceId: "/wsB" }, null],
   ];
-  for (const [label, A, B] of dims) {
+  for (const [label, A, B, switchBack] of dims) {
     const { adapter, calls } = makeAdapter((i) =>
       i === 1 ? { conversationId: ID_B, result: { ok: true, text: "B1" } }
               : { conversationId: ID_A, result: { ok: true, text: "A" } });
     const rt = createDefaultHarnessRuntime({ agyAdapter: adapter });
     await rt.runTurn({ context: ctx(A), invocation: inv() }).promise;
     await rt.runTurn({ context: ctx(B), invocation: inv() }).promise;
-    await rt.runTurn({ context: ctx(A), invocation: inv() }).promise;
     assert.equal(convIndex(calls[0].argv), -1, `${label}: A 첫 turn`);
     assert.equal(convIndex(calls[1].argv), -1, `${label}: B는 다른 conversation(첫 turn)`);
-    const ci = convIndex(calls[2].argv);
-    assert.ok(ci >= 0 && calls[2].argv[ci + 1] === ID_A, `${label}: 같은 키 A는 resume ID_A`);
+    if (switchBack === "resume") {
+      await rt.runTurn({ context: ctx(A), invocation: inv() }).promise;
+      const ci = convIndex(calls[2].argv);
+      assert.ok(ci >= 0 && calls[2].argv[ci + 1] === ID_A, `${label}: 같은 키 A는 resume ID_A`);
+    }
+  }
+});
+
+test("E2. model/permission 전환 뒤 switch-back은 old conversation을 부활시키지 않는다(fresh 세대)", async () => {
+  // Stage C lifecycle: 같은 lineage에서 modelKey/permissionMode가 바뀌면 old
+  // sibling이 RETIRE되므로, A로 되돌아와도 old conversation을 --conversation으로 잇지 않는다.
+  const dims = [
+    ["modelKey", { modelKey: "gemini-3.7-flash-low" }, { modelKey: "gemini-3.6-flash-low" }],
+    ["permissionMode", { permissionMode: "workspace-write" }, { permissionMode: "workspace-read" }],
+  ];
+  for (const [label, A, B] of dims) {
+    const { adapter, calls } = makeAdapter((i) =>
+      i === 1 ? { conversationId: ID_B, result: { ok: true, text: "B1" } }
+              : { conversationId: ID_A, result: { ok: true, text: "A" } });
+    const rt = createDefaultHarnessRuntime({ agyAdapter: adapter });
+    const r1 = await rt.runTurn({ context: ctx(A), invocation: inv() }).promise;
+    await rt.runTurn({ context: ctx(B), invocation: inv() }).promise;
+    const r3 = await rt.runTurn({ context: ctx(A), invocation: inv() }).promise;
+    assert.equal(convIndex(calls[0].argv), -1, `${label}: A 첫 turn`);
+    assert.equal(convIndex(calls[1].argv), -1, `${label}: B는 다른 conversation(첫 turn)`);
+    assert.equal(convIndex(calls[2].argv), -1, `${label}: switch-back A는 old resume 금지(fresh)`);
+    assert.equal(r1.ok, true);
+    assert.equal(r3.ok, true);
   }
 });
 

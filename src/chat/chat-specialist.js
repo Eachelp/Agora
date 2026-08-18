@@ -157,12 +157,44 @@ class SpecialistMixin {
 
   transitionProfessional(event) {
     if (!this.professionalRun) return { ok: true, state: null };
+    const prevStatus = this.professionalRun.status || null;
     const transition = transitionProfessionalRun(this.professionalRun, event);
     if (!transition.ok) return transition;
     if (!this.setProfessionalRun(transition.state)) {
       return { ok: false, reason: "전문 실행 상태를 저장하지 못했습니다." };
     }
+    this.notifyProfessionalRunBoundary(event, prevStatus, transition.state);
     return transition;
+  }
+
+  // Stage C — canonical terminal transition에서만 harness lifecycle에 run 종료를
+  // 알린다(중복 UI handler 산개 금지: FSM 전이 단일 seam). COMPLETED/INTERRUPTED는
+  // 정상 종료(RETIRE), INVALID는 실행 신뢰 붕괴(INVALIDATE), REPLAN_RESET은 기존
+  // 실행 lineage 폐기(RETIRE)다. WAITING/BLOCKED는 사용자 결정 대기이므로 lifecycle
+  // boundary가 아니다.
+  notifyProfessionalRunBoundary(event, prevStatus, next) {
+    if (!this.harnessLifecycle?.professionalRunEnded || !next?.professionalRunId) return;
+    const eventType = String(event?.type || "").toUpperCase();
+    const terminal =
+      eventType === "REPLAN_RESET" ||
+      (["COMPLETED", "INTERRUPTED", "INVALID"].includes(next.status) && next.status !== prevStatus);
+    if (!terminal) return;
+    this.harnessLifecycle.professionalRunEnded({
+      professionalRunId: next.professionalRunId,
+      invalid: next.status === "INVALID",
+    });
+  }
+
+  // Stage C — checkpoint restore 결과를 harness lifecycle에 반영한다(restore 소비
+  // 지점이 호출; turn-checkpoint 모듈은 lifecycle을 모른다). 성공한 restore는 HEAD가
+  // 같아도 filesystem rewind이므로 반드시 INVALIDATE(WORKSPACE_RESTORED) 대상이고,
+  // mutation이 시작됐을 수 있는 ambiguous 실패도 보수적으로 동일하게 처리한다.
+  // mutation 전에 명확히 끝난 실패(mutated === false)만 기존 세션을 유지한다.
+  notifyWorkspaceRestoreOutcome(result) {
+    if (!this.harnessLifecycle?.workspaceRestored) return;
+    if (result?.ok === true || result?.mutated !== false) {
+      this.harnessLifecycle.workspaceRestored();
+    }
   }
 
   professionalTransitionFailure(stage, transition) {
@@ -2265,6 +2297,7 @@ class SpecialistMixin {
       const result = await this.checkpointEngine.restoreCheckpoint(this.meta.workspace, checkpoint, {
         preservePaths: runGeneratedPaths(workspace, runInfo),
       });
+      this.notifyWorkspaceRestoreOutcome(result);
       if (result?.ok) {
         this.checkpointEngine.cleanupCheckpoint(checkpoint);
         this.clearRecoveryState();
@@ -3073,6 +3106,7 @@ class SpecialistMixin {
           const result = await this.checkpointEngine.restoreCheckpoint(this.meta.workspace, pending.checkpoint, {
             preservePaths,
           });
+          this.notifyWorkspaceRestoreOutcome(result);
           if (!result?.ok) {
             return { ok: false, error: "작업 전 상태로 되돌리지 못했습니다. 변경과 복구 상태를 그대로 유지합니다." };
           }
@@ -3167,6 +3201,7 @@ class SpecialistMixin {
         const result = await this.checkpointEngine.restoreCheckpoint(this.meta.workspace, pending.checkpoint, {
           preservePaths,
         });
+        this.notifyWorkspaceRestoreOutcome(result);
         restored = Boolean(result?.ok);
         if (!restored) {
           return { ok: false, error: "작업 전 상태로 되돌리지 못했습니다. 변경은 그대로 두었습니다." };
