@@ -1218,7 +1218,14 @@ class ChatRoom extends EventEmitter {
     this.pendingTurns.clear();
     this.mentionsMuted = false;
     this.emitTurnState();
-    for (const resolve of this.pendingApprovals.values()) resolve(false);
+    // Stop/interject/reset로 turn을 중지하면 화면에 보이는 모든 승인 카드는 stale하다.
+    // resolver를 부르기 전에 provider-neutral approval-resolved를 내보내 renderer가 카드를
+    // dismiss하게 한다(same-turn action 승인 · legacy whole-turn 승인 공통). 이후 adapter가
+    // 뒤늦게 AbortController를 abort해도 이미 settled라 중복 이벤트는 나오지 않는다.
+    for (const [approvalId, resolve] of this.pendingApprovals) {
+      this.emit("approval-resolved", { approvalId });
+      resolve(false);
+    }
     this.pendingApprovals.clear();
     for (const cancel of this.cancels) {
       try {

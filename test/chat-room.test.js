@@ -3183,3 +3183,82 @@ test("Git 저장소인데 checkpoint 생성이 실패하면 Builder를 시작하
   assert.equal(result.stopReason, "CHECKPOINT_FAILED");
   assert.equal(calls.length, 0, "백업 실패 시 Builder를 호출하지 않아야 한다");
 });
+
+
+// ================= Stage C — provider-neutral 승인 seam lifecycle =================
+
+test("승인 seam: interactive 요청은 approval-request를 내보내고 pendingApprovals에 담긴다", async () => {
+  const room = new ChatRoom({ agents: makeAgents(), runAgent: fakeRunner({}) });
+  const reqs = [];
+  room.on("approval-request", (p) => reqs.push(p));
+  const p = room.requestInteractiveApproval({ id: "codex" }, { summary: "명령 실행", detail: "rm x", scope: "action" });
+  assert.equal(reqs.length, 1);
+  assert.equal(reqs[0].retryScope, "action");
+  assert.equal(reqs[0].summary, "명령 실행");
+  assert.equal(room.pendingApprovals.size, 1);
+  room.resolveApproval(reqs[0].approvalId, "deny");
+  assert.equal(await p, false);
+});
+
+test("승인 seam: stopAllSilently는 pending 승인마다 approval-resolved를 정확히 1회 내보내고 dismiss한다", async () => {
+  const room = new ChatRoom({ agents: makeAgents(), runAgent: fakeRunner({}) });
+  const resolved = [];
+  room.on("approval-resolved", (p) => resolved.push(p.approvalId));
+  let reqId = null;
+  room.on("approval-request", (p) => { reqId = p.approvalId; });
+  const controller = new AbortController();
+  const p = room.requestInteractiveApproval({ id: "codex" }, { summary: "s", detail: "d", scope: "action", signal: controller.signal });
+  assert.equal(room.pendingApprovals.size, 1);
+
+  room.stopAllSilently();
+
+  assert.equal(await p, false, "Stop 시 승인 Promise는 false로 resolve");
+  assert.deepEqual(resolved, [reqId], "approval-resolved는 해당 approvalId로 정확히 1회");
+  assert.equal(room.pendingApprovals.size, 0, "pendingApprovals 비워짐");
+  assert.equal(room.resolveApproval(reqId, "approve"), false, "late resolveApproval은 no-op(false)");
+
+  // adapter가 뒤늦게 AbortController를 abort해도 이미 settled -> 중복 approval-resolved 없음
+  controller.abort();
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(resolved, [reqId], "abort 후 중복 approval-resolved 없음");
+});
+
+test("승인 seam: interject 경로도 pending 승인을 dismiss한다(stale 승인 없음)", async () => {
+  const room = new ChatRoom({ agents: makeAgents(), runAgent: fakeRunner({}) });
+  const resolved = [];
+  room.on("approval-resolved", (p) => resolved.push(p.approvalId));
+  let reqId = null;
+  room.on("approval-request", (p) => { reqId = p.approvalId; });
+  const p = room.requestInteractiveApproval({ id: "codex" }, { summary: "s", detail: "d", scope: "action" });
+  room.interject();
+  assert.equal(await p, false);
+  assert.deepEqual(resolved, [reqId]);
+  assert.equal(room.pendingApprovals.size, 0);
+});
+
+test("승인 seam: 정상 approve/deny는 approval-resolved를 내보내지 않는다(클라이언트 dismiss)", async () => {
+  const room = new ChatRoom({ agents: makeAgents(), runAgent: fakeRunner({}) });
+  const resolved = [];
+  room.on("approval-resolved", (p) => resolved.push(p.approvalId));
+  let reqId = null;
+  room.on("approval-request", (p) => { reqId = p.approvalId; });
+  const p = room.requestInteractiveApproval({ id: "codex" }, { summary: "s", detail: "d", scope: "action" });
+  assert.equal(room.resolveApproval(reqId, "approve"), true);
+  assert.equal(await p, true, "approve -> Promise true");
+  assert.equal(resolved.length, 0, "정상 결정은 approval-resolved를 내보내지 않는다");
+  assert.equal(room.pendingApprovals.size, 0);
+});
+
+test("승인 seam: legacy whole-turn requestApproval도 stopAllSilently에서 approval-resolved로 dismiss된다", async () => {
+  const room = new ChatRoom({ agents: makeAgents(), runAgent: fakeRunner({}) });
+  const resolved = [];
+  room.on("approval-resolved", (p) => resolved.push(p.approvalId));
+  let reqId = null;
+  room.on("approval-request", (p) => { reqId = p.approvalId; });
+  const p = room.requestApproval({ id: "codex" }, { summary: "명령 권한" }); // legacy whole-turn seam
+  assert.equal(room.pendingApprovals.size, 1);
+  room.stopAllSilently();
+  assert.equal(await p, false);
+  assert.deepEqual(resolved, [reqId]);
+  assert.equal(room.pendingApprovals.size, 0);
+});
