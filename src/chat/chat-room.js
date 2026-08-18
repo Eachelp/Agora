@@ -463,6 +463,44 @@ class ChatRoom extends EventEmitter {
     return true;
   }
 
+  // Stage C — provider-neutral same-turn approval seam. harness adapter가 실행 중 특정 action
+  // 승인을 요청할 때(예: Codex on-request) 호출한다. native protocol id(threadId/turnId/
+  // requestId/method)는 전혀 노출하지 않고 { summary, detail, scope, signal }만 받는다. 기존
+  // approval UI(approval-request/resolveApproval)를 재사용한다. signal이 abort되면(=turn
+  // 종료/취소) 카드를 dismiss하고 더 이상 승인 가능 상태로 두지 않는다(late accept 금지).
+  requestInteractiveApproval(agent, request = {}, generation = this.generation) {
+    if (generation !== this.generation) return Promise.resolve(false);
+    const signal = request.signal;
+    if (signal && signal.aborted) return Promise.resolve(false);
+    this.approvalSeq += 1;
+    const approvalId = `a${this.sessionId || "s"}-${this.approvalSeq}`;
+    const scope = request.scope === "action" ? "action" : "turn";
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (decision) => {
+        if (settled) return;
+        settled = true;
+        if (this.pendingApprovals.get(approvalId) === finish) this.pendingApprovals.delete(approvalId);
+        resolve(Boolean(decision));
+      };
+      this.pendingApprovals.set(approvalId, finish);
+      this.emit("approval-request", {
+        approvalId,
+        agentId: agent.id,
+        summary: request.summary || "도구 실행 권한이 필요합니다.",
+        detail: request.detail || "",
+        retryScope: scope,
+      });
+      if (signal) {
+        signal.addEventListener("abort", () => {
+          if (settled) return;
+          this.emit("approval-resolved", { approvalId });
+          finish(false);
+        }, { once: true });
+      }
+    });
+  }
+
   // 방 전체 단일 턴 큐. 일반 응답과 멘션 호출은 대기 중인 같은 에이전트의
   // 턴을 공유해, 한 릴레이에서 같은 발언권이 중복 예약되지 않게 합니다.
   scheduleResponse(agent, context = {}) {
@@ -771,6 +809,10 @@ class ChatRoom extends EventEmitter {
           autoApprove: context.specialist
             ? permissionMode === "workspace-write" && (agent.autoApprove || approvedRetry)
             : agent.autoApprove || approvedRetry,
+          // Stage C — same-turn approval seam(provider-neutral). harness가 지원하면 실행 중
+          // action 승인을 이 콜백으로 요청한다. 미지원 provider는 이 콜백을 무시하고 기존
+          // approvalRequired -> whole-turn retry 경로를 그대로 쓴다.
+          requestApproval: (req) => this.requestInteractiveApproval(agent, req, generation),
         });
         this.cancels.add(run.cancel);
         result = await run.promise;

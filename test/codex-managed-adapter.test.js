@@ -36,7 +36,7 @@ function makeFakeClient() {
       if (method === "turn/interrupt") { this.interrupts.push(params); return Promise.resolve({}); }
       return Promise.resolve({});
     },
-    respond(id, result) { this.responses.push({ id, result }); return true; },
+    respond(id, result) { this.responses.push({ id, result }); return this.failRespond ? false : true; },
     notify() { return true; },
     close() { this.state = "closed"; this.closed = true; },
     emit(method, params) { this._notify(method, params); },
@@ -81,6 +81,28 @@ function inv(over = {}) {
   return { commandPath: "codex", needsShell: false, prompt: "작업", cwd: REAL_TMP, requireFinal: true, ...over };
 }
 const session = (key, generation = 1) => ({ key, generation });
+
+// provider-neutral same-turn approval 콜백 모의. 각 요청을 rec로 기록하고 test가 approve/
+// deny로 resolve한다. signal abort는 rec.aborted로만 관측(promise는 resolve하지 않음 = 실제
+// UI가 answer 없이 dismiss되는 상황을 모사).
+function makeApprover() {
+  const calls = [];
+  const requestApproval = (req) => new Promise((resolve) => {
+    const rec = { req, resolve, aborted: false };
+    if (req && req.signal) {
+      if (req.signal.aborted) rec.aborted = true;
+      else req.signal.addEventListener("abort", () => { rec.aborted = true; }, { once: true });
+    }
+    calls.push(rec);
+  });
+  return {
+    requestApproval,
+    calls,
+    approve: (i = 0) => calls[i].resolve(true),
+    deny: (i = 0) => calls[i].resolve(false),
+  };
+}
+const cmdApprovalParams = (t, over = {}) => ({ threadId: t.threadId, turnId: t.id, itemId: "c1", command: "cmd", commandActions: [{ type: "unknown", command: "cmd" }], ...over });
 
 async function completeTurn(client, threadId, turnId, { finalText = "최종", deltas = [], commands = [], status = "completed" } = {}) {
   for (const d of deltas) client.emit("item/agentMessage/delta", { threadId, turnId, itemId: "m", delta: d });
@@ -280,25 +302,375 @@ test("53b turnId 확보 전 cancel race: turnId 확보 즉시 interrupt", async 
   assert.equal(client.interrupts[0].turnId, client.turnsIssued[0].id);
 });
 
-test("54 approval: safe deny 응답 + approvalRequired 반환, 그리고 replay-required thread 재사용 금지", async () => {
+// ================= Stage C — Codex same-turn approval =================
+
+async function startAppr(key, approver, ctxOver = {}, invOver = {}) {
   const { adapter, getClient } = makeAdapter();
-  const run = adapter.runTurn({ context: ctx(), invocation: inv(), session: session("appr") });
+  const run = adapter.runTurn({
+    context: ctx(ctxOver),
+    invocation: inv({ requestApproval: approver.requestApproval, ...invOver }),
+    session: session(key),
+  });
+  await waitUntil(() => getClient() && countTurnStarts(getClient()) >= 1);
+  const client = getClient();
+  return { adapter, getClient, run, client, t: client.turnsIssued[client.turnsIssued.length - 1] };
+}
+
+test("policy: 대화형 workspace-write turn은 turn/start에 on-request + approvalsReviewer=user를 싣는다", async () => {
+  const approver = makeApprover();
+  const { run, client, t } = await startAppr("pol", approver);
+  const ts = client.requests.find((r) => r.method === "turn/start");
+  assert.equal(ts.params.approvalPolicy, "on-request");
+  assert.equal(ts.params.approvalsReviewer, "user");
+  assert.equal(ts.params.sandboxPolicy.type, "workspaceWrite");
+  await completeTurn(client, t.threadId, t.id, { finalText: "ok" });
+  await run.promise;
+});
+
+test("G/H/I/J command approve: deny-first 없음 -> accept 응답(same id) -> interrupt/finalize/새 turn 없음 -> same T/U 완료", async () => {
+  const approver = makeApprover();
+  const { run, client, t } = await startAppr("g", approver);
+  client.emit("item/started", { threadId: t.threadId, turnId: t.id, item: { type: "commandExecution", id: "c1", command: "rm x" } });
+  client.serverRequest(11, "item/commandExecution/requestApproval", cmdApprovalParams(t, { itemId: "c1", command: "rm x" }));
+  await waitUntil(() => approver.calls.length >= 1);
+  assert.equal(approver.calls[0].req.scope, "action");
+  assert.equal(client.responses.length, 0, "human 결정 전에는 응답하지 않는다(deny-first 제거)");
+  approver.approve(0);
+  await waitUntil(() => client.responses.length >= 1);
+  assert.deepEqual(client.responses[0], { id: 11, result: { decision: "accept" } });
+  assert.equal(client.interrupts.length, 0, "정상 승인은 interrupt 없음");
+  assert.equal(countTurnStarts(client), 1, "새 turn/start 없음");
+  assert.equal(countThreadStarts(client), 1, "새 thread/start 없음");
+  client.emit("item/completed", { threadId: t.threadId, turnId: t.id, item: { type: "commandExecution", id: "c1", command: "rm x", exitCode: 0 } });
+  await completeTurn(client, t.threadId, t.id, { finalText: "done" });
+  const r = await run.promise;
+  assert.equal(r.ok, true);
+  assert.equal(r.text, "done");
+  assert.equal(r.approvalRequired, undefined, "same-turn 승인은 approvalRequired를 반환하지 않는다");
+  assert.equal(client.turnsIssued.length, 1, "turnId 하나로 완료");
+});
+
+test("K/L/M command deny: decline(ONE action) 응답 -> whole-turn cancel 아님(interrupt 없음) -> 같은 turn 계속 완료", async () => {
+  const approver = makeApprover();
+  const { run, client, t } = await startAppr("k", approver);
+  client.serverRequest(12, "item/commandExecution/requestApproval", cmdApprovalParams(t));
+  await waitUntil(() => approver.calls.length >= 1);
+  approver.deny(0);
+  await waitUntil(() => client.responses.length >= 1);
+  assert.deepEqual(client.responses[0], { id: 12, result: { decision: "decline" } });
+  assert.equal(client.interrupts.length, 0, "deny는 whole-turn cancel/interrupt가 아니다");
+  await completeTurn(client, t.threadId, t.id, { finalText: "continued" });
+  assert.equal((await run.promise).text, "continued");
+});
+
+test("N/O/P file approve: item/started 변경 경로 context -> detail 노출 -> accept -> 같은 turn 계속", async () => {
+  const approver = makeApprover();
+  const { run, client, t } = await startAppr("file", approver);
+  client.emit("item/started", { threadId: t.threadId, turnId: t.id, item: { type: "fileChange", id: "f1", changes: [{ path: "src/a.js", kind: "update", diff: "d" }, { path: "b.txt", kind: "add", diff: "d" }], status: "inProgress" } });
+  client.serverRequest(21, "item/fileChange/requestApproval", { threadId: t.threadId, turnId: t.id, itemId: "f1", reason: "쓰기" });
+  await waitUntil(() => approver.calls.length >= 1);
+  assert.match(approver.calls[0].req.detail, /src\/a\.js/);
+  assert.match(approver.calls[0].req.detail, /b\.txt/);
+  approver.approve(0);
+  await waitUntil(() => client.responses.length >= 1);
+  assert.deepEqual(client.responses[0], { id: 21, result: { decision: "accept" } });
+  await completeTurn(client, t.threadId, t.id, { finalText: "wrote" });
+  assert.equal((await run.promise).text, "wrote");
+});
+
+test("Q/R file: deny -> decline; 변경 context 없는 fileChange는 blind 금지 -> human 없이 safe decline", async () => {
+  const a1 = makeApprover();
+  const s1 = await startAppr("fq", a1);
+  s1.client.emit("item/started", { threadId: s1.t.threadId, turnId: s1.t.id, item: { type: "fileChange", id: "f1", changes: [{ path: "z.js", kind: "update", diff: "d" }], status: "inProgress" } });
+  s1.client.serverRequest(22, "item/fileChange/requestApproval", { threadId: s1.t.threadId, turnId: s1.t.id, itemId: "f1" });
+  await waitUntil(() => a1.calls.length >= 1);
+  a1.deny(0);
+  await waitUntil(() => s1.client.responses.length >= 1);
+  assert.deepEqual(s1.client.responses[0], { id: 22, result: { decision: "decline" } });
+  await completeTurn(s1.client, s1.t.threadId, s1.t.id, { finalText: "ok" });
+  await s1.run.promise;
+
+  const a2 = makeApprover();
+  const s2 = await startAppr("fr", a2);
+  s2.client.serverRequest(23, "item/fileChange/requestApproval", { threadId: s2.t.threadId, turnId: s2.t.id, itemId: "unknown", reason: "쓰기" });
+  await waitUntil(() => s2.client.responses.length >= 1);
+  assert.deepEqual(s2.client.responses[0], { id: 23, result: { decision: "decline" } });
+  assert.equal(a2.calls.length, 0, "blind file은 human prompt를 띄우지 않는다");
+  await completeTurn(s2.client, s2.t.threadId, s2.t.id, { finalText: "ok" });
+  await s2.run.promise;
+});
+
+test("S sequential: 같은 T/U에서 approve -> deny -> 완료. callback 2, turn/start 1, interrupt 0, one RunMetrics", async () => {
+  const approver = makeApprover();
+  const { run, client, t } = await startAppr("seq", approver);
+  client.serverRequest(31, "item/commandExecution/requestApproval", cmdApprovalParams(t, { itemId: "c1", command: "cmd1" }));
+  await waitUntil(() => approver.calls.length >= 1);
+  approver.approve(0);
+  await waitUntil(() => client.responses.length >= 1);
+  client.serverRequest(32, "item/commandExecution/requestApproval", cmdApprovalParams(t, { itemId: "c2", command: "cmd2" }));
+  await waitUntil(() => approver.calls.length >= 2);
+  approver.deny(1);
+  await waitUntil(() => client.responses.length >= 2);
+  assert.deepEqual(client.responses[0].result, { decision: "accept" });
+  assert.deepEqual(client.responses[1].result, { decision: "decline" });
+  await completeTurn(client, t.threadId, t.id, { finalText: "final" });
+  const r = await run.promise;
+  assert.equal(approver.calls.length, 2);
+  assert.equal(countTurnStarts(client), 1);
+  assert.equal(countThreadStarts(client), 1);
+  assert.equal(client.interrupts.length, 0);
+  assert.equal(r.runMetrics.stopReason, "COMPLETED");
+});
+
+test("T/U stale routing: wrong thread / wrong turn approval은 human 없이 safe decline, 현재 turn 불변", async () => {
+  const approver = makeApprover();
+  const { run, client, t } = await startAppr("stale", approver);
+  client.serverRequest(41, "item/commandExecution/requestApproval", cmdApprovalParams(t, { threadId: "other-thread" }));
+  client.serverRequest(42, "item/commandExecution/requestApproval", cmdApprovalParams(t, { turnId: "other-turn" }));
+  await waitUntil(() => client.responses.length >= 2);
+  assert.equal(approver.calls.length, 0, "stale은 human prompt 없음");
+  for (const resp of client.responses) assert.deepEqual(resp.result, { decision: "decline" });
+  assert.equal(client.interrupts.length, 0, "stale은 현재 turn을 interrupt하지 않는다");
+  await completeTurn(client, t.threadId, t.id, { finalText: "ok" });
+  assert.equal((await run.promise).text, "ok");
+});
+
+test("V stale after finalize: 종료된 turn에 늦게 온 approval은 human 없이 safe decline", async () => {
+  const approver = makeApprover();
+  const { run, client, t } = await startAppr("v", approver);
+  await completeTurn(client, t.threadId, t.id, { finalText: "done" });
+  const r = await run.promise;
+  const before = client.responses.length;
+  client.serverRequest(51, "item/commandExecution/requestApproval", cmdApprovalParams(t));
+  assert.equal(approver.calls.length, 0);
+  assert.equal(client.responses.length, before + 1);
+  assert.deepEqual(client.responses[before].result, { decision: "decline" });
+  assert.equal(r.text, "done");
+});
+
+test("W/X/Y serverRequest/resolved: pending 제거 + UI abort, late approve는 accept 안 함, 중복 resolved idempotent", async () => {
+  const approver = makeApprover();
+  const { run, client, t } = await startAppr("res", approver);
+  client.serverRequest(61, "item/commandExecution/requestApproval", cmdApprovalParams(t));
+  await waitUntil(() => approver.calls.length >= 1);
+  client.emit("serverRequest/resolved", { threadId: t.threadId, requestId: 61 });
+  await waitUntil(() => approver.calls[0].aborted === true);
+  client.emit("serverRequest/resolved", { threadId: t.threadId, requestId: 61 }); // idempotent
+  approver.approve(0); // late
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(client.responses.length, 0, "resolved 이후 late approve는 accept 응답을 보내지 않는다");
+  await completeTurn(client, t.threadId, t.id, { finalText: "ok" });
+  await run.promise;
+});
+
+test("Z/AA cancel while pending: human 무효화 + late accept 없음 + native cancel best-effort + interrupt", async () => {
+  const approver = makeApprover();
+  const { run, client, t } = await startAppr("cxl", approver);
+  client.serverRequest(71, "item/commandExecution/requestApproval", cmdApprovalParams(t));
+  await waitUntil(() => approver.calls.length >= 1);
+  run.cancel();
+  await waitUntil(() => client.interrupts.length >= 1);
+  client.emit("turn/completed", { threadId: t.threadId, turn: { id: t.id, status: "interrupted" } });
+  const r = await run.promise;
+  approver.approve(0); // late
+  await new Promise((rs) => setTimeout(rs, 10));
+  assert.equal(r.cancelled, true);
+  assert.ok(approver.calls[0].aborted, "human UI abort");
+  const accepts = client.responses.filter((x) => x.result && x.result.decision === "accept");
+  assert.equal(accepts.length, 0, "취소 후 accept 절대 없음");
+  const cancels = client.responses.filter((x) => x.id === 71 && x.result && x.result.decision === "cancel");
+  assert.equal(cancels.length, 1, "미응답 native 요청에 whole-turn cancel best-effort");
+});
+
+test("AB timeout while pending: timeout verdict 유지 + late accept 없음 + handle invalidate", async () => {
+  const approver = makeApprover();
+  const { adapter, run, client, t } = await startAppr("to", approver, {}, { timeoutMs: 40 });
+  client.serverRequest(81, "item/commandExecution/requestApproval", cmdApprovalParams(t));
+  await waitUntil(() => approver.calls.length >= 1);
+  await new Promise((r) => setTimeout(r, 90)); // ref'd keepalive past timeout
+  const r = await run.promise;
+  approver.approve(0); // late
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(r.timedOut, true);
+  const accepts = client.responses.filter((x) => x.result && x.result.decision === "accept");
+  assert.equal(accepts.length, 0, "timeout 후 late accept 금지");
+  // handle invalidated -> 다음 turn fail-closed
+  const r2 = await adapter.runTurn({ context: ctx(), invocation: inv({ requestApproval: approver.requestApproval }), session: session("to") }).promise;
+  assert.equal(r2.ok, false);
+});
+
+test("AC output-limit while pending: output-limit verdict 유지 + late accept 없음", async () => {
+  const approver = makeApprover();
+  const { run, client, t } = await startAppr("ol", approver, {}, { hardOutputLimitBytes: 10 });
+  client.serverRequest(82, "item/commandExecution/requestApproval", cmdApprovalParams(t));
+  await waitUntil(() => approver.calls.length >= 1);
+  // 큰 notification으로 hard output-limit 초과 유도(_noteActivity에서 강제 finalize)
+  client.emit("item/agentMessage/delta", { threadId: t.threadId, turnId: t.id, itemId: "m", delta: "x".repeat(200) });
+  const r = await run.promise;
+  approver.approve(0); // late
+  await new Promise((rs) => setTimeout(rs, 10));
+  assert.equal(r.outputLimited, true);
+  const accepts = client.responses.filter((x) => x.result && x.result.decision === "accept");
+  assert.equal(accepts.length, 0, "output-limit 후 late accept 금지");
+});
+
+test("AD app-server close while pending: human 취소 + late 무효 + continuity-loss + handle invalidate", async () => {
+  const approver = makeApprover();
+  const { adapter, run, client, t } = await startAppr("cl", approver);
+  client.serverRequest(91, "item/commandExecution/requestApproval", cmdApprovalParams(t));
+  await waitUntil(() => approver.calls.length >= 1);
+  client.die("CODEX_SESSION_LOST");
+  const r = await run.promise;
+  approver.approve(0); // late (client dead)
+  await new Promise((rs) => setTimeout(rs, 10));
+  assert.equal(r.ok, false);
+  assert.equal(r.stopReason, "CODEX_SESSION_LOST");
+  const accepts = client.responses.filter((x) => x.result && x.result.decision === "accept");
+  assert.equal(accepts.length, 0, "close 후 accept 없음");
+  const r2 = await adapter.runTurn({ context: ctx(), invocation: inv({ requestApproval: approver.requestApproval }), session: session("cl") }).promise;
+  assert.equal(r2.ok, false, "죽은 연결 재사용 fail-closed");
+});
+
+test("AE/AF callback error/absent: 자동 승인 금지 -> safe decline", async () => {
+  const throwing = { requestApproval: () => { throw new Error("boom"); } };
+  const { adapter, getClient } = makeAdapter();
+  const run = adapter.runTurn({ context: ctx(), invocation: inv({ requestApproval: throwing.requestApproval }), session: session("ae") });
   await waitUntil(() => getClient() && countTurnStarts(getClient()) >= 1);
   const client = getClient();
   const t = client.turnsIssued[0];
-  client.serverRequest(99, "item/commandExecution/requestApproval", { threadId: t.threadId, turnId: t.id, command: ["rm", "x"], cwd: REAL_TMP, reason: "삭제" });
-  const r = await run.promise;
-  assert.equal(r.approvalRequired, true);
-  assert.match(r.approval.summary, /rm x/);
-  assert.deepEqual(client.responses[0], { id: 99, result: { decision: "cancel" } });
+  client.serverRequest(101, "item/commandExecution/requestApproval", cmdApprovalParams(t));
+  await waitUntil(() => client.responses.length >= 1);
+  assert.deepEqual(client.responses[0].result, { decision: "decline" }, "throw는 자동 승인이 아니라 safe decline");
+  await completeTurn(client, t.threadId, t.id, { finalText: "ok" });
+  await run.promise;
 
-  // approved whole-turn retry(같은 session) -> 기존 thread 재사용 안 함(새 thread/start)
-  const retry = adapter.runTurn({ context: ctx({ autoApprove: true }), invocation: inv(), session: session("appr") });
+  // 콜백 부재: never policy지만 방어적으로 요청이 와도 safe decline
+  const { adapter: a2, getClient: g2 } = makeAdapter();
+  const run2 = a2.runTurn({ context: ctx(), invocation: inv(), session: session("af") });
+  await waitUntil(() => g2() && countTurnStarts(g2()) >= 1);
+  const c2 = g2();
+  const t2 = c2.turnsIssued[0];
+  c2.serverRequest(102, "item/commandExecution/requestApproval", cmdApprovalParams(t2));
+  await waitUntil(() => c2.responses.length >= 1);
+  assert.deepEqual(c2.responses[0].result, { decision: "decline" });
+  await completeTurn(c2, t2.threadId, t2.id, { finalText: "ok" });
+  await run2.promise;
+});
+
+test("AG/AH permissions request: full grant 없이 빈 grant + turn scope로 safe-deny(session/human 아님)", async () => {
+  const approver = makeApprover();
+  const { run, client, t } = await startAppr("perm", approver);
+  client.serverRequest(111, "item/permissions/requestApproval", { threadId: t.threadId, turnId: t.id, itemId: "p1", permissions: { network: { enabled: true }, fileSystem: null } });
+  await waitUntil(() => client.responses.length >= 1);
+  assert.deepEqual(client.responses[0].result, { permissions: {}, scope: "turn" });
+  assert.equal(approver.calls.length, 0, "permissions는 boolean human 승인 대상이 아니다");
+  await completeTurn(client, t.threadId, t.id, { finalText: "ok" });
+  await run.promise;
+});
+
+test("AK duplicate request id: human prompt/accept 각각 최대 1회", async () => {
+  const approver = makeApprover();
+  const { run, client, t } = await startAppr("dup", approver);
+  client.serverRequest(121, "item/commandExecution/requestApproval", cmdApprovalParams(t));
+  client.serverRequest(121, "item/commandExecution/requestApproval", cmdApprovalParams(t)); // duplicate id
+  await waitUntil(() => approver.calls.length >= 1);
+  assert.equal(approver.calls.length, 1, "중복 id는 두 번째 prompt를 만들지 않는다");
+  approver.approve(0);
+  await waitUntil(() => client.responses.length >= 1);
+  assert.equal(client.responses.filter((r) => r.id === 121).length, 1, "중복 id 응답도 1회");
+  await completeTurn(client, t.threadId, t.id, { finalText: "ok" });
+  await run.promise;
+});
+
+test("AL 두 distinct pending id: 상태 교차/overwrite 없이 각자 정확히 응답", async () => {
+  const approver = makeApprover();
+  const { run, client, t } = await startAppr("two", approver);
+  client.serverRequest(131, "item/commandExecution/requestApproval", cmdApprovalParams(t, { itemId: "c1", command: "cmd1" }));
+  client.serverRequest(132, "item/commandExecution/requestApproval", cmdApprovalParams(t, { itemId: "c2", command: "cmd2" }));
+  await waitUntil(() => approver.calls.length >= 2);
+  approver.approve(1); // 2번째 요청(132) 승인
+  approver.deny(0);    // 1번째 요청(131) 거절
+  await waitUntil(() => client.responses.length >= 2);
+  const byId = Object.fromEntries(client.responses.map((r) => [r.id, r.result.decision]));
+  assert.equal(byId[131], "decline");
+  assert.equal(byId[132], "accept");
+  await completeTurn(client, t.threadId, t.id, { finalText: "ok" });
+  await run.promise;
+});
+
+test("AO approve 후 같은 handle의 다음 turn은 기존 thread를 재사용한다(새 thread 강제 없음)", async () => {
+  const approver = makeApprover();
+  const { adapter, run, client, t } = await startAppr("re", approver);
+  client.serverRequest(141, "item/commandExecution/requestApproval", cmdApprovalParams(t));
+  await waitUntil(() => approver.calls.length >= 1);
+  approver.approve(0);
+  await waitUntil(() => client.responses.length >= 1);
+  await completeTurn(client, t.threadId, t.id, { finalText: "one" });
+  await run.promise;
+  const run2 = adapter.runTurn({ context: ctx(), invocation: inv({ requestApproval: approver.requestApproval }), session: session("re") });
   await waitUntil(() => countTurnStarts(client) >= 2);
-  assert.equal(countThreadStarts(client), 2, "approval thread는 재사용하지 않고 새 thread 생성");
+  assert.equal(countThreadStarts(client), 1, "approval 후에도 새 thread를 강제하지 않는다");
   const t2 = client.turnsIssued[1];
-  await completeTurn(client, t2.threadId, t2.id, { finalText: "retried" });
-  assert.equal((await retry.promise).text, "retried");
+  assert.equal(t2.threadId, t.threadId, "같은 thread 재사용");
+  await completeTurn(client, t2.threadId, t2.id, { finalText: "two" });
+  assert.equal((await run2.promise).text, "two");
+});
+
+test("AP/AQ/AR Evidence/RunMetrics continuity: 승인 전후 command가 한 Evidence에, RunMetrics는 하나", async () => {
+  const approver = makeApprover();
+  const events = [];
+  const { adapter, getClient } = makeAdapter();
+  const run = adapter.runTurn({ context: ctx(), invocation: inv({ requestApproval: approver.requestApproval, onEvent: (e) => events.push(e) }), session: session("ev") });
+  await waitUntil(() => getClient() && countTurnStarts(getClient()) >= 1);
+  const client = getClient();
+  const t = client.turnsIssued[0];
+  client.emit("item/started", { threadId: t.threadId, turnId: t.id, item: { type: "commandExecution", id: "c1", command: "cmd1" } });
+  client.emit("item/completed", { threadId: t.threadId, turnId: t.id, item: { type: "commandExecution", id: "c1", command: "cmd1", exitCode: 0 } });
+  client.serverRequest(151, "item/commandExecution/requestApproval", cmdApprovalParams(t, { itemId: "c2", command: "cmd2" }));
+  await waitUntil(() => approver.calls.length >= 1);
+  approver.approve(0);
+  await waitUntil(() => client.responses.length >= 1);
+  client.emit("item/started", { threadId: t.threadId, turnId: t.id, item: { type: "commandExecution", id: "c2", command: "cmd2" } });
+  client.emit("item/completed", { threadId: t.threadId, turnId: t.id, item: { type: "commandExecution", id: "c2", command: "cmd2", exitCode: 0 } });
+  await completeTurn(client, t.threadId, t.id, { finalText: "final" });
+  const r = await run.promise;
+  assert.ok(r.evidence, "evidence 존재");
+  assert.equal(r.evidence.commandSummary.total, 2, "승인 전후 command가 한 Evidence에");
+  const metricEvents = events.filter((e) => e.kind === "run-metrics");
+  assert.equal(metricEvents.length, 1, "RunMetrics는 하나(invocation 당)");
+  assert.equal(r.runMetrics.stopReason, "COMPLETED");
+});
+
+test("AK2 이미 응답한 request id 재전송은 재prompt/재응답 없음(idempotent, §duplicate)", async () => {
+  const approver = makeApprover();
+  const { run, client, t } = await startAppr("dup2", approver);
+  client.serverRequest(161, "item/commandExecution/requestApproval", cmdApprovalParams(t));
+  await waitUntil(() => approver.calls.length >= 1);
+  approver.approve(0);
+  await waitUntil(() => client.responses.length >= 1);
+  assert.deepEqual(client.responses[0], { id: 161, result: { decision: "accept" } });
+  client.serverRequest(161, "item/commandExecution/requestApproval", cmdApprovalParams(t)); // 재전송
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(approver.calls.length, 1, "응답완료 id 재전송은 재prompt하지 않는다");
+  assert.equal(client.responses.filter((x) => x.id === 161).length, 1, "재응답 없음");
+  await completeTurn(client, t.threadId, t.id, { finalText: "ok" });
+  await run.promise;
+});
+
+test("§53 turn/completed가 approval 대기 중 먼저 오면 late accept 없이 정상 finalize + pending cleanup", async () => {
+  const approver = makeApprover();
+  const { run, client, t } = await startAppr("tcp", approver);
+  client.serverRequest(171, "item/commandExecution/requestApproval", cmdApprovalParams(t));
+  await waitUntil(() => approver.calls.length >= 1);
+  await completeTurn(client, t.threadId, t.id, { finalText: "done" }); // 비정상 race
+  const r = await run.promise;
+  approver.approve(0); // late
+  await new Promise((rs) => setTimeout(rs, 10));
+  assert.equal(r.ok, true);
+  assert.equal(r.text, "done", "정상 finalize authority 유지");
+  assert.ok(approver.calls[0].aborted, "pending human UI dismiss");
+  const accepts = client.responses.filter((x) => x.result && x.result.decision === "accept");
+  assert.equal(accepts.length, 0, "turn 완료 후 late accept 없음");
 });
 
 test("54b autoApprove는 turn/start의 sandboxPolicy=dangerFullAccess로 명시 반영", async () => {

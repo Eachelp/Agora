@@ -47,6 +47,7 @@ function mapCodexTurnPolicy(input = {}, deps = {}) {
   const realpath = typeof deps.realpath === "function" ? deps.realpath : fs.realpathSync;
   const permissionMode = input.permissionMode;
   const autoApprove = Boolean(input.autoApprove);
+  const interactiveApproval = Boolean(input.interactiveApproval);
   const cwd = input.cwd;
   const workspaceId = input.workspaceId || null;
 
@@ -54,11 +55,12 @@ function mapCodexTurnPolicy(input = {}, deps = {}) {
     throw new CodexPolicyError("CODEX_TURN_START_FAILED", "실행 cwd가 없습니다.");
   }
 
-  // Agora는 대화형 승인을 turn 도중 수행하지 않는다.
+  // 기본: turn 도중 대화형 승인을 하지 않는다(read-only 단계·autoApprove·승인 콜백 부재).
   const approvalPolicy = "never";
 
   if (permissionMode === "chat") {
-    // workspace를 cwd로 노출하지 않는다(Recorder 등 chat permission 포함).
+    // workspace를 cwd로 노출하지 않는다(Recorder 등 chat permission 포함). read-only 단계는
+    // 승인 UI를 통해 workspace-write로 승격되지 않는다(approvalPolicy never 고정).
     return { cwd, approvalPolicy, sandboxPolicy: { type: "readOnly" } };
   }
 
@@ -81,13 +83,28 @@ function mapCodexTurnPolicy(input = {}, deps = {}) {
   }
 
   if (permissionMode === "workspace-read") {
+    // read-only 단계(Planner/Reviewer 등)는 승인 escalation을 열지 않는다.
     return { cwd, approvalPolicy, sandboxPolicy: { type: "readOnly" } };
   }
   // workspace-write
   if (autoApprove) {
-    // 기존 --dangerously-bypass-approvals-and-sandbox 등가.
+    // 기존 --dangerously-bypass-approvals-and-sandbox 등가(danger/full-access 유지).
     return { cwd, approvalPolicy, sandboxPolicy: { type: "dangerFullAccess" } };
   }
+  if (interactiveApproval) {
+    // workspace-write + autoApprove=false + 사용자 승인 콜백 존재: Codex가 실행 중 특정
+    // action 승인을 요청할 수 있게 on-request로 연다(설치 스키마 AskForApproval). 승인은
+    // 항상 Agora 사용자에게 route한다(approvalsReviewer="user"). sandbox는 danger가 아니라
+    // workspaceWrite 그대로다(승인은 sandbox 우회가 아니라 provider가 요청한 개별 escalation).
+    return {
+      cwd,
+      approvalPolicy: "on-request",
+      approvalsReviewer: "user",
+      sandboxPolicy: { type: "workspaceWrite", writableRoots: [cwd], networkAccess: false },
+    };
+  }
+  // workspace-write지만 사용자 승인 콜백이 없다: fail-safe. 승인 요청을 조용히 자동 승인하지
+  // 않도록 approvalPolicy를 never로 유지한다(요청이 와도 adapter가 safe-decline).
   return {
     cwd,
     approvalPolicy,
@@ -114,7 +131,10 @@ function denyResponseFor(method) {
     case "applyPatchApproval":
       return { decision: "abort" };
     case "item/permissions/requestApproval":
-      return { permissions: {} };
+      // 설치 스키마 PermissionsRequestApprovalResponse는 { permissions, scope } 필수.
+      // 어떤 추가 권한도 grant하지 않고(빈 profile) turn scope로 fail-closed한다(§ granular
+      // permission UI는 별도 future scope). session-persistent grant를 임의 생성하지 않는다.
+      return { permissions: {}, scope: "turn" };
     case "item/tool/requestUserInput":
       return { answers: [] };
     case "mcpServer/elicitation/request":
@@ -158,6 +178,73 @@ function approvalSummaryFrom(method, params = {}) {
   return { summary: boundedText(summary, 300), detail: boundedText(detailParts.join("\n"), 2000) };
 }
 
+// 지원되는 same-turn approval 분류(설치 스키마 ServerRequest union 기준):
+//   command : item/commandExecution/requestApproval  (사용자 same-turn 승인 대상)
+//   file    : item/fileChange/requestApproval          (사용자 same-turn 승인 대상)
+//   permissions : item/permissions/requestApproval     (granular grant; boolean 아님 → safe-deny)
+//   legacy  : execCommandApproval / applyPatchApproval  (v1; 기존 safe-deny 유지)
+//   other   : 승인이 아닌 infra 요청(user-input/elicitation/tool-call/attestation 등)
+function classifyApprovalRequest(method) {
+  switch (method) {
+    case "item/commandExecution/requestApproval": return "command";
+    case "item/fileChange/requestApproval": return "file";
+    case "item/permissions/requestApproval": return "permissions";
+    case "execCommandApproval":
+    case "applyPatchApproval": return "legacy";
+    default: return "other";
+  }
+}
+
+// command/file approval의 one-shot decision 응답(설치 스키마 Command/FileChangeApprovalDecision):
+//   approve ONE action = "accept", deny ONE action = "decline", whole-turn = "cancel".
+//   "acceptForSession"(session-persistent)은 일반 승인 버튼에 매핑하지 않는다.
+function approvalDecisionResponse(method, decision) {
+  const cls = classifyApprovalRequest(method);
+  if (cls !== "command" && cls !== "file") return null;
+  const allowed = decision === "accept" || decision === "decline" || decision === "cancel";
+  return { decision: allowed ? decision : "decline" };
+}
+
+// 사용자에게 보여줄 bounded approval view. command는 request params(command/cwd/reason)에서,
+// file은 request params(reason) + item context(변경 경로)에서 만든다. usable=false면 무엇을
+// 승인하는지 안전하게 설명할 수 없다는 뜻이라 blind approve UI를 띄우지 않는다(safe decline).
+function buildApprovalView(method, params = {}, itemContext = null) {
+  const cls = classifyApprovalRequest(method);
+  const p = params || {};
+  if (cls === "command") {
+    const command = Array.isArray(p.command) ? p.command.join(" ") : p.command;
+    const cmd = command || (itemContext && itemContext.command) || null;
+    const cwd = p.cwd || (itemContext && itemContext.cwd) || null;
+    const summaryParts = [];
+    if (cmd) summaryParts.push(`명령: ${boundedText(cmd, 200)}`);
+    if (cwd) summaryParts.push(`위치: ${boundedText(cwd, 200)}`);
+    const detailParts = [];
+    if (p.reason) detailParts.push(`사유: ${boundedText(p.reason)}`);
+    if (cmd) detailParts.push(`명령: ${boundedText(cmd)}`);
+    if (cwd) detailParts.push(`위치: ${boundedText(cwd, 400)}`);
+    return {
+      usable: Boolean(cmd || (Array.isArray(p.commandActions) && p.commandActions.length)),
+      summary: boundedText(summaryParts.join(" · ") || "명령 실행 승인이 필요합니다.", 300),
+      detail: boundedText(detailParts.join("\n"), 2000),
+    };
+  }
+  if (cls === "file") {
+    const paths = itemContext && Array.isArray(itemContext.paths) ? itemContext.paths : [];
+    const usable = paths.length > 0;
+    const shown = paths.slice(0, 20);
+    const more = paths.length > shown.length ? ` 외 ${paths.length - shown.length}개` : "";
+    const detailParts = [];
+    if (p.reason) detailParts.push(`사유: ${boundedText(p.reason)}`);
+    if (usable) detailParts.push(`변경 파일:\n${shown.map((x) => `- ${boundedText(x, 300)}`).join("\n")}${more}`);
+    return {
+      usable,
+      summary: boundedText(usable ? `파일 변경 승인: ${paths.length}개 파일` : "파일 변경 승인이 필요합니다.", 300),
+      detail: boundedText(detailParts.join("\n"), 2000),
+    };
+  }
+  return { usable: false, summary: "", detail: "" };
+}
+
 // ---- turn event collector --------------------------------------------------
 //
 // 한 turn(=한 thread의 활성 turn)의 v2 notification을 canonical event로 변환하고
@@ -193,8 +280,28 @@ function createCodexTurnCollector({ onEvent } = {}) {
     emitEvent(event);
   }
 
+  const itemContext = new Map(); // itemId -> bounded { kind, command?, paths?, status? } (approval detail 용)
+
+  function captureItemContext(item) {
+    if (!item || typeof item !== "object" || !item.id) return;
+    if (item.type === "commandExecution") {
+      const command = Array.isArray(item.command) ? item.command.join(" ") : item.command;
+      itemContext.set(item.id, { kind: "command", command: command ? boundedText(command, 2000) : null });
+      return;
+    }
+    if (item.type === "fileChange") {
+      const changes = Array.isArray(item.changes) ? item.changes : [];
+      const paths = changes
+        .map((c) => (c && typeof c.path === "string" ? c.path : null))
+        .filter(Boolean)
+        .slice(0, 50);
+      itemContext.set(item.id, { kind: "file", paths, status: item.status || null });
+    }
+  }
+
   function startItem(item) {
     if (!item || typeof item !== "object") return;
+    captureItemContext(item);
     const type = item.type;
     if (type === "commandExecution") {
       const ev = commandStarted(item.command, item.id || null);
@@ -296,6 +403,7 @@ function createCodexTurnCollector({ onEvent } = {}) {
   return {
     ingest,
     buildEvidence,
+    getItemContext: (id) => (id != null ? itemContext.get(id) || null : null),
     get deltaText() { return deltaText; },
     get trustedFinal() { return trustedFinal; },
     get lastError() { return lastError; },
@@ -307,6 +415,9 @@ module.exports = {
   CodexPolicyError,
   denyResponseFor,
   isApprovalRequest,
+  classifyApprovalRequest,
+  approvalDecisionResponse,
   approvalSummaryFrom,
+  buildApprovalView,
   createCodexTurnCollector,
 };

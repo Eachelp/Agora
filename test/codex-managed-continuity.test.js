@@ -130,8 +130,9 @@ test("B1-C: 이전 turn의 늦은 approval request가 현재 turn을 approvalReq
   c.serverRequest(77, "item/commandExecution/requestApproval", { threadId: a.threadId, turnId: a.turnId, command: ["x"], cwd: "/w" });
   await tick();
   assert.equal(bDone, false, "stale approval로 B가 종료되면 안 된다");
-  // 그래도 서버 unblock 위해 deny 응답은 보냈다
-  assert.deepEqual(c.responses.find((r) => r.id === 77).result, { decision: "cancel" });
+  // Stage C same-turn: stale/wrong-turn approval은 human 없이 이 action만 safe decline한다
+  // (whole-turn cancel 아님). 서버는 unblock되고 현재 turn B는 영향받지 않는다.
+  assert.deepEqual(c.responses.find((r) => r.id === 77).result, { decision: "decline" });
 
   c.emit("item/completed", { threadId: b.threadId, turnId: b.id, item: { type: "agentMessage", id: "m", text: "B done" } });
   c.emit("turn/completed", { threadId: b.threadId, turn: { id: b.id, status: "completed" } });

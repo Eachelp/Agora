@@ -6,8 +6,9 @@ const {
   mapCodexTurnPolicy,
   CodexPolicyError,
   denyResponseFor,
-  isApprovalRequest,
-  approvalSummaryFrom,
+  classifyApprovalRequest,
+  approvalDecisionResponse,
+  buildApprovalView,
   createCodexTurnCollector,
 } = require("./codex-app-server-events");
 const { buildRunMetrics } = require("../../chat/chat-run-metrics");
@@ -25,7 +26,10 @@ const { buildRunMetrics } = require("../../chat/chat-run-metrics");
 //     달라져 새 thread다(HarnessSessionRegistry가 identity를 보장).
 //   - native thread memory는 cache다. 매 turn에 현재 invocation.prompt 전체를 다시 보낸다.
 //   - notification은 params.threadId로 정확히 active turn에 route한다(role leakage 금지).
-//   - approval은 same-turn resume(C-6)이 아니다. deny + approvalRequired 반환(compat replay).
+//   - command/file approval은 same-turn이다: 사용자 승인 콜백(invocation.requestApproval)을
+//     기다렸다가 같은 native turn에 accept/decline으로 응답하고 turn을 계속 진행한다. 정상
+//     승인/거절로 turn을 interrupt하거나 whole-turn replay하지 않는다. permissions(granular)/
+//     legacy(v1)/non-approval infra server request는 기존처럼 즉시 safe response한다.
 //   - session loss(process crash / protocol desync)면 fail-closed. Process fallback 금지,
 //     자동 restart 금지.
 
@@ -43,7 +47,6 @@ class CodexManagedAdapter extends HarnessAdapter {
     this._runtimeIdentity = null; // { commandPath, needsShell }
     this._threads = new Map();    // logicalHandle -> { threadId }
     this._activeTurns = new Map(); // threadId -> turnState
-    this._replayRequired = new Set(); // logicalHandle: approval 발생 후 재사용 금지
     // BLOCKER 2: native continuity가 손상된 logicalHandle -> 다음 turn에서 재사용 fail-closed.
     this._invalidatedHandles = new Map(); // logicalHandle -> reason
   }
@@ -106,6 +109,8 @@ class CodexManagedAdapter extends HarnessAdapter {
         autoApprove: Boolean(context && context.autoApprove),
         cwd: invocation.cwd,
         workspaceId: context && context.workspaceId,
+        // 사용자 same-turn 승인 콜백이 있을 때만 on-request를 연다(없으면 fail-safe never).
+        interactiveApproval: typeof invocation.requestApproval === "function",
       });
     } catch (error) {
       const code = error instanceof CodexPolicyError ? error.code : "CODEX_PERMISSION_INVALID";
@@ -138,7 +143,8 @@ class CodexManagedAdapter extends HarnessAdapter {
       cancelRequested: false,
       timedOut: false,
       outputLimited: false,
-      approval: null,
+      pendingApprovals: new Map(), // requestId(string) -> { id, method, itemId, responded, abort }
+      seenApprovalIds: new Set(),  // 이 turn에서 이미 prompt한 request id(중복/재전송 idempotent)
       requireFinal: Boolean(invocation.requireFinal),
       startedAt,
       promptChars: String(invocation.prompt || "").length,
@@ -205,6 +211,8 @@ class CodexManagedAdapter extends HarnessAdapter {
       sandboxPolicy: policy.sandboxPolicy,
       cwd: policy.cwd,
     };
+    // 대화형 승인 turn에서만 승인 라우팅을 명시적으로 사용자에게 고정한다(설치 스키마 지원 값).
+    if (policy.approvalsReviewer) turnParams.approvalsReviewer = policy.approvalsReviewer;
     if (context && context.modelKey) turnParams.model = context.modelKey;
     if (context && context.effort) turnParams.effort = context.effort;
 
@@ -284,11 +292,6 @@ class CodexManagedAdapter extends HarnessAdapter {
       const err = new Error("이 logical Codex session은 native continuity가 손상되어 재사용할 수 없습니다.");
       err.code = this._invalidatedHandles.get(logicalHandle) || "CODEX_SESSION_LOST";
       throw err;
-    }
-    // approval로 replay-required가 된 handle은 기존 thread를 재사용하지 않고 새로 만든다.
-    if (this._replayRequired.has(logicalHandle)) {
-      this._threads.delete(logicalHandle);
-      this._replayRequired.delete(logicalHandle);
     }
     const existing = this._threads.get(logicalHandle);
     if (existing && existing.threadId) return existing.threadId;
@@ -404,6 +407,14 @@ class CodexManagedAdapter extends HarnessAdapter {
     const ts = this._activeTurns.get(threadId);
     if (!ts || ts.settled) return;
 
+    // serverRequest/resolved는 { threadId, requestId }만 갖고 turnId가 없다(설치 스키마).
+    // generic turnId 필터에 묻히지 않게 먼저 처리한다: pending native approval을 정리하고
+    // 대기 중인 사용자 UI를 dismiss한다(late decision 무효화). turn을 finalize하지 않는다.
+    if (method === "serverRequest/resolved") {
+      this._onServerRequestResolved(ts, params);
+      return;
+    }
+
     if (method === "turn/started") {
       // authoritative turnId source. 확정 id와 충돌하면 protocol mismatch로 fail-closed.
       if (this._correlateTurn(ts, params.turn && params.turn.id, true) === "mismatch") {
@@ -428,27 +439,130 @@ class CodexManagedAdapter extends HarnessAdapter {
     ts.collector.ingest(method, params);
   }
 
-  _onServerRequest(id, method, params) {
-    // 항상 안전한 deny/empty로 응답해 서버가 무한 대기하지 않게 한다.
+  _respondSafely(id, result) {
     if (this._client && this._client.isReady()) {
-      this._client.respond(id, denyResponseFor(method));
+      try { return this._client.respond(id, result); } catch { return false; }
     }
-    if (!isApprovalRequest(method)) return; // auth/attestation 등 infra 요청은 turn을 실패시키지 않는다.
+    return false;
+  }
+
+  _onServerRequest(id, method, params) {
+    const cls = classifyApprovalRequest(method);
+    // command/file approval만 사용자 same-turn 승인 대상이다. 즉시 deny-first 하지 않고
+    // 아래 비동기 흐름에서 사용자 결정을 기다렸다가 같은 request id에 응답한다.
+    if (cls === "command" || cls === "file") {
+      this._onApprovalRequest(id, method, params, cls);
+      return;
+    }
+    // permissions(granular grant -> 빈 grant fail-closed) / legacy(v1 abort) / non-approval
+    // infra(user-input/elicitation/tool-call/attestation 등)는 즉시 안전 응답한다. turn은
+    // 계속되며 사용자 승인 UI를 띄우거나 finalize하지 않는다.
+    this._respondSafely(id, denyResponseFor(method));
+  }
+
+  // command/file same-turn approval: correlate -> register -> await human -> respond same id.
+  async _onApprovalRequest(id, method, params, cls) {
+    const rid = String(id);
     const threadId = params && params.threadId;
     const ts = threadId ? this._activeTurns.get(threadId) : null;
-    if (!ts || ts.settled) return;
-    // 이전 turn의 지연 approval request가 현재 turn을 approvalRequired로 만들면 안 된다(BLOCKER 1-C).
-    // (위에서 이미 deny 응답은 보냈으므로 서버는 unblock된다.)
-    if (this._correlateTurn(ts, params.turnId, false) !== "match") return;
-    // approval 발생: 이 thread를 replay-required로 표시하고 turn을 종료한다.
-    ts.approval = approvalSummaryFrom(method, params);
-    this._replayRequired.add(ts.logicalHandle);
-    this._interrupt(ts);
-    this._finalize(ts, {
-      ok: false,
-      approvalRequired: true,
-      approval: ts.approval,
-    });
+    // (a) active turn correlation(wrong thread/turn/missing turnId): 현재 active turn과
+    // threadId+turnId가 정확히 일치할 때만 사용자에게 띄운다. 아니면 stale로 보고 사용자 UI
+    // 없이 이 action만 safe decline한다(현재 turn 상태를 변경하지 않는다).
+    if (!ts || ts.settled || this._correlateTurn(ts, params.turnId, false) !== "match") {
+      this._respondSafely(id, approvalDecisionResponse(method, "decline"));
+      return;
+    }
+    // (b) duplicate/재전송 request id: 이 turn에서 이미 prompt한 id면(pending이든 이미 응답됐든)
+    //     두 번째 human prompt도, 두 번째 accept/decline 응답도 만들지 않는다(idempotent ignore).
+    if (ts.seenApprovalIds.has(rid)) return;
+    // (c) 사용자 승인 콜백이 없으면 자동 승인하지 않고 safe decline.
+    const requestApproval = ts.invocation && ts.invocation.requestApproval;
+    if (typeof requestApproval !== "function") {
+      this._respondSafely(id, approvalDecisionResponse(method, "decline"));
+      return;
+    }
+    // (d) bounded human view. file인데 무엇이 바뀌는지 설명할 수 없으면 blind approve 대신 safe decline.
+    const view = buildApprovalView(method, params, ts.collector.getItemContext(params.itemId));
+    if (cls === "file" && !view.usable) {
+      this._respondSafely(id, approvalDecisionResponse(method, "decline"));
+      return;
+    }
+    // (e) native pending 등록(per-turn state; role/session boundary 우회 금지). abort로 turn
+    // 종료 시 사용자 UI를 dismiss하고 late accept를 막는다.
+    const abort = new AbortController();
+    const pending = { id, method, itemId: params.itemId || null, responded: false, abort };
+    ts.seenApprovalIds.add(rid);
+    ts.pendingApprovals.set(rid, pending);
+    this._noteActivity(ts, method, params);
+
+    let approved = false;
+    try {
+      approved = Boolean(await requestApproval({
+        summary: view.summary,
+        detail: view.detail,
+        scope: "action",
+        signal: abort.signal,
+      }));
+    } catch {
+      approved = false; // 콜백 throw/reject -> 자동 승인 금지, 아래 stillActive면 safe decline.
+    }
+
+    // (f) 결정이 온 뒤 turn/request가 여전히 "정상 active"한지 재확인한다. 취소/timeout/output-
+    // limit/turn 종료/serverRequest-resolved 이후에는 accept/decline을 절대 보내지 않는다(late
+    // accept 금지). 남은 native 응답(cancel)과 UI dismiss는 cleanup/resolved 경로가 담당한다.
+    const stillActive = !ts.settled
+      && !ts.cancelRequested && !ts.timedOut && !ts.outputLimited
+      && this._activeTurns.get(ts.threadId) === ts
+      && ts.pendingApprovals.get(rid) === pending
+      && !pending.responded;
+    if (!stillActive) return;
+
+    pending.responded = true;
+    ts.pendingApprovals.delete(rid);
+    // (g) boolean 결정 -> 설치 스키마 one-shot decision. approve="accept"(ONE action),
+    // deny="decline"(ONE action; whole-turn cancel 아님). same request id로 응답한다.
+    const sent = this._respondSafely(id, approvalDecisionResponse(method, approved ? "accept" : "decline"));
+    if (!sent) {
+      // (h) 응답 전송 실패: native continuity가 애매하다. 조용히 승인 처리하지 않고 fail-closed
+      // 한다(handle invalidate + best-effort interrupt + typed stopReason).
+      this._invalidateHandle(ts.logicalHandle, "CODEX_APPROVAL_RESPONSE_FAILED");
+      this._interrupt(ts);
+      this._finalize(ts, {
+        ok: false,
+        error: "승인 응답을 안전하게 전송하지 못했습니다.",
+        stopReason: "CODEX_APPROVAL_RESPONSE_FAILED",
+        ...(ts.collector.deltaText.trim() ? { partialText: ts.collector.deltaText.trim() } : {}),
+      });
+      return;
+    }
+    // (i) 정상: interrupt/finalize/replay 없이 같은 native turn의 다음 notification을 기다린다.
+  }
+
+  // serverRequest/resolved: 해당 requestId의 pending을 정리하고 대기 UI를 dismiss한다(idempotent).
+  // 이미 응답을 보냈든 아니든, resolved 이후의 late human 결정은 무효가 된다.
+  _onServerRequestResolved(ts, params) {
+    const rid = params && params.requestId != null ? String(params.requestId) : null;
+    if (!rid) return;
+    const pending = ts.pendingApprovals.get(rid);
+    if (!pending) return; // 이미 응답/정리됨 -> idempotent.
+    ts.pendingApprovals.delete(rid);
+    pending.responded = true;
+    try { pending.abort.abort(); } catch {}
+  }
+
+  // turn 종료 시 pending native approval 정리: 사용자 UI dismiss(abort) + 아직 응답하지 않은
+  // native 요청은 서버가 무한 대기하지 않도록 whole-turn cancel로 best-effort 응답한다(late
+  // accept 금지). 정상 완료 turn에는 미응답 pending이 남지 않는다(응답 즉시 map에서 제거).
+  _cleanupPendingApprovals(ts) {
+    if (!ts.pendingApprovals || ts.pendingApprovals.size === 0) return;
+    for (const pending of ts.pendingApprovals.values()) {
+      try { pending.abort.abort(); } catch {}
+      if (!pending.responded) {
+        pending.responded = true;
+        this._respondSafely(pending.id, approvalDecisionResponse(pending.method, "cancel"));
+      }
+    }
+    ts.pendingApprovals.clear();
   }
 
   _onClose(info) {
@@ -470,11 +584,6 @@ class CodexManagedAdapter extends HarnessAdapter {
 
   _finalizeFromTurn(ts, turn) {
     if (ts.settled) return;
-    // approval이 이미 잡혔으면 approvalRequired가 우선(turn/completed=interrupted로 올 수 있음).
-    if (ts.approval) {
-      this._finalize(ts, { ok: false, approvalRequired: true, approval: ts.approval });
-      return;
-    }
     const status = turn && turn.status;
     const trusted = ts.collector.trustedFinal;
     if (status === "completed") {
@@ -528,6 +637,7 @@ class CodexManagedAdapter extends HarnessAdapter {
   _finalize(ts, partial) {
     if (ts.settled) return;
     ts.settled = true;
+    this._cleanupPendingApprovals(ts);
     if (ts.timeoutTimer) clearTimeout(ts.timeoutTimer);
     if (ts.silenceTimer) clearInterval(ts.silenceTimer);
     this._activeTurns.delete(ts.threadId);

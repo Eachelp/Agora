@@ -4187,6 +4187,11 @@ window.chatApi.onReset(({ sessionId }) => {
   chatMessages = [];
   typingAgents.clear();
   roomTurnState = { current: null, queue: [], deferred: [] };
+  // Stage C — 방 reset(중지/초기화) 시 남은 승인 카드를 모두 제거한다(late accept 방지 UX).
+  approvalQueue.length = 0;
+  activeApproval = null;
+  approvalBackdrop.hidden = true;
+  syncComposerLock();
   renderTyping();
 });
 window.chatApi.onSystemNotice(({ text }) => {
@@ -4276,6 +4281,22 @@ approvalDeny.addEventListener("click", () => answerApproval("deny"));
 window.chatApi.onApprovalRequest((payload) => {
   approvalQueue.push(payload);
   showNextApproval();
+});
+// Stage C — same-turn 승인 카드가 turn 종료/취소/서버 resolved로 무효화되면 dismiss한다
+// (native protocol id 노출 없음; Agora approvalId만 사용). late accept를 UX에서도 막는다.
+function dismissApproval(approvalId) {
+  const idx = approvalQueue.findIndex((a) => a.approvalId === approvalId);
+  if (idx >= 0) approvalQueue.splice(idx, 1);
+  if (activeApproval && activeApproval.approvalId === approvalId) {
+    activeApproval = null;
+    approvalBackdrop.hidden = true;
+    syncComposerLock();
+    showNextApproval();
+  }
+}
+window.chatApi.onApprovalResolved(({ sessionId, approvalId }) => {
+  if (sessionId !== activeSessionId) return;
+  dismissApproval(approvalId);
 });
 window.chatApi.onAppearance(applyAppearance);
 

@@ -514,6 +514,9 @@ function createChatFeature(options) {
       permissionMode: requestedPermission,
       specialistStage = null,
       autoApprove = false,
+      // Stage C — provider-neutral same-turn approval 콜백. harness가 지원하면 실행 중 action
+      // 승인을 요청한다. 여기서는 provider를 구분하지 않고 그대로 전달만 한다(codex 분기 없음).
+      requestApproval = null,
     }) => {
       const record = ensureCapabilityService().getRecord(agent.id);
       const meta = store?.readMeta(sessionId);
@@ -654,6 +657,8 @@ function createChatFeature(options) {
         ...(hardOutputLimitBytes ? { hardOutputLimitBytes } : {}),
         onRawChunk: rawLog.write,
         images: nativeImages,
+        // provider-neutral: managed adapter만 이 콜백을 실제로 사용한다(process/Claude/AGY는 무시).
+        ...(typeof requestApproval === "function" ? { requestApproval } : {}),
       };
       // Stage C-2: 이미 계산된 authority 결과만 모아 ExecutionContext를 만든다.
       // (workspace/permission/provider invocation/prompt/Evidence 순서는 그대로 두고
@@ -1042,6 +1047,7 @@ function roomMeta(meta) {
     room.on("run-event", (payload) => broadcast("chat:run-event", { sessionId, ...payload }));
     room.on("agents", (agents) => broadcast("chat:agents", { sessionId, agents }));
     room.on("approval-request", (payload) => broadcast("chat:approval-request", { sessionId, ...payload }));
+    room.on("approval-resolved", (payload) => broadcast("chat:approval-resolved", { sessionId, ...payload }));
     room.on("busy", (busy) => {
       if (shuttingDown) return;
       store.setSessionStatus(sessionId, busy ? "running" : "idle");
