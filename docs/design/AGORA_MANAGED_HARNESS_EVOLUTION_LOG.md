@@ -1,10 +1,10 @@
 # Agora — Managed Harness Runtime 개발일지 및 확장 기준
 
-> 상태: **Stage A/B 완료 · Professional 안정화 Stage 1~5 COMPLETE · Stage C-2 COMPLETE · Stage C-3 COMPLETE (Codex managed) · Stage C-4 READY**
+> 상태: **Stage A/B 완료 · Professional 안정화 Stage 1~5 COMPLETE · Stage C Managed Harness Runtime 진행 중 · Claude/AGY native resume COMPLETE · Codex same-turn approval COMPLETE · AGY parser compatibility PASS · Session Invalidation / Lifecycle NEXT**
 > 최초 작성: 2026-08-16
-> 최종 안정화 기준일: 2026-08-17
+> 최종 안정화 기준일: 2026-08-18
 > 대상 브랜치: `feat/multi-harness-runtime`
-> 최종 검증 코드 baseline: `58e5d8c7f31f8f214fb15997eabd60ac710191cc`
+> 최종 검증 코드 baseline: `fba6011d46b621348d074b36df76da0c5cdd8aec`
 > 관련 문서:
 > - [AGORA_V1_DESIGN.md](AGORA_V1_DESIGN.md)
 > - [AGORA_IMPLEMENTATION_PLAN.md](AGORA_IMPLEMENTATION_PLAN.md)
@@ -14,7 +14,7 @@
 
 현재 기준에서 가장 중요한 결론은 하나다.
 
-> **Stage A/B와 Professional 안정화 Stage 1~5는 끝났다. 이제 기존 안전 계약을 보존한 채 Stage C Managed Harness Runtime으로 이동한다.**
+> **Stage A/B와 Professional 안정화 Stage 1~5는 끝났다. Stage C는 대부분의 provider-native continuity와 Codex same-turn approval까지 완료되었고, 마지막 핵심 integration은 Session Invalidation / Lifecycle이다.**
 
 ---
 
@@ -1489,3 +1489,386 @@ Harness Runtime
 이 문서는 다음을 남기는 데 목적이 있다.
 
 > **왜 그렇게 만들었는지, 현재 무엇이 authoritative한지, 무엇이 완료됐는지, 다음 사람이 무엇을 깨뜨리면 안 되는지, 그리고 다음 단계가 무엇인지.**
+
+---
+
+# Part V. 2026-08-18 Stage C 최신 진행
+
+## 20. Claude role-scoped exact native session resume — COMPLETE
+
+Claude managed adapter는 Agora turn마다 fresh CLI process를 사용하되 provider-native session continuity를 명시적으로 관리한다.
+
+계약:
+
+```text
+first turn
+  → native session_id capture
+
+next turn
+  → --resume <exact session_id>
+```
+
+`--continue`는 사용하지 않는다.
+
+Resume turn에서도 현재 authoritative prompt 전체를 매번 다시 전달한다. 따라서 Claude native memory는 실행 비용과 continuity를 줄이는 cache일 뿐 Requirements truth가 아니다.
+
+주요 기준 commit:
+
+```text
+c822a3f
+feat(agora): resume role-scoped claude sessions
+```
+
+---
+
+## 21. AGY role-scoped exact native conversation resume — COMPLETE
+
+AGY도 Agora turn마다 fresh CLI process를 사용한다.
+
+계약:
+
+```text
+first turn
+  → conversation_id capture
+
+next turn
+  → --conversation <exact conversation_id>
+```
+
+`--continue` / `-c`는 사용하지 않는다.
+
+주요 기준 commit:
+
+```text
+4f4b4ce
+feat(agora): resume role-scoped agy conversations
+```
+
+### AGY invalid conversation fallback 방어
+
+실제 AGY 특성상 invalid `--conversation A`를 줬을 때 provider가 실패하지 않고 warning 후 fresh conversation B를 만들고 prompt/tool 실행까지 이어간 뒤 exit code 0으로 끝날 수 있다.
+
+따라서 Agora는 다음을 계약으로 고정했다.
+
+```text
+requested native id = A
+observed native id  = B
+A != B
+
+→ streaming 중 best-effort cancel
+→ final verdict = AGY_CONVERSATION_ID_MISMATCH
+→ B adopt 금지
+→ logical handle poison
+→ 다음 동일 handle 실행 금지
+```
+
+주요 기준 commit:
+
+```text
+83eab16
+fix(agora): abort agy resume turn on native conversation-id mismatch
+```
+
+Provider의 조용한 fresh fallback을 continuity success로 승격하지 않는 것이 핵심이다.
+
+---
+
+## 22. Codex same-turn approval — COMPLETE
+
+Codex resident App Server에서 정상 command/file approval은 whole-turn replay를 하지 않고 **같은 native turn**에서 계속한다.
+
+계약:
+
+```text
+Codex turn U
+  → command/file approval server request
+  → Agora 사용자 승인/거절
+  → client.respond(requestId, accept/decline)
+  → SAME thread
+  → SAME turn U 계속
+```
+
+정상 approval 때문에 다음을 하지 않는다.
+
+- interrupt
+- 새 turn/start
+- whole-turn replay
+- danger-mode retry
+
+command/file normal approve는 one action only이며 `acceptForSession`을 사용하지 않는다.
+
+permissions granular request는 boolean approve UI로 전체 grant하지 않고 fail-closed한다.
+
+주요 기준 commits:
+
+```text
+52b8804
+feat(agora): continue codex turns after approval
+
+d8cc2d8
+fix(agora): dismiss pending approvals when stopping turns
+```
+
+`d8cc2d8`까지 Codex Same-turn Approval은 별도 actual-diff review에서 FINAL PASS를 받았다.
+
+---
+
+## 23. AGY 1.1.14 parser compatibility — PASS
+
+AGY CLI 업데이트 점검 중 기존 Agora parser와 실제 structured output 사이의 불일치를 확인했다.
+
+표현은 다음으로 제한한다.
+
+> **AGY 1.1.14 실출력에서 관찰**
+
+AGY changelog에 stream-json schema change가 명시된 것은 아니므로 "1.1.14에서 schema가 바뀌었다"고 단정하지 않는다.
+
+실제 관찰된 형태:
+
+```text
+init:
+  top-level conversation_id
+
+step_update:
+  step_update.conversation_id
+
+result:
+  result.conversation_id
+
+agent streaming:
+  step_type = agent_response
+  text_delta = live text
+
+tool start:
+  state = ACTIVE
+
+tool completion:
+  state = DONE
+
+shell command:
+  tool_info.parameters.CommandLine
+
+tool id:
+  id / step_id가 없을 수 있음
+  step_index 사용 가능
+```
+
+반영된 parser 계약:
+
+- `agent_response.text_delta` → `delta`
+- toolUseId fallback: `step.id || step.step_id || String(step.step_index)`
+- command: `step.command || tool_info.parameters.CommandLine || tool name`
+- `ACTIVE` → start
+- `DONE / COMPLETED / SUCCESS` → completion
+- toolStarted input에 `tool_info.parameters` 포함
+- native conversation ID extraction은 `init / step_update / result` 세 위치만 명시적으로 읽음
+- arbitrary recursive native-id search 금지
+
+### Evidence truth 보정
+
+독립 검수에서 `DONE`인데 실제 exit code가 없는 경우 parser가 `exitCode: 0`을 합성해 `OBSERVED`로 기록하는 문제를 발견했다.
+
+최종 계약:
+
+```text
+exitCode:
+  step.exit_code
+  ?? step.exitCode
+  ?? null
+```
+
+따라서:
+
+```text
+DONE + explicit exit code 없음
+  → exitCode = null
+  → executionStatus = PARTIAL
+
+DONE + explicit exit_code: 0
+  → exitCode = 0
+  → executionStatus = OBSERVED
+```
+
+Provider lifecycle state `DONE`과 실제 process exit code 0 관측을 구분한다.
+
+### result fail-closed 순서
+
+`result.status`가 존재하고 `SUCCESS`가 아니면 `response`가 있어도 final로 승격하지 않는다.
+
+```text
+status = ERROR
+response = "..."
+
+→ error
+→ final 아님
+```
+
+### fixture contract test
+
+`test/agy-stream-json-contract.test.js`는 실제 AGY 1.1.14 샘플을 재구성한 fixture contract test다.
+
+검증 항목:
+
+- DONE + no exit code → PARTIAL
+- DONE + explicit exit_code:0 → OBSERVED
+- ERROR + response → error
+- text_delta 3조각 순서 보존
+- init / step_update / result conversation_id capture
+
+이 테스트는 live CLI smoke test는 아니다. 향후 optional `npm run smoke:agy` 같은 별도 live smoke는 가능하지만 canonical `npm test` blocker는 아니다.
+
+### 실제 원격 검수
+
+`d8cc2d8` 이후 parser 작업의 원격 누적 diff는 2 commits ahead / 0 behind였고 변경 파일은 다음 두 개뿐이었다.
+
+```text
+src/chat/chat-events.js
+test/agy-stream-json-contract.test.js
+```
+
+최종 검증 코드 baseline:
+
+```text
+fba6011d46b621348d074b36df76da0c5cdd8aec
+```
+
+최종 commit message:
+
+```text
+20260818_10:10
+```
+
+원격 actual source/diff 독립 검수 결과:
+
+```text
+PASS
+FIX REQUIRED: 없음
+SHOULD FIX: 없음
+```
+
+---
+
+## 24. Windows 전체 회귀 테스트 — GREEN
+
+`fba6011d46b621348d074b36df76da0c5cdd8aec` 코드 baseline에 대해 사용자 Windows 실제 로컬 `D:\Projects\Agora`에서 canonical `npm test`를 실행했다.
+
+사용자 로컬 실측:
+
+```text
+tests      889
+suites     0
+pass       887
+fail       0
+cancelled  0
+skipped    2
+todo       0
+duration_ms 33620.4682
+```
+
+따라서 현재 기준:
+
+```text
+AGY parser actual-diff review  PASS
+Windows full npm test          GREEN
+fail                           0
+```
+
+이 테스트 결과는 사용자 Windows 로컬 실행 결과이며, 외부 에이전트 자기보고와 구분한다.
+
+---
+
+## 25. 현재 Stage C 상태와 다음 작업
+
+현재 Stage C에서 완료된 주요 축:
+
+```text
+HarnessAdapter                         COMPLETE
+Role-scoped HarnessSessionRegistry     COMPLETE
+Codex resident App Server runtime      COMPLETE
+Claude exact native session resume     COMPLETE
+AGY exact native conversation resume   COMPLETE
+AGY mismatch poison/fail-closed        COMPLETE
+Codex same-turn approval               COMPLETE
+Codex pending approval cancellation    COMPLETE
+AGY 1.1.14 parser compatibility        PASS
+```
+
+현재 SessionKey 계약은 변경하지 않는다.
+
+```text
+SessionKey =
+  projectId
+  + workspaceId
+  + professionalRunId
+  + role
+  + providerId
+  + modelKey
+  + permissionMode
+```
+
+다음은 SessionKey가 아니다.
+
+```text
+effort
+autoApprove
+taskHash
+```
+
+Registry는 memory-only이며:
+
+```text
+ACTIVE
+INVALIDATED
+RETIRED
+```
+
+lifecycle과 generation을 갖는다. retired/invalidated key가 다시 acquire되면 generation이 증가한다.
+
+### NEXT — Session Invalidation / Lifecycle
+
+Stage C의 마지막 본 작업이다.
+
+핵심 목표:
+
+> **Native session memory는 cache only다. authority/environment 변화 뒤 과거 native session이 다시 살아나면 안 된다.**
+
+특히 다음 switch-back을 막는다.
+
+```text
+model A
+  → model B
+  → model A
+
+old A native session 재사용 금지
+```
+
+주요 lifecycle trigger:
+
+- model change → sibling sessions RETIRE
+- permission change → sibling sessions RETIRE
+- Frozen Task taskHash change → same Professional Run 전체 old role sessions RETIRE
+- Git HEAD change → run-wide old sessions RETIRE
+- ordinary working-tree edit only → 자동 retire 금지
+- successful checkpoint restore → explicit INVALIDATE
+- project workspace change → project sessions RETIRE
+- successful provider account change → provider-wide INVALIDATE
+- Codex account change → logical sessions INVALIDATE + resident App Server deliberate reset
+- Professional Run end → run entries RETIRE
+- effort change → lifecycle trigger 아님
+- autoApprove change → lifecycle trigger 아님
+
+Lifecycle replacement 중 old entry가 inflight이면 새 generation을 병렬로 시작하지 않고 fail-closed해야 한다. Stage D의 global one-writer governance 전체를 이번 작업에 끌어오지는 않는다.
+
+Stage C Session Lifecycle이 구현되고 별도 actual-diff review를 PASS하면 Stage C — Managed Harness Runtime 종료를 판단한다.
+
+그 다음은 Stage D:
+
+```text
+Verification Runner
+workspace one-writer governance
+run-scoped execution capabilities
+verified evidence provenance
+governance / audit
+```
+
+Stage D를 Stage C lifecycle 구현에 섞지 않는다.
