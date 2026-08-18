@@ -273,6 +273,17 @@ function parseAgyLine(line) {
     const step = event.step_update || {};
     const tool = step.tool_name || step.tool_info?.name;
     const error = step.tool_info?.error?.message || step.error?.message || "";
+    // AGY 1.1.14 agent_response: streaming text via text_delta.
+    // final is authoritative from result.response; delta is for live display.
+    if (step.step_type === "agent_response" && typeof step.text_delta === "string" && step.text_delta) {
+      return { kind: "delta", text: String(step.text_delta) };
+    }
+    // AGY 1.1.14 sends tool start as ACTIVE and completion as DONE (beyond the
+    // 1.1.13 STARTED/SUCCESS variants). The real command lives in
+    // tool_info.parameters.CommandLine and tool steps carry step_index instead
+    // of an id.
+    const toolUseId = step.id || step.step_id || (step.step_index != null ? String(step.step_index) : null);
+    const command = step.command || step.tool_info?.parameters?.CommandLine || tool;
     if (step.state === "ERROR" && /permission|approval|권한|승인/i.test(error)) {
       return {
         kind: "approval-required",
@@ -280,27 +291,27 @@ function parseAgyLine(line) {
         detail: String(error),
       };
     }
-    if (tool && /^(START|STARTED|RUNNING|PENDING)$/i.test(String(step.state || ""))) {
-      if (isCommandTool(tool)) return commandStarted(step.command || tool, step.id || step.step_id || null);
+    if (tool && /^(START|STARTED|RUNNING|PENDING|ACTIVE)$/i.test(String(step.state || ""))) {
+      if (isCommandTool(tool)) return commandStarted(command, toolUseId);
       return toolStarted({
         tool,
-        input: step.input ?? step.arguments ?? step.tool_info?.input ?? step.command,
-        toolUseId: step.id || step.step_id || null,
+        input: step.input ?? step.arguments ?? step.tool_info?.input ?? step.tool_info?.parameters ?? command,
+        toolUseId,
       });
     }
     if (tool && /^(DONE|COMPLETED|SUCCESS|ERROR|FAILED)$/i.test(String(step.state || ""))) {
       if (isCommandTool(tool)) {
         return commandFinished({
-          command: step.command || tool,
-          toolUseId: step.id || step.step_id || null,
-          exitCode: step.exit_code ?? step.exitCode ?? (String(step.state).toUpperCase() === "SUCCESS" ? 0 : null),
+          command,
+          toolUseId,
+          exitCode: step.exit_code ?? step.exitCode ?? (/^(DONE|COMPLETED|SUCCESS)$/i.test(String(step.state || "")) ? 0 : null),
           stdout: step.stdout ?? step.output ?? step.tool_info?.output,
           stderr: step.stderr ?? error,
         });
       }
       return toolFinished({
         tool,
-        toolUseId: step.id || step.step_id || null,
+        toolUseId,
         output: step.stdout ?? step.output ?? step.tool_info?.output,
         error: step.stderr ?? error,
         exitCode: step.exit_code ?? step.exitCode,
