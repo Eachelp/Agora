@@ -273,15 +273,15 @@ function parseAgyLine(line) {
     const step = event.step_update || {};
     const tool = step.tool_name || step.tool_info?.name;
     const error = step.tool_info?.error?.message || step.error?.message || "";
-    // AGY 1.1.14 agent_response: streaming text via text_delta.
+    // Observed in AGY 1.1.14 stream-json: agent_response streams text via
+    // text_delta.
     // final is authoritative from result.response; delta is for live display.
     if (step.step_type === "agent_response" && typeof step.text_delta === "string" && step.text_delta) {
       return { kind: "delta", text: String(step.text_delta) };
     }
-    // AGY 1.1.14 sends tool start as ACTIVE and completion as DONE (beyond the
-    // 1.1.13 STARTED/SUCCESS variants). The real command lives in
-    // tool_info.parameters.CommandLine and tool steps carry step_index instead
-    // of an id.
+    // Observed in AGY 1.1.14 stream-json: tool start is ACTIVE and completion
+    // is DONE. The real command lives in tool_info.parameters.CommandLine and
+    // tool steps carry step_index instead of an id.
     const toolUseId = step.id || step.step_id || (step.step_index != null ? String(step.step_index) : null);
     const command = step.command || step.tool_info?.parameters?.CommandLine || tool;
     if (step.state === "ERROR" && /permission|approval|권한|승인/i.test(error)) {
@@ -301,10 +301,13 @@ function parseAgyLine(line) {
     }
     if (tool && /^(DONE|COMPLETED|SUCCESS|ERROR|FAILED)$/i.test(String(step.state || ""))) {
       if (isCommandTool(tool)) {
+        // DONE/COMPLETED는 command-finished 발생 근거일 뿐 exit code 근거가
+        // 아니다. 명시적 exit_code가 없으면 합성 0을 만들지 않고 null(PARTIAL)로
+        // 둔다. 실행 Evidence는 관측값만 신뢰한다.
         return commandFinished({
           command,
           toolUseId,
-          exitCode: step.exit_code ?? step.exitCode ?? (/^(DONE|COMPLETED|SUCCESS)$/i.test(String(step.state || "")) ? 0 : null),
+          exitCode: step.exit_code ?? step.exitCode ?? null,
           stdout: step.stdout ?? step.output ?? step.tool_info?.output,
           stderr: step.stderr ?? error,
         });
@@ -321,10 +324,12 @@ function parseAgyLine(line) {
   }
   if (event.event === "result") {
     const result = event.result || {};
-    if (result.response) return { kind: "final", text: String(result.response) };
+    // status가 SUCCESS가 아니면 response가 있어도 final로 승격하지 않는다.
+    // provider failure가 성공처럼 보이는 것을 막는다(fail-closed 방향).
     if (result.status && result.status !== "SUCCESS") {
-      return { kind: "error", message: truncateLabel(result.error || `AGY ${result.status}`, 200) };
+      return { kind: "error", message: truncateLabel(result.error || result.response || `AGY ${result.status}`, 200) };
     }
+    if (result.response) return { kind: "final", text: String(result.response) };
   }
   return null;
 }
