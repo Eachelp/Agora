@@ -111,20 +111,43 @@ class HarnessRuntime {
     return this._applyLifecycle("invalidate", { projectId }, INVALIDATE_REASONS.WORKSPACE_RESTORED);
   }
 
-  // provider 계정이 실제로 바뀌었다(성공한 switch 또는 partial-mutation ambiguous
-  // failure의 conservative 처리): 해당 provider의 managed session 전체 INVALIDATE.
-  // Codex처럼 resident runtime이 old account context를 들고 있을 수 있는 provider는
-  // adapter의 deliberate reset hook(resetRuntime)까지 호출한다. 이는 provider
-  // continuity failure(CODEX_SESSION_LOST)의 자동 restart와 다른, 명시적 account
-  // trust-boundary reset이다.
-  providerAccountChanged({ providerId } = {}) {
+  // provider 계정 상태가 바뀌었다(성공한 switch는 accountKey와 함께, 외부 로그인
+  // 시작/partial-mutation ambiguous failure는 accountKey 없이 = unknown 전이).
+  //
+  // 계정 변경은 session-selection boundary이지 provider-wide 세션 파괴가 아니다:
+  //   - parked(비-inflight) 세션은 절대 건드리지 않는다. SessionKey가
+  //     providerAccountKey를 포함하므로 다른 계정의 세션은 선택되지 않을 뿐이고,
+  //     같은 계정으로 돌아오면(A→B→A) 같은 key로 native resume된다.
+  //   - 오염된 inflight turn만 INVALIDATE한다: live credential이 turn 도중에
+  //     mutation을 지나면 그 turn의 출력/부작용이 어느 계정 namespace에 속하는지
+  //     보증할 수 없다. accountKey가 확정된 전환에서 이미 그 계정 key로 실행 중이던
+  //     turn(중복 same-account 전환)은 오염이 아니므로 제외한다.
+  //   - Codex처럼 resident runtime이 old account context를 들고 있을 수 있는
+  //     provider는 adapter의 deliberate reset hook(resetRuntime)을 항상 호출한다.
+  //     이 reset은 native cache(thread binding)만 비운다 — parked logical 세션은
+  //     보존되며, 같은 계정 namespace로 돌아온 다음 turn은 (cross-process thread
+  //     reattach가 지원되지 않으므로) 같은 logical session 아래 fresh native
+  //     thread로 시작한다. provider continuity failure(CODEX_SESSION_LOST)의 자동
+  //     restart와 다른, 명시적 account trust-boundary reset이다.
+  providerAccountChanged({ providerId, accountKey = null } = {}) {
     if (providerId == null) return [];
-    const affected = this._applyLifecycle(
-      "invalidate",
-      { providerId },
-      INVALIDATE_REASONS.PROVIDER_ACCOUNT_CHANGED
-    );
-    const adapter = this._persistentAdapters.get(String(providerId));
+    const pid = String(providerId);
+    const nextKey = accountKey == null || accountKey === "" ? null : String(accountKey);
+    const affected = [];
+    for (const entry of this._registry.matching({ providerId: pid })) {
+      if (entry.lifecycle !== LIFECYCLE.ACTIVE || !entry.inflight) continue;
+      if (nextKey != null && entry.identity && entry.identity.providerAccountKey === nextKey) {
+        continue; // 같은 계정으로의 재확정 — credential 의미가 그대로라 오염이 아니다.
+      }
+      this._registry.invalidate(entry.key, INVALIDATE_REASONS.PROVIDER_ACCOUNT_CHANGED);
+      const cancel = this._activeTurnCancels.get(entry);
+      if (cancel) {
+        try { cancel(); } catch {}
+      }
+      this._forgetSessionOnAdapter(entry);
+      affected.push(entry);
+    }
+    const adapter = this._persistentAdapters.get(pid);
     if (adapter && typeof adapter.resetRuntime === "function") {
       adapter.resetRuntime(INVALIDATE_REASONS.PROVIDER_ACCOUNT_CHANGED);
     }
@@ -298,16 +321,20 @@ class HarnessRuntime {
 
   // ---- role lineage sibling retire (model / permission switch-back 방지) ----
   //
-  // 같은 lineage(projectId + professionalRunId + role + providerId)에서 modelKey /
-  // permissionMode가 바뀌면 old sibling을 RETIRE한다. 그래야 switch-back 시 ACTIVE로
-  // 남아 있던 old native session이 부활하지 못한다. effort/autoApprove는 identity도
-  // trigger도 아니다(매 turn 재전달되는 turn-level 설정).
+  // 같은 lineage(projectId + professionalRunId + role + providerId +
+  // providerAccountKey)에서 modelKey / permissionMode가 바뀌면 old sibling을
+  // RETIRE한다. 그래야 switch-back 시 ACTIVE로 남아 있던 old native session이
+  // 부활하지 못한다. lineage에 계정 key를 포함해 다른 계정 namespace의 parked
+  // sibling(예: 계정 A의 Builder)이 계정 B에서의 model 변경으로 파괴되지 않게
+  // 한다. effort/autoApprove는 identity도 trigger도 아니다(매 turn 재전달되는
+  // turn-level 설정).
   _retireLineageSiblings(context) {
     const lineage = {
       projectId: context.projectId,
       professionalRunId: context.professionalRunId,
       role: context.role,
       providerId: context.providerId,
+      providerAccountKey: context.providerAccountKey == null ? null : String(context.providerAccountKey),
     };
     const modelKey = context.modelKey == null ? null : String(context.modelKey);
     const permissionMode = context.permissionMode == null ? null : String(context.permissionMode);
@@ -364,9 +391,31 @@ class HarnessRuntime {
       );
     }
 
+    // provider 계정 identity gate. control plane이 계정 fact를 전달한 조립에서는
+    // (chat-ipc Professional turn) 반드시 known 계정 key가 있어야 하고, unknown이면
+    // A/B 어느 namespace도 선택하지 않고 fail-closed한다(parked 세션은 그대로 보존).
+    // fact가 아예 없는 조립(구형/테스트)은 계정 미추적으로 두고 진행한다.
+    const accountFact = runtimeContext ? runtimeContext.providerAccount : null;
+    let accountContext = runtimeContext;
+    if (accountFact != null) {
+      const known = typeof accountFact === "object"
+        && accountFact.status === "known"
+        && accountFact.key != null
+        && accountFact.key !== "";
+      if (!known) {
+        return failedRun(
+          "provider 계정 identity가 확인되지 않아 managed session을 시작하지 않습니다.",
+          LIFECYCLE_STOP_REASONS.ACCOUNT_UNRESOLVED
+        );
+      }
+      // 확정된 opaque 계정 key를 flat identity 필드로 주입한다(SessionKey/Registry
+      // identity의 단일 출처 = fact.key).
+      accountContext = { ...runtimeContext, providerAccountKey: String(accountFact.key) };
+    }
+
     // run-wide freshness gate: Frozen Task hash / Git HEAD fact 비교. HEAD를 판단할
     // 수 없는 비정상 상태면 stale resume 대신 typed fail-closed한다.
-    const freshnessFailure = this._checkRunFreshness(runtimeContext);
+    const freshnessFailure = this._checkRunFreshness(accountContext);
     if (freshnessFailure) {
       return failedRun(
         "authoritative Git HEAD를 확인할 수 없어 managed session을 시작하지 않습니다.",
@@ -375,9 +424,9 @@ class HarnessRuntime {
     }
 
     // lineage sibling retire: model/permission이 바뀐 old sibling의 switch-back 부활 방지.
-    this._retireLineageSiblings(runtimeContext);
+    this._retireLineageSiblings(accountContext);
 
-    const key = deriveSessionKey(runtimeContext);
+    const key = deriveSessionKey(accountContext);
     if (!key) {
       // persistent provider + Professional 실행에서 workspace/project/run/role/provider/model/
       // permission identity 중 하나라도 빠졌다면 fresh process로 조용히 우회하면 안 된다.
@@ -390,7 +439,7 @@ class HarnessRuntime {
     // persistent 경로: role-scoped logical session을 확보하고 single-flight로 보호한다.
     const entry = this._registry.acquire(key, {
       adapterId: persistentAdapter.id,
-      identity: runtimeContext,
+      identity: accountContext,
     });
     if (entry.lifecycle !== LIFECYCLE.ACTIVE) {
       // 종료된 old generation이 아직 inflight다: settle 전에는 replacement generation을
@@ -411,7 +460,7 @@ class HarnessRuntime {
     let run;
     try {
       run = persistentAdapter.runTurn({
-        context: runtimeContext,
+        context: accountContext,
         invocation,
         session: { key, generation: entry.generation },
       });

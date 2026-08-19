@@ -38,6 +38,9 @@ const INVALIDATE_REASONS = Object.freeze({
 const LIFECYCLE_STOP_REASONS = Object.freeze({
   BUSY: "HARNESS_SESSION_LIFECYCLE_BUSY",
   INVALID: "HARNESS_SESSION_LIFECYCLE_INVALID",
+  // provider 계정 identity가 unresolved다(외부 로그인 진행 중 등): A/B 어느 계정
+  // namespace도 선택하지 않고 fail-closed한다. parked 세션은 그대로 보존된다.
+  ACCOUNT_UNRESOLVED: "HARNESS_PROVIDER_ACCOUNT_UNRESOLVED",
 });
 
 // Git HEAD fact. control plane이 Professional managed turn 직전에 계산한다.

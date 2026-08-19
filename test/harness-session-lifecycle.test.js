@@ -30,6 +30,9 @@ const IDENTITY = Object.freeze({
   professionalRunId: "pr-1",
   role: "implementation",
   providerId: "claude",
+  // 계정 미추적 조립(구형/테스트)은 null — 계정 namespace가 확정된 turn은
+  // opaque stable key가 들어간다.
+  providerAccountKey: null,
   modelKey: "sonnet",
   permissionMode: "workspace-write",
 });

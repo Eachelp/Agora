@@ -13,6 +13,7 @@ const {
 } = require("../provider-usage");
 const { deleteCredential, readCredential, writeCredential } = require("../credential-store");
 const { createClaudeLiveStore } = require("../claude-live-credentials");
+const { fingerprint, secretFingerprint } = require("../provider-profile-store");
 const {
   CodexProxy,
   disableProxyInConfig,
@@ -582,20 +583,140 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
     return profile.active ? `${label} (현재)` : label;
   }
 
-  // Stage C — provider account trust boundary를 harness lifecycle에 알립니다.
-  // 실제 계정 전환이 성공했을 때, 그리고 live credential이 부분 변경됐을 수 있는
-  // ambiguous 실패에서 보수적으로 호출합니다(전환 시작 전 검증 실패처럼 credential이
-  // 확실히 그대로인 실패는 불필요한 invalidation을 만들지 않습니다). 이 모듈은
-  // adapter internals를 만지지 않고 chatFeature의 provider-neutral seam만 부릅니다.
-  function notifyAccountLifecycle(provider) {
+  // Stage C — provider account selection boundary를 harness lifecycle에 알립니다.
+  // 계정 변경은 provider-wide 세션 파괴가 아니라 session-selection boundary입니다:
+  // runtime은 오염된 inflight turn만 정리하고, parked 세션은 계정 namespace
+  // (providerAccountKey)로 격리된 채 보존됩니다. 확정된 전환(switchToProfile 성공)
+  // 은 detail.accountKey로 새 계정의 stable key를 함께 전달하고, unknown 전이
+  // (외부 로그인 시작 · partial-mutation 가능성이 있는 ambiguous 실패)는 key 없이
+  // 호출합니다(전환 시작 전 검증 실패처럼 credential이 확실히 그대로인 실패는
+  // 어떤 통지도 만들지 않습니다). 이 모듈은 adapter internals를 만지지 않고
+  // chatFeature의 provider-neutral seam만 부릅니다.
+  function notifyAccountLifecycle(provider, detail = {}) {
     try {
       const chatFeature = getChatFeature();
       if (chatFeature && typeof chatFeature.notifyProviderAccountChanged === "function") {
-        chatFeature.notifyProviderAccountChanged(provider);
+        chatFeature.notifyProviderAccountChanged(provider, {
+          accountKey: detail.accountKey == null ? null : String(detail.accountKey),
+        });
       }
     } catch (error) {
       appendDebugLog(`account lifecycle notify failed (${provider}): ${error?.message || String(error)}`);
     }
+  }
+
+  // ---- Stage C — provider 계정 identity 해석(SessionKey namespace용) ----
+  //
+  // chat-ipc control plane이 Professional managed turn 직전에 호출해, 현재 live
+  // credential이 어느 계정 namespace인지 opaque stable key로 확정합니다.
+  //   - 저장된 프로필이 live secret과 일치하면 그 프로필 key(안정적인 local profile
+  //     key)를 씁니다. 프로필이 없으면 토큰 원문이 아닌 secret fingerprint
+  //     (provider-profile-store의 profile key 파생 규칙과 동일한 16-hex 해시)로만
+  //     식별합니다. 어떤 경우에도 access/refresh token 원문이나 표시용 이메일
+  //     라벨을 identity로 노출하지 않습니다.
+  //   - 확정할 수 없으면 { status: "unknown" }을 돌려주고, runtime이 Professional
+  //     managed 실행을 fail-closed합니다(parked 세션은 보존).
+
+  function stableStoreKeyFor(store, secret) {
+    if (!secret) return null;
+    try {
+      const matched = store.findKeyBySecret(secret);
+      if (matched) return matched;
+    } catch {
+      // 프로필 저장소를 읽지 못해도 fingerprint 경로는 시도할 수 있습니다.
+    }
+    try {
+      return secretFingerprint(secret);
+    } catch {
+      return null;
+    }
+  }
+
+  // 외부 `claude auth login` launcher가 열린 뒤에는 old credential이 그대로 남아
+  // 있어 로그인 완료 여부를 live 상태만으로 구별할 수 없습니다(unknown window).
+  // launch 시점의 baseline key와 다른 live key가 관측되는 순간에만 identity가
+  // 재확립됩니다. 명시적 switchToProfile 성공도 window를 닫습니다.
+  const claudeLoginWindow = { pending: false, baselineKey: null };
+
+  function readClaudeAccountKey() {
+    let live = null;
+    try {
+      live = claudeLiveStore.read();
+    } catch {
+      live = null;
+    }
+    if (!ClaudeAccountSwitcher.hasClaudeToken(live)) return null;
+    return stableStoreKeyFor(claudeAccountSwitcher.store, live);
+  }
+
+  function resolveClaudeAccount() {
+    const key = readClaudeAccountKey();
+    if (claudeLoginWindow.pending) {
+      if (key != null && key !== claudeLoginWindow.baselineKey) {
+        // live credential이 baseline과 다르게 확정됐다 = 외부 로그인이 완료됐다.
+        claudeLoginWindow.pending = false;
+        claudeLoginWindow.baselineKey = null;
+        return { status: "known", key };
+      }
+      return { status: "unknown" };
+    }
+    return key != null ? { status: "known", key } : { status: "unknown" };
+  }
+
+  async function resolveAgyAccount() {
+    // AGY의 unknown window는 live 상태 자체가 인코딩합니다: prepareLogin이 live
+    // credential을 지우므로, 자격 증명이 없으면 unknown이고 새 credential이
+    // 존재하는 순간이 곧 재확립입니다(별도 pending 플래그 불필요).
+    let secret = null;
+    try {
+      secret = await antigravityAccountSwitcher.read();
+    } catch {
+      secret = null;
+    }
+    if (!secret?.token?.refresh_token) return { status: "unknown" };
+    const key = stableStoreKeyFor(antigravityAccountSwitcher.store, secret);
+    return key != null ? { status: "known", key } : { status: "unknown" };
+  }
+
+  function resolveCodexAccount() {
+    // Codex add-login은 pending profile CODEX_HOME에서 진행되어 live auth.json을
+    // 건드리지 않으므로 unknown window를 만들지 않습니다. 계정 변경은 항상 명시적
+    // switchToProfile / proxy auto-switch 경로를 지납니다.
+    let summary = null;
+    try {
+      summary = codexAccountSwitcher.readCurrentAuthSummary();
+    } catch {
+      summary = null;
+    }
+    if (!summary || !summary.hasAuth) return { status: "unknown" };
+    try {
+      const matched = codexAccountSwitcher.findMatchingProfile(summary);
+      if (matched) return { status: "known", key: matched };
+    } catch {
+      // 프로필 스캔 실패 시에도 안정 identity 필드 fingerprint로 식별을 시도합니다.
+    }
+    // accountId는 워크스페이스 공유 가능성이 있어 단독 identity가 아닙니다. 저장
+    // 프로필 매칭(sameIdentity)과 같은 안정 필드 조합을 fingerprint합니다.
+    const identity = [summary.subject, summary.accountId, summary.email]
+      .filter(Boolean)
+      .join("|");
+    return identity
+      ? { status: "known", key: fingerprint(`codex-account:${identity}`) }
+      : { status: "unknown" };
+  }
+
+  async function resolveProviderAccount(providerId) {
+    const provider = String(providerId || "");
+    try {
+      if (provider === "claude") return resolveClaudeAccount();
+      if (provider === "agy") return resolveAgyAccount();
+      if (provider === "codex") return resolveCodexAccount();
+    } catch (error) {
+      appendDebugLog(`account resolve failed (${provider}): ${error?.message || String(error)}`);
+      return { status: "unknown" };
+    }
+    // 계정 개념이 연결되지 않은 provider는 unknown으로 fail-closed합니다.
+    return { status: "unknown" };
   }
 
   // switchToProfile 실패가 live credential 무변경(사전 검증 실패)임이 확실한지.
@@ -702,9 +823,10 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
       try {
         const result = codexAccountSwitcher.switchToProfile(profileKey);
         invalidateProxyAccountsCache();
-        // Stage C: 성공한 Codex 계정 전환은 managed session 전체 INVALIDATE +
-        // resident App Server deliberate reset 대상이다(다음 turn은 fresh server/thread).
-        notifyAccountLifecycle("codex");
+        // Stage C: 성공한 Codex 계정 전환은 selection boundary다 — 새 계정 key를
+        // 전달해 오염된 inflight turn만 정리되고(parked 세션 보존), resident App
+        // Server는 deliberate reset된다(다음 turn은 fresh server/thread).
+        notifyAccountLifecycle("codex", { accountKey: profileKey });
         refreshTrayMenu();
         showCodexAccountBubble(
           `"${result.profile.label}" 계정으로 전환했습니다.\n프록시 모드: 재시작 없이 다음 요청부터 바로 적용됩니다.`
@@ -732,7 +854,7 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
 
       try {
         const result = codexAccountSwitcher.switchToProfile(profileKey);
-        notifyAccountLifecycle("codex");
+        notifyAccountLifecycle("codex", { accountKey: profileKey });
         refreshTrayMenu();
 
         let launchText = "Codex Desktop App 재실행을 요청했습니다.";
@@ -786,13 +908,20 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
     try {
       await switcher.switchToProfile(profileKey);
     } catch (error) {
-      // credential이 부분 변경됐을 수 있는 ambiguous 실패는 stale native 세션을
-      // 신뢰하기보다 보수적으로 invalidation한다. 무변경 검증 실패는 그대로 둔다.
+      // credential이 부분 변경됐을 수 있는 ambiguous 실패는 unknown 전이다: 오염된
+      // inflight turn만 정리되도록 key 없이 통지한다. 무변경 검증 실패는 그대로 둔다.
       if (!isCredentialUnchangedFailure(error)) notifyAccountLifecycle(provider);
       throw error;
     }
-    // Stage C: 성공한 계정 전환 → 해당 provider의 managed session 전체 INVALIDATE.
-    notifyAccountLifecycle(provider);
+    // Stage C: 성공한 계정 전환은 selection boundary다 — 새 계정의 stable profile
+    // key를 전달한다(runtime은 오염 inflight만 정리하고 parked 세션은 계정
+    // namespace로 격리 보존한다). 명시적 전환은 Claude 외부 로그인 unknown
+    // window도 닫는다(live credential이 방금 확정된 프로필로 재작성됐다).
+    if (provider === "claude") {
+      claudeLoginWindow.pending = false;
+      claudeLoginWindow.baselineKey = null;
+    }
+    notifyAccountLifecycle(provider, { accountKey: profileKey });
     clearUsageCache(provider);
     refreshTrayMenu();
     return true;
@@ -843,13 +972,17 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
         await antigravityAccountSwitcher.prepareLogin(meta);
       } catch (error) {
         // clear/restart가 시작된 뒤의 실패는 live credential이 부분 변경됐을 수 있는
-        // ambiguous 상태다: stale managed AGY 세션을 신뢰하는 대신 보수적으로
-        // invalidation한다. clear 이전(무변경 증명, accountSwitchSafe) 실패는 그대로 둔다.
+        // ambiguous 상태다: unknown 전이로 통지해 오염된 inflight AGY turn만
+        // 정리한다(parked 세션은 계정 namespace에 보존). clear 이전(무변경 증명,
+        // accountSwitchSafe) 실패는 어떤 통지도 만들지 않는다.
         if (!isCredentialUnchangedFailure(error)) notifyAccountLifecycle("agy");
         throw error;
       }
-      // 성공한 prepareLogin은 live credential을 비우고 AGY를 재시작한 상태다:
-      // old managed AGY conversation binding은 더 이상 계정 신뢰 경계 안에 없다.
+      // 성공한 prepareLogin은 live credential을 비우고 AGY를 재시작한 상태다 —
+      // 계정 identity의 unknown window가 시작된다(live credential 부재 자체가
+      // resolver의 unknown 표식이고, 새 로그인으로 credential이 생기는 순간이
+      // 재확립이다). key 없이 통지해 오염된 inflight turn만 정리하고, old 계정의
+      // parked 세션은 namespace에 그대로 남겨 되돌아오면 resume되게 한다.
       notifyAccountLifecycle("agy");
       clearUsageCache("agy");
       refreshTrayMenu();
@@ -866,14 +999,21 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
       } catch {
         // 처음 로그인하는 PC라면 저장할 현재 계정이 없습니다.
       }
+      // launcher가 열리기 전에 baseline key를 캡처한다(로그인이 아주 빨리 끝나도
+      // baseline과의 차이로 재확립을 판정할 수 있게).
+      const baselineKey = readClaudeAccountKey();
       const scriptPath = writeClaudeLoginScript();
       const error = await openLoginScript(scriptPath);
       if (error) throw new Error(error);
-      // 외부 `claude auth login` 터미널은 완료 콜백이 없다. launcher가 성공적으로
-      // 열렸다면 로그인이 실제로 끝났는지 알 수 없으므로 보수적으로 old managed
-      // Claude 세션을 INVALIDATE한다(사용자가 취소해도 continuity 비용뿐이며,
-      // 완료된 로그인 후 old-account 세션이 남는 것보다 안전하다). launcher 실패는
-      // live credential 환경이 그대로이므로 통지하지 않는다.
+      // 외부 `claude auth login` 터미널은 완료 콜백이 없고 old credential은 로그인
+      // 완료 전까지 그대로 남는다: launcher가 실제로 열린 순간부터 계정 identity
+      // unknown window를 시작한다. window 동안 Professional managed 실행은
+      // fail-closed되고(parked 세션 보존), baseline과 다른 live key가 관측되거나
+      // 명시적 계정 전환이 성공해야 identity가 재확립된다. key 없이 통지해 오염
+      // 가능성이 있는 inflight turn만 정리한다. launcher 실패는 live credential
+      // 환경이 그대로이므로 window도 통지도 만들지 않는다.
+      claudeLoginWindow.pending = true;
+      claudeLoginWindow.baselineKey = baselineKey;
       notifyAccountLifecycle("claude");
       clearUsageCache("claude");
       return true;
@@ -1098,9 +1238,14 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
       // 무거운 동기 작업)와 UI 갱신은 응답 중계를 지연시키지 않도록 다음 tick으로 미룹니다.
       setImmediate(() => {
         // Stage C: 프록시 auto-switch는 이 시점에 이미 실제 계정이 바뀐 상태다
-        // (영속화 성공 여부와 무관). managed Codex 세션 invalidation + resident
-        // App Server reset을 즉시 알린다.
-        notifyAccountLifecycle("codex");
+        // (영속화 성공 여부와 무관). 전환된 프로필 key와 함께 selection boundary를
+        // 즉시 알린다(오염 inflight 정리 + resident App Server reset, parked 보존).
+        // 저장 프로필이 하나도 없는 "live" fallback은 key를 확정할 수 없어 unknown
+        // 전이로 알린다.
+        notifyAccountLifecycle(
+          "codex",
+          account.key !== "live" ? { accountKey: account.key } : {}
+        );
         try {
           if (account.key !== "live") {
             codexAccountSwitcher.switchToProfile(account.key);
@@ -1138,6 +1283,9 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
     claudeLiveStore,
 
     prepareChatAgent,
+    // Stage C — Professional managed turn의 계정 namespace 확정(chat-ipc가 turn
+    // 직전에 호출). unknown이면 runtime이 fail-closed한다.
+    resolveProviderAccount,
     isCodexProxyModeEnabled,
     setCodexProxyMode,
     restoreCodexProxyMode,

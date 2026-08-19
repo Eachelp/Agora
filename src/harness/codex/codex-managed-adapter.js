@@ -694,9 +694,18 @@ class CodexManagedAdapter extends HarnessAdapter {
 
   // Stage C deliberate runtime reset(account/runtime trust boundary 전용).
   // resident App Server가 old account context를 들고 있을 수 있으므로, 명시적
-  // account change에서는 (runtime이 logical invalidation + active turn cancel을
-  // 이미 지시한 뒤) old server를 닫고 다음 managed turn이 fresh App Server +
-  // fresh thread로 시작하게 한다.
+  // account change에서는 (runtime이 오염된 inflight turn의 invalidation + cancel을
+  // 이미 지시한 뒤) old server를 닫고 다음 managed turn이 fresh App Server에서
+  // 시작하게 한다.
+  //
+  // 계정 변경은 session-selection boundary라 parked logical 세션(다른 계정
+  // namespace 포함)은 registry에 보존되고 나중에 다시 선택될 수 있다. Codex
+  // thread는 ephemeral(in-process)이고 App Server 프로토콜에 cross-process thread
+  // reattach가 없으므로, 여기서 비운 thread binding은 복구하지 않는다 — 같은
+  // 계정으로 돌아온(A→B→A) logical 세션의 다음 turn은 같은 SessionKey 아래
+  // fresh native thread로 시작한다(cross-process thread 복원을 발명하지 않는다).
+  // poison 기록도 함께 비운다: poison이 가리키던 ambiguous native turn은 old
+  // server와 함께 죽었으므로, 재선택된 parked 세션의 fresh thread는 깨끗하다.
   //
   // provider continuity failure(CODEX_SESSION_LOST)의 자동 restart와는 다르다:
   // 실패 경로에서는 client가 lost/closed 상태로 남아 fail-closed되지만, 이
@@ -712,7 +721,6 @@ class CodexManagedAdapter extends HarnessAdapter {
     this._runtimeIdentity = null;
     this._activeTurns.clear();
     this._threads.clear();
-    // old generation은 registry가 다시 선택하지 않으므로 poison 기록도 함께 비운다.
     this._invalidatedHandles.clear();
   }
 

@@ -22,7 +22,26 @@ function ctx(over = {}) {
 
 test("동일 identity는 동일 key를 만든다", () => {
   assert.equal(deriveSessionKey(ctx()), deriveSessionKey(ctx()));
-  assert.ok(deriveSessionKey(ctx()).startsWith("hsk1:"));
+  assert.ok(deriveSessionKey(ctx()).startsWith("hsk2:"));
+});
+
+test("providerAccountKey가 다르면 다른 key다(계정 namespace 분리)", () => {
+  assert.notEqual(
+    deriveSessionKey(ctx({ providerAccountKey: "acctA" })),
+    deriveSessionKey(ctx({ providerAccountKey: "acctB" }))
+  );
+  // 같은 계정으로 돌아오면(A→B→A) 정확히 같은 key다(parked resume 대상).
+  assert.equal(
+    deriveSessionKey(ctx({ providerAccountKey: "acctA" })),
+    deriveSessionKey(ctx({ providerAccountKey: "acctA" }))
+  );
+});
+
+test("providerAccountKey는 미추적(null/부재)을 허용하되 추적 key와는 다른 namespace다", () => {
+  const untracked = deriveSessionKey(ctx());
+  assert.ok(untracked, "계정 미추적 조립(구형/테스트)도 key를 만든다");
+  assert.equal(deriveSessionKey(ctx({ providerAccountKey: null })), untracked);
+  assert.notEqual(deriveSessionKey(ctx({ providerAccountKey: "acctA" })), untracked);
 });
 
 test("role만 다르면 다른 key다", () => {

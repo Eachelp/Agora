@@ -681,6 +681,9 @@ function createChatFeature(options) {
       //   - gitHead: 실행 직전 authoritative workspace(ProjectStore.workspace)의
       //     현재 HEAD fact. non-Git은 unsupported(정상), 판독 불가는 error로
       //     전달되어 HarnessRuntime이 fail-closed한다. adapter는 HEAD를 계산하지 않는다.
+      //   - providerAccount: 현재 live credential의 계정 namespace fact(아래에서
+      //     turn 직전에 resolver로 확정). known이면 SessionKey가 계정별로 분리되고,
+      //     unknown이면 HarnessRuntime이 fail-closed한다(parked 세션 보존).
       const context = {
         projectId: projectIdForMeta(meta),
         workspaceId,
@@ -700,7 +703,45 @@ function createChatFeature(options) {
             : {}),
         },
       };
-      const run = harnessRuntime.runTurn({ context, invocation: harnessInvocation });
+      let run;
+      if (specialistStage && typeof options.resolveProviderAccount === "function") {
+        // 계정 resolver는 비동기일 수 있다(AGY live credential은 OS 보안 저장소).
+        // turn 시작 직전에 계정 fact를 확정한 뒤 managed 실행으로 넘어가며, 확정
+        // 실패는 unknown으로 두어 runtime이 fail-closed하게 한다. cancel은 resolver
+        // 대기 중에 와도 잃지 않는다(managed run 시작 즉시 이어받음).
+        let cancelled = false;
+        let managedCancel = null;
+        const promise = (async () => {
+          let fact = null;
+          try {
+            fact = await options.resolveProviderAccount(agent.id);
+          } catch {
+            fact = null;
+          }
+          const known = fact && typeof fact === "object" && fact.status === "known"
+            && fact.key != null && fact.key !== "";
+          context.providerAccount = known
+            ? { status: "known", key: String(fact.key) }
+            : { status: "unknown" };
+          const managed = harnessRuntime.runTurn({ context, invocation: harnessInvocation });
+          managedCancel = managed.cancel;
+          if (cancelled && typeof managed.cancel === "function") {
+            try { managed.cancel(); } catch {}
+          }
+          return managed.promise;
+        })();
+        run = {
+          promise,
+          cancel: () => {
+            cancelled = true;
+            if (typeof managedCancel === "function") {
+              try { managedCancel(); } catch {}
+            }
+          },
+        };
+      } else {
+        run = harnessRuntime.runTurn({ context, invocation: harnessInvocation });
+      }
       return {
         promise: run.promise.then((result) => {
           const logPath = rawLog.close();
@@ -2331,14 +2372,20 @@ function roomMeta(meta) {
     }
   }
 
-  // Stage C — provider account trust boundary seam. account-switching 모듈이 실제
-  // 계정 전환 성공(또는 partial-mutation 가능성이 있는 ambiguous 실패) 시 호출한다.
-  // adapter internals는 여기서도 만지지 않는다: HarnessRuntime이 logical INVALIDATE와
-  // provider-native cache cleanup(및 Codex resident runtime의 deliberate reset)을 결정한다.
-  function notifyProviderAccountChanged(providerId) {
+  // Stage C — provider account selection boundary seam. account-switching 모듈이
+  // 계정 전환 성공(detail.accountKey = 새 계정의 stable key) 또는 unknown 전이
+  // (외부 로그인 시작 · partial-mutation 가능성이 있는 ambiguous 실패, key 없음)
+  // 시 호출한다. adapter internals는 여기서도 만지지 않는다: HarnessRuntime이
+  // 오염된 inflight turn의 INVALIDATE와 provider-native cache cleanup(및 Codex
+  // resident runtime의 deliberate reset)을 결정하고, parked 세션은 계정
+  // namespace(SessionKey의 providerAccountKey)로 격리된 채 보존된다.
+  function notifyProviderAccountChanged(providerId, detail = {}) {
     if (!providerId) return;
     try {
-      harnessRuntime.providerAccountChanged({ providerId: String(providerId) });
+      harnessRuntime.providerAccountChanged({
+        providerId: String(providerId),
+        accountKey: detail && detail.accountKey != null ? String(detail.accountKey) : null,
+      });
     } catch (error) {
       console.warn("[agora] provider account lifecycle 반영 실패:", error?.message || error);
     }

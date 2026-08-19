@@ -74,7 +74,7 @@ test("등록된 persistent adapter는 role-scoped session을 만든다", async (
   assert.equal(res.ok, true);
   assert.equal(rt.registry.size(), 1);
   assert.equal(spy.calls.length, 0);
-  assert.ok(res.session.key.startsWith("hsk1:"));
+  assert.ok(res.session.key.startsWith("hsk2:"));
 });
 
 test("persistent provider의 Professional identity가 불완전하면 one-shot으로 우회하지 않고 fail-closed한다", async () => {

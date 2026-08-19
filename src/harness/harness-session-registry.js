@@ -27,12 +27,14 @@ const LIFECYCLE = Object.freeze({
 });
 
 // lifecycle query에 쓰는 bounded identity 필드(SessionKey 구성요소와 동일 집합).
+// providerAccountKey는 계정 namespace identity다(미추적 조립에서는 null).
 const IDENTITY_FIELDS = Object.freeze([
   "projectId",
   "workspaceId",
   "professionalRunId",
   "role",
   "providerId",
+  "providerAccountKey",
   "modelKey",
   "permissionMode",
 ]);
