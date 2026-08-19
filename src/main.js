@@ -362,9 +362,6 @@ const chatFeature = createChatFeature({
   electron: { ipcMain, dialog, BrowserWindow, shell },
   onWindowReady: () => sendAppearanceToWindows(),
   prepareAgent: ({ agent }) => accountSwitching.prepareChatAgent(agent),
-  // Stage C — Professional managed turn의 provider 계정 namespace 확정.
-  // prepareAgent와 같은 지연 참조 패턴이라 accountSwitching 후행 할당이 안전합니다.
-  resolveProviderAccount: (providerId) => accountSwitching.resolveProviderAccount(providerId),
   // 출력 hard limit은 기본값이 없습니다(상한 없음).
   // 사용자가 settings.json의 agentOutputHardLimitMB에 양수를 넣은 경우에만 적용됩니다.
   getHardOutputLimitBytes: () => {

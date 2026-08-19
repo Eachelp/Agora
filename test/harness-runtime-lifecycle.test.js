@@ -340,57 +340,35 @@ test("L. workspaceRestored는 HEAD가 같아도 explicit INVALIDATE(WORKSPACE_RE
   assert.equal(b2.session.generation, b1.session.generation + 1);
 });
 
-// ---- N/O/P/R. provider account change (session-selection boundary) ----
+// ---- N/O/P/R. provider account change (hard native session boundary) ----
 
-test("N. providerAccountChanged: parked 세션은 보존(파괴 금지)하고 resetRuntime hook만 부른다", async () => {
+test("N. providerAccountChanged: 해당 provider의 모든 ACTIVE 세션을 INVALIDATE하고 resetRuntime hook을 부른다", async () => {
   const fakeClaude = new FakeLifecycleAdapter("claude-fake");
   const fakeCodex = new FakeLifecycleAdapter("codex-fake");
   const rt = new HarnessRuntime({ processAdapter: spyProcessAdapter() });
   rt.register("claude", fakeClaude);
   rt.register("codex", fakeCodex);
-  await rt.runTurn({ context: ctx({ providerId: "claude", providerAccountKey: "acctA" }), invocation: INV }).promise;
+  await rt.runTurn({ context: ctx({ providerId: "claude" }), invocation: INV }).promise;
+  await rt.runTurn({ context: ctx({ providerId: "claude", role: "review" }), invocation: INV }).promise;
   await rt.runTurn({ context: ctx({ providerId: "codex", modelKey: "gpt-x" }), invocation: INV }).promise;
 
-  // 계정 A→B 전환: 비-inflight(parked) 세션은 selection boundary 뒤에 그대로 남는다.
-  const affected = rt.providerAccountChanged({ providerId: "claude", accountKey: "acctB" });
-  assert.equal(affected.length, 0, "parked 세션은 오염이 아니므로 INVALIDATE하지 않는다");
-  const parked = rt.registry.entries().find((e) => e.identity.providerAccountKey === "acctA");
-  assert.equal(parked.lifecycle, LIFECYCLE.ACTIVE, "A namespace parked 유지");
-  assert.equal(fakeClaude.forgets.length, 0, "parked native binding은 보존된다");
-  assert.deepEqual(fakeClaude.resets, ["PROVIDER_ACCOUNT_CHANGED"], "resident runtime deliberate reset hook은 항상 호출");
+  const affected = rt.providerAccountChanged({ providerId: "claude" });
+  assert.equal(affected.length, 2, "해당 provider의 모든 ACTIVE 세션을 INVALIDATE");
+  for (const e of affected) {
+    assert.equal(e.lifecycle, LIFECYCLE.INVALIDATED);
+    assert.equal(e.invalidationReason, "PROVIDER_ACCOUNT_CHANGED");
+  }
+  assert.equal(fakeClaude.forgets.length, 2, "각 invalidated 세션의 native binding forget");
+  assert.deepEqual(fakeClaude.resets, ["PROVIDER_ACCOUNT_CHANGED"], "resident runtime deliberate reset");
   assert.equal(fakeCodex.forgets.length, 0, "다른 provider는 영향 없음");
   assert.deepEqual(fakeCodex.resets, []);
 
-  // 계정 B namespace는 별도 key → 별도 logical session(1세대)이다.
-  const b = await rt.runTurn({ context: ctx({ providerId: "claude", providerAccountKey: "acctB" }), invocation: INV }).promise;
-  assert.equal(b.session.generation, 1, "B는 A의 교체 세대가 아니라 자체 namespace의 첫 세대");
-  assert.notEqual(b.session.key, parked.key);
+  const codexEntry = rt.registry.entries().find((e) => e.identity.providerId === "codex");
+  assert.equal(codexEntry.lifecycle, LIFECYCLE.ACTIVE, "다른 provider의 세션은 유지");
 
-  // A로 돌아오면(A→B→A) parked 세션이 같은 key/세대로 다시 선택된다(native resume 대상).
-  const back = await rt.runTurn({ context: ctx({ providerId: "claude", providerAccountKey: "acctA" }), invocation: INV }).promise;
-  assert.equal(back.session.key, parked.key);
-  assert.equal(back.session.generation, parked.generation, "switch-back은 parked 세션 resume이다");
-});
-
-test("N2. providerAccountChanged: 다른 계정 inflight turn만 오염으로 INVALIDATE하고 같은 계정 inflight는 지나간다", async () => {
-  const { rt, fake } = makeRuntime();
-  fake.pending = true;
-  const runA = rt.runTurn({ context: ctx({ providerAccountKey: "acctA" }), invocation: INV });
-
-  // 같은 계정으로의 재확정(중복 전환)은 오염이 아니다.
-  assert.equal(rt.providerAccountChanged({ providerId: "claude", accountKey: "acctA" }).length, 0);
-  assert.equal(fake.cancels, 0, "same-account 재확정은 inflight를 취소하지 않는다");
-
-  // 다른 계정으로의 전환은 credential mutation을 지나는 inflight turn을 오염으로 본다.
-  const affected = rt.providerAccountChanged({ providerId: "claude", accountKey: "acctB" });
-  assert.equal(affected.length, 1);
-  assert.equal(affected[0].lifecycle, LIFECYCLE.INVALIDATED);
-  assert.equal(affected[0].invalidationReason, "PROVIDER_ACCOUNT_CHANGED");
-  assert.equal(fake.cancels, 1, "오염된 inflight turn best-effort cancel");
-  assert.equal(fake.forgets.length, 1, "오염된 generation의 native binding forget");
-
-  fake.settleAll({ ok: false, cancelled: true });
-  await runA.promise;
+  // 다음 turn은 fresh generation이다(old 세션 resume 아님).
+  const fresh = await rt.runTurn({ context: ctx({ providerId: "claude" }), invocation: INV }).promise;
+  assert.equal(fresh.session.generation, 2, "계정 전환 후 fresh generation");
 });
 
 test("R. 계정 전환이 inflight turn과 겹치면: best-effort cancel + 즉시 replacement 금지 + settle 후 fresh", async () => {
@@ -672,37 +650,33 @@ test("Y. Codex normal retire: forgetSession은 thread binding만 잊고 resident
   assert.equal(clients.length, 1, "normal retire 경로에서 server reset 없음");
 });
 
-test("Z/P. Codex account change: parked logical 세션 보존 + deliberate server reset → 같은 namespace의 다음 turn은 fresh server/thread", async () => {
+test("Z/P. Codex account change: 모든 ACTIVE session INVALIDATE + deliberate server reset → 다음 turn은 fresh server/thread", async () => {
   const { adapter, clients } = makeCodexHarness();
   const rt = new HarnessRuntime({ processAdapter: spyProcessAdapter() });
   rt.register("codex", adapter);
 
-  const run1 = rt.runTurn({ context: codexCtx({ providerAccountKey: "acctA" }), invocation: codexInv() });
+  const run1 = rt.runTurn({ context: codexCtx(), invocation: codexInv() });
   await waitUntil(() => clients.length === 1 && clients[0].turnsIssued.length === 1);
   await completeCodexTurn(clients[0], 0);
   await run1.promise;
-  const parked = rt.registry.entries()[0];
-  assert.equal(parked.identity.providerAccountKey, "acctA");
+  const oldEntry = rt.registry.entries()[0];
+  assert.equal(oldEntry.lifecycle, LIFECYCLE.ACTIVE);
 
-  // 계정 A→B: parked A 세션은 파괴되지 않고, resident App Server만 deliberate reset.
-  const affected = rt.providerAccountChanged({ providerId: "codex", accountKey: "acctB" });
-  assert.equal(affected.length, 0, "parked 세션은 INVALIDATE 대상이 아니다");
+  // 계정 전환: 모든 ACTIVE session INVALIDATE + resident App Server reset.
+  const affected = rt.providerAccountChanged({ providerId: "codex" });
+  assert.equal(affected.length, 1);
+  assert.equal(affected[0].lifecycle, LIFECYCLE.INVALIDATED);
   assert.equal(clients[0].state, "closed", "old resident App Server close/reset");
-  assert.equal(parked.lifecycle, LIFECYCLE.ACTIVE, "A namespace logical 세션은 parked로 남는다");
 
-  // A로 돌아오면(A→B→A) 같은 logical 세션(같은 key/세대)이 재선택된다. Codex thread는
-  // ephemeral(cross-process reattach 미지원)이라 native thread만 fresh로 새로 시작한다.
-  const run2 = rt.runTurn({ context: codexCtx({ providerAccountKey: "acctA" }), invocation: codexInv() });
+  // 다음 turn은 fresh generation + fresh App Server + fresh thread.
+  const run2 = rt.runTurn({ context: codexCtx(), invocation: codexInv() });
   await waitUntil(() => clients.length === 2 && clients[1].turnsIssued.length === 1);
   assert.equal(threadStarts(clients[1]), 1, "fresh App Server + fresh thread");
-  assert.notEqual(clients[1].turnsIssued[0].threadId, clients[0].turnsIssued[0].threadId);
   await completeCodexTurn(clients[1], 0);
   const r2 = await run2.promise;
   assert.equal(r2.ok, true);
-  assert.equal(rt.registry.entries().length, 1, "A 복귀는 새 entry가 아니라 parked 세션 재선택이다");
-  assert.equal(rt.registry.entries()[0], parked, "같은 logical entry(같은 key/세대)");
-  assert.equal(parked.generation, 1, "parked 세션 resume(교체 세대 아님)");
-  assert.equal(r2.runMetrics && typeof r2.runMetrics, "object");
+  const freshEntry = rt.registry.entries()[0];
+  assert.equal(freshEntry.generation, 2, "fresh generation (old 세션 resume 아님)");
 });
 
 test("Z2. account change가 inflight Codex turn과 겹치면: interrupt + settle 전 replacement 금지 + settle 후 fresh server", async () => {
@@ -789,14 +763,12 @@ test("P2. CODEX_SESSION_LOST(provider failure)는 자동 restart를 만들지 �
   assert.equal(clients.length, 1, "새 App Server를 만들지 않는다");
 });
 
-// ---- AN. provider 계정 namespace (providerAccountKey selection boundary) ----
+// ---- AN. provider 계정 전환은 hard native session boundary ----
 //
-// 계정 변경은 provider-wide 세션 파괴가 아니라 session-selection boundary다:
-//   - A→B→A에서 A의 logical/native 세션은 parked로 보존되고 그대로 resume된다.
-//   - A와 B는 logical/native binding을 절대 공유하지 않는다.
-//   - 계정 identity가 unresolved면 Professional managed 실행은 fail-closed되고
-//     parked 세션은 저장된 채 남는다. 재확립되면 matching namespace만 선택된다.
-//   - 다른 lifecycle trigger(workspace/run 종료)는 계정 세션도 정상 종료시킨다.
+// 계정 변경은 provider-wide session 파괴다:
+//   - A→B→A에서도 항상 fresh session이다(old session resume 금지).
+//   - inflight turn이 있으면 settle barrier가 새 turn을 차단한다(BUSY).
+//   - 다른 provider는 영향 없다.
 
 // resume 요청(--resume/--conversation <id>)은 정확히 그 id를 echo하고, 첫 turn은
 // 새 id를 발급하는 fake CLI runner. native 연속성 검증(요청 id === 반환 id)을 통과시킨다.
@@ -819,148 +791,134 @@ function makeEchoRunner(flag, kind) {
   return { runs, runProcess };
 }
 
-test("AN-A. Claude 계정 A→B→A: A의 native session_id로 정확히 resume되고 B와 binding을 공유하지 않는다", async () => {
+test("AN-A. Claude 계정 전환: fresh native session(--resume 없음)", async () => {
   const { runs, runProcess } = makeEchoRunner("--resume", "sid");
   const adapter = new ClaudeManagedAdapter({ runProcess });
   const rt = new HarnessRuntime({ processAdapter: spyProcessAdapter() });
   rt.register("claude", adapter);
   const inv = { commandPath: "claude", argv: ["-p"], prompt: "p" };
 
-  // 계정 A 첫 turn: fresh native session(sid-1) 생성.
-  await rt.runTurn({ context: ctx({ providerAccountKey: "acctA" }), invocation: inv }).promise;
+  // 첫 turn: fresh native session(sid-1).
+  await rt.runTurn({ context: ctx(), invocation: inv }).promise;
   assert.equal(runs[0].argv.includes("--resume"), false);
 
-  // A→B 전환(선택 경계). B의 turn은 별도 logical key라 fresh native 세션이다.
-  rt.providerAccountChanged({ providerId: "claude", accountKey: "acctB" });
-  await rt.runTurn({ context: ctx({ providerAccountKey: "acctB" }), invocation: inv }).promise;
-  assert.equal(runs[1].argv.includes("--resume"), false, "B는 A의 native 세션을 이어받지 않는다");
+  // 두 번째 turn: 같은 세션이므로 resume.
+  await rt.runTurn({ context: ctx(), invocation: inv }).promise;
+  assert.deepEqual(runs[1].argv.slice(-2), ["--resume", "sid-1"]);
 
-  // B에서 이어지는 turn은 B 자신의 세션(sid-2)만 resume한다.
-  await rt.runTurn({ context: ctx({ providerAccountKey: "acctB" }), invocation: inv }).promise;
-  assert.deepEqual(runs[2].argv.slice(-2), ["--resume", "sid-2"]);
+  // 계정 전환: 모든 session INVALIDATE.
+  rt.providerAccountChanged({ providerId: "claude" });
 
-  // B→A 복귀: parked A 세션이 같은 logical key로 재선택되고 정확히 sid-1로 resume된다.
-  rt.providerAccountChanged({ providerId: "claude", accountKey: "acctA" });
-  const back = await rt.runTurn({ context: ctx({ providerAccountKey: "acctA" }), invocation: inv }).promise;
-  assert.equal(back.ok, true);
-  assert.deepEqual(runs[3].argv.slice(-2), ["--resume", "sid-1"], "A 복귀는 A의 native session_id resume이다");
-
-  const entries = rt.registry.entries();
-  assert.equal(entries.length, 2, "A/B namespace는 각자 하나의 logical 세션이다");
-  for (const entry of entries) assert.equal(entry.lifecycle, LIFECYCLE.ACTIVE);
-  assert.equal(new Set(entries.map((e) => e.key)).size, 2, "logical binding 공유 금지");
+  // 세 번째 turn: fresh native session(--resume 없음).
+  await rt.runTurn({ context: ctx(), invocation: inv }).promise;
+  assert.equal(runs[2].argv.includes("--resume"), false, "계정 전환 후 fresh native session");
+  assert.equal(rt.registry.entries().length, 1, "old entry는 교체되어 1개만 남는다");
+  assert.equal(rt.registry.entries()[0].generation, 2, "fresh generation");
 });
 
-test("AN-B. AGY 계정 A→B→A: A의 conversation_id로 정확히 resume된다", async () => {
+test("AN-B. AGY 계정 전환: fresh conversation(--conversation 없음)", async () => {
   const { runs, runProcess } = makeEchoRunner("--conversation", "conv");
   const adapter = new AGYManagedAdapter({ runProcess });
   const rt = new HarnessRuntime({ processAdapter: spyProcessAdapter() });
   rt.register("agy", adapter);
   const inv = { commandPath: "agy", argv: ["--print"], prompt: "p" };
-  const agyCtx = (key) => ctx({ providerId: "agy", providerAccountKey: key });
+  const agyCtx = (over = {}) => ctx({ providerId: "agy", ...over });
 
-  await rt.runTurn({ context: agyCtx("acctA"), invocation: inv }).promise;
+  // 첫 turn: fresh conversation.
+  await rt.runTurn({ context: agyCtx(), invocation: inv }).promise;
   assert.equal(runs[0].argv.includes("--conversation"), false);
 
-  rt.providerAccountChanged({ providerId: "agy", accountKey: "acctB" });
-  await rt.runTurn({ context: agyCtx("acctB"), invocation: inv }).promise;
-  assert.equal(runs[1].argv.includes("--conversation"), false, "B는 A의 conversation을 이어받지 않는다");
+  // resume turn.
+  await rt.runTurn({ context: agyCtx(), invocation: inv }).promise;
+  const at = runs[1].argv.indexOf("--conversation");
+  assert.ok(at >= 0, "두 번째 turn은 resume");
+  assert.equal(runs[1].argv[at + 1], "conv-1");
 
-  rt.providerAccountChanged({ providerId: "agy", accountKey: "acctA" });
-  const back = await rt.runTurn({ context: agyCtx("acctA"), invocation: inv }).promise;
-  assert.equal(back.ok, true);
-  const at = runs[2].argv.indexOf("--conversation");
-  assert.ok(at >= 0, "A 복귀는 resume turn이다");
-  assert.equal(runs[2].argv[at + 1], "conv-1", "정확히 A의 conversation_id만 잇는다");
+  // 계정 전환.
+  rt.providerAccountChanged({ providerId: "agy" });
+
+  // fresh conversation(--conversation 없음).
+  await rt.runTurn({ context: agyCtx(), invocation: inv }).promise;
+  assert.equal(runs[2].argv.includes("--conversation"), false, "계정 전환 후 fresh conversation");
 });
 
-test("AN-C. 계정 fact가 unresolved면 managed 실행은 typed fail-closed되고 parked 세션은 보존된다", async () => {
+test("AN-C. A→B→A도 항상 fresh session이다(old session resume 금지)", async () => {
   const { rt, fake } = makeRuntime();
-  // 계정 A로 확립된 parked 세션.
-  const a = await rt.runTurn({
-    context: ctx({ providerAccount: { status: "known", key: "acctA" } }),
-    invocation: INV,
-  }).promise;
-  assert.equal(a.ok, true);
-  assert.equal(rt.registry.entries()[0].identity.providerAccountKey, "acctA", "fact.key가 identity로 주입된다");
+  const a1 = await rt.runTurn({ context: ctx(), invocation: INV }).promise;
+  assert.equal(a1.session.generation, 1);
 
-  // 외부 로그인 진행 등으로 identity가 unresolved인 동안에는 A/B 어느 namespace도
-  // 선택하지 않는다.
-  for (const fact of [{ status: "unknown" }, { status: "known" }, { status: "known", key: "" }]) {
-    const blocked = await rt.runTurn({ context: ctx({ providerAccount: fact }), invocation: INV }).promise;
-    assert.equal(blocked.ok, false);
-    assert.equal(blocked.stopReason, "HARNESS_PROVIDER_ACCOUNT_UNRESOLVED");
-  }
-  assert.equal(fake.calls.length, 1, "unresolved 동안 adapter turn이 시작되지 않는다");
-  assert.equal(rt.registry.entries().length, 1, "unresolved는 어떤 entry도 만들거나 파괴하지 않는다");
-  assert.equal(rt.registry.entries()[0].lifecycle, LIFECYCLE.ACTIVE, "parked 세션은 그대로 저장된다");
-  assert.equal(fake.forgets.length, 0, "parked native binding도 보존된다");
+  // A→B 전환.
+  rt.providerAccountChanged({ providerId: "claude" });
+  const a2 = await rt.runTurn({ context: ctx(), invocation: INV }).promise;
+  assert.equal(a2.session.generation, 2, "전환 후 fresh generation");
+
+  // B→A 전환(같은 계정으로 돌아옴).
+  rt.providerAccountChanged({ providerId: "claude" });
+  const a3 = await rt.runTurn({ context: ctx(), invocation: INV }).promise;
+  assert.equal(a3.session.generation, 3, "같은 계정으로 돌아와도 fresh generation");
 });
 
-test("AN-D. identity 재확립은 matching namespace만 선택한다", async () => {
+test("AN-D. inflight settle barrier: settle 전 BUSY, settle 후 fresh", async () => {
   const { rt, fake } = makeRuntime();
-  const known = (key) => ctx({ providerAccount: { status: "known", key } });
-  await rt.runTurn({ context: known("acctA"), invocation: INV }).promise;
-  const parkedA = rt.registry.entries()[0];
+  fake.pending = true;
+  const run1 = rt.runTurn({ context: ctx(), invocation: INV });
 
-  // unknown window: 선택 불가(위 AN-C), parked 유지.
-  const blocked = await rt.runTurn({ context: ctx({ providerAccount: { status: "unknown" } }), invocation: INV }).promise;
-  assert.equal(blocked.stopReason, "HARNESS_PROVIDER_ACCOUNT_UNRESOLVED");
+  rt.providerAccountChanged({ providerId: "claude" });
+  assert.equal(fake.cancels, 1, "inflight turn best-effort cancel");
 
-  // B로 재확립: B namespace의 첫 세대만 선택된다. A는 여전히 parked.
-  const b = await rt.runTurn({ context: known("acctB"), invocation: INV }).promise;
-  assert.equal(b.ok, true);
-  assert.equal(b.session.generation, 1);
-  assert.notEqual(b.session.key, parkedA.key, "재확립된 B는 A namespace를 선택하지 않는다");
-  assert.equal(parkedA.lifecycle, LIFECYCLE.ACTIVE);
+  // settle 전에는 새 turn 차단.
+  fake.pending = false;
+  const blocked = await rt.runTurn({ context: ctx(), invocation: INV }).promise;
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.stopReason, "HARNESS_SESSION_LIFECYCLE_BUSY");
 
-  // A로 재확립: 정확히 A의 parked 세션이 선택된다(fresh 교체 세대 아님).
-  const backA = await rt.runTurn({ context: known("acctA"), invocation: INV }).promise;
-  assert.equal(backA.session.key, parkedA.key);
-  assert.equal(backA.session.generation, parkedA.generation);
-  assert.equal(fake.forgets.length, 0, "전 과정에서 어떤 native binding도 파괴되지 않았다");
+  // settle 후에만 fresh generation 허용.
+  fake.settleAll({ ok: false, cancelled: true });
+  await run1.promise;
+  const fresh = await rt.runTurn({ context: ctx(), invocation: INV }).promise;
+  assert.equal(fresh.ok, true);
+  assert.equal(fresh.session.generation, 2);
 });
 
-test("AN-E. 계정 namespace와 무관한 lifecycle trigger는 A/B 세션을 모두 정상 종료시킨다", async () => {
+test("AN-E. 다른 lifecycle trigger(workspace/run 종료)는 계정 전환 후 fresh 세션도 정상 종료시킨다", async () => {
   const { rt, fake } = makeRuntime();
-  await rt.runTurn({ context: ctx({ providerAccountKey: "acctA" }), invocation: INV }).promise;
-  await rt.runTurn({ context: ctx({ providerAccountKey: "acctB" }), invocation: INV }).promise;
+  await rt.runTurn({ context: ctx(), invocation: INV }).promise;
+  rt.providerAccountChanged({ providerId: "claude" });
+  await rt.runTurn({ context: ctx(), invocation: INV }).promise;
 
   const affected = rt.workspaceChanged({ projectId: "p1" });
-  assert.equal(affected.length, 2, "workspace authority 변경은 계정 namespace를 가리지 않는다");
-  for (const entry of affected) {
-    assert.equal(entry.lifecycle, LIFECYCLE.RETIRED);
-    assert.equal(entry.invalidationReason, "WORKSPACE_CHANGED");
-  }
-  assert.equal(fake.forgets.length, 2, "계정별 native binding 모두 forget");
+  assert.equal(affected.length, 1, "계정 전환 후 fresh 세션도 workspace authority에 종속");
+  assert.equal(affected[0].lifecycle, LIFECYCLE.RETIRED);
+  assert.equal(affected[0].invalidationReason, "WORKSPACE_CHANGED");
 });
 
-test("AN-F. run 종료는 parked 다른-계정 세션도 함께 정리한다", async () => {
-  const { rt } = makeRuntime();
-  await rt.runTurn({ context: ctx({ providerAccountKey: "acctA" }), invocation: INV }).promise;
-  rt.providerAccountChanged({ providerId: "claude", accountKey: "acctB" });
-  await rt.runTurn({ context: ctx({ providerAccountKey: "acctB" }), invocation: INV }).promise;
+test("AN-F. 계정 전환과 무관한 다른 provider는 영향 없다", async () => {
+  const fakeClaude = new FakeLifecycleAdapter("claude-fake");
+  const fakeCodex = new FakeLifecycleAdapter("codex-fake");
+  const rt = new HarnessRuntime({ processAdapter: spyProcessAdapter() });
+  rt.register("claude", fakeClaude);
+  rt.register("codex", fakeCodex);
+  await rt.runTurn({ context: ctx({ providerId: "claude" }), invocation: INV }).promise;
+  await rt.runTurn({ context: ctx({ providerId: "codex", modelKey: "gpt-x" }), invocation: INV }).promise;
 
-  const affected = rt.professionalRunEnded({ professionalRunId: "pr-1" });
-  assert.equal(affected.length, 2, "terminal run boundary는 parked A까지 포함한다");
-  for (const entry of affected) assert.equal(entry.lifecycle, LIFECYCLE.RETIRED);
+  rt.providerAccountChanged({ providerId: "claude" });
+  const codexEntry = rt.registry.entries().find((e) => e.identity.providerId === "codex");
+  assert.equal(codexEntry.lifecycle, LIFECYCLE.ACTIVE, "다른 provider는 영향 없음");
+  assert.equal(fakeCodex.forgets.length, 0);
+  assert.deepEqual(fakeCodex.resets, []);
 });
 
-test("AN-G. lineage sibling retire는 계정 namespace 안에서만 작동한다(B의 model 변경이 parked A를 파괴하지 않는다)", async () => {
+test("AN-G. lineage sibling retire는 계정 전환 후 fresh 세션에서도 정상 작동한다", async () => {
   const { rt } = makeRuntime();
-  await rt.runTurn({ context: ctx({ providerAccountKey: "acctA", modelKey: "mX" }), invocation: INV }).promise;
-  rt.providerAccountChanged({ providerId: "claude", accountKey: "acctB" });
+  rt.providerAccountChanged({ providerId: "claude" });
 
-  // B에서 같은 role/run으로 mY → mZ 전환: B의 old sibling만 RETIRE된다.
-  await rt.runTurn({ context: ctx({ providerAccountKey: "acctB", modelKey: "mY" }), invocation: INV }).promise;
-  await rt.runTurn({ context: ctx({ providerAccountKey: "acctB", modelKey: "mZ" }), invocation: INV }).promise;
+  await rt.runTurn({ context: ctx({ modelKey: "mX" }), invocation: INV }).promise;
+  await rt.runTurn({ context: ctx({ modelKey: "mY" }), invocation: INV }).promise;
 
   const entries = rt.registry.entries();
-  const parkedA = entries.find((e) => e.identity.providerAccountKey === "acctA");
-  const oldB = entries.find((e) => e.identity.providerAccountKey === "acctB" && e.identity.modelKey === "mY");
-  const newB = entries.find((e) => e.identity.providerAccountKey === "acctB" && e.identity.modelKey === "mZ");
-  assert.equal(parkedA.lifecycle, LIFECYCLE.ACTIVE, "다른 계정의 parked sibling은 lineage 대상이 아니다");
-  assert.equal(oldB.lifecycle, LIFECYCLE.RETIRED);
-  assert.equal(oldB.invalidationReason, "MODEL_CHANGED");
-  assert.equal(newB.lifecycle, LIFECYCLE.ACTIVE);
+  const oldX = entries.find((e) => e.identity.modelKey === "mX");
+  const newY = entries.find((e) => e.identity.modelKey === "mY");
+  assert.equal(oldX.lifecycle, LIFECYCLE.RETIRED, "model 변경은 old sibling RETIRE");
+  assert.equal(oldX.invalidationReason, "MODEL_CHANGED");
+  assert.equal(newY.lifecycle, LIFECYCLE.ACTIVE);
 });

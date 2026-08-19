@@ -698,14 +698,12 @@ class CodexManagedAdapter extends HarnessAdapter {
   // 이미 지시한 뒤) old server를 닫고 다음 managed turn이 fresh App Server에서
   // 시작하게 한다.
   //
-  // 계정 변경은 session-selection boundary라 parked logical 세션(다른 계정
-  // namespace 포함)은 registry에 보존되고 나중에 다시 선택될 수 있다. Codex
-  // thread는 ephemeral(in-process)이고 App Server 프로토콜에 cross-process thread
-  // reattach가 없으므로, 여기서 비운 thread binding은 복구하지 않는다 — 같은
-  // 계정으로 돌아온(A→B→A) logical 세션의 다음 turn은 같은 SessionKey 아래
-  // fresh native thread로 시작한다(cross-process thread 복원을 발명하지 않는다).
-  // poison 기록도 함께 비운다: poison이 가리키던 ambiguous native turn은 old
-  // server와 함께 죽었으므로, 재선택된 parked 세션의 fresh thread는 깨끗하다.
+  // 계정 변경은 hard native session boundary다: runtime이 해당 provider의 모든
+  // ACTIVE managed session을 INVALIDATE한 뒤 이 hook을 부른다. A→B→A도 항상
+  // fresh session이다(old session resume 없음). Codex thread는 ephemeral
+  // (in-process)이고 App Server 프로토콜에 cross-process thread reattach가
+  // 없으므로, old server를 닫고 다음 managed turn이 fresh App Server + fresh
+  // thread에서 시작하게 한다. poison 기록도 함께 비운다.
   //
   // provider continuity failure(CODEX_SESSION_LOST)의 자동 restart와는 다르다:
   // 실패 경로에서는 client가 lost/closed 상태로 남아 fail-closed되지만, 이

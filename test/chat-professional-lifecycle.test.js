@@ -295,14 +295,13 @@ test("chatFeature.notifyProviderAccountChanged는 provider account lifecycle로 
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const { feature, spy } = makeFeature(root, { canceled: true, filePaths: [] });
   assert.equal(typeof feature.notifyProviderAccountChanged, "function");
-  // 확정된 전환은 새 계정의 stable key와 함께, unknown 전이는 key 없이(null) 위임된다.
-  feature.notifyProviderAccountChanged("codex", { accountKey: "acct-1" });
+  feature.notifyProviderAccountChanged("codex");
   assert.deepEqual(spy.events, [
-    { kind: "providerAccountChanged", providerId: "codex", accountKey: "acct-1" },
+    { kind: "providerAccountChanged", providerId: "codex" },
   ]);
   feature.notifyProviderAccountChanged("codex");
   assert.deepEqual(spy.events.at(-1), {
-    kind: "providerAccountChanged", providerId: "codex", accountKey: null,
+    kind: "providerAccountChanged", providerId: "codex",
   });
   feature.notifyProviderAccountChanged(null);
   assert.equal(spy.events.length, 2, "provider 없는 호출은 무시");
@@ -317,36 +316,16 @@ test("chat-ipc source: 전문 turn provenance는 canonical frozenTask + gitHead 
   assert.doesNotMatch(source, /frozenRunId: specialistStage \? \(runId \|\| null\) : null/);
 });
 
-test("account-switching source: selection-boundary lifecycle seam + 계정 resolver 배선", () => {
+test("account-switching source: selection-boundary lifecycle seam", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "src", "agora", "account-switching.js"), "utf8");
-  assert.match(source, /function notifyAccountLifecycle\(provider, detail = \{\}\)/);
+  assert.match(source, /function notifyAccountLifecycle\(provider\)/);
   assert.match(source, /notifyProviderAccountChanged/);
-  // 확정된 전환(성공)은 반드시 새 계정의 stable key를 함께 전달한다.
-  const codexKeyed = source.match(/notifyAccountLifecycle\("codex", \{ accountKey: profileKey \}\)/g) || [];
-  assert.ok(codexKeyed.length >= 2, "codex proxy/desktop 전환 성공 경로는 accountKey를 전달한다");
-  assert.match(source, /notifyAccountLifecycle\(provider, \{ accountKey: profileKey \}\)/, "claude/agy 전환 성공 경로");
-  assert.match(source, /accountKey: account\.key/, "codex proxy auto-switch 경로");
-  // unknown 전이(외부 로그인 시작 · ambiguous 실패)는 key 없이 통지되고,
   // 무변경 검증 실패(accountSwitchSafe)는 통지를 만들지 않는다.
   assert.match(source, /isCredentialUnchangedFailure/);
   const agyCalls = source.match(/notifyAccountLifecycle\("agy"\)/g) || [];
   assert.ok(agyCalls.length >= 2, "agy prepareLogin 성공 + ambiguous 실패는 unknown 전이");
   const claudeCalls = source.match(/notifyAccountLifecycle\("claude"\)/g) || [];
   assert.ok(claudeCalls.length >= 1, "claude launcher 성공은 unknown window 시작");
-  assert.match(source, /claudeLoginWindow\.pending = true/, "claude 외부 로그인 unknown window 시작");
-  // Professional managed turn의 계정 namespace resolver가 노출된다.
-  assert.match(source, /resolveProviderAccount,/);
-  // provider-wide 세션 파괴 문구(구 정책)가 되돌아오지 않는지: 성공 전환 경로에
-  // key 없는 codex/claude/agy 통지가 남아 있지 않다(위의 unknown 전이 경로만 허용).
-});
-
-test("main/chat-ipc source: 계정 resolver가 Professional turn의 context fact로 배선된다", () => {
-  const mainSource = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf8");
-  assert.match(mainSource, /resolveProviderAccount: \(providerId\) => accountSwitching\.resolveProviderAccount\(providerId\)/);
-  const ipcSource = fs.readFileSync(path.join(__dirname, "..", "src", "chat", "chat-ipc.js"), "utf8");
-  assert.match(ipcSource, /options\.resolveProviderAccount/);
-  assert.match(ipcSource, /providerAccount = known/);
-  assert.match(ipcSource, /\{ status: "unknown" \}/);
 });
 
 // ---- turn-checkpoint restore mutated fact ----
