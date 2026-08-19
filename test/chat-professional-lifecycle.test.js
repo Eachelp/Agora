@@ -316,16 +316,15 @@ test("chat-ipc source: 전문 turn provenance는 canonical frozenTask + gitHead 
   assert.doesNotMatch(source, /frozenRunId: specialistStage \? \(runId \|\| null\) : null/);
 });
 
-test("account-switching source: selection-boundary lifecycle seam", () => {
+test("account-switching source: hard boundary는 credential mutation 이전에 설치된다", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "src", "agora", "account-switching.js"), "utf8");
   assert.match(source, /function notifyAccountLifecycle\(provider\)/);
   assert.match(source, /notifyProviderAccountChanged/);
-  // 무변경 검증 실패(accountSwitchSafe)는 통지를 만들지 않는다.
-  assert.match(source, /isCredentialUnchangedFailure/);
+  assert.match(source, /credential mutation 이전에/);
   const agyCalls = source.match(/notifyAccountLifecycle\("agy"\)/g) || [];
-  assert.ok(agyCalls.length >= 2, "agy prepareLogin 성공 + ambiguous 실패는 unknown 전이");
+  assert.ok(agyCalls.length >= 1, "agy prepareLogin 경로에 pre-mutation boundary");
   const claudeCalls = source.match(/notifyAccountLifecycle\("claude"\)/g) || [];
-  assert.ok(claudeCalls.length >= 1, "claude launcher 성공은 unknown window 시작");
+  assert.ok(claudeCalls.length >= 1, "claude login 경로에 pre-mutation boundary");
 });
 
 // ---- turn-checkpoint restore mutated fact ----

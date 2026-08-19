@@ -583,12 +583,11 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
   }
 
   // Stage C — provider account change는 hard native session boundary입니다.
-  // 계정이 바뀌면 runtime이 해당 provider의 모든 ACTIVE managed session을
-  // INVALIDATE합니다. A→B→A도 항상 fresh session입니다. 확정된 전환(switchToProfile
-  // 성공)과 unknown 전이(외부 로그인 시작 · ambiguous 실패) 모두 같은 통지입니다.
-  // 전환 시작 전 검증 실패처럼 credential이 확실히 그대로인 실패는 어떤 통지도
-  // 만들지 않습니다. 이 모듈은 adapter internals를 만지지 않고 chatFeature의
-  // provider-neutral seam만 부릅니다.
+  // 계정이 바뀌면 runtime이 해당 provider의 모든 managed session을
+  // INVALIDATE합니다. A→B→A도 항상 fresh session입니다. hard boundary는
+  // credential mutation 이전에 설치됩니다: 경계가 먼저 inflight turn의 settle
+  // barrier를 세운 뒤에 credential이 교체됩니다. 이 모듈은 adapter internals를
+  // 만지지 않고 chatFeature의 provider-neutral seam만 부릅니다.
   function notifyAccountLifecycle(provider) {
     try {
       const chatFeature = getChatFeature();
@@ -701,17 +700,16 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
     // 프록시가 실제로 config에 주입되어 트래픽이 프록시를 탈 때만 무재시작 경로를 씁니다.
     // (start만 되고 주입이 실패한 상태에서 이 경로로 빠지면 전환이 조용히 무시됩니다.)
     if (codexProxyActive) {
+      notifyAccountLifecycle("codex");
       try {
         const result = codexAccountSwitcher.switchToProfile(profileKey);
         invalidateProxyAccountsCache();
-        notifyAccountLifecycle("codex");
         refreshTrayMenu();
         showCodexAccountBubble(
           `"${result.profile.label}" 계정으로 전환했습니다.\n프록시 모드: 재시작 없이 다음 요청부터 바로 적용됩니다.`
         );
         return true;
       } catch (error) {
-        if (!isCredentialUnchangedFailure(error)) notifyAccountLifecycle("codex");
         showCodexAccountBubble(`Codex auth 전환에 실패했습니다.\n${error.message || String(error)}`);
         return false;
       }
@@ -730,9 +728,9 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
         appendDebugLog(`Codex Desktop stop failed before switch: ${error.message || String(error)}`);
       }
 
+      notifyAccountLifecycle("codex");
       try {
         const result = codexAccountSwitcher.switchToProfile(profileKey);
-        notifyAccountLifecycle("codex");
         refreshTrayMenu();
 
         let launchText = "Codex Desktop App 재실행을 요청했습니다.";
@@ -755,7 +753,6 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
         );
         return true;
       } catch (switchError) {
-        if (!isCredentialUnchangedFailure(switchError)) notifyAccountLifecycle("codex");
         showCodexAccountBubble(
           `Codex auth 전환에 실패했습니다.\n${switchError.message || String(switchError)}`
         );
@@ -783,15 +780,17 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
   async function switchProviderAccount(provider, profileKey) {
     if (provider === "codex") return switchCodexAccount(profileKey);
     const switcher = provider === "agy" ? antigravityAccountSwitcher : claudeAccountSwitcher;
+    // hard session boundary는 credential mutation 이전에 설치한다.
+    // pre-mutation 검증 실패(accountSwitchSafe)는 credential 무변경이므로
+    // 경계도 통지도 만들지 않는다.
+    notifyAccountLifecycle(provider);
     try {
       await switcher.switchToProfile(profileKey);
     } catch (error) {
-      // credential이 부분 변경됐을 수 있는 ambiguous 실패는 unknown 전이다: 오염된
-      // inflight turn만 정리되도록 key 없이 통지한다. 무변경 검증 실패는 그대로 둔다.
-      if (!isCredentialUnchangedFailure(error)) notifyAccountLifecycle(provider);
+      // 경계는 이미 설치됐다. credential 무변경 검증 실패에서도 경계는 되돌리지
+      // 않는다(보수적). ambiguous 실패도 이미 경계 뒤이므로 추가 통지는 불필요하다.
       throw error;
     }
-    notifyAccountLifecycle(provider);
     clearUsageCache(provider);
     refreshTrayMenu();
     return true;
@@ -838,18 +837,15 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
       } catch {
         // 처음 로그인하는 PC라면 저장할 현재 계정이 없습니다.
       }
+      // hard session boundary를 credential mutation(clear + restart) 이전에
+      // 설치한다. prepareLogin이 사전 검증(save-current)에서 실패해도 경계는
+      // 이미 설치된 채로 남는다(보수적: 경계를 되돌리지 않는다).
+      notifyAccountLifecycle("agy");
       try {
         await antigravityAccountSwitcher.prepareLogin(meta);
       } catch (error) {
-        // clear/restart가 시작된 뒤의 실패는 live credential이 부분 변경됐을 수 있는
-        // ambiguous 상태다: 통지해 모든 managed AGY session을 INVALIDATE한다.
-        // clear 이전(무변경 증명, accountSwitchSafe) 실패는 어떤 통지도 만들지 않는다.
-        if (!isCredentialUnchangedFailure(error)) notifyAccountLifecycle("agy");
         throw error;
       }
-      // 성공한 prepareLogin은 live credential을 비우고 AGY를 재시작한 상태다 —
-      // 계정이 바뀔 수 있으므로 모든 managed AGY session을 INVALIDATE한다.
-      notifyAccountLifecycle("agy");
       clearUsageCache("agy");
       refreshTrayMenu();
       return true;
@@ -866,12 +862,12 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
         // 처음 로그인하는 PC라면 저장할 현재 계정이 없습니다.
       }
       const scriptPath = writeClaudeLoginScript();
+      // hard session boundary를 login script 실행 이전에 설치한다. launcher 성공/
+      // 실패와 무관하게 사용자 의도(로그인 시작)가 확정된 시점에 경계를 설치해야
+      // login script가 credential을 바꾸는 시간 창에서 old session이 선택되지 않는다.
+      notifyAccountLifecycle("claude");
       const error = await openLoginScript(scriptPath);
       if (error) throw new Error(error);
-      // launcher 성공은 계정이 바뀔 수 있는 window의 시작이다: 모든 managed
-      // session을 INVALIDATE하고, 다음 turn은 항상 fresh session으로 시작한다.
-      // launcher 실패는 live credential 환경이 그대로이므로 통지하지 않는다.
-      notifyAccountLifecycle("claude");
       clearUsageCache("claude");
       return true;
     }

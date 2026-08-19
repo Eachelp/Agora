@@ -3,15 +3,15 @@
 // 계정 로그인/전환 흐름의 hard native session boundary lifecycle.
 //
 // 정책: provider 계정 변경은 hard native session boundary다. 모든 세션이
-// 무효화되며, 재개 가능한 세션은 없다. 이 파일은 account-switching 모듈이
-// 그 경계를 올바르게 통지하는지 검증한다.
+// 무효화되며, 재개 가능한 세션은 없다. hard boundary는 credential mutation
+// 이전에 설치된다: 경계가 먼저 inflight turn의 settle barrier를 세운 뒤에
+// credential이 교체된다.
 //
 //   - AGY prepareLogin의 accountSwitchSafe 의미론: clear() 시작 전 실패만 live
 //     credential 무변경 증명이고, clear가 시도된 이후의 모든 실패(재시작 실패 포함)는
 //     partial mutation 가능성이 있으므로 accountSwitchSafe를 갖지 않는다.
-//   - startProviderLogin("agy"): 성공/ambiguous 실패 → 전이 통지 정확히 1회,
-//     무변경 증명 실패 → 통지 없음.
-//   - switchProviderAccount: 전환 성공 시 lifecycle 통지 정확히 1회.
+//   - startProviderLogin("agy"): pre-mutation boundary 정확히 1회(성공/실패 무관).
+//   - switchProviderAccount: pre-mutation boundary 정확히 1회.
 //
 // wiring 테스트는 실제 createAccountSwitching + 실제 prepareLogin 구현을 통과하며,
 // live 파일시스템 접근은 임시 HOME 리다이렉트로 격리한다.
@@ -140,11 +140,9 @@ function makeSwitching(t, { pathOverride } = {}) {
   return { switching, notifications, home };
 }
 
-test("AGY prepareLogin 성공 → key 없는 unknown 전이 정확히 1회(세션 파괴 통지가 아니다)", async (t) => {
+test("AGY prepareLogin 성공 → pre-mutation boundary 정확히 1회", async (t) => {
   const { switching, notifications } = makeSwitching(t);
   const agy = switching.antigravityAccountSwitcher;
-  // live 자격 증명이 없는 첫 로그인 PC: 메타 수집/스냅샷은 건너뛰고 실제
-  // prepareLogin의 clear→restart mutation 경로가 그대로 실행된다.
   agy.read = async () => { throw new Error("live 자격 증명 없음"); };
   const mutations = [];
   agy.clear = async () => mutations.push("clear");
@@ -155,17 +153,15 @@ test("AGY prepareLogin 성공 → key 없는 unknown 전이 정확히 1회(세�
   assert.equal(result, true);
   assert.deepEqual(mutations, ["clear", "clearActive", "restart"], "실제 prepareLogin 경로가 실행됐다");
   assert.deepEqual(notifications, [{ provider: "agy" }],
-    "성공한 prepareLogin은 전이를 정확히 1회 통지한다");
+    "pre-mutation boundary는 정확히 1회 통지한다");
 });
 
-test("AGY: clear 이전 무변경 증명 실패는 어떤 lifecycle 통지도 만들지 않는다", async (t) => {
+test("AGY: clear 이전 실패에도 pre-mutation boundary는 이미 설치되어 있다", async (t) => {
   const { switching, notifications } = makeSwitching(t);
   const agy = switching.antigravityAccountSwitcher;
   let reads = 0;
   agy.read = async () => {
     reads += 1;
-    // 1회차(메타/usage 수집)는 실패해 외부 조회를 건너뛰고, 2회차(prepareLogin 내부
-    // 스냅샷)는 자격 증명을 돌려줘 clear 이전의 저장 단계까지 진입시킨다.
     if (reads === 1) throw new Error("meta 수집 생략");
     return { token: { refresh_token: "r1" } };
   };
@@ -175,10 +171,11 @@ test("AGY: clear 이전 무변경 증명 실패는 어떤 lifecycle 통지도 �
 
   await assert.rejects(() => switching.startProviderLogin("agy"), /프로필 저장 실패/);
   assert.equal(cleared, false, "live credential은 건드리지 않았다");
-  assert.deepEqual(notifications, [], "무변경 증명(accountSwitchSafe) 실패는 통지하지 않는다");
+  assert.deepEqual(notifications, [{ provider: "agy" }],
+    "pre-mutation boundary는 prepareLogin 호출 이전에 설치된다(보수적)");
 });
 
-test("AGY: clear 이후 restart 실패(ambiguous)는 key 없는 unknown 전이 정확히 1회다", async (t) => {
+test("AGY: clear 이후 restart 실패에도 pre-mutation boundary 정확히 1회", async (t) => {
   const { switching, notifications } = makeSwitching(t);
   const agy = switching.antigravityAccountSwitcher;
   agy.read = async () => { throw new Error("live 자격 증명 없음"); };
@@ -190,10 +187,10 @@ test("AGY: clear 이후 restart 실패(ambiguous)는 key 없는 unknown 전이 �
   await assert.rejects(() => switching.startProviderLogin("agy"), /재시작 실패/);
   assert.equal(cleared, true, "mutation이 이미 시작된 실패다");
   assert.deepEqual(notifications, [{ provider: "agy" }],
-    "partial mutation 가능 실패는 전이를 정확히 1회 통지한다");
+    "pre-mutation boundary는 정확히 1회(경계는 mutation 이전에 설치)");
 });
 
-test("전환 성공(switchProviderAccount)은 lifecycle 통지를 만든다", async (t) => {
+test("전환 성공(switchProviderAccount)은 pre-mutation boundary를 만든다", async (t) => {
   const { switching, notifications } = makeSwitching(t);
   const agy = switching.antigravityAccountSwitcher;
   const stored = { token: { refresh_token: "profile-secret" } };
@@ -205,5 +202,5 @@ test("전환 성공(switchProviderAccount)은 lifecycle 통지를 만든다", as
   const result = await switching.switchProviderAccount("agy", saved.key);
   assert.equal(result, true);
   assert.deepEqual(notifications, [{ provider: "agy" }],
-    "확정된 전환은 lifecycle 통지를 정확히 1회 만든다");
+    "pre-mutation boundary는 credential mutation 이전에 정확히 1회");
 });

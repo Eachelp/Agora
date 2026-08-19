@@ -109,13 +109,27 @@ class HarnessRuntime {
 
   // provider 계정 상태가 바뀌었다: provider-wide hard session boundary.
   // 해당 provider의 모든 ACTIVE managed session을 INVALIDATE하고,
-  // inflight turn이 있으면 settle barrier에 등록한다.
+  // inflight turn이 있으면 settle barrier에 등록한다. 이미 다른 lifecycle
+  // 이벤트로 RETIRED/INVALIDATED되었지만 아직 inflight인 entry도 barrier에
+  // 포함한다(lifecycle/reason은 보존).
   providerAccountChanged({ providerId } = {}) {
     if (providerId == null) return [];
     const pid = String(providerId);
     const affected = [];
+    const barriered = new Set();
     for (const entry of this._registry.matching({ providerId: pid })) {
-      if (entry.lifecycle !== LIFECYCLE.ACTIVE) continue;
+      if (entry.lifecycle !== LIFECYCLE.ACTIVE) {
+        // 이미 RETIRED/INVALIDATED이지만 아직 inflight인 entry는 settle barrier에만
+        // 추가한다. lifecycle/reason은 이전 이벤트가 남긴 것을 보존한다.
+        if (entry.inflight) {
+          const cancel = this._activeTurnCancels.get(entry);
+          if (cancel) {
+            try { cancel(); } catch {}
+          }
+          barriered.add(entry);
+        }
+        continue;
+      }
       this._registry.invalidate(entry.key, INVALIDATE_REASONS.PROVIDER_ACCOUNT_CHANGED);
       const cancel = this._activeTurnCancels.get(entry);
       if (cancel) {
@@ -123,14 +137,17 @@ class HarnessRuntime {
       }
       this._forgetSessionOnAdapter(entry);
       if (entry.inflight) {
-        let barrier = this._accountSettleBarriers.get(pid);
-        if (!barrier) {
-          barrier = new Set();
-          this._accountSettleBarriers.set(pid, barrier);
-        }
-        barrier.add(entry);
+        barriered.add(entry);
       }
       affected.push(entry);
+    }
+    if (barriered.size > 0) {
+      let barrier = this._accountSettleBarriers.get(pid);
+      if (!barrier) {
+        barrier = new Set();
+        this._accountSettleBarriers.set(pid, barrier);
+      }
+      for (const entry of barriered) barrier.add(entry);
     }
     const adapter = this._persistentAdapters.get(pid);
     if (adapter && typeof adapter.resetRuntime === "function") {

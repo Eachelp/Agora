@@ -243,3 +243,135 @@ test("invocation이 없으면 fail-closed로 던진다", () => {
   const rt = new HarnessRuntime({ processAdapter: spyProcessAdapter() });
   assert.throws(() => rt.runTurn({ context: ctx() }), /invocation이 필요/);
 });
+
+// ---- Fix 1 regression: pre-mutation boundary ordering ----
+
+test("providerAccountChanged는 모든 ACTIVE entry를 INVALIDATE하고 settle barrier에 등록한다", async () => {
+  const fake = new FakePersistentAdapter();
+  fake._pending = true;
+  const rt = new HarnessRuntime({ processAdapter: spyProcessAdapter() });
+  rt.register("claude", fake);
+  rt.runTurn({ context: ctx(), invocation: INV });
+  const affected = rt.providerAccountChanged({ providerId: "claude" });
+  assert.equal(affected.length, 1);
+  assert.equal(affected[0].lifecycle, "invalidated");
+  assert.equal(affected[0].invalidationReason, "PROVIDER_ACCOUNT_CHANGED");
+  const busy = await rt.runTurn({ context: ctx(), invocation: INV }).promise;
+  assert.equal(busy.ok, false);
+  assert.equal(busy.stopReason, "HARNESS_SESSION_LIFECYCLE_BUSY");
+});
+
+test("providerAccountChanged 후 settle되면 fresh session(새 generation)을 만든다", async () => {
+  const fake = new FakePersistentAdapter();
+  const rt = new HarnessRuntime({ processAdapter: spyProcessAdapter() });
+  rt.register("claude", fake);
+  const a = await rt.runTurn({ context: ctx(), invocation: INV }).promise;
+  rt.providerAccountChanged({ providerId: "claude" });
+  const b = await rt.runTurn({ context: ctx(), invocation: INV }).promise;
+  assert.equal(b.ok, true);
+  assert.equal(b.session.key, a.session.key);
+  assert.equal(b.session.generation, a.session.generation + 1);
+});
+
+test("A→B→A 계정 순환은 항상 fresh session이다(resume 금지)", async () => {
+  const fake = new FakePersistentAdapter();
+  const rt = new HarnessRuntime({ processAdapter: spyProcessAdapter() });
+  rt.register("claude", fake);
+  const gen1 = await rt.runTurn({ context: ctx(), invocation: INV }).promise;
+  rt.providerAccountChanged({ providerId: "claude" });
+  const gen2 = await rt.runTurn({ context: ctx(), invocation: INV }).promise;
+  assert.equal(gen2.session.generation, gen1.session.generation + 1);
+  rt.providerAccountChanged({ providerId: "claude" });
+  const gen3 = await rt.runTurn({ context: ctx(), invocation: INV }).promise;
+  assert.equal(gen3.session.generation, gen2.session.generation + 1);
+});
+
+// ---- Fix 2 regression: settle barrier covers non-ACTIVE inflight ----
+
+test("이미 RETIRED된 inflight entry도 settle barrier에 포함된다", async () => {
+  const fake = new FakePersistentAdapter();
+  fake._pending = true;
+  const rt = new HarnessRuntime({ processAdapter: spyProcessAdapter() });
+  rt.register("claude", fake);
+  rt.runTurn({ context: ctx(), invocation: INV });
+  rt.registry.retire(rt.registry.get(rt.registry.entries()[0].key).key, "WORKSPACE_CHANGED");
+  const entry = rt.registry.entries()[0];
+  assert.equal(entry.lifecycle, "retired");
+  assert.equal(entry.inflight, true);
+  rt.providerAccountChanged({ providerId: "claude" });
+  assert.equal(entry.invalidationReason, "WORKSPACE_CHANGED", "기존 retire reason 보존");
+  const busy = await rt.runTurn({ context: ctx(), invocation: INV }).promise;
+  assert.equal(busy.ok, false);
+  assert.equal(busy.stopReason, "HARNESS_SESSION_LIFECYCLE_BUSY");
+});
+
+test("이미 INVALIDATED된 inflight entry도 settle barrier에 포함된다", async () => {
+  const fake = new FakePersistentAdapter();
+  fake._pending = true;
+  const rt = new HarnessRuntime({ processAdapter: spyProcessAdapter() });
+  rt.register("claude", fake);
+  rt.runTurn({ context: ctx(), invocation: INV });
+  rt.registry.invalidate(rt.registry.entries()[0].key, "WORKSPACE_RESTORED");
+  const entry = rt.registry.entries()[0];
+  assert.equal(entry.lifecycle, "invalidated");
+  assert.equal(entry.inflight, true);
+  rt.providerAccountChanged({ providerId: "claude" });
+  assert.equal(entry.invalidationReason, "WORKSPACE_RESTORED", "기존 invalidate reason 보존");
+  const busy = await rt.runTurn({ context: ctx(), invocation: INV }).promise;
+  assert.equal(busy.ok, false);
+  assert.equal(busy.stopReason, "HARNESS_SESSION_LIFECYCLE_BUSY");
+});
+
+test("비-inflight 종료 entry는 settle barrier에 포함되지 않는다", async () => {
+  const fake = new FakePersistentAdapter();
+  const rt = new HarnessRuntime({ processAdapter: spyProcessAdapter() });
+  rt.register("claude", fake);
+  await rt.runTurn({ context: ctx(), invocation: INV }).promise;
+  rt.registry.retire(rt.registry.entries()[0].key, "WORKSPACE_CHANGED");
+  rt.providerAccountChanged({ providerId: "claude" });
+  const res = await rt.runTurn({ context: ctx(), invocation: INV }).promise;
+  assert.equal(res.ok, true, "비-inflight 종료 entry는 barrier를 만들지 않는다");
+});
+
+test("다른 provider의 inflight entry는 계정 경계에 영향받지 않는다", async () => {
+  const fake1 = new FakePersistentAdapter();
+  fake1._pending = true;
+  const fake2 = new FakePersistentAdapter();
+  const rt = new HarnessRuntime({ processAdapter: spyProcessAdapter() });
+  rt.register("claude", fake1);
+  rt.register("codex", fake2);
+  rt.runTurn({ context: ctx({ providerId: "claude" }), invocation: INV });
+  rt.providerAccountChanged({ providerId: "codex" });
+  const codexRun = await rt.runTurn({
+    context: ctx({ providerId: "codex", modelKey: "codex-m" }),
+    invocation: INV,
+  }).promise;
+  assert.equal(codexRun.ok, true, "codex barrier는 claude inflight에 영향 없다");
+});
+
+test("providerAccountChanged는 adapter.resetRuntime을 호출한다", async () => {
+  const fake = new FakePersistentAdapter();
+  let resetReason = null;
+  fake.resetRuntime = (reason) => { resetReason = reason; };
+  const rt = new HarnessRuntime({ processAdapter: spyProcessAdapter() });
+  rt.register("claude", fake);
+  await rt.runTurn({ context: ctx(), invocation: INV }).promise;
+  rt.providerAccountChanged({ providerId: "claude" });
+  assert.equal(resetReason, "PROVIDER_ACCOUNT_CHANGED");
+});
+
+test("providerAccountChanged는 inflight turn을 best-effort cancel한다", async () => {
+  const fake = new FakePersistentAdapter();
+  fake._pending = true;
+  let cancelled = false;
+  const originalRunTurn = fake.runTurn.bind(fake);
+  fake.runTurn = (req) => {
+    const run = originalRunTurn(req);
+    return { promise: run.promise, cancel: () => { cancelled = true; } };
+  };
+  const rt = new HarnessRuntime({ processAdapter: spyProcessAdapter() });
+  rt.register("claude", fake);
+  rt.runTurn({ context: ctx(), invocation: INV });
+  rt.providerAccountChanged({ providerId: "claude" });
+  assert.equal(cancelled, true, "inflight turn이 cancel되어야 한다");
+});
