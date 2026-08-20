@@ -57,6 +57,8 @@ const { createChatWindow } = require("./chat-window");
 // 무한히 쌓이지 않게 오래된 파일부터 지웁니다.
 const MAX_RUN_LOG_FILES = 20;
 const MAX_TASK_READ_BYTES = 5 * 1024 * 1024;
+// Stage D-0 workspace mutation provenance journal의 상한(process 수명 기준).
+const MAX_WORKSPACE_MUTATION_EVENTS = 2000;
 
 // 실행 원본 stdout을 파일로 흘려보내는 writer.
 // 메모리에 전체를 들고 있지 않으므로 출력이 아무리 길어도 진단 정보를 남길 수 있습니다.
@@ -298,7 +300,26 @@ function createChatFeature(options) {
   // 그 아래 세션(room)이 여럿이므로, 서로 다른 room이 같은 폴더를 동시에 바꾸는 것을
   // 막는 소유권은 room 밖(control plane)에 있어야 한다. memory-only이며 보증 경계는
   // 단일 main process다(main.js requestSingleInstanceLock).
-  const workspaceMutationLease = options.workspaceMutationLease || new WorkspaceMutationLease();
+  //
+  // Charter는 provenance를 D-C에서 몰아 만들지 말고 각 단계가 "결정 시점"에 남기라고
+  // 요구한다. 그래서 emit seam만 내지 않고 실제 sink를 여기서 연결한다. 기록의 수명은
+  // lease 자체와 같은 process 수명이다(lease가 memory-only이므로 그보다 오래 남는
+  // 기록은 의미가 없다). 영속 저장과 graph projection은 D-C 범위다.
+  const workspaceMutationJournal = [];
+  const workspaceMutationLease = options.workspaceMutationLease || new WorkspaceMutationLease({
+    onEvent: (event) => {
+      workspaceMutationJournal.push(event);
+      if (workspaceMutationJournal.length > MAX_WORKSPACE_MUTATION_EVENTS) {
+        workspaceMutationJournal.splice(0, workspaceMutationJournal.length - MAX_WORKSPACE_MUTATION_EVENTS);
+      }
+      // 거부는 사용자가 재시도로 마주치는 유일한 사건이라 운영 로그에도 남긴다.
+      if (event?.type === "lease-denied") {
+        console.warn(
+          `[agora] workspace mutation denied (sameHolder=${Boolean(event.sameHolder)}) held by run=${event.heldBy?.runId || "-"} purpose=${event.heldBy?.purpose || "-"}`
+        );
+      }
+    },
+  });
 
   function ensureStore() {
     if (store || storeError) return store;
@@ -1760,10 +1781,10 @@ function roomMeta(meta) {
         requireSession(sessionId);
         const room = rooms.get(sessionId);
         if (room) {
+          // Stage D-0: 실행이 남아 있지 않은 방의 소유권만 정리한다.
+          // stopAllSilently가 activeRuns를 0으로 만들기 전에 판단해야 한다.
+          room.releaseWorkspaceMutationsIfIdle();
           room.stopAllSilently();
-          // Stage D-0: 삭제된 세션의 workspace 소유권이 남아 다른 대화를 영구히
-          // 막지 않도록 정리한다.
-          room.releaseAllWorkspaceMutations();
           rooms.delete(sessionId);
         }
         pendingAttachments.delete(sessionId);

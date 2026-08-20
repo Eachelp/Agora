@@ -14,8 +14,10 @@
 // 확정된 계약:
 //   - 충돌은 fail-closed(BUSY)다. 대기열도 강탈도 없다.
 //   - memory-only다. 앱이 죽으면 lease도 사라진다(stale lock 없음).
-//   - 같은 holder는 재진입할 수 있다(depth). Professional 실행이 lease를 쥔 채
-//     내부에서 checkpoint restore를 호출하는 정상 경로가 교착되면 안 되기 때문이다.
+//   - 재진입은 holder가 같다는 것만으로 허용되지 않는다. 진짜 중첩(바깥 작업이
+//     자기 안에서 다시 요청)임을 parentToken으로 증명해야 한다. holder(=대화) 단위로
+//     열어 두면 같은 대화에 IPC가 두 번 들어오는 것만으로 동시 mutation이 열린다
+//     (예: restore 버튼 중복 호출). 증명 없는 같은-holder 요청은 충돌로 본다.
 //   - 이 모듈은 authority를 갖지 않는다. 무엇이 canonical workspace인지, 누가
 //     writer 자격이 있는지는 control plane이 판단하고, 여기서는 소유권만 관리한다.
 //   - resourceKind는 일반화 가능한 모양으로 받되 workspace만 지원한다. 다른 kind는
@@ -25,6 +27,7 @@
 // 경계 밖 — main.js requestSingleInstanceLock이 그 경계를 뒷받침한다), 대기열,
 // 우선순위, timeout 기반 자동 회수, 외부 자원(DB/Drive/외부 API) lease.
 
+const fs = require("node:fs");
 const path = require("node:path");
 
 const SUPPORTED_RESOURCE_KINDS = Object.freeze(["workspace"]);
@@ -56,8 +59,21 @@ function cleanString(value, limit = 200) {
 }
 
 // canonical workspace identity key.
-// 같은 폴더를 가리키는 서로 다른 표기(후행 구분자, 대소문자, 상대 경로 조각)가
-// 서로 다른 자원으로 보이면 one-writer 보증이 그대로 뚫린다.
+// 같은 폴더를 가리키는 서로 다른 표기가 서로 다른 자원으로 보이면 one-writer
+// 보증이 그대로 뚫린다. 접어야 하는 것은 표기 차이만이 아니다:
+//
+//   후행 구분자 / `.` / `..`      → path.resolve
+//   symlink · junction alias      → fs.realpathSync
+//   Windows 대소문자              → toLowerCase
+//
+// realpath까지 하는 이유는 checkpoint/diff 등 실제 mutation 주체가 이미
+// realpath 기준으로 workspace를 잡기 때문이다(turn-checkpoint, task-manager,
+// workspace-diff). lease만 lexical이면 junction 두 개가 같은 폴더를 가리켜도
+// 서로 다른 lease key가 되어 동시에 획득된다.
+//
+// 경로가 아직 없으면 realpath는 실패한다. 그때는 lexical 기준으로 되돌아간다 —
+// 존재하지 않는 폴더는 mutation 대상이 될 수 없고, 여기서 거부하면 workspace
+// 생성 직전 실행이 이유 없이 막힌다.
 function normalizeResourceId(resourceKind, resourceId) {
   const raw = cleanString(resourceId, 4096);
   if (!raw) return null;
@@ -67,6 +83,11 @@ function normalizeResourceId(resourceKind, resourceId) {
     resolved = path.resolve(raw);
   } catch {
     return null;
+  }
+  try {
+    resolved = fs.realpathSync(resolved);
+  } catch {
+    // 존재하지 않거나 접근할 수 없는 경로 → lexical 기준 유지.
   }
   // Windows 파일 시스템은 대소문자를 구분하지 않으므로 같은 폴더로 접어야 한다.
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
@@ -115,7 +136,10 @@ class WorkspaceMutationLease {
     return token;
   }
 
-  // { ok: true, token, lease } | { ok: false, code, holder?, error }
+  // { ok: true, token, lease } | { ok: false, code, holder?, sameHolder?, error }
+  //
+  // parentToken: 바깥 작업이 자기 안에서 다시 요청하는 진짜 중첩임을 증명한다.
+  // 없으면 같은 holder라도 별개의 동시 작업으로 보고 충돌시킨다.
   acquire({
     resourceKind = "workspace",
     resourceId,
@@ -123,6 +147,7 @@ class WorkspaceMutationLease {
     runId = null,
     role = null,
     purpose = null,
+    parentToken = null,
   } = {}) {
     const kind = cleanString(resourceKind, 40);
     if (!kind || !SUPPORTED_RESOURCE_KINDS.includes(kind)) {
@@ -152,7 +177,18 @@ class WorkspaceMutationLease {
     const at = this.now();
     const existing = this._entries.get(key);
 
-    if (existing && existing.holderId !== holder) {
+    // 증명된 중첩만 재진입이다: parentToken이 지금 이 lease의 유효한 token이어야 한다.
+    const parentRef = parentToken ? this._tokens.get(cleanString(parentToken, 200)) : null;
+    const nested = Boolean(
+      existing &&
+      parentRef &&
+      parentRef.key === key &&
+      parentRef.leaseId === existing.leaseId &&
+      existing.holderId === holder
+    );
+
+    if (existing && !nested) {
+      const sameHolder = existing.holderId === holder;
       this._emit(LEASE_EVENTS.DENIED, {
         resourceKind: kind,
         resourceId: key,
@@ -160,18 +196,21 @@ class WorkspaceMutationLease {
         runId: cleanString(runId, 200),
         role: cleanString(role, 80),
         purpose: cleanString(purpose, 200),
+        sameHolder,
         heldBy: publicHolder(existing),
       });
       return {
         ok: false,
         code: LEASE_ERRORS.BUSY,
         holder: publicHolder(existing),
-        error: "같은 작업 폴더를 다른 실행이 변경하고 있습니다.",
+        sameHolder,
+        error: sameHolder
+          ? "이 대화에서 이미 작업 폴더를 변경하고 있습니다."
+          : "같은 작업 폴더를 다른 실행이 변경하고 있습니다.",
       };
     }
 
-    if (existing) {
-      // 같은 holder의 재진입: 정상 경로(예: 전문 실행 중 checkpoint restore)다.
+    if (nested) {
       existing.depth += 1;
       const token = this._newToken(key, existing.leaseId);
       this._emit(LEASE_EVENTS.REENTERED, {

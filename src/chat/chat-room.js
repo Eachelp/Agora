@@ -683,12 +683,15 @@ class ChatRoom extends EventEmitter {
   //
   // 같은 프로젝트의 workspace는 하나이고 그 아래 대화(room)는 여럿이므로, 다른
   // 대화가 같은 폴더를 바꾸는 동안에는 변경을 시작하지 않는다(fail-closed).
-  // 같은 room은 재진입할 수 있다 — 전문 실행이 소유권을 쥔 채 내부에서
-  // checkpoint restore를 호출하는 정상 경로가 막히면 안 되기 때문이다.
+  //
+  // 재진입은 같은 대화라는 것만으로 허용되지 않는다. 바깥 작업이 자기 안에서
+  // 다시 요청하는 진짜 중첩임을 parentToken으로 증명해야 한다. 그렇지 않으면
+  // 같은 대화에 mutation IPC가 두 번 들어오는 것(복원 버튼 중복 호출 등)만으로
+  // 동시 변경이 열린다.
   //
   // token이 null이면 통제 대상이 아니라는 뜻이며(주입 없음 또는 workspace 없음),
   // release는 그대로 무시된다.
-  acquireWorkspaceMutation({ purpose = null, runId = null, role = null } = {}) {
+  acquireWorkspaceMutation({ purpose = null, runId = null, role = null, parentToken = null } = {}) {
     if (!this.mutationLease) return { ok: true, token: null };
     const workspace = this.meta.workspace;
     if (!workspace) return { ok: true, token: null };
@@ -699,13 +702,16 @@ class ChatRoom extends EventEmitter {
       runId,
       role,
       purpose,
+      parentToken,
     });
     if (got.ok) return { ok: true, token: got.token, reentered: Boolean(got.reentered) };
     // 내부 어휘(lease/holder/resourceId)를 사용자 표면으로 내보내지 않는다(Charter §9).
-    const error = got.code === "BUSY"
-      ? "같은 작업 폴더를 다른 대화가 변경하고 있습니다. 그 작업이 끝난 뒤 다시 시도해 주세요."
-      : "작업 폴더 변경 권한을 확인하지 못해 실행을 시작하지 않았습니다.";
-    return { ok: false, code: got.code, error };
+    const error = got.code !== "BUSY"
+      ? "작업 폴더 변경 권한을 확인하지 못해 실행을 시작하지 않았습니다."
+      : got.sameHolder
+        ? "이 대화에서 이미 작업 폴더를 변경하고 있습니다. 그 작업이 끝난 뒤 다시 시도해 주세요."
+        : "같은 작업 폴더를 다른 대화가 변경하고 있습니다. 그 작업이 끝난 뒤 다시 시도해 주세요.";
+    return { ok: false, code: got.code, sameHolder: Boolean(got.sameHolder), error };
   }
 
   releaseWorkspaceMutation(token) {
@@ -713,7 +719,18 @@ class ChatRoom extends EventEmitter {
     return this.mutationLease.release(token) === true;
   }
 
-  // 방이 닫히거나 비정상 종료했을 때 남은 소유권을 정리한다.
+  // 방이 닫힐 때 남은 소유권을 정리한다. 실행이 남아 있지 않은 경우에만.
+  //
+  // 중지(stop/cancel)는 subprocess 종료를 기다려 주지 않는다. 아직 파일을 쓰고
+  // 있을 수 있는 writer의 소유권을 정리 편의로 먼저 풀면, 다른 대화가 그 틈에
+  // 소유권을 얻어 잠시 동시에 workspace를 바꾸게 된다. 그래서 실행이 남아 있으면
+  // 소유권을 그대로 둔다 — memory-only라 앱을 다시 켜면 사라지므로, 잘못 푸는 것보다
+  // 남기는 쪽이 안전하다(fail-closed).
+  releaseWorkspaceMutationsIfIdle() {
+    if (this.activeRuns > 0 || this.specialistActive === true) return 0;
+    return this.releaseAllWorkspaceMutations();
+  }
+
   releaseAllWorkspaceMutations() {
     if (!this.mutationLease?.releaseAllFor) return 0;
     return this.mutationLease.releaseAllFor(this.sessionId);

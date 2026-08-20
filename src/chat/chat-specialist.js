@@ -1547,7 +1547,41 @@ class SpecialistMixin {
   //   builder_done        → Reviewer 실행
   //   review_fix_required → Builder 보완 (step에서는 사용자 확인 후 수동 진행)
   //   review_pass         → Recorder 실행 후 완료
+  // Stage D-0 — step 모드 전문 실행도 mutation 참여자다.
+  //
+  // step은 runExecutionBlock을 타지 않고 이 경로로 직접 freeze·checkpoint 생성·
+  // Builder 실행을 한다. 여기에 소유권이 없으면 one-writer 보증이 step 모드에서만
+  // 통째로 뚫린다.
+  //
+  // 소유권 범위는 "이번 phase 실행"이다. step은 각 단계 뒤 사용자 결정을 기다리므로
+  // 블록 전체를 쥐면 그 대기 동안 같은 프로젝트의 다른 대화가 무기한 막힌다.
+  // 단계 사이에 다른 대화가 workspace를 바꿨는지는 소유권이 아니라 결과물
+  // fingerprint(Charter INV-5, D-A)가 잡을 문제다.
   async resumeStepPhase(resume, requestedGeneration) {
+    const lease = this.acquireWorkspaceMutation({
+      purpose: "professional-step",
+      runId: resume?.runInfo?.runId || null,
+      role: "implementation",
+    });
+    if (!lease.ok) {
+      this.appendSystem(lease.error);
+      // specialistResume을 건드리지 않았으므로 사용자가 그대로 다시 진행할 수 있다.
+      return {
+        ok: false,
+        stage: "implementation",
+        completedIterations: 0,
+        needsUserDecision: true,
+        stopReason: "WORKSPACE_BUSY",
+      };
+    }
+    try {
+      return await this.resumeStepPhaseInner(resume, requestedGeneration);
+    } finally {
+      this.releaseWorkspaceMutation(lease.token);
+    }
+  }
+
+  async resumeStepPhaseInner(resume, requestedGeneration) {
     const { stages, feedback, taskInfo, maxAutoRevisions } = resume;
     const implementation = stages.implementation;
     const review = stages.review;

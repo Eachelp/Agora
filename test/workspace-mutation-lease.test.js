@@ -13,6 +13,8 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 
 const {
@@ -60,16 +62,60 @@ test("다른 holder는 같은 workspace를 얻지 못한다 (fail-closed BUSY)",
   assert.equal(l.holderOf(WS).holderId, "session-a");
 });
 
+// B3 회귀: holder가 같다는 사실만으로 재진입을 허용하면, 같은 대화에 mutation
+// 요청이 두 번 들어오는 것(복원 버튼 중복 호출 등)만으로 동시 변경이 열린다.
+test("같은 holder라도 중첩을 증명하지 못하면 충돌로 본다", () => {
+  const l = lease();
+  l.acquire({ resourceId: WS, holderId: "session-a", purpose: "checkpoint-restore" });
+  const second = l.acquire({ resourceId: WS, holderId: "session-a", purpose: "checkpoint-restore" });
+  assert.equal(second.ok, false);
+  assert.equal(second.code, LEASE_ERRORS.BUSY);
+  assert.equal(second.sameHolder, true, "같은 대화의 충돌임을 구분해 알려야 한다");
+  assert.equal(l.holderOf(WS).depth, 1, "거부된 요청이 depth를 늘리면 안 된다");
+});
+
+test("남의 lease token을 parentToken으로 내밀어도 재진입되지 않는다", () => {
+  const l = lease();
+  const otherWs = l.acquire({ resourceId: OTHER_WS, holderId: "session-a" });
+  l.acquire({ resourceId: WS, holderId: "session-a" });
+  // 다른 자원의 token은 이 자원의 중첩 증명이 될 수 없다.
+  const forged = l.acquire({ resourceId: WS, holderId: "session-a", parentToken: otherWs.token });
+  assert.equal(forged.ok, false);
+  assert.equal(forged.code, LEASE_ERRORS.BUSY);
+
+  // 다른 holder의 token도 마찬가지다.
+  const l2 = lease();
+  const held = l2.acquire({ resourceId: WS, holderId: "session-a" });
+  const impostor = l2.acquire({ resourceId: WS, holderId: "session-b", parentToken: held.token });
+  assert.equal(impostor.ok, false);
+  assert.equal(impostor.sameHolder, false);
+});
+
+test("해제된 lease의 token은 더 이상 중첩 증명이 되지 않는다", () => {
+  const l = lease();
+  const first = l.acquire({ resourceId: WS, holderId: "session-a" });
+  l.release(first.token);
+  l.acquire({ resourceId: WS, holderId: "session-a" });
+  const stale = l.acquire({ resourceId: WS, holderId: "session-a", parentToken: first.token });
+  assert.equal(stale.ok, false);
+  assert.equal(stale.code, LEASE_ERRORS.BUSY);
+});
+
 test("다른 workspace는 서로 막지 않는다", () => {
   const l = lease();
   assert.equal(l.acquire({ resourceId: WS, holderId: "session-a" }).ok, true);
   assert.equal(l.acquire({ resourceId: OTHER_WS, holderId: "session-b" }).ok, true);
 });
 
-test("같은 holder는 재진입할 수 있고 depth가 쌓인다", () => {
+test("증명된 중첩(parentToken)만 재진입할 수 있고 depth가 쌓인다", () => {
   const l = lease();
   const outer = l.acquire({ resourceId: WS, holderId: "session-a", purpose: "professional-mutation" });
-  const inner = l.acquire({ resourceId: WS, holderId: "session-a", purpose: "checkpoint-restore" });
+  const inner = l.acquire({
+    resourceId: WS,
+    holderId: "session-a",
+    purpose: "checkpoint-restore",
+    parentToken: outer.token,
+  });
   assert.equal(inner.ok, true);
   assert.equal(inner.reentered, true);
   assert.equal(l.holderOf(WS).depth, 2);
@@ -177,7 +223,12 @@ test("결정 시점에 provenance event를 남긴다", () => {
   const events = [];
   const l = lease((event) => events.push(event));
   const a = l.acquire({ resourceId: WS, holderId: "session-a", runId: "RUN-1", role: "implementation" });
-  const nested = l.acquire({ resourceId: WS, holderId: "session-a", purpose: "checkpoint-restore" });
+  const nested = l.acquire({
+    resourceId: WS,
+    holderId: "session-a",
+    purpose: "checkpoint-restore",
+    parentToken: a.token,
+  });
   l.acquire({ resourceId: WS, holderId: "session-b" });
   l.release(nested.token);
   l.release(a.token);
@@ -210,4 +261,38 @@ test("normalizeResourceId는 workspace가 아닌 kind의 값을 경로로 재해
   assert.equal(normalizeResourceId("workspace", WS), process.platform === "win32" ? WS.toLowerCase() : WS);
   assert.equal(normalizeResourceId("database", "db://x"), "db://x");
   assert.equal(normalizeResourceId("workspace", "   "), null);
+});
+
+// B4 회귀: lexical 정규화만 하면 같은 실제 폴더를 가리키는 symlink/junction이
+// 서로 다른 lease key가 되어 동시에 획득된다. checkpoint/diff는 이미 realpath
+// 기준으로 동작하므로 lease도 같은 physical identity를 써야 한다.
+test("symlink alias는 같은 workspace로 접힌다", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agora-lease-"));
+  const real = path.join(root, "real");
+  const link = path.join(root, "link");
+  fs.mkdirSync(real);
+  try {
+    fs.symlinkSync(real, link, "junction");
+  } catch {
+    t.skip("symlink/junction을 만들 권한이 없는 환경");
+    fs.rmSync(root, { recursive: true, force: true });
+    return;
+  }
+  try {
+    const l = lease();
+    const first = l.acquire({ resourceId: real, holderId: "session-a" });
+    assert.equal(first.ok, true);
+    const viaLink = l.acquire({ resourceId: link, holderId: "session-b" });
+    assert.equal(viaLink.ok, false, "같은 실제 폴더인데 두 번째 writer가 들어왔다");
+    assert.equal(viaLink.code, LEASE_ERRORS.BUSY);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("존재하지 않는 경로는 lexical 기준으로 되돌아간다", () => {
+  const missing = path.join(os.tmpdir(), "agora-lease-missing-xyz");
+  const l = lease();
+  assert.equal(l.acquire({ resourceId: missing, holderId: "session-a" }).ok, true);
+  assert.equal(l.acquire({ resourceId: `${missing}${path.sep}`, holderId: "session-b" }).code, LEASE_ERRORS.BUSY);
 });

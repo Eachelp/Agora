@@ -201,19 +201,142 @@ test("전문 실행 블록이 예외로 끝나도 소유권이 남지 않는다"
   assert.equal(lease.isHeld(WS), false);
 });
 
-test("전문 실행 중 같은 방의 checkpoint restore는 교착되지 않는다(재진입)", async () => {
+test("블록 안의 중첩 작업은 parentToken으로 재진입한다", () => {
   const lease = new WorkspaceMutationLease();
   const room = roomWith({ sessionId: "s-a", lease });
+  const outer = room.acquireWorkspaceMutation({ purpose: "professional-execution" });
   let nested = null;
-  room.runExecutionBlockInner = async () => {
-    // 블록 안에서 restore 경로가 다시 소유권을 요청하는 상황.
-    nested = room.acquireWorkspaceMutation({ purpose: "checkpoint-restore" });
-    if (nested.ok) room.releaseWorkspaceMutation(nested.token);
+  nested = room.acquireWorkspaceMutation({ purpose: "checkpoint-restore", parentToken: outer.token });
+  assert.equal(nested.ok, true, "증명된 중첩은 허용된다");
+  assert.equal(nested.reentered, true);
+  room.releaseWorkspaceMutation(nested.token);
+  assert.equal(lease.isHeld(WS), true, "안쪽만 놓으면 소유권은 유지된다");
+  room.releaseWorkspaceMutation(outer.token);
+  assert.equal(lease.isHeld(WS), false);
+});
+
+// B3 회귀: 같은 방이라는 이유만으로 재진입을 허용하면, restore IPC가 두 번
+// 들어오는 것만으로 복원이 동시에 두 번 돈다. renderer가 버튼을 막더라도
+// control plane이 스스로 막아야 한다.
+test("같은 방의 restore가 동시에 두 번 들어오면 두 번째는 거부된다", async () => {
+  const lease = new WorkspaceMutationLease();
+  let inFlight = 0;
+  let maxConcurrent = 0;
+  let releaseRestore = null;
+  const restoreGate = new Promise((resolve) => {
+    releaseRestore = resolve;
+  });
+  const room = roomWith({
+    sessionId: "s-a",
+    lease,
+    checkpoint: {
+      createCheckpoint: async () => ({ supported: true, checkpointId: "cp-x" }),
+      restoreCheckpoint: async () => {
+        inFlight += 1;
+        maxConcurrent = Math.max(maxConcurrent, inFlight);
+        await restoreGate;
+        inFlight -= 1;
+        return { ok: true, mutated: true };
+      },
+      cleanupCheckpoint: () => ({ ok: true }),
+    },
+  });
+  const blocked = {
+    runId: "RUN-012",
+    canRestore: true,
+    checkpoint: { supported: true, checkpointId: "cp-x" },
+    taskPath: null,
+    blockReason: "BLOCKED",
+  };
+  room.specialistBlocked = blocked;
+
+  const first = room.resolveBlocked("restore");
+  await new Promise((resolve) => setImmediate(resolve));
+  // 실제 IPC는 직렬화되지 않으므로 두 번째 호출이 그대로 들어올 수 있다.
+  room.specialistBlocked = blocked;
+  const second = await room.resolveBlocked("restore");
+
+  assert.equal(second.ok, false, "두 번째 복원이 통과하면 안 된다");
+  assert.match(second.error, /이미 작업 폴더를 변경/);
+
+  releaseRestore();
+  await first;
+  assert.equal(maxConcurrent, 1, "복원이 동시에 두 번 실행되면 안 된다");
+  assert.equal(lease.isHeld(WS), false);
+});
+
+// B1 회귀: step 모드는 runExecutionBlock을 타지 않고 별도 경로에서 freeze·
+// checkpoint 생성·Builder 실행을 한다. wrapper가 아니라 실제 진입점
+// (resumeSpecialist → step 분기)을 타고 소유권이 걸리는지 확인한다.
+
+function stepModeRoom({ sessionId, lease }) {
+  const room = roomWith({ sessionId, lease });
+  room.specialistResume = {
+    mode: "step",
+    phase: "plan_ready",
+    stages: {},
+    taskInfo: null,
+    feedback: "",
+    maxAutoRevisions: 0,
+  };
+  return room;
+}
+
+test("step 전문 실행은 다른 대화가 workspace를 쥐고 있으면 시작하지 않는다", async () => {
+  const lease = new WorkspaceMutationLease();
+  const holder = new ChatRoom({ sessionId: "s-other", agents: makeAgents(), mutationLease: lease, meta: { workspace: WS } });
+  holder.acquireWorkspaceMutation({ purpose: "chat-turn" });
+
+  const room = stepModeRoom({ sessionId: "s-a", lease });
+  let innerCalls = 0;
+  room.resumeStepPhaseInner = async () => {
+    innerCalls += 1;
     return { ok: true };
   };
-  await room.runExecutionBlock({ stages: {}, mode: "step" });
-  assert.equal(nested.ok, true, "같은 holder의 재진입은 허용된다");
-  assert.equal(nested.reentered, true);
+
+  const result = await room.resumeSpecialist();
+  assert.equal(result.ok, false);
+  assert.equal(result.stopReason, "WORKSPACE_BUSY");
+  assert.equal(innerCalls, 0, "freeze/checkpoint/Builder가 시작되면 안 된다");
+});
+
+test("step 전문 실행은 실행 동안 소유권을 쥐고 끝나면 반납한다", async () => {
+  const lease = new WorkspaceMutationLease();
+  const room = stepModeRoom({ sessionId: "s-a", lease });
+  let holderDuringPhase = null;
+  room.resumeStepPhaseInner = async () => {
+    holderDuringPhase = lease.holderOf(WS);
+    return { ok: true };
+  };
+
+  await room.resumeSpecialist();
+  assert.equal(holderDuringPhase?.holderId, "s-a");
+  assert.equal(holderDuringPhase?.purpose, "professional-step");
+  assert.equal(lease.isHeld(WS), false, "phase가 끝나면 반납");
+});
+
+test("step 실행이 소유권을 쥔 동안 다른 대화의 write는 막힌다", async () => {
+  const lease = new WorkspaceMutationLease();
+  const room = stepModeRoom({ sessionId: "s-a", lease });
+  const other = roomWith({ sessionId: "s-b", lease });
+  let otherResult = null;
+  room.resumeStepPhaseInner = async () => {
+    otherResult = await other.respond(other.findAgent("claude"), {});
+    return { ok: true };
+  };
+
+  await room.resumeSpecialist();
+  assert.equal(otherResult.ok, false);
+  assert.equal(otherResult.stopReason, "WORKSPACE_BUSY");
+});
+
+test("step 실행이 실패해도 소유권이 남지 않는다", async () => {
+  const lease = new WorkspaceMutationLease();
+  const room = stepModeRoom({ sessionId: "s-a", lease });
+  room.resumeStepPhaseInner = async () => {
+    throw new Error("builder 폭발");
+  };
+  await room.resumeSpecialist().catch(() => {});
   assert.equal(lease.isHeld(WS), false);
 });
 
@@ -308,15 +431,42 @@ test("복원이 실패해도 소유권이 남지 않는다", async () => {
 
 // ---- 정리 경로 ----
 
-test("세션 정리는 남은 소유권을 해제해 다른 대화를 영구히 막지 않는다", () => {
+test("실행이 없는 방의 정리는 소유권을 해제해 다른 대화를 막지 않는다", () => {
   const lease = new WorkspaceMutationLease();
   const room = roomWith({ sessionId: "s-a", lease });
   room.acquireWorkspaceMutation({ purpose: "professional-execution" });
   assert.equal(lease.isHeld(WS), true);
 
-  assert.equal(room.releaseAllWorkspaceMutations(), 1);
+  assert.equal(room.releaseWorkspaceMutationsIfIdle(), 1);
   assert.equal(lease.isHeld(WS), false);
 
   const other = roomWith({ sessionId: "s-b", lease });
   assert.equal(other.acquireWorkspaceMutation({ purpose: "chat-turn" }).ok, true);
+});
+
+// B2 회귀: 중지는 subprocess 종료를 기다려 주지 않는다. 아직 쓰고 있을 수 있는
+// writer의 소유권을 정리 편의로 풀면 다른 대화가 그 틈에 들어온다.
+test("실행이 남아 있는 방의 정리는 소유권을 풀지 않는다", () => {
+  const lease = new WorkspaceMutationLease();
+  const room = roomWith({ sessionId: "s-a", lease });
+  room.acquireWorkspaceMutation({ purpose: "professional-execution" });
+
+  room.trackRunStart(); // subprocess가 아직 살아 있는 상태
+  assert.equal(room.releaseWorkspaceMutationsIfIdle(), 0, "실행 중에는 풀면 안 된다");
+  assert.equal(lease.isHeld(WS), true);
+
+  const other = roomWith({ sessionId: "s-b", lease });
+  assert.equal(other.acquireWorkspaceMutation({ purpose: "chat-turn" }).ok, false);
+
+  room.trackRunEnd();
+  assert.equal(room.releaseWorkspaceMutationsIfIdle(), 1);
+});
+
+test("전문 실행이 남아 있는 방의 정리도 소유권을 풀지 않는다", () => {
+  const lease = new WorkspaceMutationLease();
+  const room = roomWith({ sessionId: "s-a", lease });
+  room.acquireWorkspaceMutation({ purpose: "professional-execution" });
+  room.specialistActive = true;
+  assert.equal(room.releaseWorkspaceMutationsIfIdle(), 0);
+  assert.equal(lease.isHeld(WS), true);
 });
