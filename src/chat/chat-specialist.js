@@ -1305,40 +1305,68 @@ class SpecialistMixin {
       this.emitSpecialistState();
       return { ok: false, cancelled: true };
     }
-    this.specialistResume = null;
-    this.emitSpecialistState();
-    // 단계별(step) 실행은 phase에 따라 다음 한 단계만 진행합니다.
-    if (resume.mode === "step") {
-      return this.resumeStepPhase(resume, requestedGeneration);
-    }
-    // checkpoint 실패 후 사용자 선택 처리: 재시도 / 무보호 진행 / 취소.
-    if (resume.phase === "checkpoint_failed") {
-      return this.resumeCheckpointFailure(resume, requestedGeneration, checkpointAction);
-    }
-    this.appendSystem("기획이 승인되었습니다. 구현을 이어서 진행합니다.");
-    try {
-      return await this.runExecutionBlock({
-        stages: resume.stages,
-        mode: resume.mode,
-        maxAutoRevisions: resume.maxAutoRevisions,
-        feedback: resume.feedback,
-        taskInfo: resume.taskInfo || null,
-        round: 1,
-        requestedGeneration,
-      });
-    } finally {
+    // Stage D-0 — workspace 소유권은 실행 상태를 소비하기 전에 확보한다.
+    //
+    // 소비한 뒤에 admission이 실패하면 "다른 작업이 끝난 뒤 다시 시도하세요"를
+    // 돌려주면서 정작 재개할 resume 상태는 이미 없어진 상태가 된다. 순서를 뒤집으면
+    // 되돌릴 것이 없다 — 실패해도 아무것도 시작하지 않은 그대로다.
+    const lease = this.acquireWorkspaceMutation({
+      purpose: "professional-resume",
+      runId: resume?.runInfo?.runId || null,
+      role: "implementation",
+    });
+    if (!lease.ok) {
       this.specialistActive = false;
       this.emitSpecialistState();
-      this.turnQueue.push(...this.deferredTurnQueue.splice(0));
-      this.emitTurnState();
-      this.pumpTurnQueue();
+      this.appendSystem(lease.error);
+      return {
+        ok: false,
+        stage: "implementation",
+        completedIterations: 0,
+        needsUserDecision: true,
+        stopReason: "WORKSPACE_BUSY",
+      };
+    }
+
+    this.specialistResume = null;
+    this.emitSpecialistState();
+    try {
+      // 단계별(step) 실행은 phase에 따라 다음 한 단계만 진행합니다.
+      if (resume.mode === "step") {
+        return await this.resumeStepPhase(resume, requestedGeneration, lease.token);
+      }
+      // checkpoint 실패 후 사용자 선택 처리: 재시도 / 무보호 진행 / 취소.
+      if (resume.phase === "checkpoint_failed") {
+        return await this.resumeCheckpointFailure(resume, requestedGeneration, checkpointAction, lease.token);
+      }
+      this.appendSystem("기획이 승인되었습니다. 구현을 이어서 진행합니다.");
+      try {
+        return await this.runExecutionBlock({
+          stages: resume.stages,
+          mode: resume.mode,
+          maxAutoRevisions: resume.maxAutoRevisions,
+          feedback: resume.feedback,
+          taskInfo: resume.taskInfo || null,
+          round: 1,
+          requestedGeneration,
+          parentToken: lease.token,
+        });
+      } finally {
+        this.specialistActive = false;
+        this.emitSpecialistState();
+        this.turnQueue.push(...this.deferredTurnQueue.splice(0));
+        this.emitTurnState();
+        this.pumpTurnQueue();
+      }
+    } finally {
+      this.releaseWorkspaceMutation(lease.token);
     }
   }
 
   // checkpoint 생성 실패 후 사용자 선택(재시도/무보호 진행/취소)을 처리한다.
   // 취소(cancel)는 별도 IPC(chat:specialist:cancel)로 요청된다. 이 메서드는
   // 재시도 및 무보호 진행 두 선택지만 처리한다.
-  async resumeCheckpointFailure(resume, requestedGeneration, checkpointAction) {
+  async resumeCheckpointFailure(resume, requestedGeneration, checkpointAction, parentToken = null) {
     const allowUnprotected = String(checkpointAction || "").toLowerCase() === "proceed_unprotected";
     const transition = this.transitionProfessional({
       type: allowUnprotected ? "PROCEED_UNPROTECTED" : "CHECKPOINT_RETRY",
@@ -1362,6 +1390,7 @@ class SpecialistMixin {
       allowUnprotected,
       checkpointFailReason: resume.checkpointFailReason || null,
       resumedRun: resume.runInfo || null,
+      parentToken,
     });
   }
 
@@ -1557,15 +1586,21 @@ class SpecialistMixin {
   // 블록 전체를 쥐면 그 대기 동안 같은 프로젝트의 다른 대화가 무기한 막힌다.
   // 단계 사이에 다른 대화가 workspace를 바꿨는지는 소유권이 아니라 결과물
   // fingerprint(Charter INV-5, D-A)가 잡을 문제다.
-  async resumeStepPhase(resume, requestedGeneration) {
+  async resumeStepPhase(resume, requestedGeneration, parentToken = null) {
     const lease = this.acquireWorkspaceMutation({
       purpose: "professional-step",
       runId: resume?.runInfo?.runId || null,
       role: "implementation",
+      parentToken,
     });
     if (!lease.ok) {
+      // 정상 경로에서는 호출자가 이미 소유권을 확보했으므로 여기까지 오지 않는다.
+      // 그래도 admission 실패는 "아무것도 시작하지 않은 상태"여야 하므로, 호출자가
+      // 소비한 resume 상태를 되돌려 재시도가 가능하게 한다.
+      this.specialistResume = this.specialistResume || resume;
+      this.specialistActive = false;
+      this.emitSpecialistState();
       this.appendSystem(lease.error);
-      // specialistResume을 건드리지 않았으므로 사용자가 그대로 다시 진행할 수 있다.
       return {
         ok: false,
         stage: "implementation",
@@ -2102,6 +2137,8 @@ class SpecialistMixin {
       purpose: "professional-execution",
       runId: args.resumedRun?.runId || null,
       role: "implementation",
+      // 호출자가 이미 소유권을 쥐고 있으면(예: resume admission) 그 안의 중첩이다.
+      parentToken: args.parentToken || null,
     });
     if (!lease.ok) {
       this.appendSystem(lease.error);

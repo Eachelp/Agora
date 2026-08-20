@@ -300,6 +300,89 @@ test("step 전문 실행은 다른 대화가 workspace를 쥐고 있으면 시�
   assert.equal(innerCalls, 0, "freeze/checkpoint/Builder가 시작되면 안 된다");
 });
 
+// B5 회귀: BUSY는 아무것도 시작하지 않은 admission 실패다. "끝난 뒤 다시
+// 시도하세요"라고 말하면서 재개할 상태를 소비해 버리면 방이 잠긴다.
+test("BUSY로 막힌 step 실행은 재시도 가능한 상태를 그대로 남긴다", async () => {
+  const lease = new WorkspaceMutationLease();
+  const holder = new ChatRoom({ sessionId: "s-other", agents: makeAgents(), mutationLease: lease, meta: { workspace: WS } });
+  const held = holder.acquireWorkspaceMutation({ purpose: "chat-turn" });
+
+  const room = stepModeRoom({ sessionId: "s-a", lease });
+  const originalResume = room.specialistResume;
+  let innerCalls = 0;
+  room.resumeStepPhaseInner = async () => {
+    innerCalls += 1;
+    return { ok: true, stage: "implementation" };
+  };
+
+  const busy = await room.resumeSpecialist();
+  assert.equal(busy.stopReason, "WORKSPACE_BUSY");
+  assert.equal(room.specialistActive, false, "실행 중 상태로 고착되면 안 된다");
+  assert.equal(room.specialistResume, originalResume, "재개할 상태가 보존되어야 한다");
+
+  // 다른 대화가 끝나면 같은 승인으로 그대로 재시도된다.
+  holder.releaseWorkspaceMutation(held.token);
+  const retry = await room.resumeSpecialist();
+  assert.equal(retry.ok, true);
+  assert.equal(innerCalls, 1);
+});
+
+test("BUSY로 막힌 비-step(블록 모드) 실행도 재시도 가능한 상태를 남긴다", async () => {
+  const lease = new WorkspaceMutationLease();
+  const holder = new ChatRoom({ sessionId: "s-other", agents: makeAgents(), mutationLease: lease, meta: { workspace: WS } });
+  const held = holder.acquireWorkspaceMutation({ purpose: "chat-turn" });
+
+  const room = roomWith({ sessionId: "s-a", lease });
+  room.specialistResume = {
+    mode: "auto",
+    phase: "plan_ready",
+    stages: {},
+    taskInfo: null,
+    feedback: "",
+    maxAutoRevisions: 0,
+  };
+  const originalResume = room.specialistResume;
+  let innerCalls = 0;
+  room.runExecutionBlockInner = async () => {
+    innerCalls += 1;
+    return { ok: true };
+  };
+
+  const busy = await room.resumeSpecialist();
+  assert.equal(busy.stopReason, "WORKSPACE_BUSY");
+  assert.equal(room.specialistActive, false);
+  assert.equal(room.specialistResume, originalResume);
+  assert.equal(innerCalls, 0);
+
+  holder.releaseWorkspaceMutation(held.token);
+  const retry = await room.resumeSpecialist();
+  assert.equal(retry.ok, true);
+  assert.equal(innerCalls, 1);
+});
+
+test("resume이 확보한 소유권 안에서 실행 블록은 중첩으로 통과한다", async () => {
+  const lease = new WorkspaceMutationLease();
+  const room = roomWith({ sessionId: "s-a", lease });
+  room.specialistResume = {
+    mode: "auto",
+    phase: "plan_ready",
+    stages: {},
+    taskInfo: null,
+    feedback: "",
+    maxAutoRevisions: 0,
+  };
+  let depthDuringBlock = null;
+  room.runExecutionBlockInner = async () => {
+    depthDuringBlock = lease.holderOf(WS)?.depth || null;
+    return { ok: true };
+  };
+
+  const result = await room.resumeSpecialist();
+  assert.equal(result.ok, true, "자기 자신의 소유권에 막히면 안 된다");
+  assert.equal(depthDuringBlock, 2, "resume + 블록이 중첩으로 잡힌다");
+  assert.equal(lease.isHeld(WS), false, "끝나면 둘 다 반납된다");
+});
+
 test("step 전문 실행은 실행 동안 소유권을 쥐고 끝나면 반납한다", async () => {
   const lease = new WorkspaceMutationLease();
   const room = stepModeRoom({ sessionId: "s-a", lease });
@@ -311,7 +394,8 @@ test("step 전문 실행은 실행 동안 소유권을 쥐고 끝나면 반납�
 
   await room.resumeSpecialist();
   assert.equal(holderDuringPhase?.holderId, "s-a");
-  assert.equal(holderDuringPhase?.purpose, "professional-step");
+  // resume admission이 바깥 소유권을 잡고 step phase가 그 안에 중첩된다.
+  assert.equal(holderDuringPhase?.depth, 2);
   assert.equal(lease.isHeld(WS), false, "phase가 끝나면 반납");
 });
 

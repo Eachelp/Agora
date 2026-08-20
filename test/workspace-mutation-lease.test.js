@@ -196,8 +196,10 @@ test("release는 알 수 없는 token이나 중복 호출에 안전하다", () =
 
 test("releaseAllFor는 depth와 무관하게 해당 holder의 lease를 정리한다", () => {
   const l = lease();
-  l.acquire({ resourceId: WS, holderId: "session-a" });
-  l.acquire({ resourceId: WS, holderId: "session-a" });
+  const outer = l.acquire({ resourceId: WS, holderId: "session-a" });
+  const inner = l.acquire({ resourceId: WS, holderId: "session-a", parentToken: outer.token });
+  assert.equal(inner.reentered, true);
+  assert.equal(l.holderOf(WS).depth, 2, "중첩된 lease를 정리 대상으로 삼는다");
   l.acquire({ resourceId: OTHER_WS, holderId: "session-a" });
   l.acquire({ resourceId: path.resolve("/ws/gamma"), holderId: "session-b" });
 

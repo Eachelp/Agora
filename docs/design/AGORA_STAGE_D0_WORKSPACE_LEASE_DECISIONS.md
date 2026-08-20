@@ -1,6 +1,6 @@
 # Agora Stage D-0 — Workspace Mutation Lease Decision Log
 
-> 상태: **1차 검수 FIX_REQUIRED 반영 완료 · 2차 검수 대기**
+> 상태: **2차 검수 FIX_REQUIRED(B5) 반영 완료 · 3차 검수 대기**
 > 최초 기록: 2026-08-20
 > 기준 브랜치: `feat/stage-d0-workspace-lease`
 > 상위 기준 문서: [AGORA_STAGE_D_ASSURANCE_CHARTER.md](AGORA_STAGE_D_ASSURANCE_CHARTER.md) (v0.4, D-0 절)
@@ -49,6 +49,22 @@ win32 소문자 접기 → 대소문자
 ### 2.2 충돌은 fail-closed다 — 대기열도 강탈도 없다
 
 BUSY를 돌려주고 끝낸다. 큐잉을 넣지 않은 이유: 큐는 "언젠가 실행된다"는 약속인데, 그 사이 Frozen Task·workspace·사용자 의도가 이미 달라져 있을 수 있다. 재시도는 사용자의 결정이어야 한다.
+
+**따라서 admission은 실행 상태를 소비하기 전에 이루어져야 한다.** "끝난 뒤 다시 시도하세요"라고 안내하면서 정작 재개할 상태를 이미 소비했다면 그 안내는 거짓이고, 사용자는 재시도할 수 없는 방에 갇힌다.
+
+초기 수정(B1)은 `resumeStepPhase` 안에서 소유권을 잡았는데, 호출자인 `_resumeSpecialist`는 그보다 먼저 `specialistResume`을 `null`로 만들고 `specialistActive`를 `true`로 올린 뒤였다. 그래서 BUSY가 나면 `needsUserDecision: true`를 반환하면서 실제로는 재개 상태가 없고 실행 중 표시만 남았다(B5).
+
+수정된 순서:
+
+```text
+waitForIdle
+  → 소유권 admission          ← 실패하면 여기서 끝. 되돌릴 것이 없다.
+  → specialistResume 소비
+  → 실행(step / checkpoint 재시도 / 블록)   ← 확보한 소유권 안의 중첩
+  → finally: 소유권 반납
+```
+
+이 순서는 "admission 실패 후 rollback"을 짜는 것보다 안전하다. rollback은 소비된 상태를 정확히 되돌려야 하지만, 순서를 뒤집으면 되돌릴 상태 자체가 생기지 않는다. 안쪽 wrapper에도 방어적 rollback을 남겨 두었지만 정상 경로에서는 도달하지 않는다.
 
 ### 2.3 재진입은 증명된 중첩에만 허용한다
 
@@ -148,8 +164,8 @@ Charter §9(Progressive Disclosure). BUSY 메시지는 "같은 작업 폴더를 
 
 ```text
 test/workspace-mutation-lease.test.js              20 tests  (코어 의미론)
-test/workspace-mutation-lease-integration.test.js  21 tests  (참여자별 진입 경로)
-canonical npm test                                 1052 tests / 0 fail / 2 skipped
+test/workspace-mutation-lease-integration.test.js  24 tests  (참여자별 진입 경로)
+canonical npm test                                 1055 tests / 0 fail / 2 skipped
 ```
 
 통합 테스트가 실제로 증명하는 것:
@@ -159,6 +175,7 @@ canonical npm test                                 1052 tests / 0 fail / 2 skipp
 - **step 모드는 실제 진입점(`resumeSpecialist` → step 분기)에서 소유권을 잡고**, 경합 시 freeze/checkpoint/Builder가 시작되지 않으며, 실행 중에는 다른 대화의 write가 막힌다.
 - 다른 대화가 쥐고 있으면 **BLOCKED 복원이 실행되지 않는다**(원래의 데이터 유실 경로).
 - **같은 방에 복원 요청이 두 번 들어와도 복원은 한 번만 실행된다**(동시 실행 카운터로 확인).
+- **BUSY로 막힌 실행은 재시도 가능한 상태를 그대로 남긴다** — step·블록 모드 모두 `specialistResume` 보존 + `specialistActive === false`를 확인하고, 앞 작업이 끝난 뒤 같은 승인으로 재시도해 실제로 실행에 진입하는 것까지 검증한다.
 - 증명된 중첩(`parentToken`)만 재진입하며, 위조·타 자원·해제된 token은 거부된다.
 - **실행이 남아 있는 방의 정리는 소유권을 풀지 않는다**(취소 후 subprocess 잔존 구간 보호).
 - 정상·실패·예외 모든 경로에서 소유권이 반납된다.
@@ -184,7 +201,19 @@ Windows `npm test` 1040/0 fail은 통과했으나, production 진입 경로 기�
 
 검수의 방법론적 지적 하나를 함께 수용했다 — **wrapper를 직접 호출하는 테스트는 진입 경로의 우회를 잡지 못한다.** 이번 회귀 테스트는 모두 실제 진입점에서 시작한다.
 
-### 2차 검수 — `81d2776` → 현재 HEAD : 대기
+### 2차 검수 — `81d2776` → `fbfa9fe` : **FIX_REQUIRED**
+
+Windows `npm test` 1052/0 fail. B1~B4는 FIXED, F1은 ACCEPTED로 판정되었고, **B1 수정이 새로 만든 실패 경로 1건**이 blocker로 확인되었다.
+
+| # | 지적 | 수정 |
+|---|---|---|
+| B5 | `WORKSPACE_BUSY`가 step resume state를 소비하고 `specialistActive=true`를 남김 | admission을 상태 소비 앞으로 이동 (2.2) |
+
+함께 지적된 테스트 결함 하나도 고쳤다 — `releaseAllFor` 테스트가 `parentToken` 도입 이후 실제로는 depth=2를 만들지 않아, 이름이 주장하는 케이스를 검증하지 못하고 있었다.
+
+step의 phase 단위 소유권 해석은 2차에서 blocker로 잡히지 않았다. 다만 **D-A 이전까지는 step review가 저장된 diff를 보는 동안 결과물이 달라질 수 있는 일시적 assurance gap이 존재한다**는 점이 명시적으로 기록되었다. 이 gap을 닫는 것은 INV-5(Assurance Subject)이며 D-A 범위다.
+
+### 3차 검수 — `fbfa9fe` → 현재 HEAD : 대기
 
 - 사용자 Windows 로컬 canonical `npm test` GREEN 실측 (Charter §6 DoD 3).
 - actual-diff 독립 검수 PASS (Charter §6 DoD 2).
