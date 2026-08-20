@@ -2059,8 +2059,29 @@ class SpecialistMixin {
     }
   }
 
+  // Stage D-0 — 전문 실행의 mutation~판정 구간은 workspace 소유권을 블록 전체에서
+  // 쥔다. turn 단위로 잡으면 Builder와 Reviewer 사이의 틈으로 다른 대화의 변경이
+  // 끼어들 수 있고, 그러면 Reviewer가 보는 변경과 실제 workspace가 어긋난다.
+  // 블록 안의 checkpoint restore는 같은 holder의 재진입이라 별도로 잡지 않는다.
+  async runExecutionBlock(args = {}) {
+    const lease = this.acquireWorkspaceMutation({
+      purpose: "professional-execution",
+      runId: args.resumedRun?.runId || null,
+      role: "implementation",
+    });
+    if (!lease.ok) {
+      this.appendSystem(lease.error);
+      return { ok: false, error: lease.error, stopReason: "WORKSPACE_BUSY" };
+    }
+    try {
+      return await this.runExecutionBlockInner(args);
+    } finally {
+      this.releaseWorkspaceMutation(lease.token);
+    }
+  }
+
   // Builder → Reviewer → (auto면 자동 보완) → 기록관(블록 끝) 실행 블록.
-  async runExecutionBlock({ stages, mode, maxAutoRevisions, feedback, taskInfo, round, requestedGeneration, recordAfter = true, allowUnprotected = false, checkpointFailReason = null, resumedRun = null }) {
+  async runExecutionBlockInner({ stages, mode, maxAutoRevisions, feedback, taskInfo, round, requestedGeneration, recordAfter = true, allowUnprotected = false, checkpointFailReason = null, resumedRun = null }) {
     const implementation = stages.implementation;
     const review = stages.review;
     const recorder = stages.recorder;
@@ -3102,10 +3123,23 @@ class SpecialistMixin {
 
       if (workspaceAction === "restore") {
         if (this.checkpointEngine && pending.checkpoint) {
-          const preservePaths = runInfo ? runGeneratedPaths(this.meta.workspace, runInfo) : [];
-          const result = await this.checkpointEngine.restoreCheckpoint(this.meta.workspace, pending.checkpoint, {
-            preservePaths,
+          // Stage D-0: restore는 workspace 전체를 되돌리는 가장 큰 mutation이므로
+          // 다른 대화가 변경 중이면 시작하지 않는다(그 대화의 작업까지 지워진다).
+          const lease = this.acquireWorkspaceMutation({
+            purpose: "checkpoint-restore",
+            runId: pending.runId || null,
+            role: "replan",
           });
+          if (!lease.ok) return { ok: false, error: lease.error };
+          const preservePaths = runInfo ? runGeneratedPaths(this.meta.workspace, runInfo) : [];
+          let result;
+          try {
+            result = await this.checkpointEngine.restoreCheckpoint(this.meta.workspace, pending.checkpoint, {
+              preservePaths,
+            });
+          } finally {
+            this.releaseWorkspaceMutation(lease.token);
+          }
           this.notifyWorkspaceRestoreOutcome(result);
           if (!result?.ok) {
             return { ok: false, error: "작업 전 상태로 되돌리지 못했습니다. 변경과 복구 상태를 그대로 유지합니다." };
@@ -3198,9 +3232,21 @@ class SpecialistMixin {
     let restored = false;
     if (action === "restore" || action === "discard") {
       if (this.checkpointEngine && pending.checkpoint) {
-        const result = await this.checkpointEngine.restoreCheckpoint(this.meta.workspace, pending.checkpoint, {
-          preservePaths,
+        // Stage D-0: 같은 workspace를 다른 대화가 변경 중이면 되돌리지 않는다.
+        const lease = this.acquireWorkspaceMutation({
+          purpose: "checkpoint-restore",
+          runId: pending.runId || null,
+          role: "recovery",
         });
+        if (!lease.ok) return { ok: false, error: lease.error };
+        let result;
+        try {
+          result = await this.checkpointEngine.restoreCheckpoint(this.meta.workspace, pending.checkpoint, {
+            preservePaths,
+          });
+        } finally {
+          this.releaseWorkspaceMutation(lease.token);
+        }
         this.notifyWorkspaceRestoreOutcome(result);
         restored = Boolean(result?.ok);
         if (!restored) {

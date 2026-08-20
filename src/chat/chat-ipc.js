@@ -16,6 +16,7 @@ const {
   ROLE_DEFS,
 } = require("../agora/workflow-store");
 const { MemoryStore } = require("../agora/memory-store");
+const { WorkspaceMutationLease } = require("../agora/workspace-mutation-lease");
 const { parseRecorderOutput } = require("../agora/recorder-output");
 const turnCheckpoint = require("../agora/turn-checkpoint");
 const { TaskManager } = require("../agora/task-manager");
@@ -292,6 +293,12 @@ function createChatFeature(options) {
   // harnessRuntime 직접 주입 또는 harnessAdapter(=process adapter) 주입 모두 허용.
   const harnessRuntime = options.harnessRuntime
     || createDefaultHarnessRuntime({ processAdapter: options.harnessAdapter || new ProcessHarnessAdapter() });
+
+  // Stage D-0: canonical workspace one-writer. 프로젝트 하나에 workspace 하나이고
+  // 그 아래 세션(room)이 여럿이므로, 서로 다른 room이 같은 폴더를 동시에 바꾸는 것을
+  // 막는 소유권은 room 밖(control plane)에 있어야 한다. memory-only이며 보증 경계는
+  // 단일 main process다(main.js requestSingleInstanceLock).
+  const workspaceMutationLease = options.workspaceMutationLease || new WorkspaceMutationLease();
 
   function ensureStore() {
     if (store || storeError) return store;
@@ -909,6 +916,9 @@ function roomMeta(meta) {
       meta: roomMeta(session.meta),
       checkpoint: options.checkpoint || turnCheckpoint,
       checkpointRoot: store.checkpointsDir(sessionId),
+      // Stage D-0 — workspace mutation ownership. room은 자기 sessionId를 holder로
+      // 소유권을 요청할 뿐, 누가 쥐고 있는지·어느 room과 경합하는지는 모른다.
+      mutationLease: workspaceMutationLease,
       strictReviewDiff: true,
       initialRecovery: session.meta.pendingRecovery || null,
       persistRecovery: (pendingRecovery) => {
@@ -1751,6 +1761,9 @@ function roomMeta(meta) {
         const room = rooms.get(sessionId);
         if (room) {
           room.stopAllSilently();
+          // Stage D-0: 삭제된 세션의 workspace 소유권이 남아 다른 대화를 영구히
+          // 막지 않도록 정리한다.
+          room.releaseAllWorkspaceMutations();
           rooms.delete(sessionId);
         }
         pendingAttachments.delete(sessionId);

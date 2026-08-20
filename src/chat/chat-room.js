@@ -72,6 +72,9 @@ class ChatRoom extends EventEmitter {
     // { createCheckpoint, restoreCheckpoint, cleanupCheckpoint } 형태입니다.
     this.checkpointEngine = options.checkpoint || null;
     this.checkpointRoot = options.checkpointRoot || null;
+    // Stage D-0 Workspace Mutation Lease. 주입되지 않으면 소유권 통제 없이
+    // 기존 동작을 유지합니다(legacy 호출/테스트 호환).
+    this.mutationLease = options.mutationLease || null;
     this.strictReviewDiff = Boolean(options.strictReviewDiff);
     this.persistRecovery = typeof options.persistRecovery === "function"
       ? options.persistRecovery
@@ -676,6 +679,46 @@ class ChatRoom extends EventEmitter {
     if (this.activeRuns === 0) this.emit("busy", false);
   }
 
+  // Stage D-0 — canonical workspace one-writer.
+  //
+  // 같은 프로젝트의 workspace는 하나이고 그 아래 대화(room)는 여럿이므로, 다른
+  // 대화가 같은 폴더를 바꾸는 동안에는 변경을 시작하지 않는다(fail-closed).
+  // 같은 room은 재진입할 수 있다 — 전문 실행이 소유권을 쥔 채 내부에서
+  // checkpoint restore를 호출하는 정상 경로가 막히면 안 되기 때문이다.
+  //
+  // token이 null이면 통제 대상이 아니라는 뜻이며(주입 없음 또는 workspace 없음),
+  // release는 그대로 무시된다.
+  acquireWorkspaceMutation({ purpose = null, runId = null, role = null } = {}) {
+    if (!this.mutationLease) return { ok: true, token: null };
+    const workspace = this.meta.workspace;
+    if (!workspace) return { ok: true, token: null };
+    const got = this.mutationLease.acquire({
+      resourceKind: "workspace",
+      resourceId: workspace,
+      holderId: this.sessionId,
+      runId,
+      role,
+      purpose,
+    });
+    if (got.ok) return { ok: true, token: got.token, reentered: Boolean(got.reentered) };
+    // 내부 어휘(lease/holder/resourceId)를 사용자 표면으로 내보내지 않는다(Charter §9).
+    const error = got.code === "BUSY"
+      ? "같은 작업 폴더를 다른 대화가 변경하고 있습니다. 그 작업이 끝난 뒤 다시 시도해 주세요."
+      : "작업 폴더 변경 권한을 확인하지 못해 실행을 시작하지 않았습니다.";
+    return { ok: false, code: got.code, error };
+  }
+
+  releaseWorkspaceMutation(token) {
+    if (!token || !this.mutationLease) return false;
+    return this.mutationLease.release(token) === true;
+  }
+
+  // 방이 닫히거나 비정상 종료했을 때 남은 소유권을 정리한다.
+  releaseAllWorkspaceMutations() {
+    if (!this.mutationLease?.releaseAllFor) return 0;
+    return this.mutationLease.releaseAllFor(this.sessionId);
+  }
+
   promptMessages(promptLimit = null, independent = false) {
     const messages = this.messages;
     if (!Number.isInteger(promptLimit) || promptLimit < 0) {
@@ -693,7 +736,30 @@ class ChatRoom extends EventEmitter {
     return [...base, ...extra].filter((message) => message.authorType !== "system" && !message.error);
   }
 
+  // Stage D-0 — workspace-write 일반 채팅 turn은 mutation 참여자다.
+  // 전문 실행은 turn 단위가 아니라 실행 블록 전체(mutation~판정 구간)에서 소유권을
+  // 쥐므로 여기서 다시 잡지 않는다(같은 room이라 재진입으로 통과하기도 한다).
   async respond(agent, context = {}, generation = this.generation) {
+    const generalWorkspaceWrite =
+      !context.specialist &&
+      !context.discussionSummary &&
+      !context.simplifyMeta &&
+      this.meta.permissionMode === "workspace-write";
+    if (!generalWorkspaceWrite) return this.runResponseTurn(agent, context, generation);
+
+    const lease = this.acquireWorkspaceMutation({ purpose: "chat-turn" });
+    if (!lease.ok) {
+      this.appendSystem(lease.error);
+      return { ok: false, stopReason: "WORKSPACE_BUSY", error: lease.error };
+    }
+    try {
+      return await this.runResponseTurn(agent, context, generation);
+    } finally {
+      this.releaseWorkspaceMutation(lease.token);
+    }
+  }
+
+  async runResponseTurn(agent, context = {}, generation = this.generation) {
     // 큐에서 기다리는 사이 참가자가 비활성화되거나 CLI가 사라졌다면 실행하지 않습니다.
     const currentAgent = this.findAgent(agent.id);
     if (!currentAgent || !currentAgent.available || currentAgent.enabled === false) return;
