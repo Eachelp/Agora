@@ -1,6 +1,6 @@
 # Agora — Stage D Assurance & Governance Charter
 
-> 상태: **확정 기준 문서 — v0.3 동결 (2026-08-20 사용자 승인)**
+> 상태: **확정 기준 문서 — v0.4 동결 (2026-08-20 사용자 승인)**
 > 작성일: 2026-08-20
 > 코드 baseline: Stage C COMPLETE @ `048dca0` (`origin/feat/multi-harness-runtime`)
 > 관련 문서: [AGORA_V1_DESIGN.md](AGORA_V1_DESIGN.md) · [AGORA_MANAGED_HARNESS_EVOLUTION_LOG.md](AGORA_MANAGED_HARNESS_EVOLUTION_LOG.md) · [AGORA_STAGE_C_FINAL_REVIEW.md](AGORA_STAGE_C_FINAL_REVIEW.md) · [AGORA_STAGE_C_SESSION_LIFECYCLE_DECISIONS.md](AGORA_STAGE_C_SESSION_LIFECYCLE_DECISIONS.md)
@@ -500,8 +500,44 @@ NO cross-process workspace governance     (v1 보증 경계 밖)
 
 ---
 
+## 9. UX 원칙 — Progressive Disclosure
+
+**Stage D의 복잡도는 사용자가 아니라 Agora가 부담한다.** 내부 어휘(controlClass, assuranceSubjectRef, fingerprint, lease, provenance event 등)는 엔진 상태이며 UI에 그대로 노출하지 않는다. 정상 경로의 사용자 감각은 Stage C와 동일해야 한다: 추가 조작 0회, 계획 승인 1회, 완료 화면은 요약 + 원할 때만 [검증 상세].
+
+사용자 재개입은 세 가지뿐이다.
+
+```text
+1. 계약 변경 (REPLAN — 변경 이유와 검사 diff를 보여주고 재승인)
+2. 되돌릴 수 없는 외부 행동 (HUMAN_APPROVAL)
+3. 인간만 판단할 수 있는 criterion
+```
+
+- **P-1 · projection은 압축이지 생략이 아니다.** 모든 criterion은 승인 표면에서 추적 가능해야 하며(INV-4), 동일 성격의 criterion은 의미를 잃지 않는 범위에서 그룹화할 수 있다. 그룹화한 경우 펼치면 각 criterion과 1:1 대응을 확인할 수 있어야 한다. Inputs·Deliverables는 압축본에도 반드시 보인다(INV-5·frozen input의 대상).
+
+```text
+완료 확인 (예)
+- 테스트 실행 및 통과 확인 (8)
+- 산출물 구조/파일 검사 (4)
+- 내용 품질 Reviewer 검토 (2)
+[14개 검사 상세]
+```
+
+- **P-2 · 정직한 강등은 요약에서도 보인다.** 처분 구성(자동 / Reviewer / 사용자)을 하나의 "✓"로 합치지 않는다. "✓ 6개 검사 통과"가 아니라 "자동 확인 4 · Reviewer 판단 2 · 사용자 승인 0"이다. 이것은 UX 취향이 아니라 **R-3의 표현 계층 보존**이다 — UI 단순화를 명분으로 `UNSUPPORTED → Reviewer PASS`를 초록 체크 하나로 세탁하는 것을 막는다.
+- **P-3 · 계획된 Human 개입은 사전 예고한다.** 계획 승인 화면에서 예정된 사용자 승인 지점(HUMAN_APPROVAL criterion)을 미리 보여준다. REPLAN은 실행 중 발견되는 조건부 사건이므로 횟수를 약속하지 않고 "계약 변경 시 별도 재승인이 발생할 수 있음"으로 표기한다. Planner는 불필요한 human criterion을 만들지 않는다 — 승인 남발은 rubber-stamp를 만들고 안전장치를 무력화한다.
+
+```text
+예정된 사용자 승인: 1회
+- 외부 이메일 발송 전
+※ 계약 변경이 필요한 경우 별도 재승인이 발생할 수 있음
+```
+
+- **P-4 · Task schema 작성 비용은 Planner가 부담한다.** 사용자는 자연어로 요청하고 압축 승인 카드만 본다. Inputs / Deliverables / Acceptance Criteria 등 섹션 폼을 사용자에게 채우게 하지 않는다.
+
+---
+
 ## 초안 이력
 
 - 2026-08-20 · v0.1 최초 초안.
 - 2026-08-20 · v0.2 사용자 검토 반영: INV-5(Assurance Subject) 신설 · outcome/disposition 축 분리(R-7) · Verification Runner Contract 추가 · Final disposition 집계 규칙 추가 · Input binding(frozen/live) 구분 · M1을 D-A1에 포함/선행으로 재배치 · typed lineage edge(D-C) · provenance graph DB 금지.
 - 2026-08-20 · v0.3 최종 보강 및 **동결**: frozen input admission/최종 재대조 규칙 추가 · R-8(판정 append-only) 신설. 이 버전으로 사용자 승인.
+- 2026-08-20 · v0.4 개정(§8 규칙에 따른 사용자 승인): **§9 UX 원칙 — Progressive Disclosure** 추가. P-1 전 criterion 추적 가능·그룹화 허용, P-2 처분 구성 숨김 금지, P-3 계획된 Human 개입 사전 예고·REPLAN은 조건부, P-4 schema 작성 비용은 Planner 부담. 이후 UX 원칙 추가는 동결하고 D-0 구현으로 이행한다.
