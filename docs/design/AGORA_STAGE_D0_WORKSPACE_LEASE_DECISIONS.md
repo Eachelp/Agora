@@ -1,10 +1,11 @@
 # Agora Stage D-0 — Workspace Mutation Lease Decision Log
 
-> 상태: **2차 검수 FIX_REQUIRED(B5) 반영 완료 · 3차 검수 대기**
+> 상태: **D-0 COMPLETE · 독립 검수 PASS @ 05636ca**
 > 최초 기록: 2026-08-20
 > 기준 브랜치: `feat/stage-d0-workspace-lease`
 > 상위 기준 문서: [AGORA_STAGE_D_ASSURANCE_CHARTER.md](AGORA_STAGE_D_ASSURANCE_CHARTER.md) (v0.4, D-0 절)
 > 직전 baseline: Stage C COMPLETE `048dca0`
+> D-0 검수 완료 기준점: `05636ca`
 
 이 문서는 D-0에서 확정된 **아키텍처 결정, 버린 대안, 보증 경계, 의도적으로 하지 않은 것**을 결정 시점에 기록한다(Charter §6 DoD 4).
 
@@ -58,13 +59,17 @@ BUSY를 돌려주고 끝낸다. 큐잉을 넣지 않은 이유: 큐는 "언젠�
 
 ```text
 waitForIdle
-  → 소유권 admission          ← 실패하면 여기서 끝. 되돌릴 것이 없다.
+  → 소유권 admission          ← 실패하면 여기서 끝. resume 상태는 소비 전이다.
   → specialistResume 소비
   → 실행(step / checkpoint 재시도 / 블록)   ← 확보한 소유권 안의 중첩
   → finally: 소유권 반납
 ```
 
-이 순서는 "admission 실패 후 rollback"을 짜는 것보다 안전하다. rollback은 소비된 상태를 정확히 되돌려야 하지만, 순서를 뒤집으면 되돌릴 상태 자체가 생기지 않는다. 안쪽 wrapper에도 방어적 rollback을 남겨 두었지만 정상 경로에서는 도달하지 않는다.
+이 순서는 "admission 실패 후 rollback"을 짜는 것보다 안전하다. rollback은 소비된 상태를 정확히 되돌려야 하지만, 순서를 뒤집으면 **되돌려야 할 persistent 상태(`specialistResume`)가 애초에 소비되지 않는다.**
+
+엄밀히 말하면 admission 이전에 올려 두는 room-local 상태가 하나 있다 — `specialistActive`는 중복 진입을 막기 위해 `waitForIdle` 전에 `true`가 되고, admission 실패 시 `false`로 되돌린다. 즉 "되돌릴 것이 전혀 없다"가 아니라 **재개에 필요한 상태를 잃지 않는다**는 뜻이다.
+
+안쪽 wrapper에도 방어적 rollback을 남겨 두었지만 정상 경로에서는 도달하지 않는다.
 
 ### 2.3 재진입은 증명된 중첩에만 허용한다
 
@@ -213,7 +218,32 @@ Windows `npm test` 1052/0 fail. B1~B4는 FIXED, F1은 ACCEPTED로 판정되었�
 
 step의 phase 단위 소유권 해석은 2차에서 blocker로 잡히지 않았다. 다만 **D-A 이전까지는 step review가 저장된 diff를 보는 동안 결과물이 달라질 수 있는 일시적 assurance gap이 존재한다**는 점이 명시적으로 기록되었다. 이 gap을 닫는 것은 INV-5(Assurance Subject)이며 D-A 범위다.
 
-### 3차 검수 — `fbfa9fe` → 현재 HEAD : 대기
+### 3차 검수 — `fbfa9fe` → `05636ca` : **PASS**
 
-- 사용자 Windows 로컬 canonical `npm test` GREEN 실측 (Charter §6 DoD 3).
-- actual-diff 독립 검수 PASS (Charter §6 DoD 2).
+```text
+B1 step-mode bypass                 FIXED
+B2 early force-release              FIXED
+B3 same-holder unsafe reentry       FIXED
+B4 non-canonical physical identity  FIXED
+B5 BUSY resume-state loss           FIXED
+F1 provenance sink                  ACCEPTED
+
+Windows npm test    1055 tests / 1053 pass / 0 fail / 2 skipped
+Actual-diff review  PASS
+```
+
+**D-0 검수 완료 코드 기준점: `05636ca`.**
+
+Charter §6 DoD 충족: feature branch 작업(1) · actual-diff 독립 검수 PASS(2) · 사용자 Windows 로컬 canonical `npm test` GREEN 실측(3) · 결정 시점 decision log 기록(4) · Charter 충돌 없음(5).
+
+---
+
+## 7. D-0 이후로 넘기는 후속 항목
+
+blocker가 아니며 D-0 PASS를 막지 않는다. 다음 단계에서 처리한다.
+
+| 항목 | 내용 | 처리 시점 |
+|---|---|---|
+| lease provenance의 `role` 정교화 | step phase의 소유권은 Reviewer/Recorder phase에서도 `role: "implementation"`으로 기록된다. provenance 의미론을 실제로 사용하기 전에 phase 파생 role로 바꿔야 한다. | D-C가 provenance를 소비하기 전 |
+| step 구간의 일시적 assurance gap | step은 phase 단위로 소유권을 잡으므로, Builder 종료 후 사용자 대기 동안 결과물이 달라질 수 있다. 소유권이 아니라 결과물 fingerprint가 잡을 문제다. | D-A (INV-5 Assurance Subject) |
+| PLAN 블록의 참여자 편입 | Planner의 TASK.md 저장은 Agora managed write다. 경합이 관측되면 Charter §8 개정 후 확장한다. | 관측 시 |
