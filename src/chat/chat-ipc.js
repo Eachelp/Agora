@@ -2343,16 +2343,38 @@ function roomMeta(meta) {
   //
   // 이것은 best-effort UI 통지가 아니라 safety boundary다: 실패는 삼키지 않고
   // 그대로 전파해서 호출자가 credential mutation을 중단하게 한다(fail-closed).
+  //
+  // 반환값은 전환 트랜잭션 handle이다. 호출자는 credential mutation과 restart가
+  // 확정된 뒤 반드시 complete()를 finally에서 불러야 한다. 그때까지 이 provider의
+  // managed admission은 닫혀 있다.
   async function notifyProviderAccountChanged(providerId) {
     if (!providerId) {
       throw new Error("provider account lifecycle boundary: providerId가 필요합니다.");
     }
-    if (!harnessRuntime || typeof harnessRuntime.installProviderAccountBoundary !== "function") {
+    // 여는 쪽과 닫는 쪽을 **둘 다** 확인한 뒤에 연다. begin만 있고 complete가 없는
+    // runtime에 전환을 열면 그 provider의 admission이 영원히 닫힌 채 남는다.
+    if (
+      !harnessRuntime
+      || typeof harnessRuntime.beginProviderAccountBoundary !== "function"
+      || typeof harnessRuntime.completeProviderAccountBoundary !== "function"
+    ) {
       throw new Error(
         "provider account lifecycle boundary를 설치할 수 없습니다: managed harness runtime seam이 없습니다."
       );
     }
-    return harnessRuntime.installProviderAccountBoundary({ providerId: String(providerId) });
+    const pid = String(providerId);
+    const opened = await harnessRuntime.beginProviderAccountBoundary({ providerId: pid });
+    return {
+      ...opened,
+      complete: () => {
+        try {
+          return harnessRuntime.completeProviderAccountBoundary({ providerId: pid, token: opened.token });
+        } catch (error) {
+          console.warn("[agora] provider account transition 해제 실패:", error?.message || error);
+          return false;
+        }
+      },
+    };
   }
 
   return {

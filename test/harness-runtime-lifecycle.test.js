@@ -880,20 +880,20 @@ test("AN-D. inflight settle barrier: settle 전 BUSY, settle 후 fresh", async (
   assert.equal(fresh.session.generation, 2);
 });
 
-// ---- AS. installProviderAccountBoundary: 실제 settle까지 기다리는 awaitable seam ----
+// ---- AS. beginProviderAccountBoundary: 실제 settle까지 기다리는 awaitable seam ----
 //
 // cancel()은 실제 child close보다 먼저 반환할 수 있다. barrier가 새 turn을 막는
 // 것만으로는 "old 계정 CLI가 아직 살아 있는데 credential은 이미 새 계정"인 창을
 // 닫지 못한다. boundary seam은 pre-boundary inflight turn이 물리적으로 끝난 뒤에만
 // resolve되어야 한다.
 
-test("AS-A. installProviderAccountBoundary는 pre-boundary inflight turn이 settle될 때까지 resolve되지 않는다", async () => {
+test("AS-A. beginProviderAccountBoundary는 pre-boundary inflight turn이 settle될 때까지 resolve되지 않는다", async () => {
   const { rt, fake } = makeRuntime();
   fake.pending = true;
   const run1 = rt.runTurn({ context: ctx(), invocation: INV });
 
   let resolved = false;
-  const boundary = rt.installProviderAccountBoundary({ providerId: "claude" }).then((r) => {
+  const boundary = rt.beginProviderAccountBoundary({ providerId: "claude" }).then((r) => {
     resolved = true;
     return r;
   });
@@ -916,22 +916,30 @@ test("AS-A. installProviderAccountBoundary는 pre-boundary inflight turn이 sett
 test("AS-B. inflight turn이 없으면 boundary는 즉시 resolve된다", async () => {
   const { rt } = makeRuntime();
   await rt.runTurn({ context: ctx(), invocation: INV }).promise;
-  const result = await rt.installProviderAccountBoundary({ providerId: "claude" });
+  const result = await rt.beginProviderAccountBoundary({ providerId: "claude" });
   assert.equal(result.invalidated, 1);
+
+  // 전환 트랜잭션이 열려 있는 동안은 admission이 닫혀 있다.
+  const duringTransition = await rt.runTurn({ context: ctx(), invocation: INV }).promise;
+  assert.equal(duringTransition.ok, false);
+  assert.equal(duringTransition.stopReason, "HARNESS_SESSION_LIFECYCLE_BUSY");
+
+  assert.equal(rt.completeProviderAccountBoundary({ providerId: "claude", token: result.token }), true);
   const fresh = await rt.runTurn({ context: ctx(), invocation: INV }).promise;
   assert.equal(fresh.ok, true);
-  assert.equal(fresh.session.generation, 2, "boundary 후 첫 invocation이 fresh session을 만든다");
+  assert.equal(fresh.session.generation, 2, "전환 종료 후 첫 invocation이 fresh session을 만든다");
 });
 
 test("AS-C. 실패로 끝난 old turn도 settle로 인정된다(boundary가 매달리지 않는다)", async () => {
   const { rt, fake } = makeRuntime();
   fake.pending = true;
   const run1 = rt.runTurn({ context: ctx(), invocation: INV });
-  const boundary = rt.installProviderAccountBoundary({ providerId: "claude" });
+  const boundary = rt.beginProviderAccountBoundary({ providerId: "claude" });
   // turn이 reject로 끝나도 "물리적으로 끝났다"는 사실은 같다.
   for (const resolve of fake._resolvers.splice(0)) resolve(Promise.reject(new Error("turn 실패")));
   await assert.rejects(() => run1.promise, /turn 실패/);
-  await boundary;
+  const opened = await boundary;
+  rt.completeProviderAccountBoundary({ providerId: "claude", token: opened.token });
   fake.pending = false;
   const fresh = await rt.runTurn({ context: ctx(), invocation: INV }).promise;
   assert.equal(fresh.ok, true, "실패한 old turn 이후에도 fresh session이 시작된다");
@@ -948,7 +956,7 @@ test("AS-D. 이미 RETIRED지만 inflight인 old-credential turn도 boundary 대
   assert.equal(entry.inflight, true);
 
   let resolved = false;
-  const boundary = rt.installProviderAccountBoundary({ providerId: "claude" }).then(() => { resolved = true; });
+  const boundary = rt.beginProviderAccountBoundary({ providerId: "claude" }).then(() => { resolved = true; });
   await new Promise((r) => setImmediate(r));
   await new Promise((r) => setImmediate(r));
   assert.equal(resolved, false, "RETIRED여도 물리적으로 살아 있으면 기다려야 한다");
@@ -969,7 +977,7 @@ test("AS-E. 다른 provider의 inflight turn은 boundary 대기를 막지 않는
   const claudeRun = rt.runTurn({ context: ctx({ providerId: "claude" }), invocation: INV });
 
   // claude turn이 매달려 있어도 codex boundary는 즉시 완료된다.
-  const result = await rt.installProviderAccountBoundary({ providerId: "codex" });
+  const result = await rt.beginProviderAccountBoundary({ providerId: "codex" });
   assert.equal(result.providerId, "codex");
   assert.equal(fakeClaude.cancels, 0, "다른 provider의 turn은 cancel되지 않는다");
 
@@ -979,8 +987,8 @@ test("AS-E. 다른 provider의 inflight turn은 boundary 대기를 막지 않는
 
 test("AS-F. providerId 없는 boundary 호출은 fail-closed로 던진다", async () => {
   const { rt } = makeRuntime();
-  await assert.rejects(() => rt.installProviderAccountBoundary({}), /providerId가 필요/);
-  await assert.rejects(() => rt.installProviderAccountBoundary(), /providerId가 필요/);
+  await assert.rejects(() => rt.beginProviderAccountBoundary({}), /providerId가 필요/);
+  await assert.rejects(() => rt.beginProviderAccountBoundary(), /providerId가 필요/);
 });
 
 test("AS-G. old turn이 상한 안에 끝나지 않으면 boundary는 fail-closed로 reject한다", async () => {
@@ -993,7 +1001,7 @@ test("AS-G. old turn이 상한 안에 끝나지 않으면 boundary는 fail-close
   const run1 = rt.runTurn({ context: ctx(), invocation: INV });
 
   await assert.rejects(
-    () => rt.installProviderAccountBoundary({ providerId: "claude" }),
+    () => rt.beginProviderAccountBoundary({ providerId: "claude" }),
     /계정 세션 경계를 확정하지 못했습니다/
   );
 
@@ -1012,7 +1020,7 @@ test("AS-H. 상한 안에 settle되면 타이머가 boundary를 방해하지 않
   rt.register("claude", fake);
   fake.pending = true;
   const run1 = rt.runTurn({ context: ctx(), invocation: INV });
-  const boundary = rt.installProviderAccountBoundary({ providerId: "claude" });
+  const boundary = rt.beginProviderAccountBoundary({ providerId: "claude" });
   fake.settleAll({ ok: false, cancelled: true });
   await run1.promise;
   const result = await boundary;
@@ -1060,4 +1068,126 @@ test("AN-G. lineage sibling retire는 계정 전환 후 fresh 세션에서도 �
   assert.equal(oldX.lifecycle, LIFECYCLE.RETIRED, "model 변경은 old sibling RETIRE");
   assert.equal(oldX.invalidationReason, "MODEL_CHANGED");
   assert.equal(newY.lifecycle, LIFECYCLE.ACTIVE);
+});
+
+// ---- AT. 계정 전환 트랜잭션 admission gate ----
+//
+// old turn이 settle된 뒤에도 credential mutation/restart가 끝날 때까지 managed
+// admission은 닫혀 있어야 한다. 그렇지 않으면 mutation 이전 async 구간(AGY
+// switchToProfile의 await snapshotCurrent(), prepareLogin의 await read())에서
+// 새 turn이 old credential로 시작해 mutation을 살아서 넘어간다.
+
+test("AT-A. 전환 트랜잭션이 열려 있는 동안 새 managed turn은 BUSY다(settle 이후에도)", async () => {
+  const { rt, fake } = makeRuntime();
+  await rt.runTurn({ context: ctx(), invocation: INV }).promise;
+  const opened = await rt.beginProviderAccountBoundary({ providerId: "claude" });
+  assert.equal(rt.isProviderAccountTransitionActive("claude"), true);
+
+  // 기다릴 inflight turn이 없어 settle은 이미 끝났지만 admission은 닫혀 있다.
+  const blocked = await rt.runTurn({ context: ctx(), invocation: INV }).promise;
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.stopReason, "HARNESS_SESSION_LIFECYCLE_BUSY");
+  assert.equal(fake.calls.length, 1, "adapter 실행 없음");
+  assert.equal(blocked.evidence, undefined, "Evidence 없음");
+  assert.equal(blocked.runMetrics, undefined, "RunMetrics 없음");
+
+  rt.completeProviderAccountBoundary({ providerId: "claude", token: opened.token });
+  assert.equal(rt.isProviderAccountTransitionActive("claude"), false);
+  const fresh = await rt.runTurn({ context: ctx(), invocation: INV }).promise;
+  assert.equal(fresh.ok, true);
+  assert.equal(fresh.session.generation, 2);
+});
+
+test("AT-B. 같은 provider의 두 번째 전환은 fail-closed(동시 credential mutation 금지)", async () => {
+  const { rt } = makeRuntime();
+  const first = await rt.beginProviderAccountBoundary({ providerId: "claude" });
+  await assert.rejects(
+    () => rt.beginProviderAccountBoundary({ providerId: "claude" }),
+    (error) => {
+      assert.match(error.message, /계정 전환이 이미 진행 중/);
+      assert.equal(error.accountSwitchSafe, true, "두 번째 전환은 credential 무변경");
+      return true;
+    }
+  );
+  // 실패한 두 번째 전환이 첫 번째 트랜잭션을 해제하면 안 된다.
+  assert.equal(rt.isProviderAccountTransitionActive("claude"), true);
+  rt.completeProviderAccountBoundary({ providerId: "claude", token: first.token });
+  assert.equal(rt.isProviderAccountTransitionActive("claude"), false);
+});
+
+test("AT-C. stale token은 더 새로 시작된 전환을 해제하지 못한다", async () => {
+  const { rt } = makeRuntime();
+  const first = await rt.beginProviderAccountBoundary({ providerId: "claude" });
+  rt.completeProviderAccountBoundary({ providerId: "claude", token: first.token });
+  const second = await rt.beginProviderAccountBoundary({ providerId: "claude" });
+  assert.notEqual(second.token, first.token);
+
+  assert.equal(
+    rt.completeProviderAccountBoundary({ providerId: "claude", token: first.token }),
+    false,
+    "stale completion은 무시된다"
+  );
+  assert.equal(rt.isProviderAccountTransitionActive("claude"), true, "새 전환은 계속 열려 있다");
+  assert.equal(
+    rt.completeProviderAccountBoundary({ providerId: "claude", token: second.token }),
+    true
+  );
+});
+
+test("AT-D. settle 상한 초과는 영구히 막힌 전환을 남기지 않는다", async () => {
+  const fake = new FakeLifecycleAdapter();
+  const rt = new HarnessRuntime({ processAdapter: spyProcessAdapter(), accountSettleTimeoutMs: 20 });
+  rt.register("claude", fake);
+  fake.pending = true;
+  const run1 = rt.runTurn({ context: ctx(), invocation: INV });
+
+  await assert.rejects(
+    () => rt.beginProviderAccountBoundary({ providerId: "claude" }),
+    /계정 세션 경계를 확정하지 못했습니다/
+  );
+  assert.equal(rt.isProviderAccountTransitionActive("claude"), false, "전환 상태가 정리된다");
+
+  // 정리됐으므로 재시도가 가능하다(영구 잠김 아님).
+  fake.settleAll({ ok: false, cancelled: true });
+  await run1.promise;
+  const retry = await rt.beginProviderAccountBoundary({ providerId: "claude" });
+  assert.equal(typeof retry.token, "string");
+  rt.completeProviderAccountBoundary({ providerId: "claude", token: retry.token });
+});
+
+test("AT-E. 전환 실패 후에도 native session은 폐기 상태로 남는다(되살리지 않는다)", async () => {
+  const fake = new FakeLifecycleAdapter();
+  const rt = new HarnessRuntime({ processAdapter: spyProcessAdapter(), accountSettleTimeoutMs: 20 });
+  rt.register("claude", fake);
+  const first = await rt.runTurn({ context: ctx(), invocation: INV }).promise;
+  fake.pending = true;
+  const run2 = rt.runTurn({ context: ctx(), invocation: INV });
+
+  await assert.rejects(() => rt.beginProviderAccountBoundary({ providerId: "claude" }), /확정하지 못했습니다/);
+  const entry = rt.registry.get(first.session.key);
+  assert.equal(entry.lifecycle, LIFECYCLE.INVALIDATED);
+  assert.equal(entry.invalidationReason, "PROVIDER_ACCOUNT_CHANGED");
+
+  fake.settleAll({ ok: false, cancelled: true });
+  await run2.promise;
+});
+
+test("AT-F. 전환 gate는 provider-scoped다(다른 provider는 계속 실행된다)", async () => {
+  const fakeClaude = new FakeLifecycleAdapter("claude-fake");
+  const fakeCodex = new FakeLifecycleAdapter("codex-fake");
+  const rt = new HarnessRuntime({ processAdapter: spyProcessAdapter() });
+  rt.register("claude", fakeClaude);
+  rt.register("codex", fakeCodex);
+
+  const opened = await rt.beginProviderAccountBoundary({ providerId: "claude" });
+  const codexRun = await rt.runTurn({
+    context: ctx({ providerId: "codex", modelKey: "gpt-x" }),
+    invocation: INV,
+  }).promise;
+  assert.equal(codexRun.ok, true, "다른 provider는 admission이 열려 있다");
+
+  // 다른 provider의 전환도 독립적으로 열 수 있다.
+  const codexTransition = await rt.beginProviderAccountBoundary({ providerId: "codex" });
+  rt.completeProviderAccountBoundary({ providerId: "codex", token: codexTransition.token });
+  rt.completeProviderAccountBoundary({ providerId: "claude", token: opened.token });
 });

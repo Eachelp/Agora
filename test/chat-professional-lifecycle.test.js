@@ -199,10 +199,15 @@ function runtimeSpy() {
       workspaceChanged: (p) => events.push({ kind: "workspaceChanged", ...p }),
       workspaceRestored: (p) => events.push({ kind: "workspaceRestored", ...p }),
       providerAccountChanged: (p) => events.push({ kind: "providerAccountChanged", ...p }),
-      // 계정 경계는 awaitable seam이다: 상위가 credential을 바꾸기 전에 await한다.
-      installProviderAccountBoundary: async (p) => {
-        events.push({ kind: "installProviderAccountBoundary", ...p });
-        return { providerId: p.providerId, invalidated: 0 };
+      // 계정 경계는 awaitable 전환 트랜잭션이다: 상위가 credential을 바꾸기 전에
+      // begin을 await하고, mutation이 확정된 뒤 complete로 admission을 다시 연다.
+      beginProviderAccountBoundary: async (p) => {
+        events.push({ kind: "beginProviderAccountBoundary", ...p });
+        return { providerId: p.providerId, token: `t-${p.providerId}`, invalidated: 0 };
+      },
+      completeProviderAccountBoundary: (p) => {
+        events.push({ kind: "completeProviderAccountBoundary", ...p });
+        return true;
       },
       professionalRunEnded: (p) => events.push({ kind: "professionalRunEnded", ...p }),
       close: () => events.push({ kind: "close" }),
@@ -303,19 +308,26 @@ test("chatFeature.notifyProviderAccountChanged는 awaitable hard boundary seam�
 
   const result = await feature.notifyProviderAccountChanged("codex");
   assert.deepEqual(spy.events, [
-    { kind: "installProviderAccountBoundary", providerId: "codex" },
+    { kind: "beginProviderAccountBoundary", providerId: "codex" },
   ]);
   assert.equal(result.providerId, "codex", "boundary 결과를 그대로 돌려준다");
 
+  // handle.complete()가 전환 트랜잭션을 닫고 admission을 다시 연다.
+  assert.equal(typeof result.complete, "function");
+  assert.equal(result.complete(), true);
+  assert.deepEqual(spy.events.at(-1), {
+    kind: "completeProviderAccountBoundary", providerId: "codex", token: "t-codex",
+  });
+
   await feature.notifyProviderAccountChanged("codex");
-  assert.equal(spy.events.length, 2);
+  assert.equal(spy.events.length, 3);
 
   // providerId 없는 호출은 조용히 무시되지 않는다(fail-closed): 호출자 버그다.
   await assert.rejects(
     () => feature.notifyProviderAccountChanged(null),
     /providerId가 필요/
   );
-  assert.equal(spy.events.length, 2, "실패한 boundary는 이벤트를 만들지 않는다");
+  assert.equal(spy.events.length, 3, "실패한 boundary는 이벤트를 만들지 않는다");
 });
 
 test("chatFeature.notifyProviderAccountChanged는 runtime 실패를 삼키지 않는다(fail-closed)", async (t) => {
@@ -333,9 +345,10 @@ test("chatFeature.notifyProviderAccountChanged는 runtime 실패를 삼키지 �
     capabilities: fakeCapabilities(),
     harnessRuntime: {
       runTurn: () => ({ promise: Promise.resolve({ ok: true }), cancel: () => {} }),
-      installProviderAccountBoundary: async () => {
+      beginProviderAccountBoundary: async () => {
         throw new Error("boundary 설치 실패");
       },
+      completeProviderAccountBoundary: () => true,
       close() {},
     },
   });
@@ -391,6 +404,20 @@ test("account-switching source: 모든 credential mutation 경로가 awaitable b
   assert.ok(calls.length >= 6, `모든 mutation 경로가 boundary를 거쳐야 한다(현재 ${calls.length})`);
   const awaited = source.match(/await installAccountBoundaryOrFail\(/g) || [];
   assert.equal(awaited.length, calls.length, "boundary 호출은 예외 없이 await되어야 한다");
+
+  // 열린 전환 트랜잭션은 반드시 finally에서 닫힌다(영구히 막힌 provider 금지).
+  assert.match(source, /function completeAccountBoundary\(boundary, provider\)/);
+  const completes = source.match(/(?<!function )completeAccountBoundary\(/g) || [];
+  assert.ok(
+    completes.length >= calls.length,
+    `boundary를 여는 모든 경로가 전환을 닫아야 한다(현재 ${completes.length} < ${calls.length})`
+  );
+  // 주석이 끼어들 수 있으므로 finally 블록 안에 있는지만 확인한다.
+  const finallyBlocks = source.match(/finally \{[\s\S]{0,300}?completeAccountBoundary\(/g) || [];
+  assert.equal(
+    finallyBlocks.length, calls.length,
+    "전환 종료는 예외 경로에서도 실행되도록 finally에 있어야 한다"
+  );
 
   // 삼키는 seam으로 되돌아가지 않았는지.
   assert.doesNotMatch(source, /function notifyAccountLifecycle/, "fail-open seam은 제거되었다");
@@ -474,4 +501,33 @@ test("Claude/AGY/Codex switcher의 사전 검증 실패는 accountSwitchSafe=tru
       return true;
     }
   );
+});
+
+test("chatFeature.notifyProviderAccountChanged는 complete seam이 없는 runtime을 열지 않는다", async (t) => {
+  // begin만 있고 complete가 없는 runtime에 전환을 열면 그 provider의 admission이
+  // 영원히 닫힌 채 남는다. 열기 전에 양쪽 seam을 모두 확인해야 한다.
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-lifecycle-halfseam-")));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  let opened = 0;
+  const feature = createChatFeature({
+    electron: {
+      ipcMain: { handle() {}, on() {} },
+      dialog: { async showOpenDialog() { return { canceled: true, filePaths: [] }; } },
+      BrowserWindow: class BrowserWindow {},
+      shell: {},
+    },
+    storeRoot: root,
+    capabilities: fakeCapabilities(),
+    harnessRuntime: {
+      runTurn: () => ({ promise: Promise.resolve({ ok: true }), cancel: () => {} }),
+      beginProviderAccountBoundary: async () => { opened += 1; return { token: "t" }; },
+      // completeProviderAccountBoundary 없음
+      close() {},
+    },
+  });
+  await assert.rejects(
+    () => feature.notifyProviderAccountChanged("claude"),
+    /managed harness runtime seam이 없습니다/
+  );
+  assert.equal(opened, 0, "닫을 수 없는 전환을 애초에 열지 않는다");
 });

@@ -99,6 +99,12 @@ class HarnessRuntime {
     // providerId -> Set<entry> — 계정 전환으로 invalidated된 inflight entry가
     // settle될 때까지 해당 provider의 새 managed turn을 차단한다.
     this._accountSettleBarriers = new Map();
+    // providerId -> token — 계정 전환 트랜잭션이 진행 중인 provider.
+    // old turn이 settle된 뒤에도 credential mutation/restart가 끝날 때까지
+    // 해당 provider의 managed admission을 닫아 둔다. workspace writer lease가
+    // 아니라 계정 전환 트랜잭션 수명만 덮는 provider-scoped 상태다.
+    this._accountTransitions = new Map();
+    this._accountTransitionSeq = 0;
     this._closed = false;
   }
 
@@ -188,14 +194,56 @@ class HarnessRuntime {
   // old 실행이 끝났음을 상한 안에 증명하지 못하면 reject한다. 호출자는 그때
   // credential을 바꾸지 않는다(fail-closed) — 증명 못 한 상태로 전환을 강행하는
   // 것보다 전환을 거부하고 사용자가 재시도하게 하는 편이 안전하다.
-  async installProviderAccountBoundary({ providerId } = {}) {
+  //
+  // 반환된 token은 전환 트랜잭션의 소유권이다. 호출자는 credential mutation과
+  // restart가 확정적으로 성공/실패한 뒤 반드시 completeProviderAccountBoundary를
+  // finally에서 불러야 한다. 그 전까지 이 provider의 managed admission은 닫혀 있다:
+  // old turn이 settle된 뒤에도 credential mutation 도중에 새 turn이 old credential로
+  // 시작하는 창을 남기지 않기 위해서다(AGY switchToProfile의 await snapshotCurrent(),
+  // prepareLogin의 await read()처럼 mutation 이전 async 구간이 실재한다).
+  async beginProviderAccountBoundary({ providerId } = {}) {
     if (providerId == null) {
-      throw new Error("HarnessRuntime.installProviderAccountBoundary: providerId가 필요합니다.");
+      throw new Error("HarnessRuntime.beginProviderAccountBoundary: providerId가 필요합니다.");
     }
     const pid = String(providerId);
-    const affected = this.providerAccountChanged({ providerId: pid });
-    await this._awaitProviderSettled(pid);
-    return { providerId: pid, invalidated: affected.length };
+    if (this._accountTransitions.has(pid)) {
+      // 같은 provider의 전환이 이미 진행 중이다. 동시 credential mutation을
+      // 허용하는 대신 fail-closed한다(마지막 writer가 이기는 상황을 만들지 않는다).
+      const error = new Error(`${pid} 계정 전환이 이미 진행 중입니다.`);
+      error.accountSwitchSafe = true;
+      throw error;
+    }
+    const token = `apt-${pid}-${++this._accountTransitionSeq}`;
+    this._accountTransitions.set(pid, token);
+    try {
+      const affected = this.providerAccountChanged({ providerId: pid });
+      await this._awaitProviderSettled(pid);
+      return { providerId: pid, token, invalidated: affected.length };
+    } catch (error) {
+      // settle 상한 초과를 포함한 boundary 설치 실패는 전환 상태를 남기지 않는다
+      // (영구히 막힌 provider를 만들지 않는다). 이미 INVALIDATE된 native session은
+      // 그대로 폐기 상태로 남는다 — 되살리지 않는다.
+      this.completeProviderAccountBoundary({ providerId: pid, token });
+      throw error;
+    }
+  }
+
+  // 계정 전환 트랜잭션을 닫고 managed admission을 다시 연다.
+  // token이 현재 전환의 것이 아니면 무시한다: 늦게 도착한 stale completion이
+  // 더 새로 시작된 전환을 실수로 열어 주면 안 된다.
+  completeProviderAccountBoundary({ providerId, token } = {}) {
+    if (providerId == null) return false;
+    const pid = String(providerId);
+    const current = this._accountTransitions.get(pid);
+    if (current == null || current !== token) return false;
+    this._accountTransitions.delete(pid);
+    return true;
+  }
+
+  // 계정 전환 트랜잭션이 진행 중인지(=managed admission이 닫혀 있는지).
+  isProviderAccountTransitionActive(providerId) {
+    if (providerId == null) return false;
+    return this._accountTransitions.has(String(providerId));
   }
 
   // boundary 설치 시점에 barrier에 들어간 inflight entry가 실제로 끝날 때까지
@@ -428,9 +476,18 @@ class HarnessRuntime {
       );
     }
 
+    // 계정 전환 트랜잭션이 진행 중이면 managed admission이 닫혀 있다. old turn이
+    // settle된 뒤에도 credential mutation/restart가 끝날 때까지 닫아 두므로,
+    // 새 turn이 old credential로 시작해 mutation을 살아서 넘어가지 않는다.
+    const pid = runtimeContext && runtimeContext.providerId ? String(runtimeContext.providerId) : null;
+    if (pid && this._accountTransitions.has(pid)) {
+      return failedRun(
+        "계정 전환이 진행 중이라 새 managed turn을 시작할 수 없습니다.",
+        LIFECYCLE_STOP_REASONS.BUSY
+      );
+    }
     // account-switch inflight settle barrier: 계정 전환으로 invalidated된
     // inflight turn이 아직 settle되지 않았으면 새 managed turn을 차단한다.
-    const pid = runtimeContext && runtimeContext.providerId ? String(runtimeContext.providerId) : null;
     if (pid && this._isProviderSettling(pid)) {
       return failedRun(
         "이전 계정의 inflight turn이 아직 종료 중이라 새 managed turn을 시작할 수 없습니다.",
