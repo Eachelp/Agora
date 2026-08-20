@@ -2335,17 +2335,24 @@ function roomMeta(meta) {
   }
 
   // Stage C — provider account change is a hard native session boundary.
-  // account-switching 모듈이 계정 전환 성공 또는 unknown 전이(외부 로그인 시작 ·
-  // partial-mutation 가능성이 있는 ambiguous 실패) 시 호출한다. HarnessRuntime이
-  // 해당 provider의 모든 ACTIVE managed session을 INVALIDATE하고, inflight turn이
-  // settle될 때까지 새 managed turn을 차단한다(BUSY). A→B→A도 항상 fresh session이다.
-  function notifyProviderAccountChanged(providerId) {
-    if (!providerId) return;
-    try {
-      harnessRuntime.providerAccountChanged({ providerId: String(providerId) });
-    } catch (error) {
-      console.warn("[agora] provider account lifecycle 반영 실패:", error?.message || error);
+  //
+  // account-switching 모듈이 live credential을 바꾸기 **전에** 반드시 await한다.
+  // HarnessRuntime이 해당 provider의 모든 managed session을 INVALIDATE하고,
+  // pre-boundary inflight turn을 cancel한 뒤 그것이 물리적으로 settle될 때까지
+  // 기다린다. A→B→A도 항상 fresh session이다.
+  //
+  // 이것은 best-effort UI 통지가 아니라 safety boundary다: 실패는 삼키지 않고
+  // 그대로 전파해서 호출자가 credential mutation을 중단하게 한다(fail-closed).
+  async function notifyProviderAccountChanged(providerId) {
+    if (!providerId) {
+      throw new Error("provider account lifecycle boundary: providerId가 필요합니다.");
     }
+    if (!harnessRuntime || typeof harnessRuntime.installProviderAccountBoundary !== "function") {
+      throw new Error(
+        "provider account lifecycle boundary를 설치할 수 없습니다: managed harness runtime seam이 없습니다."
+      );
+    }
+    return harnessRuntime.installProviderAccountBoundary({ providerId: String(providerId) });
   }
 
   return {

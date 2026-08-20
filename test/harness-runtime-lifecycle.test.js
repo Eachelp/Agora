@@ -880,6 +880,145 @@ test("AN-D. inflight settle barrier: settle 전 BUSY, settle 후 fresh", async (
   assert.equal(fresh.session.generation, 2);
 });
 
+// ---- AS. installProviderAccountBoundary: 실제 settle까지 기다리는 awaitable seam ----
+//
+// cancel()은 실제 child close보다 먼저 반환할 수 있다. barrier가 새 turn을 막는
+// 것만으로는 "old 계정 CLI가 아직 살아 있는데 credential은 이미 새 계정"인 창을
+// 닫지 못한다. boundary seam은 pre-boundary inflight turn이 물리적으로 끝난 뒤에만
+// resolve되어야 한다.
+
+test("AS-A. installProviderAccountBoundary는 pre-boundary inflight turn이 settle될 때까지 resolve되지 않는다", async () => {
+  const { rt, fake } = makeRuntime();
+  fake.pending = true;
+  const run1 = rt.runTurn({ context: ctx(), invocation: INV });
+
+  let resolved = false;
+  const boundary = rt.installProviderAccountBoundary({ providerId: "claude" }).then((r) => {
+    resolved = true;
+    return r;
+  });
+
+  assert.equal(fake.cancels, 1, "boundary 설치는 inflight turn을 cancel한다");
+  // cancel만으로는 resolve되지 않는다 — 실제 settle을 기다린다.
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(resolved, false, "cancel 요청만으로 boundary가 완료되면 안 된다");
+
+  fake.settleAll({ ok: false, cancelled: true });
+  await run1.promise;
+  const result = await boundary;
+  assert.equal(resolved, true);
+  assert.equal(result.providerId, "claude");
+  assert.equal(result.invalidated, 1);
+  assert.equal(rt.registry.entries()[0].inflight, false, "resolve 시점에 old turn은 끝나 있다");
+});
+
+test("AS-B. inflight turn이 없으면 boundary는 즉시 resolve된다", async () => {
+  const { rt } = makeRuntime();
+  await rt.runTurn({ context: ctx(), invocation: INV }).promise;
+  const result = await rt.installProviderAccountBoundary({ providerId: "claude" });
+  assert.equal(result.invalidated, 1);
+  const fresh = await rt.runTurn({ context: ctx(), invocation: INV }).promise;
+  assert.equal(fresh.ok, true);
+  assert.equal(fresh.session.generation, 2, "boundary 후 첫 invocation이 fresh session을 만든다");
+});
+
+test("AS-C. 실패로 끝난 old turn도 settle로 인정된다(boundary가 매달리지 않는다)", async () => {
+  const { rt, fake } = makeRuntime();
+  fake.pending = true;
+  const run1 = rt.runTurn({ context: ctx(), invocation: INV });
+  const boundary = rt.installProviderAccountBoundary({ providerId: "claude" });
+  // turn이 reject로 끝나도 "물리적으로 끝났다"는 사실은 같다.
+  for (const resolve of fake._resolvers.splice(0)) resolve(Promise.reject(new Error("turn 실패")));
+  await assert.rejects(() => run1.promise, /turn 실패/);
+  await boundary;
+  fake.pending = false;
+  const fresh = await rt.runTurn({ context: ctx(), invocation: INV }).promise;
+  assert.equal(fresh.ok, true, "실패한 old turn 이후에도 fresh session이 시작된다");
+});
+
+test("AS-D. 이미 RETIRED지만 inflight인 old-credential turn도 boundary 대기 대상이다", async () => {
+  const { rt, fake } = makeRuntime();
+  fake.pending = true;
+  rt.runTurn({ context: ctx(), invocation: INV });
+  // 다른 lifecycle event가 먼저 RETIRE시켰지만 실행은 아직 살아 있다.
+  rt.workspaceChanged({ projectId: "p1" });
+  const entry = rt.registry.entries()[0];
+  assert.equal(entry.lifecycle, LIFECYCLE.RETIRED);
+  assert.equal(entry.inflight, true);
+
+  let resolved = false;
+  const boundary = rt.installProviderAccountBoundary({ providerId: "claude" }).then(() => { resolved = true; });
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(resolved, false, "RETIRED여도 물리적으로 살아 있으면 기다려야 한다");
+  assert.equal(entry.invalidationReason, "WORKSPACE_CHANGED", "기존 종료 사유는 보존");
+
+  fake.settleAll({ ok: false, cancelled: true });
+  await boundary;
+  assert.equal(resolved, true);
+});
+
+test("AS-E. 다른 provider의 inflight turn은 boundary 대기를 막지 않는다", async () => {
+  const fakeClaude = new FakeLifecycleAdapter("claude-fake");
+  const fakeCodex = new FakeLifecycleAdapter("codex-fake");
+  const rt = new HarnessRuntime({ processAdapter: spyProcessAdapter() });
+  rt.register("claude", fakeClaude);
+  rt.register("codex", fakeCodex);
+  fakeClaude.pending = true;
+  const claudeRun = rt.runTurn({ context: ctx({ providerId: "claude" }), invocation: INV });
+
+  // claude turn이 매달려 있어도 codex boundary는 즉시 완료된다.
+  const result = await rt.installProviderAccountBoundary({ providerId: "codex" });
+  assert.equal(result.providerId, "codex");
+  assert.equal(fakeClaude.cancels, 0, "다른 provider의 turn은 cancel되지 않는다");
+
+  fakeClaude.settleAll({ ok: true });
+  await claudeRun.promise;
+});
+
+test("AS-F. providerId 없는 boundary 호출은 fail-closed로 던진다", async () => {
+  const { rt } = makeRuntime();
+  await assert.rejects(() => rt.installProviderAccountBoundary({}), /providerId가 필요/);
+  await assert.rejects(() => rt.installProviderAccountBoundary(), /providerId가 필요/);
+});
+
+test("AS-G. old turn이 상한 안에 끝나지 않으면 boundary는 fail-closed로 reject한다", async () => {
+  // SIGTERM을 무시하는 CLI나 이미 killed로 표시돼 재-kill이 no-op이 되는 child 때문에
+  // UI handler가 영원히 매달리면 안 된다. 증명 실패는 성공이 아니라 실패다.
+  const fake = new FakeLifecycleAdapter();
+  const rt = new HarnessRuntime({ processAdapter: spyProcessAdapter(), accountSettleTimeoutMs: 20 });
+  rt.register("claude", fake);
+  fake.pending = true;
+  const run1 = rt.runTurn({ context: ctx(), invocation: INV });
+
+  await assert.rejects(
+    () => rt.installProviderAccountBoundary({ providerId: "claude" }),
+    /계정 세션 경계를 확정하지 못했습니다/
+  );
+
+  // 경계는 이미 설치되어 있으므로 새 managed turn은 여전히 BUSY로 막힌다.
+  const blocked = await rt.runTurn({ context: ctx(), invocation: INV }).promise;
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.stopReason, "HARNESS_SESSION_LIFECYCLE_BUSY");
+
+  fake.settleAll({ ok: false, cancelled: true });
+  await run1.promise;
+});
+
+test("AS-H. 상한 안에 settle되면 타이머가 boundary를 방해하지 않는다", async () => {
+  const fake = new FakeLifecycleAdapter();
+  const rt = new HarnessRuntime({ processAdapter: spyProcessAdapter(), accountSettleTimeoutMs: 5000 });
+  rt.register("claude", fake);
+  fake.pending = true;
+  const run1 = rt.runTurn({ context: ctx(), invocation: INV });
+  const boundary = rt.installProviderAccountBoundary({ providerId: "claude" });
+  fake.settleAll({ ok: false, cancelled: true });
+  await run1.promise;
+  const result = await boundary;
+  assert.equal(result.invalidated, 1);
+});
+
 test("AN-E. 다른 lifecycle trigger(workspace/run 종료)는 계정 전환 후 fresh 세션도 정상 종료시킨다", async () => {
   const { rt, fake } = makeRuntime();
   await rt.runTurn({ context: ctx(), invocation: INV }).promise;

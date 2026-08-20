@@ -24,6 +24,8 @@ const path = require("node:path");
 
 const { AntigravityAccountSwitcher } = require("../src/antigravity-account-switcher");
 const { createAccountSwitching } = require("../src/agora/account-switching");
+const { HarnessRuntime } = require("../src/harness/harness-runtime");
+const { HarnessAdapter } = require("../src/harness/harness-adapter");
 
 // ---- AGY prepareLogin의 accountSwitchSafe 의미론 (switcher 단위) ----
 
@@ -94,7 +96,7 @@ test("prepareLogin: clear 이후 restart 실패도 ambiguous/mutated이며 accou
 
 // ---- startProviderLogin / switchProviderAccount wiring (실제 createAccountSwitching 경유) ----
 
-function makeSwitching(t, { pathOverride } = {}) {
+function makeSwitching(t, { pathOverride, chatFeature } = {}) {
   const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-acct-home-")));
   const userData = path.join(home, "userData");
   fs.mkdirSync(userData, { recursive: true });
@@ -130,9 +132,10 @@ function makeSwitching(t, { pathOverride } = {}) {
     getPetWindow: () => null,
     getBubbleHideTimer: () => null,
     setBubbleHideTimer: () => {},
-    getChatFeature: () => ({
-      notifyProviderAccountChanged: (provider) =>
-        notifications.push({ provider }),
+    getChatFeature: () => chatFeature || ({
+      notifyProviderAccountChanged: async (provider) => {
+        notifications.push({ provider });
+      },
       showSystemNotice: () => {},
     }),
     bubbleDoneAutoHideMs: 1,
@@ -203,4 +206,276 @@ test("전환 성공(switchProviderAccount)은 pre-mutation boundary를 만든다
   assert.equal(result, true);
   assert.deepEqual(notifications, [{ provider: "agy" }],
     "pre-mutation boundary는 credential mutation 이전에 정확히 1회");
+});
+
+// ---- BLOCKER 1: old inflight provider work가 실제로 settle된 뒤에만 credential mutation ----
+//
+// cancel()은 실제 child close보다 먼저 반환할 수 있다. barrier가 새 managed turn을
+// 막는 것만으로는 "old Account A CLI가 아직 물리적으로 살아 있는데 live credential은
+// 이미 Account B"인 창이 닫히지 않는다. 아래 테스트는 실제 호출 순서를 검증한다.
+
+class PendingLifecycleAdapter extends HarnessAdapter {
+  constructor(id = "fake-pending") {
+    super({ id, supportsPersistentSession: true });
+    this.pending = false;
+    this.cancels = 0;
+    this._resolvers = [];
+  }
+  runTurn({ session }) {
+    if (this.pending) {
+      let resolve;
+      const promise = new Promise((r) => { resolve = r; });
+      this._resolvers.push(resolve);
+      return { promise, cancel: () => { this.cancels += 1; } };
+    }
+    return { promise: Promise.resolve({ ok: true, session }), cancel: () => { this.cancels += 1; } };
+  }
+}
+
+const sessionlessProcessAdapter = () => ({
+  id: "process",
+  supportsPersistentSession: false,
+  runTurn: () => ({ promise: Promise.resolve({ ok: true, tag: "process" }), cancel: () => {} }),
+});
+
+const managedCtx = (over = {}) => ({
+  projectId: "p1",
+  workspaceId: "/ws/a",
+  professionalRunId: "pr-1",
+  role: "implementation",
+  providerId: "agy",
+  modelKey: "gemini-x",
+  permissionMode: "workspace-write",
+  ...over,
+});
+const MANAGED_INV = { commandPath: "agy", argv: [], prompt: "" };
+const tick = () => new Promise((r) => setImmediate(r));
+
+test("BLOCKER1. 계정 전환은 old inflight turn이 실제 settle된 뒤에만 credential을 바꾼다", async (t) => {
+  const runtime = new HarnessRuntime({ processAdapter: sessionlessProcessAdapter() });
+  const adapter = new PendingLifecycleAdapter();
+  runtime.register("agy", adapter);
+
+  const order = [];
+  const { switching } = makeSwitching(t, {
+    chatFeature: {
+      notifyProviderAccountChanged: async (provider) => {
+        order.push(`boundary:start:${provider}`);
+        const result = await runtime.installProviderAccountBoundary({ providerId: provider });
+        order.push(`boundary:settled:${provider}`);
+        return result;
+      },
+      showSystemNotice: () => {},
+    },
+  });
+
+  const agy = switching.antigravityAccountSwitcher;
+  const saved = agy.store.save({
+    secret: { token: { refresh_token: "profile-secret" } },
+    email: "b@b.c",
+    active: false,
+  });
+  agy.read = async () => { throw new Error("live 자격 증명 없음"); };
+  agy.write = async () => { order.push("credential:write"); };
+  agy.restart = async () => { order.push("provider:restart"); };
+
+  // old Account A managed turn이 실행 중이고, 의도적으로 pending 상태로 남는다.
+  adapter.pending = true;
+  const oldTurn = runtime.runTurn({ context: managedCtx(), invocation: MANAGED_INV });
+  const oldEntry = runtime.registry.entries()[0];
+  assert.equal(oldEntry.inflight, true);
+
+  const switchPromise = switching.switchProviderAccount("agy", saved.key);
+
+  // cancel은 요청됐지만 native turn은 아직 살아 있다 → credential은 그대로여야 한다.
+  await tick();
+  await tick();
+  assert.equal(adapter.cancels, 1, "boundary가 old turn을 cancel한다");
+  assert.equal(oldEntry.inflight, true, "native turn은 아직 물리적으로 살아 있다");
+  assert.deepEqual(order, ["boundary:start:agy"], "settle 전에는 credential을 건드리지 않는다");
+
+  // old turn이 실제로 settle된다.
+  for (const resolve of adapter._resolvers.splice(0)) resolve({ ok: false, cancelled: true });
+  await oldTurn.promise;
+  assert.equal(await switchPromise, true);
+
+  assert.deepEqual(
+    order,
+    ["boundary:start:agy", "boundary:settled:agy", "credential:write", "provider:restart"],
+    "boundary → 실제 settle → credential mutation → provider restart 순서"
+  );
+
+  // 다음 Professional invocation은 fresh native continuity로 시작한다.
+  adapter.pending = false;
+  const fresh = await runtime.runTurn({ context: managedCtx(), invocation: MANAGED_INV }).promise;
+  assert.equal(fresh.ok, true);
+  assert.equal(fresh.session.generation, 2, "계정 전환 후 fresh native session");
+});
+
+test("BLOCKER1-b. settle 전에는 새 managed turn도 계속 BUSY로 막힌다", async (t) => {
+  const runtime = new HarnessRuntime({ processAdapter: sessionlessProcessAdapter() });
+  const adapter = new PendingLifecycleAdapter();
+  runtime.register("agy", adapter);
+  const { switching } = makeSwitching(t, {
+    chatFeature: {
+      notifyProviderAccountChanged: (provider) =>
+        runtime.installProviderAccountBoundary({ providerId: provider }),
+      showSystemNotice: () => {},
+    },
+  });
+  const agy = switching.antigravityAccountSwitcher;
+  const saved = agy.store.save({
+    secret: { token: { refresh_token: "s" } }, email: "b@b.c", active: false,
+  });
+  agy.read = async () => { throw new Error("none"); };
+  agy.write = async () => {};
+  agy.restart = async () => {};
+
+  adapter.pending = true;
+  const oldTurn = runtime.runTurn({ context: managedCtx(), invocation: MANAGED_INV });
+  const switchPromise = switching.switchProviderAccount("agy", saved.key);
+  await tick();
+
+  adapter.pending = false;
+  const blocked = await runtime.runTurn({ context: managedCtx(), invocation: MANAGED_INV }).promise;
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.stopReason, "HARNESS_SESSION_LIFECYCLE_BUSY");
+
+  for (const resolve of adapter._resolvers.splice(0)) resolve({ ok: false, cancelled: true });
+  await oldTurn.promise;
+  assert.equal(await switchPromise, true);
+});
+
+// ---- BLOCKER 2: hard boundary 실패는 fail-closed(credential 무변경 + 실패 보고) ----
+
+function failingBoundaryFeature(message = "boundary 설치 실패") {
+  return {
+    notifyProviderAccountChanged: async () => { throw new Error(message); },
+    showSystemNotice: () => {},
+  };
+}
+
+test("BLOCKER2. boundary 설치 실패는 credential을 건드리지 않고 실패로 보고한다", async (t) => {
+  const { switching } = makeSwitching(t, { chatFeature: failingBoundaryFeature() });
+  const agy = switching.antigravityAccountSwitcher;
+  const saved = agy.store.save({
+    secret: { token: { refresh_token: "profile-secret" } }, email: "a@b.c", active: false,
+  });
+  const touched = [];
+  agy.read = async () => { throw new Error("live 자격 증명 없음"); };
+  agy.write = async () => { touched.push("write"); };
+  agy.clear = async () => { touched.push("clear"); };
+  agy.restart = async () => { touched.push("restart"); };
+
+  await assert.rejects(
+    () => switching.switchProviderAccount("agy", saved.key),
+    /boundary 설치 실패/,
+    "boundary 실패는 log 후 성공으로 둔갑하면 안 된다"
+  );
+  assert.deepEqual(touched, [], "switchToProfile / write / clear가 호출되지 않는다");
+
+  await assert.rejects(() => switching.startProviderLogin("agy"), /boundary 설치 실패/);
+  assert.deepEqual(touched, [], "prepareLogin의 clear/restart도 호출되지 않는다");
+});
+
+test("BLOCKER2-b. boundary 실패 오류는 credential 무변경(accountSwitchSafe) fact를 갖는다", async (t) => {
+  const { switching } = makeSwitching(t, { chatFeature: failingBoundaryFeature() });
+  const agy = switching.antigravityAccountSwitcher;
+  const saved = agy.store.save({
+    secret: { token: { refresh_token: "s" } }, email: "a@b.c", active: false,
+  });
+  agy.read = async () => { throw new Error("none"); };
+  await assert.rejects(
+    () => switching.switchProviderAccount("agy", saved.key),
+    (error) => {
+      assert.equal(error.accountSwitchSafe, true, "boundary 실패 시점에는 credential 무변경이 증명된다");
+      return true;
+    }
+  );
+});
+
+test("BLOCKER2-c. Codex 전환도 boundary 실패 시 auth를 바꾸지 않고 false를 돌려준다", async (t) => {
+  const { switching } = makeSwitching(t, { chatFeature: failingBoundaryFeature() });
+  let switched = 0;
+  switching.codexAccountSwitcher.switchToProfile = () => { switched += 1; };
+
+  const result = await switching.switchCodexAccount("some-profile");
+  assert.equal(result, false, "boundary 실패는 전환 성공으로 보고되지 않는다");
+  assert.equal(switched, 0, "auth.json 교체가 시도되지 않는다");
+});
+
+test("BLOCKER2-d. managed harness가 없는 구성은 명시적 immediately-safe 성공이다", async (t) => {
+  // getChatFeature가 null(= managed runtime 없음)이면 무효화할 native session도,
+  // 기다릴 inflight turn도 없다. 예외를 삼킨 결과가 아니라 명시적 안전 상태다.
+  const { switching } = makeSwitching(t, { chatFeature: null });
+  const agy = switching.antigravityAccountSwitcher;
+  const saved = agy.store.save({
+    secret: { token: { refresh_token: "s" } }, email: "a@b.c", active: false,
+  });
+  const touched = [];
+  agy.read = async () => { throw new Error("none"); };
+  agy.write = async () => { touched.push("write"); };
+  agy.restart = async () => { touched.push("restart"); };
+
+  assert.equal(await switching.switchProviderAccount("agy", saved.key), true);
+  assert.deepEqual(touched, ["write", "restart"]);
+});
+
+test("BLOCKER2-e. chat feature는 있는데 boundary seam이 없으면 wiring 결함으로 fail-closed한다", async (t) => {
+  // "managed runtime 없음"으로 오분류해 통과시키면 fail-open이다.
+  const { switching } = makeSwitching(t, { chatFeature: { showSystemNotice: () => {} } });
+  const agy = switching.antigravityAccountSwitcher;
+  const saved = agy.store.save({
+    secret: { token: { refresh_token: "s" } }, email: "a@b.c", active: false,
+  });
+  const touched = [];
+  agy.read = async () => { throw new Error("none"); };
+  agy.write = async () => { touched.push("write"); };
+  agy.restart = async () => { touched.push("restart"); };
+
+  await assert.rejects(
+    () => switching.switchProviderAccount("agy", saved.key),
+    /계정 세션 경계 seam이 없습니다/
+  );
+  assert.deepEqual(touched, [], "credential을 건드리지 않는다");
+});
+
+test("BLOCKER2-f. settle 상한 초과는 credential을 바꾸지 않고 실패로 보고한다", async (t) => {
+  // old 실행이 끝났음을 증명하지 못하면 전환을 강행하지 않는다(fail-closed).
+  const runtime = new HarnessRuntime({
+    processAdapter: sessionlessProcessAdapter(),
+    accountSettleTimeoutMs: 20,
+  });
+  const adapter = new PendingLifecycleAdapter();
+  runtime.register("agy", adapter);
+
+  const { switching } = makeSwitching(t, {
+    chatFeature: {
+      notifyProviderAccountChanged: (provider) =>
+        runtime.installProviderAccountBoundary({ providerId: provider }),
+      showSystemNotice: () => {},
+    },
+  });
+  const agy = switching.antigravityAccountSwitcher;
+  const saved = agy.store.save({
+    secret: { token: { refresh_token: "s" } }, email: "a@b.c", active: false,
+  });
+  const touched = [];
+  agy.read = async () => { throw new Error("none"); };
+  agy.write = async () => { touched.push("write"); };
+  agy.clear = async () => { touched.push("clear"); };
+  agy.restart = async () => { touched.push("restart"); };
+
+  // cancel을 무시하고 계속 살아 있는 old turn.
+  adapter.pending = true;
+  const oldTurn = runtime.runTurn({ context: managedCtx(), invocation: MANAGED_INV });
+
+  await assert.rejects(
+    () => switching.switchProviderAccount("agy", saved.key),
+    /계정 세션 경계를 확정하지 못했습니다/
+  );
+  assert.deepEqual(touched, [], "증명 실패 시 credential을 건드리지 않는다");
+
+  for (const resolve of adapter._resolvers.splice(0)) resolve({ ok: false, cancelled: true });
+  await oldTurn.promise;
 });

@@ -199,6 +199,11 @@ function runtimeSpy() {
       workspaceChanged: (p) => events.push({ kind: "workspaceChanged", ...p }),
       workspaceRestored: (p) => events.push({ kind: "workspaceRestored", ...p }),
       providerAccountChanged: (p) => events.push({ kind: "providerAccountChanged", ...p }),
+      // 계정 경계는 awaitable seam이다: 상위가 credential을 바꾸기 전에 await한다.
+      installProviderAccountBoundary: async (p) => {
+        events.push({ kind: "installProviderAccountBoundary", ...p });
+        return { providerId: p.providerId, invalidated: 0 };
+      },
       professionalRunEnded: (p) => events.push({ kind: "professionalRunEnded", ...p }),
       close: () => events.push({ kind: "close" }),
     },
@@ -290,21 +295,79 @@ test("리뷰 F1-P: 취소된 legacy choose는 mutation이 없으므로 lifecycle
   assert.deepEqual(spy.events, [], "취소된 choose는 어떤 lifecycle 통지도 만들지 않는다");
 });
 
-test("chatFeature.notifyProviderAccountChanged는 provider account lifecycle로 위임한다", async (t) => {
+test("chatFeature.notifyProviderAccountChanged는 awaitable hard boundary seam이다", async (t) => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-lifecycle-acct-")));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const { feature, spy } = makeFeature(root, { canceled: true, filePaths: [] });
   assert.equal(typeof feature.notifyProviderAccountChanged, "function");
-  feature.notifyProviderAccountChanged("codex");
+
+  const result = await feature.notifyProviderAccountChanged("codex");
   assert.deepEqual(spy.events, [
-    { kind: "providerAccountChanged", providerId: "codex" },
+    { kind: "installProviderAccountBoundary", providerId: "codex" },
   ]);
-  feature.notifyProviderAccountChanged("codex");
-  assert.deepEqual(spy.events.at(-1), {
-    kind: "providerAccountChanged", providerId: "codex",
+  assert.equal(result.providerId, "codex", "boundary 결과를 그대로 돌려준다");
+
+  await feature.notifyProviderAccountChanged("codex");
+  assert.equal(spy.events.length, 2);
+
+  // providerId 없는 호출은 조용히 무시되지 않는다(fail-closed): 호출자 버그다.
+  await assert.rejects(
+    () => feature.notifyProviderAccountChanged(null),
+    /providerId가 필요/
+  );
+  assert.equal(spy.events.length, 2, "실패한 boundary는 이벤트를 만들지 않는다");
+});
+
+test("chatFeature.notifyProviderAccountChanged는 runtime 실패를 삼키지 않는다(fail-closed)", async (t) => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-lifecycle-failclosed-")));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const handlers = new Map();
+  const feature = createChatFeature({
+    electron: {
+      ipcMain: { handle: (channel, handler) => handlers.set(channel, handler), on() {} },
+      dialog: { async showOpenDialog() { return { canceled: true, filePaths: [] }; } },
+      BrowserWindow: class BrowserWindow {},
+      shell: {},
+    },
+    storeRoot: root,
+    capabilities: fakeCapabilities(),
+    harnessRuntime: {
+      runTurn: () => ({ promise: Promise.resolve({ ok: true }), cancel: () => {} }),
+      installProviderAccountBoundary: async () => {
+        throw new Error("boundary 설치 실패");
+      },
+      close() {},
+    },
   });
-  feature.notifyProviderAccountChanged(null);
-  assert.equal(spy.events.length, 2, "provider 없는 호출은 무시");
+  await assert.rejects(
+    () => feature.notifyProviderAccountChanged("claude"),
+    /boundary 설치 실패/,
+    "runtime 실패는 log 후 성공으로 둔갑하면 안 된다"
+  );
+});
+
+test("chatFeature.notifyProviderAccountChanged는 boundary seam이 없는 runtime을 fail-closed로 거부한다", async (t) => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-lifecycle-noseam-")));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const handlers = new Map();
+  const feature = createChatFeature({
+    electron: {
+      ipcMain: { handle: (channel, handler) => handlers.set(channel, handler), on() {} },
+      dialog: { async showOpenDialog() { return { canceled: true, filePaths: [] }; } },
+      BrowserWindow: class BrowserWindow {},
+      shell: {},
+    },
+    storeRoot: root,
+    capabilities: fakeCapabilities(),
+    harnessRuntime: {
+      runTurn: () => ({ promise: Promise.resolve({ ok: true }), cancel: () => {} }),
+      close() {},
+    },
+  });
+  await assert.rejects(
+    () => feature.notifyProviderAccountChanged("claude"),
+    /managed harness runtime seam이 없습니다/
+  );
 });
 
 test("chat-ipc source: 전문 turn provenance는 canonical frozenTask + gitHead fact이며 transport runId가 아니다", () => {
@@ -316,15 +379,21 @@ test("chat-ipc source: 전문 turn provenance는 canonical frozenTask + gitHead 
   assert.doesNotMatch(source, /frozenRunId: specialistStage \? \(runId \|\| null\) : null/);
 });
 
-test("account-switching source: hard boundary는 credential mutation 이전에 설치된다", () => {
+test("account-switching source: 모든 credential mutation 경로가 awaitable boundary 뒤에 있다", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "src", "agora", "account-switching.js"), "utf8");
-  assert.match(source, /function notifyAccountLifecycle\(provider\)/);
-  assert.match(source, /notifyProviderAccountChanged/);
-  assert.match(source, /credential mutation 이전에/);
-  const agyCalls = source.match(/notifyAccountLifecycle\("agy"\)/g) || [];
-  assert.ok(agyCalls.length >= 1, "agy prepareLogin 경로에 pre-mutation boundary");
-  const claudeCalls = source.match(/notifyAccountLifecycle\("claude"\)/g) || [];
-  assert.ok(claudeCalls.length >= 1, "claude login 경로에 pre-mutation boundary");
+  assert.match(source, /async function installAccountBoundary\(provider\)/);
+  assert.match(source, /async function installAccountBoundaryOrFail\(provider\)/);
+  assert.match(source, /await chatFeature\.notifyProviderAccountChanged\(provider\)/);
+
+  // boundary는 반드시 await된다 — fire-and-forget 호출이 남아 있으면 안 된다.
+  // (선언부 `async function installAccountBoundaryOrFail(provider)`는 제외한다.)
+  const calls = source.match(/(?<!function )installAccountBoundaryOrFail\(/g) || [];
+  assert.ok(calls.length >= 6, `모든 mutation 경로가 boundary를 거쳐야 한다(현재 ${calls.length})`);
+  const awaited = source.match(/await installAccountBoundaryOrFail\(/g) || [];
+  assert.equal(awaited.length, calls.length, "boundary 호출은 예외 없이 await되어야 한다");
+
+  // 삼키는 seam으로 되돌아가지 않았는지.
+  assert.doesNotMatch(source, /function notifyAccountLifecycle/, "fail-open seam은 제거되었다");
 });
 
 // ---- turn-checkpoint restore mutated fact ----

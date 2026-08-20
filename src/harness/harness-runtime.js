@@ -38,6 +38,16 @@ const {
 //   - lifecycle boundary 자체는 실행 Evidence/RunMetrics를 만들지 않는다. busy/
 //     invalid static failure는 기존 no-execution semantics를 따른다.
 
+// 계정 경계가 old inflight turn의 실제 settle을 기다리는 상한(ms).
+//
+// 이것은 조율용 sleep이나 polling 간격이 아니다. "old 실행이 끝났음을 증명"할 수
+// 있는 최대 시간이며, 넘기면 증명 실패로 보고 credential mutation을 거부한다
+// (fail-closed). 정상 경로는 훨씬 빨리 끝난다: Codex는 resetRuntime의 동기
+// teardown이 즉시 turn을 종료시키고, Claude/AGY는 cancel의 SIGTERM 뒤 child
+// 'close'로 종료된다. 이 상한은 SIGTERM을 무시하는 CLI나 이미 killed로 표시돼
+// 재-kill이 no-op이 되는 child 때문에 UI handler가 영원히 끝나지 않는 것을 막는다.
+const ACCOUNT_SETTLE_TIMEOUT_MS = 15000;
+
 function failedRun(error, stopReason) {
   return {
     promise: Promise.resolve({ ok: false, error, stopReason }),
@@ -70,15 +80,22 @@ function normalizeExecutionContext(context) {
 }
 
 class HarnessRuntime {
-  constructor({ processAdapter, registry, now } = {}) {
+  constructor({ processAdapter, registry, now, accountSettleTimeoutMs } = {}) {
     this._processAdapter = processAdapter || new ProcessHarnessAdapter();
     this._registry = registry || new HarnessSessionRegistry({ now });
+    this._accountSettleTimeoutMs = Number.isFinite(accountSettleTimeoutMs)
+      ? accountSettleTimeoutMs
+      : ACCOUNT_SETTLE_TIMEOUT_MS;
     this._persistentAdapters = new Map(); // providerId -> adapter
     // professionalRunId -> { task, git } — run-wide freshness observation 상태.
     this._runFreshness = new Map();
     // entry -> cancel — lifecycle event에서 active turn을 best-effort로 취소하기
     // 위한 최소 추적. scheduler/lease manager가 아니다.
     this._activeTurnCancels = new Map();
+    // entry -> Promise<void> — inflight turn이 물리적으로 끝나면 resolve되는 신호.
+    // 계정 boundary가 credential mutation 전에 old turn의 실제 settle을 기다린다.
+    // 결과/오류와 무관하게 "끝났다"만 알리므로 절대 reject하지 않는다.
+    this._activeTurnSettles = new Map();
     // providerId -> Set<entry> — 계정 전환으로 invalidated된 inflight entry가
     // settle될 때까지 해당 provider의 새 managed turn을 차단한다.
     this._accountSettleBarriers = new Map();
@@ -154,6 +171,65 @@ class HarnessRuntime {
       adapter.resetRuntime(INVALIDATE_REASONS.PROVIDER_ACCOUNT_CHANGED);
     }
     return affected;
+  }
+
+  // 계정 전환 hard boundary의 awaitable seam. 상위 account-switching이 live
+  // credential을 바꾸기 전에 반드시 이 promise를 await해야 한다.
+  //
+  //   boundary 설치(invalidate + native forget + best-effort cancel + settle
+  //   barrier + resident runtime reset)
+  //     → pre-boundary inflight turn이 물리적으로 settle될 때까지 대기
+  //     → resolve
+  //
+  // 이 promise가 resolve된 뒤에만 credential을 바꿔야 "old 계정 CLI가 아직 살아
+  // 있는데 live credential은 이미 새 계정"인 창이 생기지 않는다. cancel()은 실제
+  // child close보다 먼저 반환할 수 있으므로 cancel 호출만으로는 부족하다.
+  //
+  // old 실행이 끝났음을 상한 안에 증명하지 못하면 reject한다. 호출자는 그때
+  // credential을 바꾸지 않는다(fail-closed) — 증명 못 한 상태로 전환을 강행하는
+  // 것보다 전환을 거부하고 사용자가 재시도하게 하는 편이 안전하다.
+  async installProviderAccountBoundary({ providerId } = {}) {
+    if (providerId == null) {
+      throw new Error("HarnessRuntime.installProviderAccountBoundary: providerId가 필요합니다.");
+    }
+    const pid = String(providerId);
+    const affected = this.providerAccountChanged({ providerId: pid });
+    await this._awaitProviderSettled(pid);
+    return { providerId: pid, invalidated: affected.length };
+  }
+
+  // boundary 설치 시점에 barrier에 들어간 inflight entry가 실제로 끝날 때까지
+  // 기다린다. 그 뒤에 시작되는 turn은 barrier가 이미 BUSY로 막고 있으므로
+  // 대기 대상이 아니다(대기 집합은 호출 시점에 확정된다).
+  _awaitProviderSettled(providerId) {
+    const barrier = this._accountSettleBarriers.get(providerId);
+    if (!barrier || barrier.size === 0) return Promise.resolve();
+    const waits = [];
+    for (const entry of barrier) {
+      if (!entry.inflight) continue;
+      const signal = this._activeTurnSettles.get(entry);
+      // signal 없는 inflight entry는 runTurn을 거치지 않고 registry를 직접 조작한
+      // 경우뿐이다(테스트 경로). barrier 자체는 그대로 새 turn을 막는다.
+      if (signal) waits.push(signal);
+    }
+    if (waits.length === 0) return Promise.resolve();
+
+    const settled = Promise.all(waits).then(() => undefined);
+    const limit = this._accountSettleTimeoutMs;
+    if (!Number.isFinite(limit) || limit <= 0) return settled;
+    // polling이 아니라 단발 상한이다. settle되는 즉시 타이머를 정리하므로, 타이머는
+    // 실제로 기다리는 동안에만 살아 있다(=전환이 진행 중인 창에서만 event loop 유지).
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(
+          `이전 계정의 실행이 ${limit}ms 안에 종료되지 않아 계정 세션 경계를 확정하지 못했습니다.`
+        ));
+      }, limit);
+      settled.then(
+        () => { clearTimeout(timer); resolve(undefined); },
+        (error) => { clearTimeout(timer); reject(error); }
+      );
+    });
   }
 
   professionalRunEnded({ professionalRunId, invalid = false } = {}) {
@@ -413,6 +489,7 @@ class HarnessRuntime {
     this._activeTurnCancels.set(entry, cancel);
     const settle = () => {
       this._activeTurnCancels.delete(entry);
+      this._activeTurnSettles.delete(entry);
       this._registry.endTurn(entry);
     };
     const promise = Promise.resolve(run.promise).then(
@@ -425,6 +502,10 @@ class HarnessRuntime {
         throw error;
       }
     );
+    // 물리적 종료 신호. settle()이 promise handler 안에서 먼저 실행되므로 이
+    // 신호가 resolve되는 시점에는 entry.inflight가 이미 false다. 실패한 turn도
+    // "끝났다"는 사실은 같으므로 rejection을 삼킨다(unhandled rejection 방지).
+    this._activeTurnSettles.set(entry, promise.then(() => undefined, () => undefined));
     return { promise, cancel };
   }
 }
