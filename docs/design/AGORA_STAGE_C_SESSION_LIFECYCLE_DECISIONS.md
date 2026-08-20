@@ -3,7 +3,7 @@
 > 상태: **FINAL REVIEW PENDING**
 > 최초 기록: 2026-08-19
 > 기준 브랜치: `claude/agora-stage-c-session-lifecycle-2h7hlf`
-> 현재 검수 baseline: `42f27ef` (이전 baseline `d06495ae4777f4e8c2a78ab7e63ad282bd5991f8`)
+> 현재 검수 baseline: `27d9de5` (이전 baseline `42f27ef` · `d06495ae4777f4e8c2a78ab7e63ad282bd5991f8`)
 > 상위 개발일지: [AGORA_MANAGED_HARNESS_EVOLUTION_LOG.md](AGORA_MANAGED_HARNESS_EVOLUTION_LOG.md)
 
 이 문서는 Stage C의 Session Invalidation / Lifecycle 작업에서 확정된 **아키텍처 결정, 버린 대안, 현재 안전 계약, 남은 검수 blocker**를 기록한다.
@@ -208,6 +208,10 @@ old provider turn inflight
 
 `d06495a`에서 non-ACTIVE inflight도 barrier에 포함하도록 보정했다.
 
+settle barrier는 admission 차단의 **일부**일 뿐이다. `27d9de5`부터 managed admission은
+old turn settle 시점이 아니라 **계정 전환 트랜잭션 전체**가 끝날 때 열린다(§9-3).
+settle 이후 credential mutation/restart가 진행되는 구간도 BUSY다.
+
 ---
 
 ## 7. Agora-owned context / fresh-session rehydration 원칙
@@ -306,18 +310,32 @@ fix(agora): install hard session boundary before credential mutation, barrier al
 fix(agora): wait for old provider work to settle before credential mutation, fail closed
 ```
 
-§9-3에 기록된 BLOCKER A / BLOCKER B를 닫은 커밋이다. 상세는 §9-1을 본다.
+§9-4에 기록된 BLOCKER A / BLOCKER B를 닫은 커밋이다. 상세는 §9-1을 본다.
+
+### `27d9de5`
+
+```text
+fix(agora): hold managed admission closed for the whole account-switch transaction
+```
+
+settle 이후 credential mutation/restart 구간에 남아 있던 admission 창을 닫은 커밋이다.
+provider-scoped 전환 트랜잭션(begin/complete + token)을 도입했다. 상세는 §9-3을 본다.
 
 ---
 
 ## 9-1. `42f27ef`에서 닫은 blocker
+
+> 아래 API 이름은 `42f27ef` 시점 기준이다. `27d9de5`에서
+> `installProviderAccountBoundary`가 `beginProviderAccountBoundary` +
+> `completeProviderAccountBoundary` 쌍으로 바뀌었다(§9-3). settle-before-mutation
+> 계약 자체는 그대로다.
 
 ### BLOCKER A 해소 — settle-before-mutation 강제
 
 `HarnessRuntime`에 명시적 awaitable seam을 추가했다.
 
 ```text
-installProviderAccountBoundary({ providerId })
+installProviderAccountBoundary({ providerId })   // → 27d9de5에서 begin/complete로 분리
   → providerAccountChanged() 동기 실행
       (INVALIDATE + native forget + best-effort cancel
        + settle barrier + resident runtime reset)
@@ -388,28 +406,92 @@ Codex 한도 auto-rotation은 활성 프로필 영속화가 실패하면 더 이
 
 merge blocker가 아니라, Stage C 범위 밖으로 의도적으로 남긴 것들이다.
 
-1. **mutation 구간 admission** — boundary가 settle되면 barrier가 풀리므로, credential
-   mutation이 진행되는 동안 새 managed turn이 시작될 수 있다. 그 turn은 old credential로
-   시작해 mutation 이후까지 살아 있을 수 있다. 비용은 한 turn의 계정 귀속/연속성이며
-   §10의 disposable cache 모델에서 correctness blocker가 아니다. 닫으려면 Stage D
-   writer governance가 필요하다.
-2. **one-shot 실행 범위** — general chat과 default/unresolved model 실행은 registry를
+> "mutation 구간 admission"과 "동시 전환 상호배제"는 이 목록에서 **제거**했다.
+> Stage D writer governance로 분류했던 판단이 뒤집혔고, `27d9de5`에서 provider-scoped
+> 전환 트랜잭션으로 닫았다(§9-3).
+
+1. **one-shot 실행 범위** — general chat과 default/unresolved model 실행은 registry를
    거치지 않으므로 boundary가 cancel/대기/차단하지 않는다. 현재 계약(§5)은 managed
-   native session 경계이지 프로세스 수명 잠금이 아니다.
-3. **물리적 종료의 깊이** — settle 신호는 adapter turn promise의 종료다. Claude/AGY는
+   native session 경계이지 프로세스 수명 잠금이 아니다. managed Professional turn은
+   전환 트랜잭션 전 구간에서 차단된다(§9-3).
+2. **물리적 종료의 깊이** — settle 신호는 adapter turn promise의 종료다. Claude/AGY는
    child `close`(실제 프로세스 종료), Codex는 client close 기반이다. App Server child의
    실제 exit까지 기다리지는 않는다.
-4. **동시 전환 상호배제** — 같은 provider에 대한 동시 계정 전환은 상호배제되지 않는다.
-   Stage D 항목이다.
-5. **`killTree` 재-kill no-op** — `child.killed`가 이미 true면 `killTree`가 조기 반환한다
-   (`src/chat/chat-agent-runner.js`). 이 커밋 이전부터 있던 동작이며, 위 settle 상한이
+3. **`killTree` 재-kill no-op** — `child.killed`가 이미 true면 `killTree`가 조기 반환한다
+   (`src/chat/chat-agent-runner.js`). 이 커밋 이전부터 있던 동작이며, settle 상한이
    이로 인한 무한 대기를 막는다.
-6. **context rehydration end-to-end 증명** — §7의 결론은 recon 기준이며 독립적인
+4. **context rehydration end-to-end 증명** — §7의 결론은 recon 기준이며 독립적인
    end-to-end 테스트로 증명된 것은 아니다. 이 작업에서 재설계하지 않는다.
 
 ---
 
-## 9-3. 원래 기록된 blocker 원문 (이력)
+## 9-3. `27d9de5` — 계정 전환 트랜잭션 전 구간 admission gate
+
+settle barrier는 old inflight turn이 끝나는 즉시 풀렸지만, 전환 경로에는 credential을
+건드리기 전에 남은 async 작업이 있었다. AGY가 그 구간을 구체적으로 보여준다.
+
+```text
+switchToProfile → await snapshotCurrent() → await read() → await write()
+prepareLogin    → await read()            → clear()
+```
+
+그 창에서 admission이 열려 있으면 새 managed Professional turn이 Account A로 시작해
+credential이 B로 바뀐 뒤까지 살아 있을 수 있다. 이는 hard provider account boundary
+위반이므로 Stage D로 미루지 않고 닫았다.
+
+### 확정 semantics
+
+```text
+BEGIN TRANSITION
+  → provider managed admission CLOSED
+  → old managed native session INVALIDATE
+  → pre-boundary inflight turn 전부 cancel
+  → 실제 settle까지 대기
+  → credential mutation
+  → 필요한 provider restart/reload
+  → 전환이 확정적 성공 또는 실패에 도달
+END TRANSITION
+  → provider managed admission OPEN
+```
+
+전환이 열려 있는 동안 그 provider의 새 managed Professional turn은
+`HARNESS_SESSION_LIFECYCLE_BUSY`이며 adapter 실행 · Evidence · RunMetrics를 만들지
+않는다. **old turn이 settle된 뒤 credential mutation/restart가 끝나기 전 구간도
+포함한다.**
+
+### 구현 경계
+
+```text
+beginProviderAccountBoundary({ providerId })    → { providerId, token, invalidated }
+completeProviderAccountBoundary({ providerId, token })
+isProviderAccountTransitionActive(providerId)
+```
+
+- 전환 상태는 provider-scoped다(`_accountTransitions`: providerId → token).
+- token 소유권으로 stale completion이 더 새 전환을 해제하지 못한다.
+- 같은 provider의 두 번째 전환은 credential을 바꾸지 않고 fail-closed한다
+  (`accountSwitchSafe = true`).
+- 전환을 여는 모든 경로가 `finally`에서 닫는다. mutation 실패 · restart 실패 ·
+  settle 상한 초과 어느 쪽도 영구히 막힌 provider를 남기지 않는다.
+- boundary 설치 실패는 자기 전환 상태를 정리한 뒤 다시 던진다.
+- 전환은 admission만 관장한다. mutation이 나중에 실패해도 이미 INVALIDATE된 native
+  session을 되살리지 않는다.
+- 열기 전에 seam의 양쪽(begin/complete)을 모두 확인한다. begin만 있는 runtime이나
+  `complete()`가 없는 handle은 wiring 결함으로 fail-closed한다 — 닫을 수 없는 전환을
+  애초에 열지 않는다.
+
+workspace writer lease · scheduler · capability token · global execution governance는
+만들지 않았다. 계정 전환 트랜잭션 한 번의 수명만 덮는다.
+
+### 테스트
+
+```text
+1011 pass / 0 fail / 0 skipped / exit 0
+```
+
+---
+
+## 9-4. 원래 기록된 blocker 원문 (이력)
 
 > 아래는 `d06495a` 검수 시점의 기록이며 현재 코드 상태가 아니다. 두 blocker는
 > `42f27ef`에서 닫혔다(§9-1). 무엇이 왜 문제였는지 남기기 위해 보존한다.
@@ -496,7 +578,7 @@ managed runtime이 실제로 없는 경우는 명시적인 immediately-safe 결�
 
 ## 11. 현재 merge 판정
 
-`42f27ef` 기준 자체 검증 결과다. merge 판정은 self-report가 아니라 actual remote
+`27d9de5` 기준 자체 검증 결과다. merge 판정은 self-report가 아니라 actual remote
 diff 검수를 우선한다.
 
 ```text
@@ -506,15 +588,16 @@ A→B→A old native resume 제거             PASS
 Provider-wide ACTIVE invalidation         PASS
 Non-ACTIVE inflight settle barrier        PASS
 Agora-owned context architecture          PASS (direction)
-Wait-for-actual-settle before mutation    구현 완료 (42f27ef) — 검수 대기
-Hard-boundary failure fail-closed         구현 완료 (42f27ef) — 검수 대기
+Wait-for-actual-settle before mutation    PASS (42f27ef, 원격 검수 확인)
+Hard-boundary failure fail-closed         PASS (42f27ef, 원격 검수 확인)
+전환 트랜잭션 전 구간 admission 차단        구현 완료 (27d9de5) — 검수 대기
 
 MERGE                                    FINAL REVIEW PENDING
 ```
 
 Stage D를 이 작업에 섞지 않는다.
 
-두 blocker의 구현이 actual remote diff review에서 확인되면 Session Lifecycle 자체의 FINAL PASS와 `feat/multi-harness-runtime` fast-forward merge 여부를 판단한다. §9-2의 후속 항목은 이 판정과 분리한다.
+전환 트랜잭션 gate가 actual remote diff review에서 확인되면 Session Lifecycle 자체의 FINAL PASS와 `feat/multi-harness-runtime` fast-forward merge 여부를 판단한다. §9-2의 후속 항목은 이 판정과 분리한다.
 
 ---
 
@@ -528,5 +611,11 @@ Stage D를 이 작업에 섞지 않는다.
 6. A→B→A switch-back이 old A native session을 revive하면 안 된다.
 7. Professional continuity는 Agora-owned state에서 재구성되어야 한다.
 8. Frozen Task / actual Git / Evidence가 provider transcript보다 상위 authority다.
-9. Stage C account settle barrier를 Stage D global writer-governance로 확대하지 않는다.
+9. Stage C account admission gate를 Stage D global writer-governance로 확대하지 않는다.
+   범위는 **계정 전환 트랜잭션 한 번의 수명 · provider-scoped**로 고정한다. 그 안에서
+   managed Professional admission을 닫는 것은 이 계약에 포함된다(§9-3). workspace
+   writer lease · scheduler · capability token · 일반 실행 governance는 만들지 않는다.
+   general chat / sessionless one-shot admission은 범위 밖이다.
 10. lifecycle safety failure를 silent fail-open으로 약화하지 않는다.
+11. 전환 트랜잭션을 여는 경로는 반드시 `finally`에서 닫는다. 영구히 막힌 provider는
+    이 설계에서 가장 나쁜 실패 모드다.
