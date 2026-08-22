@@ -47,6 +47,7 @@ const RUNNER_ERRORS = Object.freeze({
   CWD_OUTSIDE_ROOT: "CWD_OUTSIDE_ROOT",
   EXECUTABLE_UNAVAILABLE: "EXECUTABLE_UNAVAILABLE",
   SCRIPT_DIGEST_MISMATCH: "SCRIPT_DIGEST_MISMATCH",
+  SHELL_EXECUTABLE: "SHELL_EXECUTABLE",
   SPAWN_FAILED: "SPAWN_FAILED",
   TIMEOUT: "TIMEOUT",
 });
@@ -73,6 +74,17 @@ const DEFAULT_ENV_ALLOWLIST = Object.freeze([
 // 검증 실행이 절대 가질 수 없는 권한. worker가 무엇을 갖고 있든 상관없다.
 const VERIFICATION_MAX_PERMISSION = "workspace-read";
 const PERMISSION_RANK = Object.freeze({ chat: 0, "workspace-read": 1, "workspace-write": 2 });
+
+const SHELL_BASENAMES = new Set([
+  "cmd", "powershell", "pwsh",
+  "sh", "bash", "zsh", "fish", "csh", "tcsh", "ksh", "dash", "ash",
+]);
+
+function isShellExecutable(name) {
+  const basename = path.basename(name).toLowerCase();
+  const withoutExt = basename.replace(/\.(exe|cmd|bat)$/i, "");
+  return SHELL_BASENAMES.has(basename) || SHELL_BASENAMES.has(withoutExt);
+}
 
 function cleanText(value, limit = 4096) {
   const text = String(value == null ? "" : value).trim();
@@ -175,6 +187,9 @@ function admitVerificationStep(spec = {}, context = {}) {
   if (/[\r\n]/.test(executable) || /[&|;<>]/.test(executable)) {
     return failure(RUNNER_ERRORS.INVALID_SPEC, "실행 선언에 셸 제어 문자가 있습니다.");
   }
+  if (isShellExecutable(executable)) {
+    return failure(RUNNER_ERRORS.SHELL_EXECUTABLE, "셸 자체를 검증 실행 파일로 쓸 수 없습니다.");
+  }
 
   const argv = Array.isArray(spec.argv) ? spec.argv : [];
   if (argv.length > MAX_ARGV_ITEMS) {
@@ -211,6 +226,34 @@ function admitVerificationStep(spec = {}, context = {}) {
     }
   }
 
+  const declaredScriptReal = scriptPath ? realOrResolved(scriptPath) : null;
+  const frozenFiles = (spec.frozenFiles && typeof spec.frozenFiles === "object" && !Array.isArray(spec.frozenFiles))
+    ? spec.frozenFiles : {};
+  for (const arg of argv) {
+    let absArg;
+    try { absArg = path.resolve(root, arg); } catch { continue; }
+    if (!isInside(root, absArg)) continue;
+    const realArg = realOrResolved(absArg);
+    if (declaredScriptReal && realArg === declaredScriptReal) continue;
+    let stat;
+    try { stat = fs.statSync(absArg); } catch { continue; }
+    if (!stat.isFile()) continue;
+    const relArg = path.relative(realOrResolved(root), realArg);
+    const expectedHash = cleanText(
+      frozenFiles[relArg] || frozenFiles[arg] || frozenFiles[absArg], 128
+    );
+    if (!expectedHash) {
+      return failure(RUNNER_ERRORS.INVALID_SPEC,
+        "argv가 참조하는 workspace 파일의 동결 해시가 없습니다.");
+    }
+    const actualHash = sha256File(absArg);
+    if (actualHash !== expectedHash) {
+      return failure(RUNNER_ERRORS.SCRIPT_DIGEST_MISMATCH,
+        "argv가 참조하는 파일의 내용이 승인 시점과 다릅니다.",
+        { path: arg, expected: expectedHash, actual: actualHash });
+    }
+  }
+
   const resolved = context.capabilities
     ? ensureExecutable(context.capabilities, executable, { env: context.env, platform: context.platform })
     : null;
@@ -218,6 +261,9 @@ function admitVerificationStep(spec = {}, context = {}) {
     return failure(RUNNER_ERRORS.EXECUTABLE_UNAVAILABLE, "이 PC에서 검증 프로그램을 찾지 못했습니다.", {
       executable,
     });
+  }
+  if (resolved?.resolvedPath && isShellExecutable(resolved.resolvedPath)) {
+    return failure(RUNNER_ERRORS.SHELL_EXECUTABLE, "셸 자체를 검증 실행 파일로 쓸 수 없습니다.");
   }
 
   const timeoutMs = Number.isInteger(spec.timeoutMs) && spec.timeoutMs > 0

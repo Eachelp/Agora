@@ -65,16 +65,24 @@ REPLAN → 사용자 승인 → 새 Frozen Task / Verification Plan → 새 Run 
 
 ### INV-2 — 검증기는 Worker보다 강한 권한을 얻지 않는다
 
-Verification이 governance 우회로가 되면 안 된다. 검증 실행의 기본값:
+Verification이 governance 우회로가 되면 안 된다. 검증 권한은 `min(worker, workspace-read)`로 산정하며, **어떤 경우에도 workspace-write를 넘지 않는다.** 이 원칙의 적용 방식은 검증 backend에 따라 다르다.
 
 ```text
-workspace mutation     NO
-source mutation        NO
-external side effect   NO
-network mutation       NO
-credential mutation    NO
+artifact-predicate 검증 (Agora 자체 read-only 평가):
+  workspace mutation     NO — ENFORCEABLE
+  실제 통제 수준         Agora 프로세스 안에서 읽기만 수행, 쓰기 경로 없음
 
-기본 = READ + bounded EXECUTE
+process 검증 (외부 프로세스 실행):
+  workspace mutation     OBSERVED-NOT-ENFORCED — OBSERVABLE
+  Agora가 프로세스 내부의 fs write / network / credential 접근을
+  OS 수준에서 막을 수 없다. 대신:
+    · 실행 전후 fingerprint로 workspace 변경을 관측·기록한다 (side-effect accounting)
+    · 변경이 관측되면 disposition을 격상할 수 있다 (D-A2)
+    · env allowlist로 credential 노출을 최소화한다
+    · shell 실행 파일 자체를 차단한다
+    · argv가 참조하는 workspace 파일의 hash를 사전 검증한다
+  OS-level containment(sandbox)는 D-B(Resource & Action governance)에서
+  런타임 능력에 따라 추가한다.
 ```
 
 모델이 임의로 작성한 검증 코드를 Agora 권한으로 실행하지 않는다. 검증 script는
@@ -541,3 +549,4 @@ NO cross-process workspace governance     (v1 보증 경계 밖)
 - 2026-08-20 · v0.2 사용자 검토 반영: INV-5(Assurance Subject) 신설 · outcome/disposition 축 분리(R-7) · Verification Runner Contract 추가 · Final disposition 집계 규칙 추가 · Input binding(frozen/live) 구분 · M1을 D-A1에 포함/선행으로 재배치 · typed lineage edge(D-C) · provenance graph DB 금지.
 - 2026-08-20 · v0.3 최종 보강 및 **동결**: frozen input admission/최종 재대조 규칙 추가 · R-8(판정 append-only) 신설. 이 버전으로 사용자 승인.
 - 2026-08-20 · v0.4 개정(§8 규칙에 따른 사용자 승인): **§9 UX 원칙 — Progressive Disclosure** 추가. P-1 전 criterion 추적 가능·그룹화 허용, P-2 처분 구성 숨김 금지, P-3 계획된 Human 개입 사전 예고·REPLAN은 조건부, P-4 schema 작성 비용은 Planner 부담. 이후 UX 원칙 추가는 동결하고 D-0 구현으로 이행한다.
+- 2026-08-22 · v0.5 개정(§8 불변식 완화 절차 · 사용자 승인): **INV-2 containment/accountability 구분 명시.** 기존 INV-2의 `workspace mutation NO`는 artifact-predicate(ENFORCEABLE)에서만 문자 그대로 강제되며, process 검증은 OS-level sandbox 없이 강제 불가하므로 OBSERVABLE로 정직하게 기록한다. **막고 있던 실패 모드**: 검증 프로세스가 workspace를 임의 수정. **대체 통제**: (1) side-effect accounting — 실행 전후 fingerprint 대조로 변경을 관측·기록, (2) env allowlist — credential 누출 최소화, (3) shell 차단·argv hash binding — 임의 명령 실행 방지, (4) 변경 관측 시 disposition 격상(D-A2), (5) OS-level containment는 D-B로 이연. INV-3("증명 못 하면 VERIFIED라 부르지 않는다")과 같은 방향: 못 막는 것을 막는다고 말하지 않는다.

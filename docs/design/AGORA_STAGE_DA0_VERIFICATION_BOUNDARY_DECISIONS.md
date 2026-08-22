@@ -166,8 +166,8 @@ timeout               기본 120s, 상한 600s. 초과 시 process tree kill.
 
 ```text
 test/verification-capabilities.test.js   11 tests
-test/verification-runner.test.js         21 tests
-canonical npm test                       1087 tests / 0 fail / 2 skipped
+test/verification-runner.test.js         26 tests (+5: B1·B2 수정 후)
+canonical npm test                       1092 tests / 0 fail / 2 skipped
 ```
 
 테스트가 실제로 증명하는 것(일부는 실제 프로세스를 띄워 확인한다):
@@ -177,7 +177,9 @@ canonical npm test                       1087 tests / 0 fail / 2 skipped
 - 같은 실행 안에서 같은 실행 파일의 판정이 흔들리지 않는다.
 - 검증 권한이 어떤 worker 권한에서도 write를 넘지 않고, 계산 불가면 실행하지 않는다.
 - 셸 제어 문자·개행 인자·작업 폴더 밖 cwd를 admission에서 거부한다.
+- **셸 자체(cmd, powershell, bash 등)를 executable로 쓸 수 없다**(basename + 절대경로 양쪽 검사).
 - **승인 이후 스크립트 내용이 바뀌면 실행을 거부한다**(경로가 아니라 내용으로 고정).
+- **argv가 참조하는 workspace 파일도 frozenFiles 해시 없이 실행할 수 없다.**
 - **allowlist 밖 환경변수가 검증기로 새지 않는다**(가짜 토큰을 심어 확인).
 - 출력 상한 초과 시 잘라내고 truncated로 표시한다.
 - **멈춘 검증이 timeout으로 종료되고 성공으로 승격되지 않는다.**
@@ -186,7 +188,48 @@ canonical npm test                       1087 tests / 0 fail / 2 skipped
 
 ---
 
-## 6. 남은 확인
+## 6. 1차 독립 검수 수정 (2026-08-22)
+
+1차 actual-diff 검수에서 세 항목이 BLOCKING으로 돌아왔다.
+
+### B1 — argv의 workspace 파일이 hash 없이 실행 가능
+
+`scriptPath`를 선언하지 않으면 argv로 넘긴 스크립트가 hash 검증 없이 실행되었다.
+Plan이 동결되어도 파일 내용이 바뀔 수 있으므로 D-A1로 미룰 수 없는 문제다.
+
+**수정**: admission에서 argv의 각 원소가 workspace 내 기존 파일을 가리키면
+`spec.frozenFiles` 맵에서 SHA-256을 찾아 대조한다. 해시 미선언이나 불일치 시
+실행 거부. 기존 `scriptPath`/`scriptSha256`로 선언된 파일은 이중 검사하지 않는다.
+
+### B2 — shell 실행 파일로 argv 우회
+
+`shell: false`는 Node가 자동으로 shell을 끼우지 않을 뿐, `cmd.exe /c "..."` 같은
+구조를 막지 못했다. executable의 shell 제어 문자만 금지하고 있었으므로 shell 자체를
+executable로 쓰면 argv를 통해 임의 명령이 가능했다.
+
+**수정**: 알려진 shell(cmd, powershell, pwsh, sh, bash, zsh 등)을 basename으로
+탐지해 거부한다. 선언된 이름과 resolve된 실경로 양쪽 모두 검사해 symlink 우회도 막는다.
+
+### B3 — `workspace-read`는 라벨이지 봉쇄가 아니다
+
+`verificationPermissionFor("workspace-write")`가 `"workspace-read"`를 반환하지만,
+실제 subprocess는 Agora 프로세스 권한으로 실행되므로 filesystem write를 막지 못한다.
+Charter INV-2의 `workspace mutation NO`와 정면 충돌.
+
+**결정 (사용자 승인)**: Charter v0.5로 INV-2를 개정했다(§8 불변식 완화 절차).
+
+- artifact-predicate: ENFORCEABLE — Agora 자체 평가이므로 write 경로 자체가 없다.
+- process: OBSERVABLE — OS-level sandbox 없이는 강제 불가. 대체 통제 5가지로 위험을
+  최소화하되, 못 막는 것을 막는다고 말하지 않는다(INV-3과 같은 방향).
+- OS-level containment는 D-B로 이연.
+
+근거: sandbox를 D-A0에 넣으면 "버린 대안"을 번복하는 것이며 Agora 경량 원칙에
+반한다. 실제로 검증 도구가 파일 읽기 권한조차 없을 수 있어 read-only 사본을
+만들어도 의미 없는 경우가 있다.
+
+---
+
+## 7. 남은 확인
 
 - 사용자 Windows 로컬에서 canonical `npm test` GREEN 실측 (Charter §6 DoD 3).
 - actual-diff 독립 검수 PASS (Charter §6 DoD 2).

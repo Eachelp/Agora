@@ -39,14 +39,17 @@ function tempRoot(prefix = "agora-vrun-") {
 function nodeSpec(root, code, extra = {}) {
   const scriptPath = path.join(root, "check.js");
   fs.writeFileSync(scriptPath, code);
+  const digest = crypto.createHash("sha256").update(Buffer.from(code)).digest("hex");
   return {
     spec: {
       executable: process.execPath,
       argv: [scriptPath],
       timeoutMs: 15000,
       ...extra,
+      frozenFiles: { [scriptPath]: digest, ...(extra.frozenFiles || {}) },
     },
     scriptPath,
+    digest,
   };
 }
 
@@ -143,6 +146,35 @@ test("셸 문자열을 실행 선언에 밀어 넣을 수 없다", () => {
   }
 });
 
+test("셸 자체를 검증 실행 파일로 쓸 수 없다", () => {
+  const root = tempRoot();
+  try {
+    for (const shell of ["cmd.exe", "CMD.EXE", "powershell.exe", "pwsh", "bash", "sh", "zsh"]) {
+      const got = admitVerificationStep({ executable: shell }, context(root));
+      assert.equal(got.ok, false, shell);
+      assert.equal(got.code, RUNNER_ERRORS.SHELL_EXECUTABLE, shell);
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("셸의 절대경로로 우회할 수 없다", () => {
+  const root = tempRoot();
+  try {
+    const shellPath = process.platform === "win32"
+      ? path.join(process.env.SystemRoot || "C:\\Windows", "System32", "cmd.exe")
+      : "/bin/sh";
+    if (fs.existsSync(shellPath)) {
+      const got = admitVerificationStep({ executable: shellPath }, context(root));
+      assert.equal(got.ok, false);
+      assert.equal(got.code, RUNNER_ERRORS.SHELL_EXECUTABLE);
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("줄바꿈이 섞인 인자는 거부한다", () => {
   const root = tempRoot();
   try {
@@ -207,6 +239,57 @@ test("동결 해시 없는 스크립트는 실행하지 않는다", () => {
     );
     assert.equal(got.ok, false);
     assert.equal(got.code, RUNNER_ERRORS.INVALID_SPEC);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("argv의 workspace 파일은 frozenFiles 없이 실행할 수 없다", () => {
+  const root = tempRoot();
+  try {
+    const script = path.join(root, "check.js");
+    fs.writeFileSync(script, "process.exit(0);");
+    const got = admitVerificationStep(
+      { executable: process.execPath, argv: [script] },
+      context(root)
+    );
+    assert.equal(got.ok, false);
+    assert.equal(got.code, RUNNER_ERRORS.INVALID_SPEC);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("frozenFiles로 해시를 선언하면 argv의 workspace 파일을 실행할 수 있다", async () => {
+  const root = tempRoot();
+  try {
+    const code = "process.exit(0);";
+    const script = path.join(root, "check.js");
+    fs.writeFileSync(script, code);
+    const digest = crypto.createHash("sha256").update(Buffer.from(code)).digest("hex");
+    const result = await runVerificationProcess(
+      { executable: process.execPath, argv: [script], frozenFiles: { [script]: digest } },
+      context(root)
+    );
+    assert.equal(result.ok, true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("argv의 workspace 파일이 승인 후 바뀌면 실행을 거부한다", () => {
+  const root = tempRoot();
+  try {
+    const script = path.join(root, "check.js");
+    fs.writeFileSync(script, "process.exit(0);");
+    const digest = crypto.createHash("sha256").update(Buffer.from("process.exit(0);")).digest("hex");
+    fs.writeFileSync(script, "process.exit(1);");
+    const got = admitVerificationStep(
+      { executable: process.execPath, argv: [script], frozenFiles: { [script]: digest } },
+      context(root)
+    );
+    assert.equal(got.ok, false);
+    assert.equal(got.code, RUNNER_ERRORS.SCRIPT_DIGEST_MISMATCH);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
