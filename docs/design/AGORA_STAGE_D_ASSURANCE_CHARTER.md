@@ -1,6 +1,6 @@
 # Agora — Stage D Assurance & Governance Charter
 
-> 상태: **확정 기준 문서 — v0.4 동결 (2026-08-20 사용자 승인)**
+> 상태: **확정 기준 문서 — v0.5 (2026-08-22 사용자 승인)**
 > 작성일: 2026-08-20
 > 코드 baseline: Stage C COMPLETE @ `048dca0` (`origin/feat/multi-harness-runtime`)
 > 관련 문서: [AGORA_V1_DESIGN.md](AGORA_V1_DESIGN.md) · [AGORA_MANAGED_HARNESS_EVOLUTION_LOG.md](AGORA_MANAGED_HARNESS_EVOLUTION_LOG.md) · [AGORA_STAGE_C_FINAL_REVIEW.md](AGORA_STAGE_C_FINAL_REVIEW.md) · [AGORA_STAGE_C_SESSION_LIFECYCLE_DECISIONS.md](AGORA_STAGE_C_SESSION_LIFECYCLE_DECISIONS.md)

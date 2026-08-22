@@ -231,7 +231,7 @@ function admitVerificationStep(spec = {}, context = {}) {
     ? spec.frozenFiles : {};
   for (const arg of argv) {
     let absArg;
-    try { absArg = path.resolve(root, arg); } catch { continue; }
+    try { absArg = path.resolve(cwd, arg); } catch { continue; }
     if (!isInside(root, absArg)) continue;
     const realArg = realOrResolved(absArg);
     if (declaredScriptReal && realArg === declaredScriptReal) continue;

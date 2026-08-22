@@ -3,7 +3,7 @@
 > 상태: **구현 완료 · 독립 검수 대기**
 > 최초 기록: 2026-08-22
 > 기준 브랜치: `feat/stage-da0-verification-boundary`
-> 상위 기준 문서: [AGORA_STAGE_D_ASSURANCE_CHARTER.md](AGORA_STAGE_D_ASSURANCE_CHARTER.md) (v0.4, D-A0 절)
+> 상위 기준 문서: [AGORA_STAGE_D_ASSURANCE_CHARTER.md](AGORA_STAGE_D_ASSURANCE_CHARTER.md) (v0.5, D-A0 절)
 > 직전 baseline: D-0 COMPLETE `ba9faa6`
 
 이 문서는 D-A0에서 확정된 **아키텍처 결정, 버린 대안, 보증 경계, 의도적으로 하지 않은 것**을 결정 시점에 기록한다(Charter §6 DoD 4).

@@ -3,7 +3,7 @@
 // Stage D-A0 — Verification Safety Boundary.
 //
 // 검증 목표(AGORA_STAGE_D_ASSURANCE_CHARTER.md D-A0):
-//   INV-2  검증기는 Worker보다 강한 권한을 얻지 않는다. 어떤 경우에도 write 없음.
+//   INV-2  검증기는 Worker보다 강한 권한을 얻지 않는다 (v0.5: process는 OBSERVABLE).
 //   R-1    controlClass는 계산된다. 불확실하면 아래로 강등한다.
 //   Runner Contract
 //          shell 금지 · 작업 폴더 밖 실행 금지 · 승인된 script는 hash로 고정 ·
@@ -290,6 +290,45 @@ test("argv의 workspace 파일이 승인 후 바뀌면 실행을 거부한다", 
     );
     assert.equal(got.ok, false);
     assert.equal(got.code, RUNNER_ERRORS.SCRIPT_DIGEST_MISMATCH);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("cwd 하위의 상대경로 argv도 frozenFiles 없이 실행할 수 없다", () => {
+  const root = tempRoot();
+  try {
+    const sub = path.join(root, "sub");
+    fs.mkdirSync(sub);
+    const code = "process.exit(0);";
+    const script = path.join(sub, "check.js");
+    fs.writeFileSync(script, code);
+    const got = admitVerificationStep(
+      { executable: process.execPath, argv: ["check.js"], cwd: "sub" },
+      context(root)
+    );
+    assert.equal(got.ok, false, "cwd 상대경로가 hash 검사를 우회했다");
+    assert.equal(got.code, RUNNER_ERRORS.INVALID_SPEC);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("cwd 하위의 상대경로 argv를 frozenFiles로 바인딩하면 실행할 수 있다", async () => {
+  const root = tempRoot();
+  try {
+    const sub = path.join(root, "sub");
+    fs.mkdirSync(sub);
+    const code = "process.exit(0);";
+    const script = path.join(sub, "check.js");
+    fs.writeFileSync(script, code);
+    const digest = crypto.createHash("sha256").update(Buffer.from(code)).digest("hex");
+    const result = await runVerificationProcess(
+      { executable: process.execPath, argv: ["check.js"], cwd: "sub",
+        frozenFiles: { [script]: digest } },
+      context(root)
+    );
+    assert.equal(result.ok, true);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
