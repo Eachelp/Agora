@@ -257,6 +257,10 @@ function recordLiveRetrieval(binding, inputId, metadata = {}) {
     etag: metadata.etag != null ? String(metadata.etag).slice(0, 200) : null,
     contentHash: metadata.contentHash != null ? String(metadata.contentHash).slice(0, 128) : null,
     note: metadata.note != null ? String(metadata.note).slice(0, 500) : null,
+    // 이 기록이 어떻게 생겼는가. Agora 자신의 관측과 외부 보고를 섞지 않는다.
+    //   workspace-observation  실행 시점에 Agora가 직접 본 파일 내용
+    //   reported               외부(도구·에이전트)가 보고한 metadata
+    basis: metadata.basis === "workspace-observation" ? "workspace-observation" : "reported",
   };
   if (!Array.isArray(target.retrievals)) target.retrievals = [];
   target.retrievals.push(entry);

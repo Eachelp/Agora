@@ -244,27 +244,59 @@ class AssuranceRun {
   captureLiveInputUse({ now = null } = {}) {
     if (!this.assured) return [];
     const captured = [];
+    const unobservable = [];
+
     for (const bound of this.contract.inputBinding.bindings || []) {
       if (bound.mode !== "live") continue;
-      if (bound.kind === "path" && this.root) {
-        const fingerprint = inputBinding.fingerprintFile(path.resolve(this.root, bound.locator));
-        const recorded = this.recordLiveRetrieval(bound.inputId, {
-          retrievedAt: Number.isFinite(now) ? now : this.now(),
-          contentHash: fingerprint.sha256,
-          note: fingerprint.sha256 ? null : `관측 불가: ${fingerprint.reason || fingerprint.state}`,
-        });
-        if (recorded.ok) captured.push({ inputId: bound.inputId, observed: Boolean(fingerprint.sha256) });
+
+      // Agora가 실제로 관측할 수 있는 것은 작업 폴더 안의 파일뿐이다.
+      // 그 외(URL·API)는 Builder가 열었는지, 무엇을 받았는지, 아예 쓰지 않았는지
+      // 알지 못한다. **모르는 것에 대해 retrieval 기록을 만들지 않는다.**
+      //
+      // "관측 못 했다"를 retrieval event로 남기면 그보다 상위 사실인
+      // "실제로 사용되었다"를 만들어내는 셈이 된다. 외부에서 metadata가
+      // 보고되면 그때 recordLiveRetrieval()로 기록된다.
+      if (bound.kind !== "path" || !this.root) {
+        unobservable.push({ inputId: bound.inputId, locator: bound.locator, reason: "not-observable" });
         continue;
       }
-      // Agora가 내용을 볼 수 없는 live 입력. 사용됐다는 사실과 못 봤다는 사실을 남긴다.
+
+      const fingerprint = inputBinding.fingerprintFile(path.resolve(this.root, bound.locator));
+      if (!fingerprint.sha256) {
+        // 파일인데 읽지 못했다. 이것도 관측 실패이므로 사용 기록을 만들지 않는다.
+        unobservable.push({
+          inputId: bound.inputId,
+          locator: bound.locator,
+          reason: fingerprint.reason || fingerprint.state,
+        });
+        continue;
+      }
+
       const recorded = this.recordLiveRetrieval(bound.inputId, {
         retrievedAt: Number.isFinite(now) ? now : this.now(),
-        contentHash: null,
-        note: "Agora가 내용을 관측할 수 없는 입력입니다.",
+        contentHash: fingerprint.sha256,
+        // 어떻게 알게 된 사실인지 남긴다. Builder가 읽었다는 증거가 아니라
+        // 실행 시점에 그 내용이었다는 Agora 자신의 관측이다.
+        basis: "workspace-observation",
       });
-      if (recorded.ok) captured.push({ inputId: bound.inputId, observed: false });
+      if (recorded.ok) captured.push({ inputId: bound.inputId, observed: true });
     }
-    return captured;
+
+    return { captured, unobservable };
+  }
+
+  // 계약에 선언됐지만 실제 사용 기록이 없는 live 입력.
+  // "기록이 없다"가 그 자체로 정직한 감사 답변이다 — 없는 사실을 채우지 않는다.
+  liveInputsWithoutRetrieval() {
+    if (!this.assured) return [];
+    const retrieved = new Set(
+      (this.contract.inputBinding.bindings || [])
+        .filter((b) => Array.isArray(b.retrievals) && b.retrievals.length > 0)
+        .map((b) => b.inputId)
+    );
+    return (this.contract.inputBinding.bindings || [])
+      .filter((b) => b.mode === "live" && !retrieved.has(b.inputId))
+      .map((b) => ({ inputId: b.inputId, locator: b.locator, kind: b.kind }));
   }
 
   // --- 4. 검증 실행 ---

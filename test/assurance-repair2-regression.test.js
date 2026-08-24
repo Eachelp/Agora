@@ -294,18 +294,28 @@ test("B7: live 입력의 실제 사용이 provenance에 남는다", async () => 
 
     const usage = room.assuranceInputUsage();
     assert.ok(usage, "입력 사용 기록을 조회할 수 있어야 한다");
-    assert.equal(usage.retrievals.length, 2, "live 입력 둘 다 사용 기록이 남아야 한다");
 
     // 작업 폴더 안의 live 파일은 Agora가 실제로 관측한다.
-    const observed = usage.retrievals.find((r) => r.inputId === "IN-01");
+    assert.equal(usage.retrievals.length, 1, "관측한 입력만 사용 기록이 남는다");
+    const observed = usage.retrievals[0];
+    assert.equal(observed.inputId, "IN-01");
     assert.equal(observed.observed, true);
     assert.ok(observed.contentHash, "실제로 무엇을 썼는지가 남아야 한다");
+    assert.equal(observed.basis, "workspace-observation", "어떻게 알게 된 사실인지 구분된다");
 
-    // URL은 관측할 수 없다 — 관측한 척하지 않는다.
-    const unobserved = usage.retrievals.find((r) => r.inputId === "IN-02");
-    assert.equal(unobserved.observed, false);
-    assert.equal(unobserved.contentHash, null);
-    assert.ok(unobserved.note, "왜 관측하지 못했는지가 남아야 한다");
+    // **URL은 Builder가 실제로 썼는지조차 모른다.**
+    // "관측 못 했다"를 사용 기록으로 남기면 그보다 상위 사실인 "사용했다"를
+    // 만들어내는 셈이 된다. 기록을 만들지 않는 것이 정직하다.
+    assert.equal(
+      usage.retrievals.some((r) => r.inputId === "IN-02"),
+      false,
+      "관측하지 못한 입력에 사용 기록을 만들면 안 된다"
+    );
+    assert.deepEqual(
+      usage.withoutRetrieval.map((i) => i.inputId),
+      ["IN-02"],
+      "선언은 됐지만 사용 기록이 없다는 사실이 감사에 그대로 보여야 한다"
+    );
   } finally {
     fs.rmSync(workspace, { recursive: true, force: true });
   }
@@ -322,6 +332,11 @@ test("B7: 외부에서 보고한 retrieval metadata를 기록하고 조회할 �
     primeStep(room, taskInfo);
     await room.resumeSpecialist();
 
+    // 보고가 오기 전에는 사용 기록이 없다 — 그것이 정직한 상태다.
+    const before = room.assuranceInputUsage();
+    assert.equal(before.retrievals.length, 0);
+    assert.deepEqual(before.withoutRetrieval.map((i) => i.inputId), ["IN-01"]);
+
     const etag = 'W/"abc123"';
     const recorded = room.recordLiveInputRetrieval({
       inputId: "IN-01",
@@ -336,6 +351,8 @@ test("B7: 외부에서 보고한 retrieval metadata를 기록하고 조회할 �
     assert.ok(reported, "보고받은 metadata가 남아야 한다");
     assert.equal(reported.version, "2026-08-24");
     assert.equal(reported.observed, true);
+    assert.equal(reported.basis, "reported", "외부 보고를 Agora 자신의 관측과 섞지 않는다");
+    assert.equal(usage.withoutRetrieval.length, 0, "보고가 오면 '기록 없음'에서 빠진다");
   } finally {
     fs.rmSync(workspace, { recursive: true, force: true });
   }
@@ -406,6 +423,24 @@ test("B5: block 모드에서 승인 후 professional Run이 실제로 COMPLETED�
     // 승인이 workflow를 실제로 이어야 B5가 닫힌다.
     assert.equal(room.professionalRun.node, "COMPLETED");
     assert.equal(room.professionalRun.status, "COMPLETED");
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("B7: 읽지 못한 live 파일에도 사용 기록을 만들지 않는다", async () => {
+  const { workspace, taskInfo } = setupWorkspace(v2Task({ inputs: "- `feed.csv` (live)" }));
+  try {
+    // live로 선언됐지만 실행 시점에 존재하지 않는다 — 무엇을 썼는지 알 수 없다.
+    fs.writeFileSync(path.join(workspace, "report.md"), "# 보고서");
+    const room = makeRoom(workspace, { claude: [BUILDER_DONE], codex: [] });
+
+    primeStep(room, taskInfo);
+    await room.resumeSpecialist();
+
+    const usage = room.assuranceInputUsage();
+    assert.equal(usage.retrievals.length, 0, "관측하지 못한 파일에 기록을 만들면 안 된다");
+    assert.deepEqual(usage.withoutRetrieval.map((i) => i.inputId), ["IN-01"]);
   } finally {
     fs.rmSync(workspace, { recursive: true, force: true });
   }

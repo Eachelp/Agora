@@ -107,9 +107,11 @@ class ProvenanceLog {
     });
   }
 
-  recordInputRetrieval({ runId, inputId, locator, retrievedAt, version = null, etag = null, contentHash = null, note = null }) {
+  recordInputRetrieval({ runId, inputId, locator, retrievedAt, version = null, etag = null, contentHash = null, note = null, basis = "reported" }) {
     return this.append(NODE_TYPES.INPUT_RETRIEVAL, {
       runId, inputId, locator, retrievedAt, version, etag, contentHash, note,
+      // 이 사실을 어떻게 알게 됐는가. Agora 자신의 관측과 외부 보고는 다른 무게다.
+      basis,
       // Agora가 내용을 실제로 확인했는지. 확인 못 한 것을 확인한 것처럼 만들지 않는다.
       observed: Boolean(contentHash),
     });
@@ -366,6 +368,7 @@ function explainRun(log, runId) {
       etag: e.etag,
       contentHash: e.contentHash,
       observed: Boolean(e.observed),
+      basis: e.basis || "reported",
       note: e.note || null,
     })),
 

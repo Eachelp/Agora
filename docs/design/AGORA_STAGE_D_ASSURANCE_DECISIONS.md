@@ -408,8 +408,8 @@ test/assurance-governance-dbc.test.js     23 tests
 test/assurance-end-to-end.test.js         18 tests
 test/assurance-repair-regression.test.js  17 tests  (1차 검수 B2·B4·B6~B9)
 test/assurance-step-mode.test.js           8 tests  (1차 검수 B1·B5, production 진입점)
-test/assurance-repair2-regression.test.js 11 tests  (2차 검수 B3·B5·B7)
-canonical npm test                        1229 / 0 fail / 2 skipped
+test/assurance-repair2-regression.test.js 12 tests  (2·3차 검수 B3·B5·B7)
+canonical npm test                        1230 / 0 fail / 2 skipped
 ```
 
 end-to-end 테스트가 실제로 증명하는 것(Charter §34):
@@ -613,7 +613,44 @@ frozen 쪽은 1차에서 닫혔으나, live 계약의 의미("달라도 되지�
 
 ---
 
-## 14. 남은 확인
+## 14. 3차 독립 검수 수정 (2026-08-24)
+
+3차 검수에서 B3·B5는 닫혔고 B7에 의미 오류 1건이 남았다.
+
+### B7(3차) — 관측하지 못한 입력에 사용 기록을 만들고 있었다
+
+`captureLiveInputUse()`가 선언된 모든 live input을 순회하며 URL에도
+`inputRetrieval` event를 만들었다. `observed: false`는 정직했지만, 그보다 **상위
+사실인 "retrieval이 실제로 일어났다"를 만들어내고 있었다.**
+
+Agora가 URL에 대해 아는 것은 이것뿐이다.
+
+```text
+아는 것    이 live input이 계약에 선언되어 있었다
+모르는 것  Builder가 열었는지 · 무엇을 받았는지 · 아예 쓰지 않았는지
+```
+
+기록은 "실제로 썼는데 내용만 못 봤다"로 읽혔고, 이는 B7의 계약("실제로 무엇을
+썼는지 기록한다")과 D-C의 원칙("없는 사실을 만들어내지 않는다") 양쪽에 걸린다.
+
+**수정**: 관측할 수 없는 입력에는 event를 만들지 않는다.
+
+```text
+workspace live 파일 (읽힘)   → 관측 기록 생성 (basis: workspace-observation)
+workspace live 파일 (못 읽음) → 기록 없음
+URL/API                      → 기록 없음. 외부 metadata가 보고되면 그때 생성
+```
+
+감사에서는 `withoutRetrieval`로 "선언은 됐지만 사용 기록이 없다"를 그대로 보여
+준다 — 기록이 없다는 것 자체가 정직한 답이다. 새 event type은 만들지 않았다.
+
+함께 `basis` 필드를 추가해 **Agora 자신의 관측(`workspace-observation`)과 외부
+보고(`reported`)를 섞지 않는다.** workspace 파일 관측도 "Builder가 읽었다는 증거"가
+아니라 "실행 시점에 그 내용이었다는 Agora의 관측"이며, 필드가 그 차이를 남긴다.
+
+---
+
+## 15. 남은 확인
 
 - 사용자 Windows 로컬에서 canonical `npm test` GREEN 실측 (Charter §6 DoD 3).
-- 3차 actual-diff 독립 검수 PASS (Charter §6 DoD 2).
+- 4차 actual-diff 독립 검수 PASS (Charter §6 DoD 2).

@@ -925,7 +925,13 @@ class SpecialistMixin {
     const assurance = this.ensureAssuranceRun(this.currentRunInfo());
     if (!assurance?.assured) return null;
     const explained = assurance.explain();
-    return { declared: explained.inputs, retrievals: explained.inputRetrievals };
+    return {
+      declared: explained.inputs,
+      retrievals: explained.inputRetrievals,
+      // 선언은 됐는데 실제 사용 기록이 없는 live 입력. 감사에서는 이것이
+      // "모른다"는 정직한 답이다 — 기록을 지어내 채우지 않는다.
+      withoutRetrieval: assurance.liveInputsWithoutRetrieval(),
+    };
   }
 
   // Reviewer에게 넘길 구조화 payload(§19).
