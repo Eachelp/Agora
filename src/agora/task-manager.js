@@ -16,6 +16,11 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { validateTaskContract } = require("./task-contract-validator");
+const {
+  resolveTaskFileBoundary,
+  resolveTaskWriteBoundary,
+} = require("./task-file-boundary");
 
 // 프로젝트 작업 영역 내부의 표준 메타 데이터 폴더 이름.
 // .gitignore가 이를 무시하는지 여부와 무관하게, Run snapshot은 이 폴더에 둡니다.
@@ -23,9 +28,16 @@ const MEMORY_DIR = ".project-memory";
 const TASKS_DIR = "tasks";
 const RUNS_DIR = "runs";
 
+// UI의 Task 파일 읽기 상한과 동일한 방어선입니다. 실제 실행 계약은 아래의
+// 문자 수 상한을 추가로 적용해 거대한 파일이 Freeze/Prompt 경로로 들어오지 못하게 합니다.
+const MAX_TASK_READ_BYTES = 5 * 1024 * 1024;
+// 전문 실행 프롬프트 전체 상한(24K chars)보다 Task 하나가 더 커질 수 없게 합니다.
+// 규칙·Diff·Evidence가 함께 들어가므로 이 값 이하라도 최종 prompt budget 검사는 별도로 유지합니다.
+const MAX_TASK_CONTRACT_CHARS = 24 * 1024;
+
+// Planner 출력의 파싱용 제어 마커(STATUS: PLAN_READY 등)를 본문에서 제거합니다.
+// Task lifecycle status와 구분되는 파싱용 마커이므로 파일에 저장할 필요가 없습니다.
 function stripControlMarkers(text) {
-  // Planner 출력의 파싱용 제어 마커(STATUS: PLAN_READY 등)를 본문에서 제거합니다.
-  // Task lifecycle status와 구분되는 파싱용 마커이므로 파일에 저장할 필요가 없습니다.
   return String(text || "")
     .replace(/^\s*STATUS:\s*(PLAN_READY|NEEDS_DECISION|DONE|BLOCKED)\b.*$/gim, "")
     .replace(/\n{3,}/g, "\n\n")
@@ -61,6 +73,38 @@ function readText(file) {
     return raw;
   } catch {
     return null;
+  }
+}
+
+function taskError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function validateTaskContractContent(value) {
+  const content = String(value ?? "");
+  if (content.length > MAX_TASK_CONTRACT_CHARS) {
+    throw taskError(
+      "TASK_CONTRACT_TOO_LARGE",
+      `실행 계약(Task)이 너무 깁니다 (${content.length}/${MAX_TASK_CONTRACT_CHARS}자). 작업을 더 작은 단위로 나눠 주세요.`
+    );
+  }
+  return content;
+}
+
+// file-backed Task는 workspace 내부의 실제 regular file만 읽습니다.
+// lexical `..` 탈출뿐 아니라 symlink/junction이 workspace 밖을 가리키는 경우도
+// 공용 task-file-boundary의 realpath 검사를 재사용합니다. 존재하지 않는 파일은 기존 계약대로 null입니다.
+function readTaskContractFile(workspaceRoot, taskPath) {
+  try {
+    const boundary = resolveTaskFileBoundary(workspaceRoot, taskPath, {
+      maxBytes: MAX_TASK_READ_BYTES,
+    });
+    return validateTaskContractContent(fs.readFileSync(boundary.target, "utf8"));
+  } catch (error) {
+    if (["TASK_WORKSPACE_MISSING", "TASK_WORKSPACE_INVALID", "TASK_FILE_MISSING", "TASK_FILE_NOT_REGULAR"].includes(error?.code)) return null;
+    throw error;
   }
 }
 
@@ -106,6 +150,55 @@ function resolveWorkspace(workspaceRoot) {
   }
 }
 
+function sanitizeToolSummary(value) {
+  if (!value || typeof value !== "object") return null;
+  const repeatedTargets = Array.isArray(value.repeatedTargets)
+    ? value.repeatedTargets.slice(0, 10).map((entry) => ({
+        tool: String(entry?.tool || "tool").slice(0, 80),
+        target: entry?.target == null ? null : String(entry.target).slice(0, 512),
+        count: Number.isInteger(entry?.count) ? Math.max(0, entry.count) : 0,
+      }))
+    : [];
+  const byTool = Array.isArray(value.byTool)
+    ? value.byTool.slice(0, 20).map((entry) => ({
+        tool: String(entry?.tool || "tool").slice(0, 80),
+        count: Number.isInteger(entry?.count) ? Math.max(0, entry.count) : 0,
+      }))
+    : [];
+  return {
+    started: Number.isInteger(value.started) ? Math.max(0, value.started) : 0,
+    finished: Number.isInteger(value.finished) ? Math.max(0, value.finished) : 0,
+    failed: Number.isInteger(value.failed) ? Math.max(0, value.failed) : 0,
+    truncated: Number.isInteger(value.truncated) ? Math.max(0, value.truncated) : 0,
+    outputBytes: Number.isInteger(value.outputBytes) ? Math.max(0, value.outputBytes) : 0,
+    uniqueTargets: Number.isInteger(value.uniqueTargets) ? Math.max(0, value.uniqueTargets) : 0,
+    repeatedCalls: Number.isInteger(value.repeatedCalls) ? Math.max(0, value.repeatedCalls) : 0,
+    maxRepeatCount: Number.isInteger(value.maxRepeatCount) ? Math.max(0, value.maxRepeatCount) : 0,
+    repeatedTargets,
+    byTool,
+  };
+}
+
+function sanitizeExploration(value) {
+  if (!value || typeof value !== "object") return null;
+  const status = ["NORMAL", "WARNING", "LOOP_DETECTED"].includes(value.status)
+    ? value.status
+    : "NORMAL";
+  return {
+    status,
+    reason: value.reason == null ? null : String(value.reason).slice(0, 80),
+    reasons: Array.isArray(value.reasons)
+      ? value.reasons.slice(0, 8).map((reason) => String(reason).slice(0, 160))
+      : [],
+    maxRepeatCount: Number.isInteger(value.maxRepeatCount) ? Math.max(0, value.maxRepeatCount) : 0,
+    repeatedCalls: Number.isInteger(value.repeatedCalls) ? Math.max(0, value.repeatedCalls) : 0,
+    outputBytes: Number.isInteger(value.outputBytes) ? Math.max(0, value.outputBytes) : 0,
+    failed: Number.isInteger(value.failed) ? Math.max(0, value.failed) : 0,
+    finished: Number.isInteger(value.finished) ? Math.max(0, value.finished) : 0,
+    failureRate: Number.isFinite(value.failureRate) ? Math.max(0, Math.min(1, value.failureRate)) : 0,
+  };
+}
+
 class TaskManager {
   constructor(options = {}) {
     this.memoryRoot = options.memoryRoot || null;
@@ -124,22 +217,33 @@ class TaskManager {
   // 2. workflow.json metadata(index) 등록은 호출 측에서 수행
   // 반환: { filename, absPath, relativePath, content, hash, taskNumber }
   createTaskFromPlanner(plannerText, workspace) {
+    const root = resolveWorkspace(workspace);
     const memoryRoot = this.memoryRootFor(workspace);
-    if (!memoryRoot) throw new Error("작업 공간이 없어 Planner Task를 만들 수 없습니다.");
+    if (!root || !memoryRoot) throw new Error("작업 공간이 없어 Planner Task를 만들 수 없습니다.");
     const tasksDir = path.join(memoryRoot, TASKS_DIR);
+
+    // 번호 조회 전에 tasksDir의 기존 symlink/junction이 workspace 밖으로
+    // 빠지지 않는지 먼저 확인합니다. 실제 파일 생성 전에는 같은 경계를
+    // 한 번 더 확인해 mkdir 이후 경로도 fail-closed로 검증합니다.
+    resolveTaskWriteBoundary(root, path.join(MEMORY_DIR, TASKS_DIR, ".agora-boundary"), {
+      allowedRoot: tasksDir,
+    });
     ensureDir(tasksDir);
+
     const number = nextTaskNumber(tasksDir);
     const filename = `TASK-${String(number).padStart(3, "0")}.md`;
-    const absPath = path.join(tasksDir, filename);
-    const content = stripControlMarkers(plannerText);
+    const relativePath = path.join(MEMORY_DIR, TASKS_DIR, filename);
+    const content = validateTaskContractContent(stripControlMarkers(plannerText));
     if (!content.trim()) {
       throw new Error("Planner 결과가 비어 있어 TASK.md를 만들 수 없습니다.");
     }
-    writeTextAtomic(absPath, content);
-    const relativePath = path.join(MEMORY_DIR, TASKS_DIR, filename);
+    const boundary = resolveTaskWriteBoundary(root, relativePath, { allowedRoot: tasksDir });
+    ensureDir(boundary.parent);
+    const finalBoundary = resolveTaskWriteBoundary(root, relativePath, { allowedRoot: tasksDir });
+    writeTextAtomic(finalBoundary.target, content);
     return {
       filename,
-      absPath,
+      absPath: finalBoundary.target,
       relativePath,
       content,
       hash: hashText(content),
@@ -153,22 +257,21 @@ class TaskManager {
     const root = resolveWorkspace(workspace);
     const memoryRoot = this.memoryRootFor(workspace);
     const relativePath = String(taskInfo?.relativePath || "");
-    const absPath = root && relativePath
-      ? path.resolve(root, relativePath.replace(/^\.\/+/, ""))
-      : null;
-    const safeRoot = memoryRoot ? `${path.resolve(memoryRoot)}${path.sep}` : "";
-    const normalize = (value) => process.platform === "win32" ? value.toLowerCase() : value;
-    if (!absPath || !safeRoot || !normalize(absPath).startsWith(normalize(safeRoot))) {
-      throw new Error("갱신할 Planner Task 경로가 올바르지 않습니다.");
+    if (!root || !memoryRoot || !relativePath) {
+      throw taskError("TASK_PATH_INVALID", "갱신할 Planner Task 경로가 올바르지 않습니다.");
     }
-    const content = stripControlMarkers(plannerText);
+    const tasksDir = path.join(memoryRoot, TASKS_DIR);
+    const content = validateTaskContractContent(stripControlMarkers(plannerText));
     if (!content.trim()) {
       throw new Error("Planner 결과가 비어 있어 TASK.md를 갱신할 수 없습니다.");
     }
-    writeTextAtomic(absPath, content);
+    const boundary = resolveTaskWriteBoundary(root, relativePath, { allowedRoot: tasksDir });
+    ensureDir(boundary.parent);
+    const finalBoundary = resolveTaskWriteBoundary(root, relativePath, { allowedRoot: tasksDir });
+    writeTextAtomic(finalBoundary.target, content);
     return {
       ...taskInfo,
-      absPath,
+      absPath: finalBoundary.target,
       relativePath,
       content,
       hash: hashText(content),
@@ -180,16 +283,15 @@ class TaskManager {
   resolveTaskContract(task, workspace) {
     if (!task) return null;
     if (task.contentSource === "file") {
-      const root = resolveWorkspace(workspace);
-      if (!root) return null;
-      const abs = task.taskPath
-        ? path.resolve(root, task.taskPath.replace(/^\.\/+/, ""))
-        : null;
-      const content = abs ? readText(abs) : null;
+      const content = readTaskContractFile(workspace, task.taskPath);
       if (content == null) return null;
       return { source: "file", taskPath: task.taskPath, content };
     }
-    return { source: "inline", taskPath: null, content: String(task.description || "") };
+    return {
+      source: "inline",
+      taskPath: null,
+      content: validateTaskContractContent(String(task.description || "")),
+    };
   }
 
   // Builder 실행 직전에 Task Contract를 RUN-xxx/task.md로 동결(Freeze)합니다.
@@ -200,6 +302,20 @@ class TaskManager {
     const contract = this.resolveTaskContract(task, workspace);
     if (!contract || !contract.content.trim()) {
       throw new Error("실행 계약(Task)을 읽을 수 없습니다. Task를 확인해 주세요.");
+    }
+    // 최후 방어선: Frozen Task는 필수 6개 섹션과 non-empty content를 반드시
+    // 갖춰야 합니다. 누락 시 즉시 거부하며 repair 없이 중단합니다.
+    // (Planner 생성/수정 경계는 chat-specialist가 제한된 횟수로 복구를 시도하고,
+    // 여기는 그 검증을 통과하지 못한 계약이 실행으로 들어오지 못하게 막습니다.)
+    const contractCheck = validateTaskContract(contract.content);
+    if (!contractCheck.valid) {
+      const err = taskError(
+        "TASK_CONTRACT_INCOMPLETE",
+        `실행 계약(Task)에 필수 섹션이 빠졌습니다: ${contractCheck.missing.join(", ")}`
+      );
+      err.missing = contractCheck.missing;
+      err.contractCheck = contractCheck;
+      throw err;
     }
     const memoryRoot = this.memoryRootFor(workspace);
     if (!memoryRoot) throw new Error("작업 공간이 없어 Run을 만들 수 없습니다.");
@@ -229,10 +345,18 @@ class TaskManager {
     if (!runDir) throw new Error("Frozen Task 경로가 없습니다.");
     const taskPath = path.join(runDir, "task.md");
     const hashPath = path.join(runDir, "task-hash");
+    let stat = null;
+    try {
+      stat = fs.statSync(taskPath);
+    } catch {}
+    if (stat?.isFile() && stat.size > MAX_TASK_READ_BYTES) {
+      throw taskError("TASK_FILE_TOO_LARGE", `Frozen Task가 너무 큽니다 (${stat.size}/${MAX_TASK_READ_BYTES} bytes).`);
+    }
     const content = readText(taskPath);
     if (content == null || !content.trim()) {
       throw new Error(`Frozen Task(task.md)가 누락되었습니다: ${runDir}`);
     }
+    validateTaskContractContent(content);
     const savedHash = readText(hashPath);
     if (savedHash == null || !savedHash.trim()) {
       throw new Error(`Frozen Task 해시가 누락되었습니다: ${runDir}`);
@@ -290,6 +414,8 @@ class TaskManager {
         total,
         Number.isInteger(summary.included) ? Math.max(0, summary.included) : commands.length
       );
+      const toolSummary = sanitizeToolSummary(evidence.toolSummary);
+      const exploration = sanitizeExploration(evidence.exploration);
       writeJsonAtomic(path.join(runInfo.runDir, "evidence.json"), {
         schemaVersion: 2,
         round: evidence.round || 1,
@@ -299,6 +425,9 @@ class TaskManager {
         changes: evidence.changes || "NO_CHANGES",
         execution: evidence.execution || "UNAVAILABLE",
         sessionPersisted: evidence.sessionPersisted !== false,
+        ...(evidence.checkpointProtection ? { checkpointProtection: evidence.checkpointProtection } : {}),
+        ...(evidence.checkpointFailReason ? { checkpointFailReason: evidence.checkpointFailReason } : {}),
+        ...(evidence.userApprovedUnprotectedExecution ? { userApprovedUnprotectedExecution: true } : {}),
         source: { kind: evidence.source?.kind || "provider-event", provider: evidence.source?.provider || null },
         provider: evidence.provider || evidence.source?.provider || null,
         commands,
@@ -309,6 +438,8 @@ class TaskManager {
           failed: Number.isInteger(summary.failed) ? Math.max(0, summary.failed) : 0,
           truncated: Number.isInteger(summary.truncated) ? Math.max(0, summary.truncated) : 0,
         },
+        ...(toolSummary ? { toolSummary } : {}),
+        ...(exploration ? { exploration } : {}),
         persistedAt: this.now(),
       });
       return true;
@@ -418,6 +549,12 @@ module.exports = {
   MEMORY_DIR,
   TASKS_DIR,
   RUNS_DIR,
+  MAX_TASK_READ_BYTES,
+  MAX_TASK_CONTRACT_CHARS,
   stripControlMarkers,
   hashText,
+  validateTaskContractContent,
+  readTaskContractFile,
+  sanitizeToolSummary,
+  sanitizeExploration,
 };

@@ -276,6 +276,7 @@ function migrateSessionsToProjects(chatStore, projectStore) {
   if (!chatStore || !projectStore) return 0;
   projectStore.ensureUncategorizedProject();
   let migrated = 0;
+  const allSessions = [];
   for (const entry of chatStore.listSessions()) {
     const meta = chatStore.readMeta(entry.id);
     if (!meta || meta.readOnly) continue;
@@ -284,9 +285,45 @@ function migrateSessionsToProjects(chatStore, projectStore) {
     const projectId = meta.projectId && projectStore.hasProjectFile(meta.projectId)
       ? meta.projectId
       : UNCATEGORIZED_PROJECT_ID;
-    if (meta.projectId === projectId) continue;
-    chatStore.updateMeta(meta.id, { projectId });
-    migrated += 1;
+    if (meta.projectId !== projectId) {
+      chatStore.updateMeta(meta.id, { projectId });
+      meta.projectId = projectId;
+      migrated += 1;
+    }
+    allSessions.push(meta);
+  }
+
+  // 프로젝트 workspace vs 세션 workspace 마이그레이션 (idempotent)
+  // - project.workspace가 있으면 canonical: 모든 세션의 workspace를 project.workspace로 일괄 반영
+  // - project.workspace가 null이면:
+  //   해당 프로젝트에 속한 세션들의 고유 workspace가 1개일 때만 프로젝트로 승격
+  //   2개 이상(conflict)이면 임의 선택하지 않고 유지
+  const projects = projectStore.listProjects();
+  for (const project of projects) {
+    const projectSessions = allSessions.filter((s) => s.projectId === project.id);
+    if (project.workspace) {
+      for (const s of projectSessions) {
+        if (s.workspace !== project.workspace) {
+          chatStore.updateMeta(s.id, { workspace: project.workspace });
+          s.workspace = project.workspace;
+          migrated += 1;
+        }
+      }
+    } else {
+      const uniqueWs = [...new Set(projectSessions.map((s) => s.workspace).filter(Boolean))];
+      if (uniqueWs.length === 1) {
+        const promotedWs = uniqueWs[0];
+        projectStore.updateProject(project.id, { workspace: promotedWs });
+        for (const s of projectSessions) {
+          if (s.workspace !== promotedWs) {
+            chatStore.updateMeta(s.id, { workspace: promotedWs });
+            s.workspace = promotedWs;
+            migrated += 1;
+          }
+        }
+        migrated += 1;
+      }
+    }
   }
   return migrated;
 }

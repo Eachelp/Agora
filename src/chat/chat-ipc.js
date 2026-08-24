@@ -16,9 +16,11 @@ const {
   ROLE_DEFS,
 } = require("../agora/workflow-store");
 const { MemoryStore } = require("../agora/memory-store");
+const { WorkspaceMutationLease } = require("../agora/workspace-mutation-lease");
 const { parseRecorderOutput } = require("../agora/recorder-output");
 const turnCheckpoint = require("../agora/turn-checkpoint");
 const { TaskManager } = require("../agora/task-manager");
+const { resolveTaskFileBoundary } = require("../agora/task-file-boundary");
 const {
   createCapabilityService,
   toPublicProviders,
@@ -27,15 +29,20 @@ const { toDiagnostics } = require("../providers/provider-diagnostics");
 const { roomAgentsFromCapabilities } = require("./chat-agents");
 const { ChatRoom, DEFAULT_DISCUSSION_RUN_BUDGET } = require("./chat-room");
 const { MAX_SPECIALIST_PROMPT_CHARS } = require("./chat-prompt");
+const { isStateAllowed, allowedIpcFor, isActiveProfessionalRun } = require("./professional-ipc-policy");
 const {
   buildAgentInvocation,
   PERMISSION_MODES,
   INLINE_TEXT_LIMIT,
   minPermissionMode,
   specialistPermissionMode,
+  normalizeChoice,
 } = require("./chat-argv");
 const { createLineParser } = require("./chat-events");
-const { runAgentProcess } = require("./chat-agent-runner");
+const { ProcessHarnessAdapter } = require("../harness/process-harness-adapter");
+const { createDefaultHarnessRuntime } = require("../harness/create-default-harness-runtime");
+const { probeGitHead } = require("../harness/harness-session-lifecycle");
+const { persistRunMetrics } = require("./chat-run-metrics-store");
 const {
   importAttachment,
   readImagePreview,
@@ -50,6 +57,8 @@ const { createChatWindow } = require("./chat-window");
 // 무한히 쌓이지 않게 오래된 파일부터 지웁니다.
 const MAX_RUN_LOG_FILES = 20;
 const MAX_TASK_READ_BYTES = 5 * 1024 * 1024;
+// Stage D-0 workspace mutation provenance journal의 상한(process 수명 기준).
+const MAX_WORKSPACE_MUTATION_EVENTS = 2000;
 
 // 실행 원본 stdout을 파일로 흘려보내는 writer.
 // 메모리에 전체를 들고 있지 않으므로 출력이 아무리 길어도 진단 정보를 남길 수 있습니다.
@@ -138,6 +147,21 @@ function writeBoundedEvidence(store, sessionId, runId, provider, evidence) {
   } catch {
     return false;
   }
+}
+
+function persistInvocationMetrics({ store, sessionId, runId, agent, specialistStage = null, result }) {
+  if (!result?.runMetrics) return false;
+  const saved = persistRunMetrics({
+    store,
+    sessionId,
+    runId,
+    provider: agent?.id || null,
+    model: agent?.model || null,
+    effort: agent?.effort || null,
+    stage: specialistStage || null,
+    metrics: result.runMetrics,
+  });
+  return Boolean(saved?.ok);
 }
 
 // 오래된 실행 로그를 정리합니다. 실패해도 실행에는 영향을 주지 않습니다.
@@ -260,6 +284,42 @@ function createChatFeature(options) {
   const rooms = new Map();
   // 세션별 "아직 전송 전" 첨부: id → 내부 레코드(fileName 포함)
   const pendingAttachments = new Map();
+  // Stage C-1: 프로바이더 실행 transport를 HarnessAdapter 경계 뒤로 옮긴다.
+  // ProcessHarnessAdapter는 기존 process-per-invocation 실행(runAgentProcess)을
+  // 그대로 위임하는 compatibility 구현이며, workspace/permission/Evidence 등
+  // control-plane 권한은 makeRunAgent에 그대로 남는다. 테스트는 options로 주입한다.
+  // Stage C: HarnessRuntime이 실행 adapter 선택 · role-scoped logical session ·
+  // session lifecycle(RETIRE/INVALIDATE) 결정을 소유한다. Codex/Claude/AGY managed
+  // adapter가 등록되어 있으며, general chat과 default/unresolved model은 여전히
+  // sessionless ProcessHarnessAdapter one-shot이다. options seam은 backward-compatible:
+  // harnessRuntime 직접 주입 또는 harnessAdapter(=process adapter) 주입 모두 허용.
+  const harnessRuntime = options.harnessRuntime
+    || createDefaultHarnessRuntime({ processAdapter: options.harnessAdapter || new ProcessHarnessAdapter() });
+
+  // Stage D-0: canonical workspace one-writer. 프로젝트 하나에 workspace 하나이고
+  // 그 아래 세션(room)이 여럿이므로, 서로 다른 room이 같은 폴더를 동시에 바꾸는 것을
+  // 막는 소유권은 room 밖(control plane)에 있어야 한다. memory-only이며 보증 경계는
+  // 단일 main process다(main.js requestSingleInstanceLock).
+  //
+  // Charter는 provenance를 D-C에서 몰아 만들지 말고 각 단계가 "결정 시점"에 남기라고
+  // 요구한다. 그래서 emit seam만 내지 않고 실제 sink를 여기서 연결한다. 기록의 수명은
+  // lease 자체와 같은 process 수명이다(lease가 memory-only이므로 그보다 오래 남는
+  // 기록은 의미가 없다). 영속 저장과 graph projection은 D-C 범위다.
+  const workspaceMutationJournal = [];
+  const workspaceMutationLease = options.workspaceMutationLease || new WorkspaceMutationLease({
+    onEvent: (event) => {
+      workspaceMutationJournal.push(event);
+      if (workspaceMutationJournal.length > MAX_WORKSPACE_MUTATION_EVENTS) {
+        workspaceMutationJournal.splice(0, workspaceMutationJournal.length - MAX_WORKSPACE_MUTATION_EVENTS);
+      }
+      // 거부는 사용자가 재시도로 마주치는 유일한 사건이라 운영 로그에도 남긴다.
+      if (event?.type === "lease-denied") {
+        console.warn(
+          `[agora] workspace mutation denied (sameHolder=${Boolean(event.sameHolder)}) held by run=${event.heldBy?.runId || "-"} purpose=${event.heldBy?.purpose || "-"}`
+        );
+      }
+    },
+  });
 
   function ensureStore() {
     if (store || storeError) return store;
@@ -361,6 +421,23 @@ function createChatFeature(options) {
   function listSessionsForProject(projectId) {
     if (!ensureStore() || !projectId) return [];
     return store.listSessions().filter((entry) => projectIdForMeta(entry) === projectId);
+  }
+
+  // 프로젝트 workspace 변경을 프로젝트에 속한 모든 세션 meta에 일괄 반영합니다.
+  // 워크스페이스의 유일한 출처는 프로젝트이며 세션 개별 폴더 설계는 없습니다.
+  // workspace를 설정할 때는 세션의 기존 권한을 유지하고, 해제할 때만 chat으로
+  // 되돌립니다(해제 전에 workspace 권한으로 실행 중이던 세션 보호).
+  function syncProjectWorkspaceToSessions(projectId, workspace) {
+    if (!ensureStore() || !projectId) return;
+    const project = ensureProjectStore()?.getProject(projectId);
+    for (const entry of listSessionsForProject(projectId)) {
+      const patch = { workspace };
+      if (workspace == null) {
+        patch.permissionMode = "chat";
+      }
+      store.updateMeta(entry.id, patch);
+      refreshRoomAgents(entry.id);
+    }
   }
 
   function workflowForProject(projectId = getActiveProjectId()) {
@@ -467,6 +544,13 @@ function createChatFeature(options) {
       permissionMode: requestedPermission,
       specialistStage = null,
       autoApprove = false,
+      // Stage C — provider-neutral same-turn approval 콜백. harness가 지원하면 실행 중 action
+      // 승인을 요청한다. 여기서는 provider를 구분하지 않고 그대로 전달만 한다(codex 분기 없음).
+      requestApproval = null,
+      // Stage C — canonical Frozen Task provenance({ runId: RUN-###, taskHash }).
+      // ChatRoom이 frozenTask 실행 context에서 전달한다. transport runId(r...)와
+      // 무관한 lifecycle fact이며 pre-freeze 단계에서는 null일 수 있다(정상).
+      frozenTask = null,
     }) => {
       const record = ensureCapabilityService().getRecord(agent.id);
       const meta = store?.readMeta(sessionId);
@@ -510,6 +594,19 @@ function createChatFeature(options) {
           cancel: () => {},
         };
       }
+      // 실행 authority는 프로젝트 workspace가 canonical이다. 세션 workspace는
+      // 마이그레이션 호환 캐시일 뿐이며, 프로젝트 workspace를 덮어쓰지 않는다.
+      const canonicalWorkspace = canonicalWorkspaceForMeta(meta);
+      // workspace를 필요로 하는 권한(workspace-read/write)인데 프로젝트 workspace가
+      // 없으면 fail-closed로 차단한다. (migration conflict로 프로젝트 workspace가
+      // null인 경우가 대표적이며, 이때 세션별 workspace로 실행되면 같은 프로젝트의
+      // 다른 채팅이 서로 다른 repo에서 실행될 수 있기 때문.)
+      if ((permissionMode === "workspace-read" || permissionMode === "workspace-write") && !canonicalWorkspace) {
+        return {
+          promise: Promise.resolve({ ok: false, error: "프로젝트 workspace가 설정되어 있지 않아 실행할 수 없습니다. 프로젝트 워크스페이스 폴더를 먼저 선택해 주세요." }),
+          cancel: () => {},
+        };
+      }
       const attachmentsDir = store.attachmentsDir(sessionId);
       const enriched = (attachments || []).map((attachment) => ({
         ...attachment,
@@ -524,21 +621,24 @@ function createChatFeature(options) {
         );
       }
 
+      // Stage C-3: effective auto-approval을 한 번만 계산해 process invocation과
+      // managed context(Codex turn approval policy)에서 동일하게 사용한다.
+      const effectiveAutoApprove = permissionMode === "workspace-write" && Boolean(config.autoApprove || autoApprove);
       const invocation = buildAgentInvocation({
         provider: record,
         permissionMode,
-        workspace: meta.workspace || null,
+        workspace: canonicalWorkspace,
         model: agent.model,
         effort: agent.effort,
         attachments: enriched,
         chatCwd: store.runtimeChatDir(),
         attachmentsDir,
         outputFile,
-        autoApprove: permissionMode === "workspace-write" && Boolean(config.autoApprove || autoApprove),
+        autoApprove: effectiveAutoApprove,
       });
       if (!invocation.ok) {
         return {
-          promise: Promise.resolve({ ok: false, error: invocation.error }),
+          promise: Promise.resolve({ ok: false, error: invocation.error, ...(invocation.stopReason ? { stopReason: invocation.stopReason } : {}) }),
           cancel: () => {},
         };
       }
@@ -565,7 +665,13 @@ function createChatFeature(options) {
 
       const hardOutputLimitBytes = resolveHardOutputLimit();
 
-      const run = runAgentProcess({
+      // Stage C-3: native local-image delivery metadata(control-plane 준비). ProcessHarnessAdapter는
+      // 이 필드를 무시하고 기존 argv --image 경로를 그대로 쓴다. CodexManagedAdapter만 사용한다.
+      const nativeImages = enriched
+        .filter((a, i) => invocation.deliveries?.[i]?.method === "native-image")
+        .map((a) => a.path)
+        .filter(Boolean);
+      const harnessInvocation = {
         commandPath: record.commandPath,
         needsShell: record.needsShell,
         argv: invocation.argv,
@@ -576,6 +682,7 @@ function createChatFeature(options) {
         parseLine: createLineParser(agent.id),
         onEvent: emitEvent,
         timeoutMs: options.timeoutMs,
+        requireFinal: Boolean(specialistStage),
         // 출력이 길다는 이유로 실행을 죽이지 않습니다. hard limit은 사용자가
         // 명시적으로 켜지 않으면 undefined(=상한 없음)로 남습니다.
         ...(Number.isFinite(options.captureOutputBytes) && options.captureOutputBytes > 0
@@ -583,7 +690,48 @@ function createChatFeature(options) {
           : {}),
         ...(hardOutputLimitBytes ? { hardOutputLimitBytes } : {}),
         onRawChunk: rawLog.write,
-      });
+        images: nativeImages,
+        // provider-neutral: managed adapter만 이 콜백을 실제로 사용한다(process/Claude/AGY는 무시).
+        ...(typeof requestApproval === "function" ? { requestApproval } : {}),
+      };
+      // Stage C-2: 이미 계산된 authority 결과만 모아 ExecutionContext를 만든다.
+      // (workspace/permission/provider invocation/prompt/Evidence 순서는 그대로 두고
+      //  결과만 전달한다. authority는 위에 남고 runtime/adapter로 이동하지 않는다.)
+      // workspaceId는 session identity 전용이다: authority는 project.workspace이고,
+      // 여기서 realpath로 identity만 계산한다(실패 시 null → persistent 대상 아님).
+      let workspaceId = null;
+      if (canonicalWorkspace) {
+        try { workspaceId = fs.realpathSync(canonicalWorkspace); } catch { workspaceId = null; }
+      }
+      // Stage C lifecycle facts(Professional managed turn 전용):
+      //   - frozenRunId/taskHash: TaskManager가 만든 canonical Frozen provenance만
+      //     전달한다. chat transport runId(r...)는 provenance가 아니다.
+      //   - gitHead: 실행 직전 authoritative workspace(ProjectStore.workspace)의
+      //     현재 HEAD fact. non-Git은 unsupported(정상), 판독 불가는 error로
+      //     전달되어 HarnessRuntime이 fail-closed한다. adapter는 HEAD를 계산하지 않는다.
+      //   - providerAccount: 현재 live credential의 계정 namespace fact(아래에서
+      //     turn 직전에 resolver로 확정). known이면 SessionKey가 계정별로 분리되고,
+      //     unknown이면 HarnessRuntime이 fail-closed한다(parked 세션 보존).
+      const context = {
+        projectId: projectIdForMeta(meta),
+        workspaceId,
+        professionalRunId: room?.professionalRun?.professionalRunId || null,
+        role: specialistStage || null,
+        providerId: agent.id,
+        modelKey: normalizeChoice(agent.model) || null,
+        permissionMode,
+        // turn-level security setting. SessionKey 구성요소가 아니며 매 turn 명시 전달된다.
+        autoApprove: effectiveAutoApprove,
+        effort: normalizeChoice(agent.effort) || null,
+        provenance: {
+          frozenRunId: specialistStage ? (frozenTask?.runId || null) : null,
+          taskHash: specialistStage ? (frozenTask?.taskHash || null) : null,
+          ...(specialistStage
+            ? { gitHead: canonicalWorkspace ? probeGitHead(canonicalWorkspace) : { status: "unsupported" } }
+            : {}),
+        },
+      };
+      const run = harnessRuntime.runTurn({ context, invocation: harnessInvocation });
       return {
         promise: run.promise.then((result) => {
           const logPath = rawLog.close();
@@ -597,6 +745,14 @@ function createChatFeature(options) {
                 }
               : null;
           const enrichedResult = diagnostics ? { ...result, output: diagnostics } : result;
+          const metricsPersisted = persistInvocationMetrics({
+            store,
+            sessionId,
+            runId,
+            agent,
+            specialistStage,
+            result: enrichedResult,
+          });
           const persistedEvidence = specialistStage
             ? writeBoundedEvidence(
                 store,
@@ -607,8 +763,13 @@ function createChatFeature(options) {
               )
             : true;
           return enrichedResult.ok
-            ? { ...enrichedResult, deliveries: invocation.deliveries, evidencePersisted: persistedEvidence }
-            : { ...enrichedResult, evidencePersisted: persistedEvidence };
+            ? {
+                ...enrichedResult,
+                deliveries: invocation.deliveries,
+                evidencePersisted: persistedEvidence,
+                metricsPersisted,
+              }
+            : { ...enrichedResult, evidencePersisted: persistedEvidence, metricsPersisted };
         }),
         cancel: run.cancel,
       };
@@ -637,15 +798,20 @@ const TASK_STATUS_LABELS = Object.freeze({
   blocked: "막힘",
 });
 
+function canonicalWorkspaceForMeta(meta) {
+  const project = projectForSession(meta);
+  return project?.workspace || null;
+}
+
 function roomMeta(meta) {
   const project = projectForSession(meta);
   const memory = ensureMemoryStore();
   return {
     permissionMode: meta?.permissionMode || "chat",
-    workspace: meta?.workspace || null,
+    workspace: canonicalWorkspaceForMeta(meta),
     projectContext: project?.context || "",
-      memoryContext: memory && project ? memory.readForPrompt(project.id) : "",
-      rulesContext: memory && project ? memory.readRules(project.id) : "",
+    memoryContext: memory && project ? memory.readForPrompt(project.id) : "",
+    rulesContext: memory && project ? memory.readRules(project.id) : "",
       workflowContext: project ? buildWorkflowContext(project.id) : "",
     };
   }
@@ -756,9 +922,9 @@ function roomMeta(meta) {
     if (!session) return null;
     const sessionProject = projectForSession(session.meta);
     const workflow = ensureWorkflowStore();
-    if (workflow && sessionProject && session.meta.workspace && !workflow.readOnly) {
+    if (workflow && sessionProject && sessionProject.workspace && !workflow.readOnly) {
       try {
-        workflow.reconcileProjectTasks(sessionProject.id, session.meta.workspace);
+        workflow.reconcileProjectTasks(sessionProject.id, sessionProject.workspace);
       } catch {}
     }
 
@@ -771,6 +937,9 @@ function roomMeta(meta) {
       meta: roomMeta(session.meta),
       checkpoint: options.checkpoint || turnCheckpoint,
       checkpointRoot: store.checkpointsDir(sessionId),
+      // Stage D-0 — workspace mutation ownership. room은 자기 sessionId를 holder로
+      // 소유권을 요청할 뿐, 누가 쥐고 있는지·어느 room과 경합하는지는 모른다.
+      mutationLease: workspaceMutationLease,
       strictReviewDiff: true,
       initialRecovery: session.meta.pendingRecovery || null,
       persistRecovery: (pendingRecovery) => {
@@ -781,6 +950,18 @@ function roomMeta(meta) {
       persistProfessionalRun: (professionalRun) => {
         const updated = store.updateMeta(sessionId, { professionalRun: professionalRun || null });
         return Boolean(updated);
+      },
+      // Stage C — provider-neutral harness lifecycle seam. room은 restore/run 종료
+      // fact만 전달하고, project 범위 해석과 registry/adapter 반영은 여기(control
+      // plane)와 HarnessRuntime이 맡는다.
+      harnessLifecycle: {
+        workspaceRestored: () => {
+          const projectId = projectIdForMeta(store?.readMeta(sessionId));
+          harnessRuntime.workspaceRestored({ projectId });
+        },
+        professionalRunEnded: ({ professionalRunId, invalid = false } = {}) => {
+          harnessRuntime.professionalRunEnded({ professionalRunId, invalid });
+        },
       },
       taskManager: options.taskManager || new TaskManager(),
       // TASK-007: Planner가 TASK.md를 만들면 workflow.json에 metadata를 등록합니다.
@@ -820,9 +1001,42 @@ function roomMeta(meta) {
           const workflow = ensureWorkflowStore();
           const project = projectForSession(store.readMeta(sessionId));
           if (!workflow || !project) return false;
-          const target = workflow.listTasks(project.id).find((task) => task.taskPath === taskPath);
+          const normPath = String(taskPath || "").replace(/[\\/]+/g, path.sep);
+
+          // 1) taskPath + taskHash + syncState === "ok" 인 canonical record를 찾는다.
+          let target = workflow
+            .listTasks(project.id)
+            .find(
+              (task) =>
+                task.taskPath &&
+                task.taskPath.replace(/[\\/]+/g, path.sep) === normPath &&
+                task.taskHash === taskHash &&
+                task.syncState === "ok"
+            );
+
+          // 2) 정확한 canonical record가 없으면(새 revision 또는 missing recovery)
+          // disk state를 reconcileProjectTasks로 동기화한다.
+          // (old revision -> superseded 보존, new disk hash -> new canonical task 생성)
+          if (!target && project.workspace) {
+            workflow.reconcileProjectTasks(project.id, project.workspace);
+            target = workflow
+              .listTasks(project.id)
+              .find(
+                (task) =>
+                  task.taskPath &&
+                  task.taskPath.replace(/[\\/]+/g, path.sep) === normPath &&
+                  task.taskHash === taskHash &&
+                  task.syncState === "ok"
+              );
+          }
+
           if (!target) return false;
-          workflow.updateTask(target.id, { taskHash, status });
+
+          // 3) canonical record에 필요한 상태(status 등)만 갱신한다. (hash/syncState overwrite 금지)
+          if (status && status !== target.status) {
+            workflow.updateTask(target.id, { status });
+          }
+
           refreshWorkflowForProject(project.id);
           broadcast("chat:workflow-changed", {
             projectId: project.id,
@@ -834,13 +1048,32 @@ function roomMeta(meta) {
           return false;
         }
       },
-      onProfessionalTaskState: ({ taskPath, status, activeRunId = null, lastRunId = null }) => {
+      onProfessionalTaskState: ({ taskPath, taskHash, status, activeRunId = null, lastRunId = null }) => {
         try {
           const workflow = ensureWorkflowStore();
           const project = projectForSession(store.readMeta(sessionId));
           if (!workflow || !project || !taskPath) return false;
-          const task = workflow.listTasks(project.id).find((entry) => entry.taskPath === taskPath);
-          if (!task || task.syncState !== "ok") return false;
+          const normPath = taskPath.replace(/[\\/]+/g, path.sep);
+
+          // syncState === "ok" 인 활성 canonical task만 대상으로 한다.
+          // missing_file 또는 superseded 태스크는 부활시키지 않는다 (fail-closed).
+          const activeTasks = workflow
+            .listTasks(project.id)
+            .filter(
+              (entry) =>
+                entry.taskPath &&
+                entry.taskPath.replace(/[\\/]+/g, path.sep) === normPath &&
+                entry.syncState === "ok"
+            );
+
+          let task = null;
+          if (taskHash) {
+            task = activeTasks.find((entry) => entry.taskHash === taskHash) || null;
+          } else if (activeTasks.length === 1) {
+            task = activeTasks[0];
+          }
+
+          if (!task) return false;
           const updated = workflow.updateTask(task.id, {
             status,
             activeRunId,
@@ -876,6 +1109,7 @@ function roomMeta(meta) {
     room.on("run-event", (payload) => broadcast("chat:run-event", { sessionId, ...payload }));
     room.on("agents", (agents) => broadcast("chat:agents", { sessionId, agents }));
     room.on("approval-request", (payload) => broadcast("chat:approval-request", { sessionId, ...payload }));
+    room.on("approval-resolved", (payload) => broadcast("chat:approval-resolved", { sessionId, ...payload }));
     room.on("busy", (busy) => {
       if (shuttingDown) return;
       store.setSessionStatus(sessionId, busy ? "running" : "idle");
@@ -1027,21 +1261,20 @@ function roomMeta(meta) {
     return sessionId;
   }
 
-  // 세션 워크스페이스 안의 작업 지시서 경로를 검증해 절대 경로로 돌려줍니다.
-  // open-file/read-file이 같은 검증을 공유해 임의 경로 접근을 막습니다.
+  // 세션 워크스페이스 안의 작업 지시서 경로를 검증해 실제 regular file 경로로 돌려줍니다.
+  // open-file/read-file 모두 realpath containment와 같은 5MiB 상한을 공유합니다.
   function resolveTaskFilePath(sessionId, taskPath) {
     requireSession(sessionId);
     const meta = store.readMeta(sessionId);
-    const workspace = meta?.workspace;
-    if (!workspace) throw new Error("워크스페이스가 연결되어 있지 않습니다.");
-    const relative = String(taskPath || "");
-    if (!relative || path.isAbsolute(relative)) throw new Error("올바르지 않은 작업 지시서 경로입니다.");
-    const workspaceRoot = path.resolve(workspace);
-    const target = path.resolve(workspaceRoot, relative);
-    const prefix = workspaceRoot.endsWith(path.sep) ? workspaceRoot : workspaceRoot + path.sep;
-    if (!target.startsWith(prefix)) throw new Error("워크스페이스 밖의 파일은 접근할 수 없습니다.");
-    if (!fs.existsSync(target)) throw new Error("작업 지시서 파일을 찾을 수 없습니다.");
-    return target;
+    const workspace = canonicalWorkspaceForMeta(meta);
+    if (!workspace) {
+      const error = new Error("프로젝트 워크스페이스가 설정되어 있지 않습니다.");
+      error.code = "TASK_WORKSPACE_MISSING";
+      throw error;
+    }
+    return resolveTaskFileBoundary(workspace, taskPath, {
+      maxBytes: MAX_TASK_READ_BYTES,
+    }).target;
   }
 
   function wrap(handler) {
@@ -1053,6 +1286,28 @@ function roomMeta(meta) {
         return { ok: false, error: error?.message || String(error) };
       }
     };
+  }
+
+  // Professional Mode 상태별 허용 IPC의 runtime authority.
+  // 판단 기준은 professional-ipc-policy의 중앙 정책 테이블 하나뿐이며,
+  // 허용 목록에 없으면 항상 거부한다(fail-closed).
+  function professionalRunStateFor(room) {
+    const state = room?.specialistState?.() || null;
+    const node = state?.node || null;
+    const status = state?.status || null;
+    if (!node && !status) return null;
+    return { node, status };
+  }
+
+  function enforceProfessionalPolicy(room, action) {
+    const runState = professionalRunStateFor(room);
+    if (!runState || !isActiveProfessionalRun(runState)) return;
+    if (isStateAllowed(runState, action)) return;
+    const allowed = allowedIpcFor(runState);
+    throw new Error(
+      `전문 실행 ${runState.node}/${runState.status} 상태에서는 이 동작을 할 수 없습니다.` +
+        (allowed.length ? ` 지금 가능한 동작: ${allowed.join(", ")}` : "")
+    );
   }
 
   function registerIpcHandlers() {
@@ -1080,7 +1335,7 @@ function roomMeta(meta) {
     );
 
     // 작업 지시서(TASK.md)를 OS 기본 편집기로 엽니다.
-    // 임의 경로 열기를 막기 위해 해당 세션 workspace 안의 파일만 허용합니다.
+    // 임의 경로 열기를 막기 위해 해당 세션 workspace 안의 regular file만 허용합니다.
     ipcMain.handle(
       "chat:task:open-file",
       wrap(async ({ sessionId, taskPath }) => {
@@ -1092,16 +1347,11 @@ function roomMeta(meta) {
     );
 
     // 작업 지시서(TASK.md) 내용을 읽어 채팅 화면 안에서 보여줍니다(읽기 전용).
-    // open-file과 같은 경로 검증을 써서 세션 workspace 밖 파일은 읽지 않습니다.
+    // open-file과 같은 경로·realpath·regular file·크기 검증을 공유합니다.
     ipcMain.handle(
       "chat:task:read-file",
       wrap(async ({ sessionId, taskPath }) => {
         const target = resolveTaskFilePath(sessionId, taskPath);
-        const stat = fs.statSync(target);
-        if (!stat.isFile()) throw new Error("작업 지시서 파일을 찾을 수 없습니다.");
-        if (stat.size > MAX_TASK_READ_BYTES) {
-          throw new Error("작업 지시서 파일이 너무 커서 열 수 없습니다.");
-        }
         const content = fs.readFileSync(target, "utf8");
         return { content, taskPath: String(taskPath || "") };
       })
@@ -1167,6 +1417,11 @@ function roomMeta(meta) {
         const workspace = await chooseWorkspace("프로젝트 워크스페이스 선택");
         if (!workspace) return { canceled: true, ...sessionsPayload() };
         const project = ensureProjectStore().updateProject(projectId, { workspace });
+        // Stage C — ProjectStore.workspace가 authority다. 바뀌는 즉시 이 project의
+        // managed harness session 전체를 RETIRE해 old workspace native cache의
+        // switch-back 부활을 막는다.
+        harnessRuntime.workspaceChanged({ projectId });
+        syncProjectWorkspaceToSessions(projectId, workspace);
         const payload = sessionsPayload();
         broadcast("chat:sessions-changed", payload);
         return { ...payload, project };
@@ -1178,6 +1433,8 @@ function roomMeta(meta) {
       wrap(async ({ projectId }) => {
         requireProject(projectId);
         const project = ensureProjectStore().updateProject(projectId, { workspace: null });
+        harnessRuntime.workspaceChanged({ projectId });
+        syncProjectWorkspaceToSessions(projectId, null);
         const payload = sessionsPayload();
         broadcast("chat:sessions-changed", payload);
         return { ...payload, project };
@@ -1470,7 +1727,7 @@ function roomMeta(meta) {
 
     ipcMain.handle(
       "chat:sessions:move",
-      wrap(async ({ sessionId, projectId, applyProjectWorkspace = false }) => {
+      wrap(async ({ sessionId, projectId }) => {
         requireSession(sessionId);
         const targetProject = requireProject(projectId);
         const currentMeta = store.readMeta(sessionId);
@@ -1478,14 +1735,17 @@ function roomMeta(meta) {
         const projectChanged = projectIdForMeta(currentMeta) !== targetProject.id;
         if (projectChanged) {
           const patch = { projectId: targetProject.id };
-          // 프로젝트 폴더를 이 대화에도 적용하도록 사용자가 명시적으로 선택한 경우에만
-          // 워크스페이스/권한을 함께 바꿉니다. 기본값은 기존 대화 설정을 그대로 둡니다.
-          if (applyProjectWorkspace && targetProject.workspace) {
+          // 대화가 프로젝트로 이동하면 항상 대상 프로젝트의 workspace를 상속합니다.
+          // 채팅 단위 workspace는 설계에서 제거되었으므로 선택지가 없습니다.
+          if (targetProject.workspace) {
             patch.workspace = targetProject.workspace;
             patch.permissionMode = defaultPermissionMode(
               targetProject.defaultPermissionMode,
               targetProject.workspace
             );
+          } else {
+            patch.workspace = null;
+            patch.permissionMode = "chat";
           }
           store.updateMeta(sessionId, patch);
           // 대화가 다른 프로젝트로 옮겨지면, 이 대화에 연결된 결정/작업의 프로젝트 연결을 정리합니다.
@@ -1521,6 +1781,9 @@ function roomMeta(meta) {
         requireSession(sessionId);
         const room = rooms.get(sessionId);
         if (room) {
+          // Stage D-0: 실행이 남아 있지 않은 방의 소유권만 정리한다.
+          // stopAllSilently가 activeRuns를 0으로 만들기 전에 판단해야 한다.
+          room.releaseWorkspaceMutationsIfIdle();
           room.stopAllSilently();
           rooms.delete(sessionId);
         }
@@ -1537,10 +1800,13 @@ function roomMeta(meta) {
 
     ipcMain.handle(
       "chat:send",
-      wrap(async ({ sessionId, text, attachmentIds, independent }) => {
+      wrap(async ({ sessionId, text, attachmentIds, independent, professionalDraft }) => {
         requireSession(sessionId);
         const room = getRoom(sessionId);
-        if (room.isSpecialistLocked()) {
+        // 전문 실행 중 사용자 입력은 정책 테이블이 단일 기준이다.
+        // 드래프트(recordOnly)로 기록만 하는 경우와 실제 전송을 구분해 판정한다.
+        enforceProfessionalPolicy(room, professionalDraft ? "recordOnly-send" : "send");
+        if (!professionalDraft && room.isSpecialistLocked()) {
           throw new Error("전문 실행이 진행 중이거나 승인 대기 중입니다. 먼저 작업을 완료하거나 취소해 주세요.");
         }
         const pending = pendingFor(sessionId);
@@ -1552,7 +1818,12 @@ function roomMeta(meta) {
             pending.delete(id);
           }
         }
-        const entry = room.sendUserMessage({ text, attachments, independent });
+        const entry = room.sendUserMessage({
+          text,
+          attachments,
+          independent,
+          recordOnly: Boolean(professionalDraft),
+        });
         if (!entry) throw new Error("보낼 내용이 없습니다.");
         return {};
       })
@@ -1571,7 +1842,9 @@ function roomMeta(meta) {
       "chat:turn:interject",
       wrap(async ({ sessionId }) => {
         requireSession(sessionId);
-        return getRoom(sessionId).interject();
+        const room = getRoom(sessionId);
+        enforceProfessionalPolicy(room, "interject");
+        return room.interject();
       })
     );
 
@@ -1591,6 +1864,7 @@ function roomMeta(meta) {
       wrap(async ({ sessionId, agentIds }) => {
         requireSession(sessionId);
         const room = getRoom(sessionId);
+        enforceProfessionalPolicy(room, "discussion");
         const cleanIds = Array.isArray(agentIds)
           ? agentIds.filter((id) => typeof id === "string")
           : undefined;
@@ -1638,6 +1912,13 @@ function roomMeta(meta) {
         if (!room.messages.some((message) => message.authorType === "user")) {
           throw new Error("전문 실행을 시작하려면 먼저 이 대화에 작업 요청을 남겨 주세요.");
         }
+        const meta = store.readMeta(sessionId);
+        const workspace = canonicalWorkspaceForMeta(meta);
+        if (!workspace) {
+          throw new Error(
+            "전문 모드는 워크스페이스가 필요합니다. 프로젝트 워크스페이스 폴더를 먼저 선택해 주세요."
+          );
+        }
         const project = projectForSession(store.readMeta(sessionId));
         const selectedAction = ["plan", "implementation", "record", "full"].includes(action)
           ? action
@@ -1647,12 +1928,6 @@ function roomMeta(meta) {
         // 전문 실행은 워크스페이스가 있어야 하지만, 세션 권한(meta.permissionMode)은
         // 영구히 바꾸지 않는다. 실행 동안만 유효한 run-scoped 권한은 ChatRoom이
         // withProfessionalAuthorization로 관리하므로 일반 대화 권한은 그대로 유지된다.
-        const meta = store.readMeta(sessionId);
-        if (!meta.workspace) {
-          throw new Error(
-            "전문 모드는 워크스페이스가 필요합니다. 채팅 상단의 워크스페이스 버튼으로 폴더를 먼저 선택해 주세요."
-          );
-        }
         const started = room.startSpecialist({
           stages: planned.stages,
           ...(selectedAction ? { action: selectedAction } : {}),
@@ -1696,12 +1971,12 @@ function roomMeta(meta) {
 
     ipcMain.handle(
       "chat:specialist:resume",
-      wrap(async ({ sessionId }) => {
+      wrap(async ({ sessionId, action }) => {
         requireSession(sessionId);
         const room = getRoom(sessionId);
         const project = projectForSession(store.readMeta(sessionId));
         const recorderAgentId = room.specialistResume?.stages?.recorder?.agent?.id || null;
-        const started = room.resumeSpecialist();
+        const started = room.resumeSpecialist(action);
         const result = await Promise.race([
           started,
           new Promise((resolve) => setImmediate(() => resolve({ ok: true, pending: true }))),
@@ -1769,6 +2044,12 @@ function roomMeta(meta) {
       wrap(async ({ sessionId, targetAgentId, messageId, intent }) => {
         requireSession(sessionId);
         const room = getRoom(sessionId);
+        // 쉽게 설명(SIMPLIFY)과 일반 Handoff는 정책상 별도 액션으로 판정한다.
+        const policyAction =
+          intent === "SIMPLIFY" || intent === "SIMPLIFY_SELF"
+            ? "simplify"
+            : "handoff";
+        enforceProfessionalPolicy(room, policyAction);
         const result = room.handoffMessage(targetAgentId, messageId, intent);
         if (result.ok === false) throw new Error(result.error);
         return { meta: publicMeta(store.readMeta(sessionId)) };
@@ -1817,6 +2098,62 @@ function roomMeta(meta) {
       })
     );
 
+    // Stage D §20 — 사용자 승인이 필요한 확인 항목을 조회한다.
+    // Reviewer는 이 항목을 대신 해소할 수 없으므로(Charter §20), 사용자가
+    // 직접 풀 수 있는 경로가 반드시 있어야 한다.
+    ipcMain.handle(
+      "chat:specialist:pending-approvals",
+      wrap(async ({ sessionId }) => {
+        requireSession(sessionId);
+        const room = getRoom(sessionId);
+        return { pending: room.pendingHumanApprovals() };
+      })
+    );
+
+    // Stage D §3.1 — live 입력의 실제 사용 기록.
+    // Agora가 URL을 대신 가져오지는 않지만, 무엇을 썼는지 보고받으면 남긴다.
+    ipcMain.handle(
+      "chat:specialist:record-input-retrieval",
+      wrap(async ({ sessionId, inputId, version, etag, contentHash, note }) => {
+        requireSession(sessionId);
+        const room = getRoom(sessionId);
+        const result = room.recordLiveInputRetrieval({ inputId, version, etag, contentHash, note });
+        if (!result.ok) throw new Error(result.error || "입력 사용 기록을 저장하지 못했습니다.");
+        return result;
+      })
+    );
+
+    // 감사 조회: 이 Run이 쓰기로 한 입력과 실제로 쓴 입력.
+    ipcMain.handle(
+      "chat:specialist:input-usage",
+      wrap(async ({ sessionId }) => {
+        requireSession(sessionId);
+        const room = getRoom(sessionId);
+        return { usage: room.assuranceInputUsage() };
+      })
+    );
+
+    // 사용자가 승인하거나 거부한다. 승인 직후 결과물을 재확인해 이 승인이
+    // 어떤 결과물에 귀속되는지 확정한다(INV-5).
+    ipcMain.handle(
+      "chat:specialist:resolve-approval",
+      wrap(async ({ sessionId, criterionId, approved, note }) => {
+        requireSession(sessionId);
+        const room = getRoom(sessionId);
+        const result = room.resolveHumanApproval({
+          criterionId,
+          approved: Boolean(approved),
+          note: note || null,
+        });
+        if (!result.ok) throw new Error(result.error || "승인을 처리하지 못했습니다.");
+        return {
+          ...result,
+          pending: room.pendingHumanApprovals(),
+          specialist: room.specialistState(),
+        };
+      })
+    );
+
     // BLOCKED 재기획: 현재 변경을 유지(keep)하거나 작업 전으로 복원(restore)한 뒤
     // 막힌 사유를 기획자에게 전달해 재기획을 시작합니다.
     ipcMain.handle(
@@ -1862,11 +2199,16 @@ function roomMeta(meta) {
       "chat:workspace:choose",
       wrap(async ({ sessionId }) => {
         requireSession(sessionId);
-        // 워크스페이스 경로의 유일한 출처: OS 폴더 선택 대화상자.
-        const workspace = await chooseWorkspace("세션 워크스페이스 선택");
+        // 워크스페이스는 이제 프로젝트 단위입니다. 세션 호출은 프로젝트로 위임합니다.
+        const project = projectForSession(store.readMeta(sessionId));
+        if (!project) return { canceled: true };
+        const workspace = await chooseWorkspace("프로젝트 워크스페이스 선택");
         if (!workspace) return { canceled: true };
-        store.updateMeta(sessionId, { workspace });
-        refreshRoomAgents(sessionId);
+        ensureProjectStore().updateProject(project.id, { workspace });
+        // legacy 세션 경로도 동일한 authoritative ProjectStore.workspace를 바꾸므로
+        // project 경로와 같은 lifecycle boundary를 지나야 한다(mutation당 정확히 1회).
+        harnessRuntime.workspaceChanged({ projectId: project.id });
+        syncProjectWorkspaceToSessions(project.id, workspace);
         return { meta: publicMeta(store.readMeta(sessionId)), ...sessionsPayload() };
       })
     );
@@ -1884,9 +2226,13 @@ function roomMeta(meta) {
       "chat:workspace:clear",
       wrap(async ({ sessionId }) => {
         requireSession(sessionId);
-        // 워크스페이스가 없으면 workspace 권한 모드도 의미가 없어 chat으로 되돌립니다.
-        store.updateMeta(sessionId, { workspace: null, permissionMode: "chat" });
-        refreshRoomAgents(sessionId);
+        // 프로젝트 단위 해제. 같은 프로젝트의 모든 세션 권한을 chat으로 되돌립니다.
+        const project = projectForSession(store.readMeta(sessionId));
+        if (project) {
+          ensureProjectStore().updateProject(project.id, { workspace: null });
+          harnessRuntime.workspaceChanged({ projectId: project.id });
+          syncProjectWorkspaceToSessions(project.id, null);
+        }
         return { meta: publicMeta(store.readMeta(sessionId)), ...sessionsPayload() };
       })
     );
@@ -1897,7 +2243,8 @@ function roomMeta(meta) {
         requireSession(sessionId);
         if (!PERMISSION_MODES.includes(mode)) throw new Error("알 수 없는 권한 모드입니다.");
         const meta = store.readMeta(sessionId);
-        if (mode !== "chat" && !meta.workspace) {
+        const workspace = canonicalWorkspaceForMeta(meta);
+        if (mode !== "chat" && !workspace) {
           throw new Error("먼저 워크스페이스 폴더를 선택해 주세요.");
         }
         store.updateMeta(sessionId, { permissionMode: mode });
@@ -2062,6 +2409,8 @@ function roomMeta(meta) {
   // 앱 종료: 진행 중이던 세션은 interrupted로 남겨 다음 시작 때 안내합니다.
   function shutdown() {
     shuttingDown = true;
+    // Stage C-3: managed harness runtime의 long-lived child(App Server 등)를 정리한다.
+    try { if (typeof harnessRuntime.close === "function") harnessRuntime.close(); } catch {}
     for (const [sessionId, room] of rooms) {
       try {
         if (room.activeRuns > 0 && store && !store.readOnly) {
@@ -2075,7 +2424,57 @@ function roomMeta(meta) {
     }
   }
 
-  return { registerIpcHandlers, openWindow, getWindow, shutdown, showSystemNotice };
+  // Stage C — provider account change is a hard native session boundary.
+  //
+  // account-switching 모듈이 live credential을 바꾸기 **전에** 반드시 await한다.
+  // HarnessRuntime이 해당 provider의 모든 managed session을 INVALIDATE하고,
+  // pre-boundary inflight turn을 cancel한 뒤 그것이 물리적으로 settle될 때까지
+  // 기다린다. A→B→A도 항상 fresh session이다.
+  //
+  // 이것은 best-effort UI 통지가 아니라 safety boundary다: 실패는 삼키지 않고
+  // 그대로 전파해서 호출자가 credential mutation을 중단하게 한다(fail-closed).
+  //
+  // 반환값은 전환 트랜잭션 handle이다. 호출자는 credential mutation과 restart가
+  // 확정된 뒤 반드시 complete()를 finally에서 불러야 한다. 그때까지 이 provider의
+  // managed admission은 닫혀 있다.
+  async function notifyProviderAccountChanged(providerId) {
+    if (!providerId) {
+      throw new Error("provider account lifecycle boundary: providerId가 필요합니다.");
+    }
+    // 여는 쪽과 닫는 쪽을 **둘 다** 확인한 뒤에 연다. begin만 있고 complete가 없는
+    // runtime에 전환을 열면 그 provider의 admission이 영원히 닫힌 채 남는다.
+    if (
+      !harnessRuntime
+      || typeof harnessRuntime.beginProviderAccountBoundary !== "function"
+      || typeof harnessRuntime.completeProviderAccountBoundary !== "function"
+    ) {
+      throw new Error(
+        "provider account lifecycle boundary를 설치할 수 없습니다: managed harness runtime seam이 없습니다."
+      );
+    }
+    const pid = String(providerId);
+    const opened = await harnessRuntime.beginProviderAccountBoundary({ providerId: pid });
+    return {
+      ...opened,
+      complete: () => {
+        try {
+          return harnessRuntime.completeProviderAccountBoundary({ providerId: pid, token: opened.token });
+        } catch (error) {
+          console.warn("[agora] provider account transition 해제 실패:", error?.message || error);
+          return false;
+        }
+      },
+    };
+  }
+
+  return {
+    registerIpcHandlers,
+    openWindow,
+    getWindow,
+    shutdown,
+    showSystemNotice,
+    notifyProviderAccountChanged,
+  };
 }
 
 module.exports = {
@@ -2084,5 +2483,6 @@ module.exports = {
   publicAttachment,
   attachmentContextLines,
   createRunLogWriter,
+  persistInvocationMetrics,
   MAX_RUN_LOG_FILES,
 };

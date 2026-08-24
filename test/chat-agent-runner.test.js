@@ -75,7 +75,7 @@ test("parseLine이 delta/status/final 이벤트를 발생시키고 final을 답�
   const result = await run.promise;
   assert.equal(result.ok, true);
   assert.equal(result.text, "파서 최종");
-  assert.deepEqual(events.map((event) => event.kind), ["status", "delta", "final"]);
+  assert.deepEqual(events.map((event) => event.kind), ["status", "delta", "final", "run-metrics"]);
 });
 
 test("여러 구조화 오류가 오면 마지막 종료 원인을 반환한다", async () => {
@@ -210,7 +210,7 @@ test("짧은 정상 스트리밍은 복구 로직 없이 그대로 동작한다"
   assert.equal(result.ok, true);
   assert.equal(result.text, "정상 최종");
   // 같은 이벤트가 중복 발생하지 않아야 합니다.
-  assert.deepEqual(events, ["delta", "delta", "final"]);
+  assert.deepEqual(events, ["delta", "delta", "final", "run-metrics"]);
 });
 
 test("hard limit으로 끊겨도 화면에 보였던 중간 출력을 partialText로 보존한다", async () => {
@@ -457,4 +457,43 @@ test("정상 종료인데 final 이벤트가 누락되면 중간 답변을 최�
   const result = await run.promise;
   assert.equal(result.ok, true);
   assert.equal(result.text, "부분1부분2");
+});
+
+test("전문 프롬프트는 final 이벤트가 누락되면 partial을 성공으로 승격하지 않는다", async () => {
+  const script = "console.log(JSON.stringify({kind:'delta',text:'부분 구현'}))";
+  const run = runNode(script, {
+    prompt: "=== 전문 모드: 구현 ===\n실행 계약",
+    parseLine: (line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return null;
+      }
+    },
+  });
+  const result = await run.promise;
+  assert.equal(result.ok, false);
+  assert.equal(result.protocolFailed, true);
+  assert.equal(result.stopReason, "PROTOCOL_FINAL_MISSING");
+  assert.equal(result.partialText, "부분 구현");
+});
+
+test("전문 프롬프트라도 명시적 final 이벤트가 있으면 정상 성공한다", async () => {
+  const script = [
+    "console.log(JSON.stringify({kind:'delta',text:'부분'}))",
+    "console.log(JSON.stringify({kind:'final',text:'완료'}))",
+  ].join(";");
+  const run = runNode(script, {
+    prompt: "=== 전문 모드: 검토 ===\n계약",
+    parseLine: (line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return null;
+      }
+    },
+  });
+  const result = await run.promise;
+  assert.equal(result.ok, true);
+  assert.equal(result.text, "완료");
 });

@@ -1,3 +1,6 @@
+const { buildConversationWindow } = require("./chat-summary-window");
+const { roleContextNotice, includesPromptContext, roleSees } = require("./professional-role-context");
+
 const DEFAULT_MAX_MESSAGES = 40;
 const MAX_SPECIALIST_PROMPT_CHARS = 24 * 1024;
 const MAX_MESSAGE_CHARS = 4 * 1024;
@@ -70,19 +73,53 @@ function buildAgentPrompt({
   const isPlanReviewer = specialist?.stage === "plan_review";
   const isProfessionalRecorder = specialist?.stage === "recorder" && specialist?.professional === true;
   const isSpecialist = Boolean(specialist);
+  // 역할별 context 경계의 single source는 ROLE_CONTEXT_POLICY다.
+  // 아래 조립 분기는 이 판정 함수를 통해서만 context 포함 여부를 정한다.
+  // 정책이 없는 역할(일반 채팅/토론 요약 등)은 true를 돌려받아 기존 동작을 유지한다.
+  const specialistRole = specialist?.stage || null;
+  const roleAllows = (blockName) =>
+    specialistRole ? includesPromptContext(specialistRole, blockName) : true;
   const isDiscussionSummary = Boolean(discussionSummary);
   const isSimplify = Boolean(simplifyMeta);
   const agentsById = new Map(agents.map((entry) => [entry.id, entry]));
   const others = agents.filter((entry) => entry.id !== agent.id);
-  const sourceMessages = isPlanReviewer
-    ? messages.filter((message) => message?.authorType === "user")
+  // 최근 대화 전달 범위도 ROLE_CONTEXT_POLICY가 결정한다(single source).
+  // - conversationTranscript 허용(planner) → 전체 메시지
+  // - conversationContext만 허용(plan_review) → 사용자 메시지(user-only)
+  // - 둘 다 차단(implementation/review/recorder) → 빈 목록
+  // 정책이 없는 역할(일반 채팅/토론)은 기존대로 전체를 쓴다.
+  const transcriptAllowed = specialistRole ? roleSees(specialistRole, "conversationTranscript") : true;
+  const contextAllowed = specialistRole ? roleSees(specialistRole, "conversationContext") : true;
+  const sourceMessages = specialistRole
+    ? transcriptAllowed
+      ? messages
+      : contextAllowed
+        ? messages.filter((message) => message?.authorType === "user")
+        : []
     : messages;
-  const recent = isBuilder || isCleanReviewer || isProfessionalRecorder || isSimplify
+  const useGeneralSummaryWindow = !isSpecialist && !isDiscussionSummary && !isSimplify && !discussion;
+  // 최근 대화(recent)를 그릴지 여부: transcript 또는 context를 보는
+  // 역할만 그린다. 둘 다 차단된 역할은 대화 블록 전체를 생략한다.
+  const useTranscriptWindow = specialistRole
+    ? transcriptAllowed || contextAllowed
+    : true;
+  const conversationWindow = useGeneralSummaryWindow
+    ? buildConversationWindow(sourceMessages, { maxMessages })
+    : null;
+  const recent = !useTranscriptWindow || isSimplify
     ? []
     : isDiscussionSummary
       ? sourceMessages
-      : sourceMessages.slice(-maxMessages);
-  const omitted = isDiscussionSummary || isSimplify ? 0 : sourceMessages.length - recent.length;
+      : conversationWindow?.compacted
+        ? conversationWindow.recent
+        : sourceMessages.slice(-maxMessages);
+  const omitted = isDiscussionSummary || isSimplify
+    ? 0
+    : conversationWindow?.compacted
+      ? conversationWindow.omitted
+      : sourceMessages.length - recent.length;
+  const pinned = conversationWindow?.compacted ? conversationWindow.pinned : [];
+  const compressedHistory = conversationWindow?.compacted ? conversationWindow.summary : [];
 
   const lines = [];
   if (isBuilder) {
@@ -151,7 +188,7 @@ function buildAgentPrompt({
     lines.push("- 대화에서 쓰인 언어로 답하세요.");
   }
   const MAX_CONTEXT_CHARS = 16000;
-  const rules = String(rulesContext || "").trim();
+  const rules = !roleAllows("rulesContext") || isSimplify ? "" : String(rulesContext || "").trim();
   if (rules) {
     lines.push("");
     lines.push("=== 프로젝트 현재 규칙 ===");
@@ -159,21 +196,22 @@ function buildAgentPrompt({
     lines.push("=== 프로젝트 현재 규칙 끝 ===");
     lines.push("- 이 규칙은 반드시 지키세요.");
   }
-  const context = isBuilder || isCleanReviewer || isProfessionalRecorder || isSimplify ? "" : String(projectContext || "").trim();
+  // 역할별 포함 여부는 ROLE_CONTEXT_POLICY가 결정한다(하드코딩 분기 아님).
+  const context = !roleAllows("projectContext") || isSimplify ? "" : String(projectContext || "").trim();
   if (context) {
     lines.push("");
     lines.push("=== 프로젝트 공통 맥락 ===");
     lines.push(context);
     lines.push("=== 프로젝트 공통 맥락 끝 ===");
   }
-  const workflow = isBuilder || isCleanReviewer || isProfessionalRecorder || isSimplify ? "" : String(workflowContext || "").trim();
+  const workflow = !roleAllows("workflowContext") || isSimplify ? "" : String(workflowContext || "").trim();
   if (workflow) {
     lines.push("");
     lines.push("=== 확정된 결정과 진행 중 작업 ===");
     lines.push(workflow);
     lines.push("=== 확정된 결정과 진행 중 작업 끝 ===");
   }
-  const memoryFull = isBuilder || isCleanReviewer || isPlanReviewer || isProfessionalRecorder || isSimplify ? "" : String(memoryContext || "").trim();
+  const memoryFull = !roleAllows("memoryContext") || isSimplify ? "" : String(memoryContext || "").trim();
   if (memoryFull) {
     const usedSoFar = rules.length + context.length + workflow.length;
     const budget = Math.max(0, MAX_CONTEXT_CHARS - usedSoFar);
@@ -217,6 +255,8 @@ function buildAgentPrompt({
     lines.push("");
     lines.push(`=== 전문 모드: ${stageLabels[specialist.stage] || specialist.stage} ===`);
     lines.push(`현재 단계: ${stageLabels[specialist.stage] || specialist.stage} · 반복 ${specialist.round || 1}/${specialist.maxRounds || 3}`);
+    const ctxNotice = roleContextNotice(specialist.stage);
+    if (ctxNotice) lines.push(`[context 경계] ${ctxNotice}`);
     if (specialist.feedback) {
       if (specialist.stage === "plan_review") {
         lines.push("=== 현재 TASK ===");
@@ -251,7 +291,19 @@ function buildAgentPrompt({
       lines.push("- 워크스페이스 작업이면 PLAN_READY 전에 요청과 직접 관련된 파일·호출 경로·테스트를 필요한 범위에서 읽어 현재 상태와 근거를 확인하세요. 작은 작업을 위해 저장소 전체를 훑지는 마세요.");
       lines.push("- 확인하지 못한 사실은 단정하지 말고 `Risks / Open Questions`에 남기세요.");
       lines.push("- 하나의 작업이 하나의 명확한 목표와 완료 조건을 갖도록 큰 작업을 분해하세요.");
-      lines.push("- TASK에는 가능하면 `Goal`, `Current State / Evidence`, `Requirements`, `Affected Modules`, `Invariants / Must Preserve`, `Implementation Approach`, `Acceptance Criteria`, `Verification`, `Risks / Open Questions`, `Out of Scope`를 포함하세요.");
+      lines.push("- TASK에는 다음 8개 필수 섹션을 반드시 정확한 헤딩(`## Goal`, `## Inputs / Source Data`, `## Requirements`, `## Work Approach`, `## Deliverables`, `## Acceptance Criteria`, `## Verification Plan`, `## Out of Scope`)과 함께 본문(실제 설명)을 포함해 작성하세요.");
+      lines.push("- `## Inputs / Source Data`와 `## Deliverables`는 목록으로 적고, 없으면 생략하지 말고 `- 없음`이라고 명시하세요. 생략과 '없음'은 다른 의미입니다.");
+      lines.push("- 입력 항목은 `` `경로` `` 또는 URL로 적습니다. 작업 중 내용이 바뀌면 안 되는 자료는 `(frozen)`, 실행 시점에 달라질 수 있는 자료는 `(live)`를 붙이세요. 표시가 없으면 파일은 frozen, URL은 live로 처리됩니다.");
+      lines.push("- `## Verification Plan`에는 사람이 읽을 설명과 함께 아래 형식의 ```json 블록을 하나 넣으세요. 이 목록은 승인 시점에 동결되며 이후 아무도 바꿀 수 없습니다.");
+      lines.push('  형식: [{"id":"V1","method":"process|predicate|review|human","statement":"무엇을 확인하는가", ...}]');
+      lines.push('  - `process`: 프로그램 실행으로 확인. `"executable"`과 `"argv"` 배열을 구조화해 적습니다(셸 문자열 금지). 예: {"id":"V1","method":"process","statement":"전체 테스트 통과","executable":"npm","argv":["test"]}');
+      lines.push('  - `predicate`: 산출물을 직접 열어 확인. `"check"`에 `kind`와 `path`를 적습니다. 사용 가능한 kind: exists, absent, hash, text.contains, text.matches, text.section, text.lines, json.path, csv.rows, csv.column. 예: {"id":"V2","method":"predicate","statement":"보고서에 결론 절이 있다","check":{"kind":"text.section","path":"report.md","expected":"결론"}}');
+      lines.push('  - `review`: 기계가 판정할 수 없어 검수자의 판단이 필요한 항목. 예: {"id":"V3","method":"review","statement":"번역 논조가 원문과 맞는가"}');
+      lines.push('  - `human`: 되돌릴 수 없는 외부 행동 등 사용자 승인이 필요한 항목. 꼭 필요할 때만 쓰세요. 승인 남발은 안전장치를 무력화합니다.');
+      lines.push("- 확인할 수 없는 것을 process/predicate로 적지 마세요. 기계가 확정할 수 없는 항목은 정직하게 `review`로 두는 편이 낫습니다.");
+      lines.push("- 이 작업이 특정 토론 결정에서 나왔다면 `결정: D-12, D-15`처럼 결정 id를 적어 기록이 이어지게 하세요.");
+      lines.push("- 다음 보조 섹션의 포함을 권장합니다: `## Current State / Evidence`, `## Affected Resources`, `## Invariants / Must Preserve`, `## Risks / Open Questions`, `## Dependencies`, `## Related Tasks`.");
+      lines.push("- 의존하는 다른 작업이나 선행 조건이 있다면 `## Dependencies` 또는 `## Related Tasks`에 명시하세요.");
       lines.push("- 코드를 수정하거나 구현을 시작하지 마세요. 구현 담당자를 자동으로 부르지 마세요.");
       lines.push("- BLOCKING 지적을 해결하지 못하거나 수용하지 않을 때는 TASK를 고친 것처럼 다시 쓰지 마세요. `STATUS: NEEDS_DECISION`과 그 이유·사용자에게 필요한 질문을 반환하고, 기존 TASK.md를 덮어쓰지 마세요.");
       lines.push("- 응답 안에 `STATUS: PLAN_READY` 또는 `STATUS: NEEDS_DECISION` 하나를 넣으세요.");
@@ -285,6 +337,27 @@ function buildAgentPrompt({
         }
         lines.push("=== 실행 상태 축 끝 ===");
       }
+      // TASK: checkpoint 보호 상태가 열려 있으면(사전 스냅샷 없음) 회귀 신뢰도를 경고한다.
+      {
+        let protection = specialist.checkpointProtection ?? null;
+        if (protection == null && specialist.evidence) {
+          if (typeof specialist.evidence === "string") {
+            try { protection = JSON.parse(specialist.evidence)?.checkpointProtection ?? null; } catch {}
+          } else if (typeof specialist.evidence === "object") {
+            protection = specialist.evidence.checkpointProtection ?? null;
+          }
+        }
+        if (protection && String(protection).startsWith("unavailable_")) {
+          const reason = protection === "unavailable_non_git"
+            ? "non-Git workspace"
+            : protection === "unavailable_checkpoint_failed"
+              ? "checkpoint 생성 실패 후 사용자 승인"
+              : protection === "unavailable_user_approved"
+                ? "사용자가 백업 없이 실행을 승인"
+                : String(protection);
+          lines.push("⚠ 이 실행은 사전 workspace snapshot이 없습니다 (" + reason + "). 회귀 검증 신뢰도가 제한됩니다.");
+        }
+      }
       // TASK-008: Builder가 실제로 만든 변경(Diff)을 주입합니다.
       if (Object.prototype.hasOwnProperty.call(specialist, "reviewDiff")) {
         lines.push("");
@@ -302,6 +375,34 @@ function buildAgentPrompt({
         );
         lines.push(evidence.text);
         lines.push("=== 실행 근거 끝 ===");
+      }
+      // Stage D §19 — Builder의 주장이 아니라 Agora가 실제로 확인한 것과
+      // 확인하지 못한 것을 구조화해 전달한다. 무엇이 강등됐는지도 함께 보인다(R-3).
+      if (specialist.assurance) {
+        const a = specialist.assurance;
+        lines.push("");
+        lines.push("=== Agora 확인 결과 ===");
+        lines.push("아래는 Agora가 승인된 확인 목록에 따라 직접 수행한 결과입니다. 이 결과를 당신의 판단으로 바꾸지 마세요.");
+        if (a.automatic?.length) {
+          lines.push(`[자동 확정됨 ${a.automatic.length}건] ${a.automatic.map((c) => `${c.criterionId}(${c.outcome}) ${c.statement}`).join(" · ")}`);
+        }
+        if (a.reviewRequired?.length) {
+          lines.push(`[당신이 판단할 항목 ${a.reviewRequired.length}건]`);
+          for (const c of a.reviewRequired) {
+            lines.push(`  - ${c.criterionId}: ${c.statement}${c.downgradeReason ? ` (자동 확인 불가: ${c.downgradeReason})` : ""}`);
+          }
+        }
+        if (a.humanApproval?.length) {
+          lines.push(`[사용자 승인 항목 ${a.humanApproval.length}건 — 당신이 대신 승인할 수 없습니다] ${a.humanApproval.map((c) => c.criterionId).join(", ")}`);
+        }
+        if (a.downgrades?.length) {
+          lines.push(`[계획과 달라진 항목 ${a.downgrades.length}건] ${a.downgrades.map((d) => `${d.criterionId}: ${d.plannedDisposition}→${d.actualDisposition}`).join(" · ")}`);
+        }
+        if (a.verificationSideEffects?.length) {
+          lines.push(`⚠ 확인 과정이 산출물을 변경했습니다: ${a.verificationSideEffects.map((s) => s.changedPaths.join(", ")).join(" · ")} (Builder 변경과 구분해 판단하세요)`);
+        }
+        lines.push("=== Agora 확인 결과 끝 ===");
+        lines.push("- 위 [당신이 판단할 항목]을 하나도 빠뜨리지 말고 검토하고, 판단 근거를 본문에 적으세요.");
       }
       lines.push("- 수정이 필요하면 구체적인 파일·문제·수정 방향을 적으세요.");
       lines.push("- 구현자가 작업을 다른 에이전트에게 넘기려 하거나 권한이 없어 실제 변경을 못 했다면, 통과시키지 말고 구현 단계로 되돌리세요.");
@@ -353,18 +454,36 @@ function buildAgentPrompt({
     lines.push("=== 원문 메시지 끝 ===");
     lines.push("- 위 메시지를 작성 규칙에 맞게 쉬운 말로 다시 작성해 주세요.");
   }
-  if (!isBuilder && !isCleanReviewer && !isProfessionalRecorder && !isSimplify) {
+  if (useTranscriptWindow && !isSimplify) {
     lines.push("");
     lines.push("=== 대화 ===");
     if (omitted > 0) lines.push(`(이전 메시지 ${omitted}개 생략)`);
+    if (conversationWindow?.compacted) {
+      if (pinned.length > 0) {
+        lines.push("=== 대화 고정 배경 ===");
+        for (const message of pinned) {
+          lines.push(`[${speakerLabel(message, agentsById)}] ${String(message.text || "")}${attachmentSuffix(message)}`);
+        }
+        lines.push("=== 대화 고정 배경 끝 ===");
+      }
+      if (compressedHistory.length > 0) {
+        lines.push("=== 이전 대화 압축 기록 ===");
+        for (const message of compressedHistory) {
+          lines.push(`- ${speakerLabel(message, agentsById)}: ${String(message.text || "")}${attachmentSuffix(message)}`);
+        }
+        lines.push("=== 이전 대화 압축 기록 끝 ===");
+      }
+      lines.push("=== 최근 대화 ===");
+    }
     for (const message of recent) {
-      // Professional payload만 개별 메시지 예산을 적용한다. 일반 채팅·토론은
-      // 기존과 동일하게 원문 transcript를 provider에 전달한다.
+      // Professional payload만 개별 메시지 예산을 적용한다. 일반 채팅의 긴
+      // 과거는 위 Summary Window에서 줄이고, 최근 원문은 그대로 전달한다.
       const bounded = isSpecialist
         ? boundedText(message.text, MAX_MESSAGE_CHARS, "메시지")
         : { text: String(message.text || "") };
       lines.push(`[${speakerLabel(message, agentsById)}] ${bounded.text}${attachmentSuffix(message)}`);
     }
+    if (conversationWindow?.compacted) lines.push("=== 최근 대화 끝 ===");
     lines.push("=== 대화 끝 ===");
   }
   for (const line of extraLines) lines.push(line);

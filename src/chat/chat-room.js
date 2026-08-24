@@ -11,10 +11,17 @@ const {
   phaseForNode,
 } = require("../agora/professional-run");
 const { TaskManager, hashText } = require("../agora/task-manager");
+const { REQUIRED_SECTIONS, validateTaskContract } = require("../agora/task-contract-validator");
 const { describeWorkspaceChanges } = require("../agora/workspace-diff");
+// Stage D-B — 자원/행동 심사. 실제 변경 직전에 이 관문을 통과해야 한다(§23).
+const {
+  adjudicateAction,
+  admitAction,
+  RESOURCE_KINDS,
+  ACTIONS,
+} = require("../agora/assurance/resource-governance");
 const {
   installSpecialistMethods,
-  SAFE_BLOCK_REASONS,
   safeBlockReason,
   hasOpenQuestions,
   structuredIssuesFromReview,
@@ -22,6 +29,9 @@ const {
   findControlMarker,
   runGeneratedPaths,
 } = require("./chat-specialist");
+const {
+  installDeterministicProfessionalRecorder,
+} = require("./chat-professional-recorder");
 
 // 채팅방 오케스트레이션.
 // - 멘션이 없으면 세션 참가자 전체, 있으면 멘션된 참가자만 응답합니다.
@@ -69,6 +79,9 @@ class ChatRoom extends EventEmitter {
     // { createCheckpoint, restoreCheckpoint, cleanupCheckpoint } 형태입니다.
     this.checkpointEngine = options.checkpoint || null;
     this.checkpointRoot = options.checkpointRoot || null;
+    // Stage D-0 Workspace Mutation Lease. 주입되지 않으면 소유권 통제 없이
+    // 기존 동작을 유지합니다(legacy 호출/테스트 호환).
+    this.mutationLease = options.mutationLease || null;
     this.strictReviewDiff = Boolean(options.strictReviewDiff);
     this.persistRecovery = typeof options.persistRecovery === "function"
       ? options.persistRecovery
@@ -83,6 +96,10 @@ class ChatRoom extends EventEmitter {
     this.onProfessionalTaskState = typeof options.onProfessionalTaskState === "function"
       ? options.onProfessionalTaskState
       : null;
+    // Stage C — provider-neutral harness lifecycle seam(chat-ipc가 주입).
+    // { workspaceRestored(), professionalRunEnded({ professionalRunId, invalid }) }
+    // 형태이며, room은 lifecycle facts만 전달하고 세션/adapter 내부는 모른다.
+    this.harnessLifecycle = options.harnessLifecycle || null;
     this.meta = {
       permissionMode: "chat",
       ...(options.meta || {}),
@@ -140,22 +157,95 @@ class ChatRoom extends EventEmitter {
     }
     this.specialistStages = this.professionalRun?.stages || null;
     if (this.professionalRun?.node === "READY" && this.professionalRun.taskPath) {
-      const contract = this.taskManager.resolveTaskContract(
-        { contentSource: "file", taskPath: this.professionalRun.taskPath },
-        this.meta.workspace
-      );
-      if (contract?.content?.trim()) {
-        this.professionalPlan = {
+      let contract = null;
+      try {
+        contract = this.taskManager.resolveTaskContract(
+          { contentSource: "file", taskPath: this.professionalRun.taskPath },
+          this.meta.workspace
+        );
+      } catch {}
+
+      if (contract) {
+        const contractCheck = validateTaskContract(contract.content);
+        const hasValidApproval =
+          contractCheck.valid &&
+          this.professionalRun.stopReason !== "TASK_CONTRACT_INCOMPLETE" &&
+          Boolean(this.professionalRun.approvedTaskHash) &&
+          this.professionalRun.approvedTaskHash === hashText(contract.content);
+
+        if (hasValidApproval) {
+          this.professionalPlan = {
+            stages: this.professionalRun.stages || {},
+            mode: "auto",
+            implementationAutoRevisions: this.professionalRun.policy?.implementationAutoRevisions || 0,
+            taskInfo: {
+              relativePath: this.professionalRun.taskPath,
+              filename: path.basename(this.professionalRun.taskPath),
+              content: contract.content,
+              hash: this.professionalRun.approvedTaskHash,
+            },
+            feedback: contract.content,
+          };
+        } else {
+          // Task 계약이 불완전하거나, 외부 수정/이전 실패로 승인 상태가 무효화된 경우
+          // 정상 READY로 복원하지 않고 TASK_CONTRACT_INCOMPLETE 복구 대기 상태로 전환한다.
+          const missingSections = contractCheck.valid ? [] : contractCheck.missing;
+          const transition = transitionProfessionalRun(this.professionalRun, {
+            type: "TASK_CONTRACT_INCOMPLETE",
+            missingSections,
+          });
+          if (transition.ok) {
+            this.professionalRun = transition.state;
+            try {
+              this.persistProfessionalRun?.(this.professionalRun);
+            } catch {}
+          }
+          this.specialistResume = {
+            stages: this.professionalRun.stages || {},
+            mode: "auto",
+            phase: "task_contract_incomplete",
+            taskInfo: {
+              relativePath: this.professionalRun.taskPath,
+              filename: path.basename(this.professionalRun.taskPath),
+              content: contract.content || "",
+              hash: hashText(contract.content || ""),
+            },
+            feedback: contract.content || "",
+            missingSections,
+            taskError: contractCheck.valid
+              ? "작업 지시서 내용은 현재 필수 계약을 만족하지만, 승인 상태가 무효화되어 재검수가 필요합니다."
+              : `실행 계약(Task)에 필수 섹션이 빠졌습니다: ${contractCheck.missing.join(", ")}`,
+            maxAutoRevisions: this.professionalRun.policy?.implementationAutoRevisions || 0,
+          };
+        }
+      } else {
+        // resolveTaskContract가 null인 경우 (파일 누락 또는 읽기 불가)
+        // READY 상태로 방치하지 않고 fail-closed recovery 상태로 전환한다.
+        const allMissing = [...REQUIRED_SECTIONS];
+        const transition = transitionProfessionalRun(this.professionalRun, {
+          type: "TASK_CONTRACT_INCOMPLETE",
+          missingSections: allMissing,
+        });
+        if (transition.ok) {
+          this.professionalRun = transition.state;
+          try {
+            this.persistProfessionalRun?.(this.professionalRun);
+          } catch {}
+        }
+        this.specialistResume = {
           stages: this.professionalRun.stages || {},
           mode: "auto",
-          implementationAutoRevisions: this.professionalRun.policy?.implementationAutoRevisions || 0,
+          phase: "task_contract_incomplete",
           taskInfo: {
             relativePath: this.professionalRun.taskPath,
             filename: path.basename(this.professionalRun.taskPath),
-            content: contract.content,
-            hash: this.professionalRun.approvedTaskHash || hashText(contract.content),
+            content: "",
+            hash: hashText(""),
           },
-          feedback: contract.content,
+          feedback: "",
+          missingSections: allMissing,
+          taskError: "작업 지시서(TASK.md) 파일을 찾을 수 없거나 읽을 수 없습니다.",
+          maxAutoRevisions: this.professionalRun.policy?.implementationAutoRevisions || 0,
         };
       }
     }
@@ -251,8 +341,8 @@ class ChatRoom extends EventEmitter {
       phase: professional?.phase || this.specialistResume?.phase || null,
       node: professional?.node || null,
       status: professional?.status || null,
-      needsInput: Boolean(professional?.needsInput) || ["needs_decision", "plan_review_fix_required"].includes(this.specialistResume?.phase),
-      planReady: Boolean(professional?.planReady) || Boolean(this.professionalPlan),
+      needsInput: Boolean(professional?.needsInput) || ["needs_decision", "plan_review_fix_required", "task_contract_incomplete"].includes(this.specialistResume?.phase),
+      planReady: (Boolean(professional?.planReady) || Boolean(this.professionalPlan)) && this.specialistResume?.phase !== "task_contract_incomplete" && professional?.stopReason !== "TASK_CONTRACT_INCOMPLETE",
       // 승인된 기획안(Frozen Task 원본)을 채팅에서 열어볼 수 있게 경로/제목을 노출합니다.
       planTaskPath: taskPath,
       planTaskId: taskId,
@@ -266,6 +356,10 @@ class ChatRoom extends EventEmitter {
       frozenRunId: professional?.frozenRunId || null,
       planRound: professional?.planRound || 1,
       implementationRound: professional?.implementationRound || 0,
+      stopReason: professional?.stopReason || null,
+      checkpointProtection: professional?.checkpointProtection || null,
+      checkpointFailReason: professional?.checkpointFailReason || null,
+      missingSections: this.specialistResume?.missingSections || professional?.missingSections || null,
     };
   }
 
@@ -297,6 +391,7 @@ class ChatRoom extends EventEmitter {
     const trimmed = String(payload.text || "").trim();
     const attachments = Array.isArray(payload.attachments) ? payload.attachments : [];
     const independent = Boolean(payload.independent);
+    const recordOnly = Boolean(payload.recordOnly);
     if (!trimmed && attachments.length === 0) return null;
     // renderer 잠금이 늦게 반영되거나 우회되어도 전문 실행 맥락에는 일반 대화가 끼지 않습니다.
     if (this.isSpecialistLocked()) {
@@ -312,6 +407,9 @@ class ChatRoom extends EventEmitter {
     entry.turnRootId = entry.id;
 
     this.mentionsMuted = false;
+    // 전문 모드의 작업 요청은 실행 지시 원문으로만 기록한다. 여기서 일반
+    // 응답을 예약하면 Planner/Plan Reviewer와 일반 채팅 턴이 섞인다.
+    if (recordOnly) return entry;
     const mentionedIds = parseMentions(trimmed, this.agents, GROUP_ALIASES);
     const targets = mentionedIds.length > 0
       ? mentionedIds.map((agentId) => this.findAgent(agentId)).filter(Boolean)
@@ -377,6 +475,44 @@ class ChatRoom extends EventEmitter {
     this.pendingApprovals.delete(approvalId);
     resolve(decision === "approve");
     return true;
+  }
+
+  // Stage C — provider-neutral same-turn approval seam. harness adapter가 실행 중 특정 action
+  // 승인을 요청할 때(예: Codex on-request) 호출한다. native protocol id(threadId/turnId/
+  // requestId/method)는 전혀 노출하지 않고 { summary, detail, scope, signal }만 받는다. 기존
+  // approval UI(approval-request/resolveApproval)를 재사용한다. signal이 abort되면(=turn
+  // 종료/취소) 카드를 dismiss하고 더 이상 승인 가능 상태로 두지 않는다(late accept 금지).
+  requestInteractiveApproval(agent, request = {}, generation = this.generation) {
+    if (generation !== this.generation) return Promise.resolve(false);
+    const signal = request.signal;
+    if (signal && signal.aborted) return Promise.resolve(false);
+    this.approvalSeq += 1;
+    const approvalId = `a${this.sessionId || "s"}-${this.approvalSeq}`;
+    const scope = request.scope === "action" ? "action" : "turn";
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (decision) => {
+        if (settled) return;
+        settled = true;
+        if (this.pendingApprovals.get(approvalId) === finish) this.pendingApprovals.delete(approvalId);
+        resolve(Boolean(decision));
+      };
+      this.pendingApprovals.set(approvalId, finish);
+      this.emit("approval-request", {
+        approvalId,
+        agentId: agent.id,
+        summary: request.summary || "도구 실행 권한이 필요합니다.",
+        detail: request.detail || "",
+        retryScope: scope,
+      });
+      if (signal) {
+        signal.addEventListener("abort", () => {
+          if (settled) return;
+          this.emit("approval-resolved", { approvalId });
+          finish(false);
+        }, { once: true });
+      }
+    });
   }
 
   // 방 전체 단일 턴 큐. 일반 응답과 멘션 호출은 대기 중인 같은 에이전트의
@@ -550,6 +686,103 @@ class ChatRoom extends EventEmitter {
     if (this.activeRuns === 0) this.emit("busy", false);
   }
 
+  // Stage D-0 — canonical workspace one-writer.
+  //
+  // 같은 프로젝트의 workspace는 하나이고 그 아래 대화(room)는 여럿이므로, 다른
+  // 대화가 같은 폴더를 바꾸는 동안에는 변경을 시작하지 않는다(fail-closed).
+  //
+  // 재진입은 같은 대화라는 것만으로 허용되지 않는다. 바깥 작업이 자기 안에서
+  // 다시 요청하는 진짜 중첩임을 parentToken으로 증명해야 한다. 그렇지 않으면
+  // 같은 대화에 mutation IPC가 두 번 들어오는 것(복원 버튼 중복 호출 등)만으로
+  // 동시 변경이 열린다.
+  //
+  // token이 null이면 통제 대상이 아니라는 뜻이며(주입 없음 또는 workspace 없음),
+  // release는 그대로 무시된다.
+  acquireWorkspaceMutation({ purpose = null, runId = null, role = null, parentToken = null } = {}) {
+    if (!this.mutationLease) return { ok: true, token: null };
+    const workspace = this.meta.workspace;
+    if (!workspace) return { ok: true, token: null };
+    const got = this.mutationLease.acquire({
+      resourceKind: "workspace",
+      resourceId: workspace,
+      holderId: this.sessionId,
+      runId,
+      role,
+      purpose,
+      parentToken,
+    });
+    if (got.ok) {
+      // Stage D-B §23 — 소유권을 얻었다고 곧바로 변경해도 되는 것은 아니다.
+      // 실제 변경 직전에 자원/행동 심사를 통과해야 한다. 심사는 소유권을 확보한
+      // 뒤에 한다 — "lease를 든 상태에서 이 행동이 허용되는가"가 실제 질문이다.
+      const adjudication = adjudicateAction(
+        {
+          resourceKind: RESOURCE_KINDS.WORKSPACE,
+          action: ACTIONS.MUTATE,
+          resourceId: workspace,
+          requestedPermission: "workspace-write",
+        },
+        {
+          permissionCap: "workspace-write",
+          leaseHeld: true,
+          checkpointProtected: this.professionalRun?.checkpointProtection === "protected",
+        }
+      );
+      const admitted = admitAction(adjudication, { humanApprovalGranted: false });
+      if (!admitted.ok) {
+        // 사전 승인이 필요한 행동을 승인 없이 실행하지 않는다. 소유권은 돌려준다.
+        this.mutationLease.release(got.token);
+        return {
+          ok: false,
+          code: admitted.code,
+          error: admitted.error || "이 작업은 사용자 승인이 필요합니다.",
+        };
+      }
+
+      // Stage D-C — workspace 변경 소유권 획득도 provenance 사슬의 한 마디다(§26).
+      // 기록 실패가 실행을 막지는 않는다(관측 실패 ≠ governance 실패).
+      try {
+        this.assuranceRun?.recordWorkspaceMutation({
+          event: got.reentered ? "reentered" : "acquired",
+          resourceId: workspace,
+          holderId: this.sessionId,
+          purpose,
+          controlClass: adjudication.controlClass,
+        });
+      } catch {}
+      return { ok: true, token: got.token, reentered: Boolean(got.reentered) };
+    }
+    // 내부 어휘(lease/holder/resourceId)를 사용자 표면으로 내보내지 않는다(Charter §9).
+    const error = got.code !== "BUSY"
+      ? "작업 폴더 변경 권한을 확인하지 못해 실행을 시작하지 않았습니다."
+      : got.sameHolder
+        ? "이 대화에서 이미 작업 폴더를 변경하고 있습니다. 그 작업이 끝난 뒤 다시 시도해 주세요."
+        : "같은 작업 폴더를 다른 대화가 변경하고 있습니다. 그 작업이 끝난 뒤 다시 시도해 주세요.";
+    return { ok: false, code: got.code, sameHolder: Boolean(got.sameHolder), error };
+  }
+
+  releaseWorkspaceMutation(token) {
+    if (!token || !this.mutationLease) return false;
+    return this.mutationLease.release(token) === true;
+  }
+
+  // 방이 닫힐 때 남은 소유권을 정리한다. 실행이 남아 있지 않은 경우에만.
+  //
+  // 중지(stop/cancel)는 subprocess 종료를 기다려 주지 않는다. 아직 파일을 쓰고
+  // 있을 수 있는 writer의 소유권을 정리 편의로 먼저 풀면, 다른 대화가 그 틈에
+  // 소유권을 얻어 잠시 동시에 workspace를 바꾸게 된다. 그래서 실행이 남아 있으면
+  // 소유권을 그대로 둔다 — memory-only라 앱을 다시 켜면 사라지므로, 잘못 푸는 것보다
+  // 남기는 쪽이 안전하다(fail-closed).
+  releaseWorkspaceMutationsIfIdle() {
+    if (this.activeRuns > 0 || this.specialistActive === true) return 0;
+    return this.releaseAllWorkspaceMutations();
+  }
+
+  releaseAllWorkspaceMutations() {
+    if (!this.mutationLease?.releaseAllFor) return 0;
+    return this.mutationLease.releaseAllFor(this.sessionId);
+  }
+
   promptMessages(promptLimit = null, independent = false) {
     const messages = this.messages;
     if (!Number.isInteger(promptLimit) || promptLimit < 0) {
@@ -567,7 +800,30 @@ class ChatRoom extends EventEmitter {
     return [...base, ...extra].filter((message) => message.authorType !== "system" && !message.error);
   }
 
+  // Stage D-0 — workspace-write 일반 채팅 turn은 mutation 참여자다.
+  // 전문 실행은 turn 단위가 아니라 실행 블록 전체(mutation~판정 구간)에서 소유권을
+  // 쥐므로 여기서 다시 잡지 않는다(같은 room이라 재진입으로 통과하기도 한다).
   async respond(agent, context = {}, generation = this.generation) {
+    const generalWorkspaceWrite =
+      !context.specialist &&
+      !context.discussionSummary &&
+      !context.simplifyMeta &&
+      this.meta.permissionMode === "workspace-write";
+    if (!generalWorkspaceWrite) return this.runResponseTurn(agent, context, generation);
+
+    const lease = this.acquireWorkspaceMutation({ purpose: "chat-turn" });
+    if (!lease.ok) {
+      this.appendSystem(lease.error);
+      return { ok: false, stopReason: "WORKSPACE_BUSY", error: lease.error };
+    }
+    try {
+      return await this.runResponseTurn(agent, context, generation);
+    } finally {
+      this.releaseWorkspaceMutation(lease.token);
+    }
+  }
+
+  async runResponseTurn(agent, context = {}, generation = this.generation) {
     // 큐에서 기다리는 사이 참가자가 비활성화되거나 CLI가 사라졌다면 실행하지 않습니다.
     const currentAgent = this.findAgent(agent.id);
     if (!currentAgent || !currentAgent.available || currentAgent.enabled === false) return;
@@ -577,6 +833,7 @@ class ChatRoom extends EventEmitter {
     };
     const responseAgentMeta = {
       model: agent.model || "default",
+      resolvedModel: agent.resolvedModel || (agent.model && agent.model !== "default" ? agent.model : null),
       effort: agent.effort || "default",
       version: agent.version || "",
       ...(context.specialist?.stage ? { specialistStage: context.specialist.stage } : {}),
@@ -678,6 +935,14 @@ class ChatRoom extends EventEmitter {
           emitEvent,
           permissionMode,
           specialistStage,
+          // Stage C — canonical Frozen Task provenance(RUN-### + taskHash). transport
+          // runId(r...)와 구분되는 lifecycle fact로, TaskManager가 만든 값만 전달한다.
+          frozenTask: context.specialist?.frozenTask
+            ? {
+                runId: context.specialist.frozenTask.runId || null,
+                taskHash: context.specialist.frozenTask.taskHash || null,
+              }
+            : null,
           // IPC 경계에서 최종 permissionMode를 다시 계산해 실제 invocation을 제한합니다.
           // 여기서는 기존 승인 재시도 계약을 유지한 요청값만 전달합니다.
           // 일반 채팅의 승인 재시도 계약은 유지한다. 실제 provider argv에서는
@@ -686,6 +951,10 @@ class ChatRoom extends EventEmitter {
           autoApprove: context.specialist
             ? permissionMode === "workspace-write" && (agent.autoApprove || approvedRetry)
             : agent.autoApprove || approvedRetry,
+          // Stage C — same-turn approval seam(provider-neutral). harness가 지원하면 실행 중
+          // action 승인을 이 콜백으로 요청한다. 미지원 provider는 이 콜백을 무시하고 기존
+          // approvalRequired -> whole-turn retry 경로를 그대로 쓴다.
+          requestApproval: (req) => this.requestInteractiveApproval(agent, req, generation),
         });
         this.cancels.add(run.cancel);
         result = await run.promise;
@@ -850,7 +1119,48 @@ class ChatRoom extends EventEmitter {
     if (!source || source.authorType === "system" || source.authorType === "user") {
       return { ok: false, error: "전달할 메시지를 찾을 수 없습니다." };
     }
+    if (intent === "SIMPLIFY_SELF") {
+      // 메시지 바로 아래 직접 버튼 [쉽게 설명]: "같은 저자 + 같은 모델" 고정 계약.
+      // 원문을 작성한 에이전트만 수행할 수 있고 다른 에이전트로 대체(fallback)하지
+      // 않으며, 원문 작성 당시의 model/effort를 그대로 재사용한다.
+      if (target.id !== source.author) {
+        return { ok: false, error: "쉽게 설명은 원문을 작성한 에이전트만 수행할 수 있습니다." };
+      }
+      const sourceModel =
+        source.agentMeta?.resolvedModel ||
+        (source.agentMeta?.model && source.agentMeta.model !== "default"
+          ? source.agentMeta.model
+          : null);
+      if (!sourceModel) {
+        return {
+          ok: false,
+          error: "원문 작성 당시 실제 모델을 확인할 수 없어 같은 모델로 다시 설명할 수 없습니다.",
+        };
+      }
+      const sourceEffort = source.agentMeta?.effort && source.agentMeta.effort !== "default"
+        ? source.agentMeta.effort
+        : null;
+      const simplifyMeta = {
+        text: source.text || "",
+        fromAgentId: source.author,
+        messageId,
+        sourceModel,
+        sourceEffort,
+      };
+      const agentConfig = {
+        model: sourceModel,
+        ...(sourceEffort ? { effort: sourceEffort } : {}),
+      };
+      this.appendSystem(`@${target.id}에게 ${source.author}의 메시지를 알기 쉽게 풀어달라고 요청합니다.`);
+      this.scheduleResponse(target, {
+        simplifyMeta,
+        agentConfig,
+      });
+      return { ok: true };
+    }
     if (intent === "SIMPLIFY") {
+      // Handoff 팝오버의 [다른 AI에게 전달 → 쉽게 설명]: 사용자가 선택한 대상 AI가
+      // 자신의 현재/설정된 model을 사용하여 원문을 알기 쉽게 풀어 설명한다.
       const simplifyMeta = {
         text: source.text || "",
         fromAgentId: source.author,
@@ -1050,7 +1360,14 @@ class ChatRoom extends EventEmitter {
     this.pendingTurns.clear();
     this.mentionsMuted = false;
     this.emitTurnState();
-    for (const resolve of this.pendingApprovals.values()) resolve(false);
+    // Stop/interject/reset로 turn을 중지하면 화면에 보이는 모든 승인 카드는 stale하다.
+    // resolver를 부르기 전에 provider-neutral approval-resolved를 내보내 renderer가 카드를
+    // dismiss하게 한다(same-turn action 승인 · legacy whole-turn 승인 공통). 이후 adapter가
+    // 뒤늦게 AbortController를 abort해도 이미 settled라 중복 이벤트는 나오지 않는다.
+    for (const [approvalId, resolve] of this.pendingApprovals) {
+      this.emit("approval-resolved", { approvalId });
+      resolve(false);
+    }
     this.pendingApprovals.clear();
     for (const cancel of this.cancels) {
       try {
@@ -1074,3 +1391,4 @@ module.exports = { ChatRoom, DEFAULT_DISCUSSION_RUN_BUDGET };
 
 
 installSpecialistMethods(ChatRoom);
+installDeterministicProfessionalRecorder(ChatRoom);

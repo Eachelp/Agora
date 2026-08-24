@@ -113,6 +113,7 @@ let pendingAttachments = [];
 const approvalQueue = [];
 let activeApproval = null;
 const typingAgents = new Set();
+let roomTurnState = { current: null, queue: [], deferred: [] };
 const liveRuns = new Map(); // runId → { item, textEl, statusEl, text }
 let mentionState = null;
 let noticeTimer = null;
@@ -132,6 +133,9 @@ let professionalModeEnabled = false;
 // 승인된 기획안(TASK.md) 경로/제목. "기획안 보기" 버튼으로 열람합니다.
 let specialistPlanTaskPath = null;
 let specialistPlanTaskId = null;
+let specialistStopReason = null;
+let specialistCheckpointProtection = null;
+let specialistMissingSections = null;
 
 const SIDEBAR_WIDTH_KEY = "agora.chat.sidebarWidth";
 const SIDEBAR_COLLAPSED_KEY = "agora.chat.sidebarCollapsed";
@@ -383,9 +387,16 @@ function setSpecialistState(state = {}) {
   specialistStatus = state.status || null;
   specialistPlanTaskPath = state.planTaskPath || null;
   specialistPlanTaskId = state.planTaskId || null;
+  specialistStopReason = state.stopReason || null;
+  specialistCheckpointProtection = state.checkpointProtection || null;
+  specialistMissingSections = Array.isArray(state.missingSections) && state.missingSections.length > 0
+    ? [...state.missingSections]
+    : null;
 }
 
 function specialistLocksComposer() {
+  // READY 상태에서는 기획 수정을 허용하기 위해 composer를 잠그지 않는다.
+  if (specialistNode === "READY" && !specialistActive) return false;
   return Boolean(specialistActive || specialistBlockedAvailable || (specialistResumeAvailable && !specialistNeedsInput));
 }
 
@@ -1024,26 +1035,9 @@ function openSessionMovePopover(anchor, session) {
       option.disabled = project.id === activeProjectId;
       row.append(option);
 
-      // 프로젝트 폴더가 이 대화의 현재 폴더와 다를 때만 적용 여부를 물어봅니다.
-      // 기본값은 기존 대화의 워크스페이스/권한을 그대로 유지하는 것입니다.
-      let applyWorkspace = false;
-      if (project.id !== activeProjectId && project.workspace && project.workspace !== session.workspace) {
-        const applyRow = document.createElement("label");
-        applyRow.className = "project-move-apply-workspace";
-        const checkbox = document.createElement("input");
-        checkbox.type = "checkbox";
-        checkbox.addEventListener("change", () => {
-          applyWorkspace = checkbox.checked;
-        });
-        const text = document.createElement("span");
-        text.textContent = `이 대화에도 "${baseName(project.workspace)}" 폴더 적용`;
-        applyRow.append(checkbox, text);
-        row.append(applyRow);
-      }
-
       option.addEventListener("click", async () => {
         const result = await call(
-          window.chatApi.sessionsMove(session.id, project.id, applyWorkspace)
+          window.chatApi.sessionsMove(session.id, project.id)
         );
         if (result) {
           closePopover();
@@ -1260,11 +1254,11 @@ function renderHeader() {
   const entry = activeSessionEntry();
   sessionTitleEl.textContent = sessionMeta?.title || entry?.title || "세션";
 
-  const workspace = sessionMeta?.workspace || null;
+  const workspace = activeProjectEntry()?.workspace || null;
   workspaceLabel.textContent = workspace ? baseName(workspace) : "워크스페이스 없음";
   workspaceButton.title = workspace
     ? `${workspace}\n클릭해 변경 · 우클릭으로 해제`
-    : "세션에서 사용할 폴더를 선택합니다";
+    : "프로젝트에서 사용할 폴더를 선택합니다";
 
   const mode = sessionMeta?.permissionMode || "chat";
   permissionSelect.value = mode;
@@ -1318,14 +1312,18 @@ function renderHeader() {
     : "토론에는 사용 가능한 에이전트가 두 명 이상 필요합니다";
   const project = projects.find((entry) => entry.id === activeProjectId);
   const planner = roleConfigFromProject(project, "planning");
+  const planReview = roleConfigFromProject(project, "plan_review");
   const implementation = roleConfigFromProject(project, "implementation");
   const review = roleConfigFromProject(project, "review");
+  const effectivePlanReview = planReview.agentId ? planReview : review;
   // 단계별 IPC 요구 조건과 버튼 활성 조건을 맞춥니다.
   // PLAN은 기획자와 기획 검수(비어 있으면 검토 담당자 재사용)만 필요하고,
   // 구현은 구현자·검토자, 전체 실행만 세 역할을 모두 필요로 합니다.
-  const planConfigured = Boolean(planner.agentId && review.agentId);
+  const planConfigured = Boolean(planner.agentId && effectivePlanReview.agentId);
   const implementationConfigured = Boolean(implementation.agentId && review.agentId);
-  const fullConfigured = Boolean(planner.agentId && implementation.agentId && review.agentId);
+  const fullConfigured = Boolean(
+    planner.agentId && effectivePlanReview.agentId && implementation.agentId && review.agentId
+  );
   specialistButton.disabled = !activeSessionId || specialistRunning || specialistActive;
   specialistButton.setAttribute("aria-checked", String(professionalModeEnabled));
   specialistButton.title = specialistBlockedAvailable
@@ -1343,7 +1341,18 @@ function renderHeader() {
   roomControlsActions.classList.toggle("is-professional-mode", professionalModeEnabled);
   // discussable = 사용 가능하고 참여 중인 에이전트가 둘 이상.
   responseModeBar.hidden = professionalModeEnabled || !discussable;
-  const blockedOrBusy = specialistRunning || specialistActive || specialistBlockedAvailable || specialistResumeAvailable;
+  const ordinaryTurnBusy = Boolean(
+    roomTurnState.current ||
+      (roomTurnState.queue || []).length > 0 ||
+      (roomTurnState.deferred || []).length > 0
+  );
+  const blockedOrBusy = Boolean(
+    specialistRunning ||
+      specialistActive ||
+      specialistBlockedAvailable ||
+      specialistResumeAvailable ||
+      ordinaryTurnBusy
+  );
   const planStartable = !specialistNode || specialistNode === "COMPLETED" || specialistStatus === "INTERRUPTED" || specialistNeedsInput;
   professionalPlanButton.disabled = !planConfigured || blockedOrBusy || !planStartable;
   professionalImplementationButton.disabled = !implementationConfigured || blockedOrBusy || !specialistPlanReady;
@@ -1354,12 +1363,16 @@ function renderHeader() {
   professionalFullButton.disabled = !fullConfigured || blockedOrBusy || !planStartable;
   // 버튼이 비활성인 이유를 툴팁으로 알려, 눌리지 않는 것처럼 보이지 않게 합니다.
   const roleSetupHint = "프로젝트 설정(⋯)에서 담당자를 지정하면 사용할 수 있습니다";
-  professionalPlanButton.title = planConfigured
-    ? "기획을 만들고 다른 담당자가 기획을 검수합니다"
-    : `기획·검토 담당자가 필요합니다. ${roleSetupHint}`;
-  professionalFullButton.title = fullConfigured
-    ? "기획 검수 PASS 후 별도 승인 없이 구현·검수·기록까지 이어서 실행합니다"
-    : `기획·구현·검토 담당자가 모두 필요합니다. ${roleSetupHint}`;
+  professionalPlanButton.title = ordinaryTurnBusy
+    ? "일반 응답이 끝난 뒤 전문 기획을 시작할 수 있습니다"
+    : planConfigured
+      ? "기획을 만들고 다른 담당자가 기획을 검수합니다"
+      : `기획·검토 담당자가 필요합니다. ${roleSetupHint}`;
+  professionalFullButton.title = ordinaryTurnBusy
+    ? "일반 응답이 끝난 뒤 전체 전문 실행을 시작할 수 있습니다"
+    : fullConfigured
+      ? "기획 검수 PASS 후 별도 승인 없이 구현·검수·기록까지 이어서 실행합니다"
+      : `기획·구현·검토 담당자가 모두 필요합니다. ${roleSetupHint}`;
   // 저장된 기획안이 있으면(승인 대기 중이거나 통과한 경우) 열람 버튼을 노출합니다.
   const hasPlanTask = Boolean(specialistPlanTaskPath);
   professionalPlanViewButton.hidden = !hasPlanTask;
@@ -1367,8 +1380,10 @@ function renderHeader() {
   professionalPlanViewButton.textContent = specialistPlanTaskId
     ? `기획안 보기 (${specialistPlanTaskId})`
     : "기획안 보기";
-  professionalImplementationButton.title = specialistPlanReady
-    ? "기획 검수를 통과한 작업을 구현·검수·기록까지 실행합니다"
+  professionalImplementationButton.title = ordinaryTurnBusy
+    ? "일반 응답이 끝난 뒤 구현·검수를 시작할 수 있습니다"
+    : specialistPlanReady
+      ? "기획 검수를 통과한 작업을 구현·검수·기록까지 실행합니다"
     : implementationConfigured
       ? "먼저 기획·검수를 통과시켜 주세요"
       : `구현·검토 담당자가 필요합니다. ${roleSetupHint}`;
@@ -1396,6 +1411,29 @@ function renderHeader() {
       item.classList.toggle("is-complete", current >= 0 && index < current);
     });
   }
+  renderProfessionalStatusDetail();
+}
+
+function renderProfessionalStatusDetail() {
+  const box = document.getElementById("professional-status-detail");
+  if (!box) return;
+  const parts = [];
+  if (specialistStopReason) {
+    let label = specialistStopReason;
+    if (specialistStopReason === "CHECKPOINT_FAILED") {
+      label = "Checkpoint 실패";
+    } else if (specialistStopReason === "TASK_CONTRACT_INCOMPLETE") {
+      label = specialistMissingSections && specialistMissingSections.length > 0
+        ? `Task 계약 불완전 (누락: ${specialistMissingSections.join(", ")})`
+        : "Task 계약 불완전";
+    }
+    parts.push("Stop: " + label);
+  }
+  if (specialistCheckpointProtection) {
+    const icon = specialistCheckpointProtection === "protected" ? "✓" : "✗";
+    parts.push("Checkpoint " + icon);
+  }
+  box.textContent = parts.join(" · ");
 }
 
 // --- 에이전트 칩 + 팝오버 ---
@@ -1566,7 +1604,6 @@ function makeField(labelText, control) {
 
 // 다른 에이전트의 메시지를 선택한 에이전트에게 전달(Handoff)해 이어서 답하게 합니다.
 function openHandoffPopover(anchor, messageId, sourceAuthor) {
-  const source = agentById(sourceAuthor);
   const options = agents.filter((agent) => agent.available && agent.enabled !== false && agent.id !== sourceAuthor);
   if (options.length === 0) {
     openPopover(anchor, (root) => {
@@ -1624,14 +1661,19 @@ function openHandoffPopover(anchor, messageId, sourceAuthor) {
     confirm.type = "button";
     confirm.className = "button-primary";
     confirm.textContent = "전달";
-      confirm.addEventListener("click", async () => {
-        const target = targetSelect.value;
-        const intent = intentSelect.value;
+    confirm.addEventListener("click", async () => {
+      const intent = intentSelect.value;
+      const target = targetSelect.value;
+      if (!target) {
         closePopover();
-        await call(
-          window.chatApi.handoffMessage(sessionMeta?.id, target, messageId, intent)
-        );
-      });
+        flashNotice("전달 대상 에이전트를 찾을 수 없습니다.");
+        return;
+      }
+      closePopover();
+      await call(
+        window.chatApi.handoffMessage(sessionMeta?.id, target, messageId, intent)
+      );
+    });
     actions.append(cancel, confirm);
     root.append(actions);
   });
@@ -2922,23 +2964,25 @@ discussionButton.addEventListener("click", () => {
 
 // --- 워크스페이스 / 권한 ---
 workspaceButton.addEventListener("click", async () => {
-  const result = await call(window.chatApi.workspaceChoose(activeSessionId));
-  if (result && !result.canceled && result.meta) {
-    sessionMeta = result.meta;
+  const result = await call(window.chatApi.projectsWorkspaceChoose(activeProjectId));
+  if (result && !result.canceled && result.project) {
+    if (result.projects) projects = result.projects;
     sessions = result.sessions || sessions;
     renderSessions();
+    renderProjects();
     renderHeader();
   }
 });
 
 workspaceButton.addEventListener("contextmenu", async (event) => {
   event.preventDefault();
-  if (!sessionMeta?.workspace) return;
-  const result = await call(window.chatApi.workspaceClear(activeSessionId));
-  if (result?.meta) {
-    sessionMeta = result.meta;
+  if (!activeProjectEntry()?.workspace) return;
+  const result = await call(window.chatApi.projectsWorkspaceClear(activeProjectId));
+  if (result?.project) {
+    if (result.projects) projects = result.projects;
     sessions = result.sessions || sessions;
     renderSessions();
+    renderProjects();
     renderHeader();
   }
 });
@@ -3405,6 +3449,49 @@ function renderMessage(message) {
       stripMarkdown(message.text || "")
     );
     actions.append(copyMarkdownBtn, copyPlainBtn);
+
+    // 쉽게 설명 독립 버튼: 원문 작성 에이전트를 기본 대상으로 즉시 실행
+    const simplifyBtn = document.createElement("button");
+    simplifyBtn.type = "button";
+    simplifyBtn.className = "message-simplify-button";
+    simplifyBtn.textContent = "\u{1F4A1} 쉽게 설명";
+    // 같은 저자 + 같은 모델 고정 계약: 원문 작성 에이전트만 수행할 수 있고
+    // 다른 에이전트로 대체하지 않습니다. 실제 구체적 모델 정보가 없거나 사용할 수 없으면 버튼을 비활성화합니다.
+    const simplifyAuthor = agentById(message.author);
+    const simplifyModel =
+      message.agentMeta?.resolvedModel ||
+      (message.agentMeta?.model && message.agentMeta.model !== "default"
+        ? message.agentMeta.model
+        : null);
+    const simplifyAuthorUsable = Boolean(
+      simplifyAuthor && simplifyAuthor.available && simplifyAuthor.enabled !== false && simplifyModel
+    );
+    simplifyBtn.title = !simplifyModel
+      ? "원문 작성 당시 실제 모델을 확인할 수 없어 쉽게 설명을 실행할 수 없습니다"
+      : simplifyAuthorUsable
+        ? "원문을 작성한 에이전트가 같은 모델로 알기 쉽게 다시 설명합니다"
+        : "원문을 작성한 에이전트를 사용할 수 없어 쉽게 설명을 실행할 수 없습니다";
+    if (specialistRunning || specialistLocksComposer() || !simplifyAuthorUsable) {
+      simplifyBtn.disabled = true;
+      simplifyBtn.classList.add("is-disabled");
+    }
+    simplifyBtn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      if (specialistRunning || specialistLocksComposer()) return;
+      // fallback 금지: 원문 작성 에이전트나 실제 모델 정보를 쓸 수 없으면 실행하지 않습니다.
+      const target = agentById(message.author);
+      const targetModel =
+        message.agentMeta?.resolvedModel ||
+        (message.agentMeta?.model && message.agentMeta.model !== "default"
+          ? message.agentMeta.model
+          : null);
+      if (!target || !target.available || target.enabled === false || !targetModel) {
+        flashNotice("원문 작성 에이전트나 실제 모델 정보를 확인할 수 없어 쉽게 설명을 실행할 수 없습니다.");
+        return;
+      }
+      await call(window.chatApi.handoffMessage(sessionMeta?.id, target.id, message.id, "SIMPLIFY_SELF"));
+    });
+    actions.append(simplifyBtn);
 
     const handoffBtn = document.createElement("button");
     handoffBtn.type = "button";
@@ -3876,6 +3963,25 @@ async function sendCurrentMessage() {
     composerInput.focus();
     return;
   }
+  // READY 상태에서 텍스트 입력은 기획 수정으로 라우팅한다.
+  if (specialistNode === "READY" && !specialistActive && text) {
+    const draftText = composerInput.value;
+    composerInput.value = "";
+    closeMentionPopup();
+    autoresize();
+    const result = await call(window.chatApi.specialistPlanAnswer(activeSessionId, text));
+    if (!result) {
+      composerInput.value = draftText;
+      autoresize();
+    } else {
+      if (result.meta) sessionMeta = result.meta;
+      if (result.specialist) setSpecialistState(result.specialist);
+    }
+    syncComposerLock();
+    renderHeader();
+    composerInput.focus();
+    return;
+  }
   if (specialistLocksComposer()) {
     flashNotice("전문 실행이 진행 중이거나 승인 대기 중입니다. 먼저 작업을 완료하거나 취소해 주세요.");
     return;
@@ -3889,10 +3995,21 @@ async function sendCurrentMessage() {
   closeMentionPopup();
   autoresize();
   const independent = isIndependentResponseMode;
-  const result = await call(window.chatApi.send(activeSessionId, text, attachmentIds, independent));
+  const result = await call(
+    window.chatApi.send(
+      activeSessionId,
+      text,
+      attachmentIds,
+      independent,
+      professionalModeEnabled
+    )
+  );
   if (result) {
     pendingAttachments = [];
     renderPendingAttachments();
+    if (professionalModeEnabled) {
+      flashNotice("작업 요청을 기록했습니다. PLAN 또는 전체 실행을 선택하세요.", false);
+    }
   } else {
     // 실패 시 작성 중이던 내용을 그대로 복원한다.
     composerInput.value = draftText;
@@ -4012,6 +4129,7 @@ function applyFullState(full) {
     setSpecialistState(full.session.specialist || {});
     typingAgents.clear();
     for (const agentId of full.session.typing || []) typingAgents.add(agentId);
+    roomTurnState = full.session.turnState || { current: null, queue: [], deferred: [] };
     pendingAttachments = full.session.pendingAttachments || [];
     renderAllMessages(full.session.messages);
     scrollToBottom(true);
@@ -4054,11 +4172,26 @@ window.chatApi.onTyping(({ sessionId, agentId, busy }) => {
   else typingAgents.delete(agentId);
   renderTyping();
 });
+window.chatApi.onTurnState(({ sessionId, ...state }) => {
+  if (sessionId !== activeSessionId) return;
+  roomTurnState = {
+    current: state.current || null,
+    queue: Array.isArray(state.queue) ? state.queue : [],
+    deferred: Array.isArray(state.deferred) ? state.deferred : [],
+  };
+  renderHeader();
+});
 window.chatApi.onReset(({ sessionId }) => {
   if (sessionId !== activeSessionId) return;
   renderAllMessages([]);
   chatMessages = [];
   typingAgents.clear();
+  roomTurnState = { current: null, queue: [], deferred: [] };
+  // Stage C — 방 reset(중지/초기화) 시 남은 승인 카드를 모두 제거한다(late accept 방지 UX).
+  approvalQueue.length = 0;
+  activeApproval = null;
+  approvalBackdrop.hidden = true;
+  syncComposerLock();
   renderTyping();
 });
 window.chatApi.onSystemNotice(({ text }) => {
@@ -4100,8 +4233,24 @@ function lockComposer(locked) {
   sendButton.disabled = locked;
   attachButton.disabled = locked || specialistNeedsInput;
   if (specialistNeedsInput) {
-    composerInput.placeholder = "기획자의 Open Question에 답하세요 (Enter 전송)";
-    sendButton.textContent = "답변 보내기";
+    if (specialistStopReason === "CHECKPOINT_FAILED") {
+      composerInput.placeholder = "아래에서 다음 처리를 선택하세요";
+      composerInput.disabled = true;
+      sendButton.textContent = "선택 대기";
+    } else if (specialistStopReason === "TASK_CONTRACT_INCOMPLETE") {
+      composerInput.placeholder = "기획을 보완하려면 수정 사항을 입력하세요 (Enter 전송)";
+      composerInput.disabled = false;
+      sendButton.textContent = "기획 보완";
+    } else {
+      composerInput.placeholder = "기획자의 Open Question에 답하세요 (Enter 전송)";
+      composerInput.disabled = false;
+      sendButton.textContent = "답변 보내기";
+    }
+  } else if (specialistNode === "READY" && !specialistActive) {
+    composerInput.disabled = false;
+    sendButton.disabled = false;
+    composerInput.placeholder = "기획을 수정하려면 변경사항을 입력하세요. '실행' 버튼으로 시작합니다 (Enter 전송)";
+    sendButton.textContent = "기획 수정";
   } else {
     composerInput.placeholder = locked ? "전문 실행이 끝난 뒤 입력할 수 있습니다" : "질문이나 작업을 입력하세요  (@로 대상 지정 · Enter 전송)";
     sendButton.textContent = "전송";
@@ -4132,6 +4281,22 @@ approvalDeny.addEventListener("click", () => answerApproval("deny"));
 window.chatApi.onApprovalRequest((payload) => {
   approvalQueue.push(payload);
   showNextApproval();
+});
+// Stage C — same-turn 승인 카드가 turn 종료/취소/서버 resolved로 무효화되면 dismiss한다
+// (native protocol id 노출 없음; Agora approvalId만 사용). late accept를 UX에서도 막는다.
+function dismissApproval(approvalId) {
+  const idx = approvalQueue.findIndex((a) => a.approvalId === approvalId);
+  if (idx >= 0) approvalQueue.splice(idx, 1);
+  if (activeApproval && activeApproval.approvalId === approvalId) {
+    activeApproval = null;
+    approvalBackdrop.hidden = true;
+    syncComposerLock();
+    showNextApproval();
+  }
+}
+window.chatApi.onApprovalResolved(({ sessionId, approvalId }) => {
+  if (sessionId !== activeSessionId) return;
+  dismissApproval(approvalId);
 });
 window.chatApi.onAppearance(applyAppearance);
 

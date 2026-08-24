@@ -10,6 +10,7 @@ const {
   createCheckpoint,
   restoreCheckpoint,
   cleanupCheckpoint,
+  CHECKPOINT_FAILURE_CODES,
 } = require("../src/agora/turn-checkpoint");
 
 function git(root, args) {
@@ -18,11 +19,12 @@ function git(root, args) {
 
 function makeTempRepo(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agora-checkpoint-test-"));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  git(dir, ["init", "-q"]);
-  git(dir, ["config", "user.email", "test@example.com"]);
-  git(dir, ["config", "user.name", "Test"]);
-  return dir;
+  const real = fs.realpathSync(dir);
+  t.after(() => fs.rmSync(real, { recursive: true, force: true }));
+  git(real, ["init", "-q"]);
+  git(real, ["config", "user.email", "test@example.com"]);
+  git(real, ["config", "user.name", "Test"]);
+  return real;
 }
 
 test("git이 아닌 폴더에서는 checkpoint를 지원하지 않는다", async (t) => {
@@ -35,6 +37,47 @@ test("git이 아닌 폴더에서는 checkpoint를 지원하지 않는다", async
 test("workspace가 없으면 checkpoint를 지원하지 않는다", async () => {
   const checkpoint = await createCheckpoint(null);
   assert.equal(checkpoint.supported, false);
+});
+
+test("저장소 쓰기 실패는 OS raw code가 아니라 CHECKPOINT_* enum으로 보고한다", async (t) => {
+  const repo = makeTempRepo(t);
+  fs.writeFileSync(path.join(repo, "a.txt"), "hello", "utf8");
+  git(repo, ["add", "."]);
+  git(repo, ["commit", "-qm", "init"]);
+
+  // storageRoot 자리에 "파일"을 만들어 mkdirSync가 ENOTDIR/EEXIST로 실패하게 한다.
+  const blocker = path.join(repo, "blocked-root");
+  fs.writeFileSync(blocker, "not a directory", "utf8");
+
+  const checkpoint = await createCheckpoint(repo, { storageRoot: path.join(blocker, "nested") });
+  assert.equal(checkpoint.supported, false);
+  assert.equal(checkpoint.failed, true);
+  assert.ok(
+    CHECKPOINT_FAILURE_CODES.includes(checkpoint.reason),
+    `reason은 CHECKPOINT_* enum이어야 하는데 실제: ${checkpoint.reason}`
+  );
+  assert.ok(
+    !/^E[A-Z]+$/.test(checkpoint.reason),
+    `OS raw error code가 그대로 노출되면 안 된다: ${checkpoint.reason}`
+  );
+  assert.equal(checkpoint.reason, "CHECKPOINT_STORAGE_FAILED");
+});
+
+test("Git 저장소인데 백업 생성에 실패하면 failed:true와 taxonomy reason을 반환한다", async (t) => {
+  // 커밋이 없는 리포: git rev-parse HEAD가 실패해 catch 블록에서
+  // supported:false + failed:true + reason(taxonomy)를 반환한다.
+  let dir;
+  try { dir = fs.mkdtempSync(path.join(os.tmpdir(), "agora-checkpoint-fail-")); }
+  catch { throw new Error("tempdir"); }
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  git(dir, ["init", "-q"]);
+  git(dir, ["config", "user.email", "test@example.com"]);
+  git(dir, ["config", "user.name", "Test"]);
+
+  const checkpoint = await createCheckpoint(dir);
+  assert.equal(checkpoint.supported, false);
+  assert.equal(checkpoint.failed, true);
+  assert.equal(checkpoint.reason, "CHECKPOINT_GIT_FAILED");
 });
 
 test("checkpoint 생성 후 Builder 변경만 되돌리고 사용자 사전 변경은 보존한다", async (t) => {
@@ -137,4 +180,31 @@ test("checkpoint schema v2: untracked 사본이 변조되면 복원을 거부한
 
   assert.equal(fs.readFileSync(userNote, "utf8"), "original note\n");
   cleanupCheckpoint(checkpoint);
+});
+
+test("정상 checkpoint는 생성 직후 자체 검증을 거쳐 supported:true를 반환한다", async (t) => {
+  const repo = makeTempRepo(t);
+  git(repo, ["commit", "--allow-empty", "-qm", "init"]);
+  fs.writeFileSync(path.join(repo, "sample.txt"), "hello world\n", "utf8");
+
+  const checkpoint = await createCheckpoint(repo);
+  assert.equal(checkpoint.supported, true);
+  assert.equal(typeof checkpoint.checkpointId, "string");
+  assert.equal(checkpoint.workspace, fs.realpathSync(repo));
+  cleanupCheckpoint(checkpoint);
+});
+
+test("생성 시 artifact 저장이 실패하면 failed:true와 CHECKPOINT_* taxonomy reason을 반환한다", async (t) => {
+  const repo = makeTempRepo(t);
+  git(repo, ["commit", "--allow-empty", "-qm", "init"]);
+  fs.writeFileSync(path.join(repo, "sample.txt"), "test content\n", "utf8");
+
+  // storageRoot를 파일로 만들어 디렉터리 생성이 실패하도록 유도
+  const badRoot = path.join(repo, "bad-storage-root");
+  fs.writeFileSync(badRoot, "blocker", "utf8");
+
+  const checkpoint = await createCheckpoint(repo, { storageRoot: badRoot });
+  assert.equal(checkpoint.supported, false);
+  assert.equal(checkpoint.failed, true);
+  assert.equal(checkpoint.reason, "CHECKPOINT_STORAGE_FAILED");
 });

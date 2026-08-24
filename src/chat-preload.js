@@ -44,6 +44,10 @@ const INVOKE = Object.freeze({
   SPECIALIST_BLOCKED: "chat:specialist:blocked",
   SPECIALIST_BLOCK_DETAILS: "chat:specialist:block-details",
   SPECIALIST_REPLAN_BLOCKED: "chat:specialist:replan-blocked",
+  SPECIALIST_PENDING_APPROVALS: "chat:specialist:pending-approvals",
+  SPECIALIST_RESOLVE_APPROVAL: "chat:specialist:resolve-approval",
+  SPECIALIST_RECORD_INPUT_RETRIEVAL: "chat:specialist:record-input-retrieval",
+  SPECIALIST_INPUT_USAGE: "chat:specialist:input-usage",
   TASK_OPEN_FILE: "chat:task:open-file",
   TASK_READ_FILE: "chat:task:read-file",
   MESSAGE_HANDOFF: "chat:message:handoff",
@@ -104,14 +108,21 @@ contextBridge.exposeInMainWorld("chatApi", {
 
   sessionsCreate: () => ipcRenderer.invoke(INVOKE.SESSIONS_CREATE),
   sessionsSelect: (sessionId) => ipcRenderer.invoke(INVOKE.SESSIONS_SELECT, { sessionId }),
-  sessionsMove: (sessionId, projectId, applyProjectWorkspace = false) =>
-    ipcRenderer.invoke(INVOKE.SESSIONS_MOVE, { sessionId, projectId, applyProjectWorkspace }),
+  // 프로젝트 이동 시 대상 프로젝트의 workspace를 항상 상속합니다(선택 옵션 없음).
+  sessionsMove: (sessionId, projectId) =>
+    ipcRenderer.invoke(INVOKE.SESSIONS_MOVE, { sessionId, projectId }),
   sessionsRename: (sessionId, title) =>
     ipcRenderer.invoke(INVOKE.SESSIONS_RENAME, { sessionId, title }),
   sessionsDelete: (sessionId) => ipcRenderer.invoke(INVOKE.SESSIONS_DELETE, { sessionId }),
 
-  send: (sessionId, text, attachmentIds, independent = false) =>
-    ipcRenderer.invoke(INVOKE.SEND, { sessionId, text, attachmentIds, independent }),
+  send: (sessionId, text, attachmentIds, independent = false, professionalDraft = false) =>
+    ipcRenderer.invoke(INVOKE.SEND, {
+      sessionId,
+      text,
+      attachmentIds,
+      independent,
+      professionalDraft,
+    }),
   stop: (sessionId) => ipcRenderer.invoke(INVOKE.STOP, { sessionId }),
   turnInterject: (sessionId) => ipcRenderer.invoke(INVOKE.TURN_INTERJECT, { sessionId }),
   turnCancel: (sessionId, turnId) =>
@@ -134,6 +145,17 @@ contextBridge.exposeInMainWorld("chatApi", {
     ipcRenderer.invoke(INVOKE.SPECIALIST_BLOCK_DETAILS, { sessionId }),
   specialistReplanBlocked: (sessionId, workspaceAction) =>
     ipcRenderer.invoke(INVOKE.SPECIALIST_REPLAN_BLOCKED, { sessionId, workspaceAction }),
+  // Stage D §20 — 사용자 승인이 필요한 확인 항목의 조회/해소.
+  // Reviewer가 대신 풀 수 없는 항목이므로 사용자 경로가 반드시 있어야 한다.
+  specialistPendingApprovals: (sessionId) =>
+    ipcRenderer.invoke(INVOKE.SPECIALIST_PENDING_APPROVALS, { sessionId }),
+  specialistResolveApproval: (sessionId, criterionId, approved, note) =>
+    ipcRenderer.invoke(INVOKE.SPECIALIST_RESOLVE_APPROVAL, { sessionId, criterionId, approved, note }),
+  // Stage D §3.1 — live 입력의 실제 사용 기록/조회.
+  specialistRecordInputRetrieval: (sessionId, inputId, metadata = {}) =>
+    ipcRenderer.invoke(INVOKE.SPECIALIST_RECORD_INPUT_RETRIEVAL, { sessionId, inputId, ...metadata }),
+  specialistInputUsage: (sessionId) =>
+    ipcRenderer.invoke(INVOKE.SPECIALIST_INPUT_USAGE, { sessionId }),
   openTaskFile: (sessionId, taskPath) =>
     ipcRenderer.invoke(INVOKE.TASK_OPEN_FILE, { sessionId, taskPath }),
   readTaskFile: (sessionId, taskPath) =>
@@ -177,6 +199,7 @@ contextBridge.exposeInMainWorld("chatApi", {
   onWorkflowChanged: (handler) => subscribe("chat:workflow-changed", handler),
   onAgents: (handler) => subscribe("chat:agents", handler),
   onApprovalRequest: (handler) => subscribe("chat:approval-request", handler),
+  onApprovalResolved: (handler) => subscribe("chat:approval-resolved", handler),
   onSystemNotice: (handler) => subscribe("chat:system-notice", handler),
   onAppearance: (handler) => subscribe("appearance:update", handler),
   onMaximizedState: (handler) => subscribe("chat:maximized-state", handler),

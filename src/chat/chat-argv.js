@@ -3,6 +3,8 @@
 // - 위험 플래그는 사용자가 에이전트별 자동 승인을 명시한 workspace-write에서만 허용합니다.
 // - 모델/노력 문자열은 허용 문자만 통과시켜 .cmd 셸 경유 시 주입을 차단합니다.
 
+const { processProviderPolicy } = require("./chat-provider-policy");
+
 const PERMISSION_MODES = Object.freeze(["chat", "workspace-read", "workspace-write"]);
 const PERMISSION_RANK = Object.freeze({
   chat: 0,
@@ -119,7 +121,7 @@ function claudeArgv({ permissionMode, workspace, model, effort, attachmentsDir, 
     return argv;
   }
   // workspace-write: 편집 자동 승인까지만. Bash 등 파괴 가능 도구는 기본 정책에 맡기고
-  // 위험 우회 플래그는 절대 쓰지 않습니다.
+  // 위험 우회 플래그는 autoApprove를 명시한 경우에만 아래 allowlist로 제한합니다.
   argv.push("--permission-mode", "acceptEdits", "--strict-mcp-config");
   if (autoApprove) argv.push("--dangerously-skip-permissions");
   argv.push("--add-dir", workspace);
@@ -148,7 +150,7 @@ function codexArgv({ permissionMode, workspace, model, effort, outputFile, image
 }
 
 // agy 1.1.10 검증 플래그 기반 매핑. 위험 플래그(--dangerously-skip-permissions)는
-// 어떤 모드에서도 사용하지 않습니다.
+// autoApprove가 명시된 workspace-write에서만 허용합니다.
 // - chat: plan 모드(수정 불가) + 샌드박스 + 슬래시 명령 차단
 // - workspace-read: plan 모드 + 샌드박스 + add-dir
 // - workspace-write: accept-edits 모드 + 샌드박스 + add-dir
@@ -201,8 +203,6 @@ function buildDeliveries({ providerId, permissionMode, attachments }) {
       }
       return { id: attachment.id, method: "path" };
     }
-    // 그 외 확인되지 않은 CLI: 작은 텍스트 인라인 외에는 전달 불가로 배지 처리합니다.
-    if (canInline(attachment)) return { id: attachment.id, method: "inline" };
     return { id: attachment.id, method: "unsupported" };
   });
 }
@@ -223,6 +223,10 @@ function buildAgentInvocation(input = {}) {
 
   if (!provider || provider.status !== "cli") {
     return { ok: false, error: provider?.reason || "CLI를 사용할 수 없습니다." };
+  }
+  const providerPolicy = processProviderPolicy(provider);
+  if (!providerPolicy.ok) {
+    return { ok: false, error: providerPolicy.error, stopReason: providerPolicy.reason };
   }
   if (!PERMISSION_MODES.includes(permissionMode)) {
     return { ok: false, error: `알 수 없는 권한 모드: ${permissionMode}` };
@@ -299,8 +303,8 @@ function buildAgentInvocation(input = {}) {
       autoApprove,
     });
   } else {
-    // 알 수 없는 프로바이더: 플래그 없이 stdin 대화만 시도합니다.
-    argv = [];
+    // processProviderPolicy()가 위에서 차단하므로 도달할 수 없습니다.
+    return { ok: false, error: "지원되지 않는 Agent Harness입니다.", stopReason: "UNSUPPORTED_PROCESS_PROVIDER" };
   }
 
   return {

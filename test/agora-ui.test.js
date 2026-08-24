@@ -184,7 +184,7 @@ test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있
   assert.match(preload, /projectsSelect: \(projectId\)/);
   assert.match(preload, /projectsUpdate: \(projectId, patch\)/);
   assert.match(preload, /projectsDelete: \(projectId\)/);
-  assert.match(preload, /sessionsMove: \(sessionId, projectId, applyProjectWorkspace = false\)/);
+  assert.match(preload, /sessionsMove: \(sessionId, projectId\)/);
   assert.match(preload, /specialistStart: \(sessionId, options = \{\}\)/);
   assert.match(preload, /specialistPlanAnswer: \(sessionId, text\)/);
   assert.match(preload, /specialistBlockDetails: \(sessionId\)/);
@@ -199,8 +199,8 @@ test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있
   assert.match(renderer, /defaultAgents/);
   assert.match(renderer, /defaultRoles/);
   assert.match(renderer, /function openSessionMovePopover\(anchor, session\)/);
-  assert.match(renderer, /sessionsMove\(session\.id, project\.id, applyWorkspace\)/);
-  assert.match(renderer, /project-move-apply-workspace/);
+  assert.match(renderer, /sessionsMove\(session\.id, project\.id\)/);
+  assert.doesNotMatch(renderer, /project-move-apply-workspace/);
   assert.match(renderer, /전문 모드 역할 설정/);
   assert.match(renderer, /기획 검수 \(선택\)/);
   assert.match(renderer, /runProfessionalAction\(action\)/);
@@ -210,7 +210,7 @@ test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있
   assert.match(html, /role="switch"/);
   assert.match(renderer, /function openPlanPreview\(anchor\)/);
   assert.match(renderer, /누적 요약/);
-  assert.match(ipc, /applyProjectWorkspace = false/);
+  assert.doesNotMatch(ipc, /applyProjectWorkspace = false/);
   assert.match(ipc, /"chat:specialist:start"/);
   assert.match(ipc, /"chat:specialist:plan-answer"/);
   assert.match(ipc, /"chat:task:read-file"/);

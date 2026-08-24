@@ -3,10 +3,10 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { defaultAgoraHome } = require("../app-paths");
 const { writeJsonAtomic } = require("../chat/chat-store");
-const { ROLE_IDS } = require("./project-store");
+const { ROLE_IDS, ProjectStore } = require("./project-store");
 
-const WORKFLOW_SCHEMA_VERSION = 3;
-const SYNC_STATES = Object.freeze(["ok", "missing_file", "hash_mismatch", "duplicate_index"]);
+const WORKFLOW_SCHEMA_VERSION = 4;
+const SYNC_STATES = Object.freeze(["ok", "missing_file", "hash_mismatch", "duplicate_index", "superseded"]);
 const TASK_STATUSES = Object.freeze([
   "todo",
   "in_progress",
@@ -141,9 +141,8 @@ class WorkflowStore {
     const exists = fs.existsSync(this.filePath);
     const loaded = readJsonSafe(this.filePath);
     if (loaded && typeof loaded === "object" && !Array.isArray(loaded)) {
-      if (Number(loaded.schemaVersion) > WORKFLOW_SCHEMA_VERSION) {
-        this.readOnly = true;
-      }
+      // 어느 버전이든 기존 결정/작업은 읽어서 표시합니다. 더 새로운
+      // 스키마 버전의 데이터는 쓰기만 차단하고(readOnly) 읽기는 유지합니다.
       this.data = {
         schemaVersion: WORKFLOW_SCHEMA_VERSION,
         decisions: Array.isArray(loaded.decisions)
@@ -153,6 +152,17 @@ class WorkflowStore {
           ? loaded.tasks.map((entry) => normalizeTask(entry, this.now())).filter(Boolean)
           : [],
       };
+      if (Number(loaded.schemaVersion) > WORKFLOW_SCHEMA_VERSION) {
+        this.readOnly = true;
+      } else {
+        // 스키마 3 → 4: 프로젝트 workspace 기준으로 같은 taskPath의 중복 항목을
+        // 해시로 canonical 하나만 남기고 나머지는 superseded로 표시합니다.
+        // schemaVersion bump는 마이그레이션 게이트로만 사용하고 실제 로직은
+        // migrateOrphanedTasks가 담당합니다.
+        if (Number(loaded.schemaVersion) < WORKFLOW_SCHEMA_VERSION) {
+          this.migrateOrphanedTasks();
+        }
+      }
     } else if (exists) {
       // ponytail: 손상된 workflow 파일은 덮어쓰지 않고 읽기 전용으로 열어 데이터 손실을 막습니다.
       this.readOnly = true;
@@ -241,9 +251,20 @@ class WorkflowStore {
     });
   }
 
-  listTasks(projectId) {
+  listTasks(projectId, options = {}) {
+    const includeMissing = Boolean(options.includeMissing);
+    const includeAll = Boolean(options.includeAll);
+    if (includeAll) {
+      return this.data.tasks
+        .filter((entry) => !projectId || entry.projectId === projectId)
+        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    }
     return this.data.tasks
-      .filter((entry) => !projectId || entry.projectId === projectId)
+      .filter((entry) => {
+        if (projectId && entry.projectId !== projectId) return false;
+        if (includeMissing) return true;
+        return entry.syncState !== "missing_file" && entry.syncState !== "superseded";
+      })
       .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
   }
 
@@ -353,40 +374,80 @@ class WorkflowStore {
 
       this.mutateAndPersist(() => {
         let changed = false;
-        const seenPaths = new Set();
+        // 동일 taskPath 그룹: 현재 워크스페이스 파일 hash와 일치하는 항목을
+        // canonical로 선택합니다. 일치하는 항목이 하나도 없으면(disk 파일이
+        // 외부에서 바뀌었거나 새 revision) 기존 항목의 taskHash·실행 상태를
+        // 덮어쓰지 않고, disk 기준으로 새 canonical 항목을 만들고 기존 항목들은
+        // 전부 superseded로 표시합니다. 과거 Run 실행 상태가 새 내용에 잘못
+        // 붙는 provenance 오염을 막습니다.
+        const pathGroups = new Map();
         for (const task of this.data.tasks) {
           if (task.projectId !== projectId || task.contentSource !== "file" || !task.taskPath) continue;
           const normPath = task.taskPath.replace(/[\\/]+/g, path.sep);
-          if (seenPaths.has(normPath)) {
-            if (task.syncState !== "duplicate_index") {
-              task.syncState = "duplicate_index";
-              task.updatedAt = this.now();
-              changed = true;
-            }
-            continue;
-          }
-          seenPaths.add(normPath);
+          if (!pathGroups.has(normPath)) pathGroups.set(normPath, []);
+          pathGroups.get(normPath).push(task);
+        }
 
+        const pendingNew = [];
+        for (const [normPath, group] of pathGroups) {
           const onDisk = fileMap.get(normPath);
-          if (!onDisk) {
-            if (task.syncState !== "missing_file") {
-              task.syncState = "missing_file";
-              task.updatedAt = this.now();
+          let canonical = null;
+          if (onDisk) {
+            canonical = group.find((task) => task.taskHash && task.taskHash === onDisk.hash);
+          }
+          if (onDisk && !canonical) {
+            // 기존 항목을 재사용해 덮어쓰지 않는다. 새 canonical 항목을 만든다.
+            const first = group[0];
+            if (first) {
+              pendingNew.push({
+                projectId,
+                title: onDisk.filename,
+                description: "",
+                contentSource: "file",
+                taskPath: normPath,
+                taskHash: onDisk.hash,
+                status: "todo",
+                role: first.role || "implementation",
+                origin: first.origin || "planner",
+                syncState: "ok",
+                chatId: first.chatId || null,
+                decisionId: first.decisionId || null,
+              });
               changed = true;
             }
-          } else {
-            if (task.taskHash && task.taskHash !== onDisk.hash) {
-              if (task.syncState !== "hash_mismatch") {
-                task.syncState = "hash_mismatch";
+          }
+          for (const task of group) {
+            if (!onDisk) {
+              if (task.syncState !== "missing_file") {
+                task.syncState = "missing_file";
                 task.updatedAt = this.now();
                 changed = true;
               }
-            } else if (task.syncState !== "ok") {
-              task.syncState = "ok";
+              continue;
+            }
+            if (task === canonical) {
+              if (task.syncState !== "ok") {
+                task.syncState = "ok";
+                task.updatedAt = this.now();
+                changed = true;
+              }
+              continue;
+            }
+            // disk 파일이 존재하는데 canonical이 아니면 그룹 크기와 무관하게
+            // superseded로 표시합니다. 기존 revision이 하나뿐인 상태에서 파일이
+            // 외부 수정되어 hash가 어긋난 경우(canonical === null)에도 과거
+            // 항목이 활성 상태로 남지 않도록 fail-closed 처리합니다.
+            if (task.syncState !== "superseded") {
+              task.syncState = "superseded";
               task.updatedAt = this.now();
               changed = true;
             }
           }
+        }
+
+        for (const input of pendingNew) {
+          const built = normalizeTask(input, this.now());
+          if (built) this.data.tasks.push(built);
         }
 
         for (const [relPath, info] of fileMap.entries()) {
@@ -413,10 +474,121 @@ class WorkflowStore {
 
         return changed;
       });
-      return { ok: true, tasks: this.listTasks(projectId) };
+      // 동기화 결과는 missing_file/superseded까지 포함해 반환해야 호출자가
+      // 상태를 볼 수 있습니다. 기본 목록(listTasks)에서는 숨겨집니다.
+      return { ok: true, tasks: this.listTasks(projectId, { includeMissing: true }) };
     } catch {
       return { ok: false };
     }
+  }
+
+  // 스키마 3 → 4 마이그레이션: 프로젝트 workspace 기준으로 같은 taskPath의
+  // 중복 인덱스 항목을 canonical 하나로 정리합니다. 파일 hash가 일치하는 항목을
+  // canonical로 선택하고, 없으면 가장 최근 업데이트 항목을 사용합니다.
+  // 파일 자체가 사라진 항목은 missing_file로 유지되며, 같은 taskPath에서
+  // canonical이 아닌 항목은 superseded로 표시합니다. 실제 삭제는 하지 않습니다.
+  migrateOrphanedTasks() {
+    if (this.readOnly) return { ok: false, changed: false };
+    let changed = false;
+    try {
+      const projects = new ProjectStore({ root: this.root }).init();
+      const projectList = projects?.listProjects() || [];
+      const byId = new Map(projectList.map((entry) => [entry.id, entry]));
+
+      // 프로젝트별 workspace로 taskPath 그룹 구성
+      const groupsByProject = new Map();
+      for (const task of this.data.tasks) {
+        if (task.contentSource !== "file" || !task.taskPath || !task.projectId) continue;
+        if (!groupsByProject.has(task.projectId)) groupsByProject.set(task.projectId, new Map());
+        const groups = groupsByProject.get(task.projectId);
+        const normPath = task.taskPath.replace(/[\\/]+/g, path.sep);
+        if (!groups.has(normPath)) groups.set(normPath, []);
+        groups.get(normPath).push(task);
+      }
+
+      for (const [projectId, groups] of groupsByProject) {
+        const project = byId.get(projectId);
+        const workspace = project?.workspace || null;
+        let fileMap = new Map();
+        if (workspace) {
+          try {
+            const resolvedRoot = fs.realpathSync(workspace);
+            const memoryTasksDir = path.join(resolvedRoot, ".project-memory", "tasks");
+            if (fs.existsSync(memoryTasksDir)) {
+              const taskFiles = fs.readdirSync(memoryTasksDir).filter((name) => /^TASK-\d+\.md$/i.test(name));
+              for (const filename of taskFiles) {
+                const absPath = path.join(memoryTasksDir, filename);
+                const content = fs.readFileSync(absPath, "utf8");
+                const hash = crypto.createHash("sha256").update(content, "utf8").digest("hex");
+                const relPath = path.join(".project-memory", "tasks", filename);
+                fileMap.set(relPath, { filename, hash });
+              }
+            }
+          } catch {
+            fileMap = new Map();
+          }
+        }
+
+        for (const [normPath, group] of groups) {
+          const onDisk = fileMap.get(normPath);
+          if (!onDisk) {
+            for (const task of group) {
+              if (task.syncState !== "missing_file") {
+                task.syncState = "missing_file";
+                task.updatedAt = this.now();
+                changed = true;
+              }
+            }
+            continue;
+          }
+          let canonical = group.find((task) => task.taskHash && task.taskHash === onDisk.hash) || null;
+          if (!canonical) {
+            // 기존 항목을 덮어써 provenance를 오염시키지 않는다. disk 기준으로
+            // 새 canonical 항목을 만들고 기존 항목은 superseded로 처리한다.
+            const first = group[0];
+            if (first) {
+              const built = normalizeTask({
+                projectId,
+                title: onDisk.filename,
+                description: "",
+                contentSource: "file",
+                taskPath: normPath,
+                taskHash: onDisk.hash,
+                status: "todo",
+                role: first.role || "implementation",
+                origin: first.origin || "planner",
+                syncState: "ok",
+                chatId: first.chatId || null,
+                decisionId: first.decisionId || null,
+              }, this.now());
+              if (built) {
+                this.data.tasks.push(built);
+                canonical = built;
+                changed = true;
+              }
+            }
+          } else if (canonical.syncState !== "ok") {
+            canonical.syncState = "ok";
+            canonical.updatedAt = this.now();
+            changed = true;
+          }
+          for (const task of group) {
+            if (task === canonical) continue;
+            if (task.syncState !== "superseded") {
+              task.syncState = "superseded";
+              task.updatedAt = this.now();
+              changed = true;
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.warn("[agora] workflow 마이그레이션 중 오류:", error?.message || error);
+    }
+    if (changed) this.persist();
+    this.data.schemaVersion = WORKFLOW_SCHEMA_VERSION;
+    this.persist();
+    return { ok: true, changed };
   }
 
   forProject(projectId) {

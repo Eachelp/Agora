@@ -582,6 +582,92 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
     return profile.active ? `${label} (현재)` : label;
   }
 
+  // Stage C — provider account change는 hard native session boundary입니다.
+  //
+  // 요구 순서:
+  //   preflight/검증
+  //     → hard session boundary 설치(managed session INVALIDATE + native forget)
+  //     → pre-boundary inflight turn cancel
+  //     → 그 turn들이 **실제로 settle될 때까지 대기**
+  //     → 그제서야 live credential mutation
+  //     → 필요하면 provider 재시작/reload
+  //
+  // 이렇게 해야 "old 계정 CLI가 아직 물리적으로 살아 있는데 live credential은
+  // 이미 새 계정"인 창이 생기지 않습니다. cancel()은 실제 child close보다 먼저
+  // 반환할 수 있으므로 cancel 호출만으로는 부족합니다.
+  //
+  // 이것은 best-effort UI 통지가 아니라 safety boundary입니다: 설치/대기가
+  // 실패하면 예외를 던져서 호출자가 credential을 건드리지 않게 합니다(fail-closed).
+  // managed harness가 아예 없는 구성만 명시적으로 immediately-safe 성공입니다.
+  //
+  // A→B→A도 항상 fresh session입니다. 이 모듈은 adapter internals를 만지지 않고
+  // chatFeature의 provider-neutral seam만 부릅니다.
+  async function installAccountBoundary(provider) {
+    const chatFeature = getChatFeature();
+    if (!chatFeature) {
+      // chat feature가 아직 없는 구성에는 무효화할 native session도, 기다릴 inflight
+      // turn도 없습니다. 예외를 삼킨 결과가 아니라 명시적으로 안전한 상태입니다.
+      return { ok: true, immediate: true, complete: () => true };
+    }
+    if (typeof chatFeature.notifyProviderAccountChanged !== "function") {
+      // chat feature는 있는데 boundary seam이 없다 = wiring 결함입니다.
+      // "managed runtime 없음"으로 오분류해 통과시키면 fail-open이 됩니다.
+      throw new Error(
+        `${provider} 계정 세션 경계 seam이 없습니다: chat feature에 notifyProviderAccountChanged가 없습니다.`
+      );
+    }
+    const result = await chatFeature.notifyProviderAccountChanged(provider);
+    if (result && result.ok === false) {
+      // 열린 전환이 있으면 먼저 닫는다. 닫지 않고 던지면 provider admission이
+      // 영원히 잠긴 채로 남습니다.
+      completeAccountBoundary(result, provider);
+      const error = new Error(
+        `${provider} 계정 세션 경계를 설치하지 못해 계정을 전환하지 않았습니다.`
+      );
+      error.accountSwitchSafe = true;
+      throw error;
+    }
+    if (!result || typeof result !== "object" || typeof result.complete !== "function") {
+      // seam이 전환 handle 계약을 지키지 않았습니다. 닫을 방법이 없는 전환을
+      // 열어 둔 채 credential을 바꾸지는 않습니다(fail-closed).
+      throw new Error(
+        `${provider} 계정 세션 경계 handle이 올바르지 않습니다: complete()가 없습니다.`
+      );
+    }
+    return result;
+  }
+
+  // 전환 트랜잭션을 닫아 managed admission을 다시 엽니다.
+  // credential mutation이 성공하든 실패하든 확정된 뒤 finally에서 호출합니다.
+  // 여기서 실패해도 전환 결과 자체를 뒤집지는 않습니다(로그만 남깁니다).
+  function completeAccountBoundary(boundary, provider) {
+    if (!boundary || typeof boundary.complete !== "function") return;
+    try {
+      boundary.complete();
+    } catch (error) {
+      appendDebugLog(
+        `account lifecycle boundary complete failed (${provider}): ${error?.message || String(error)}`
+      );
+    }
+  }
+
+  // boundary 실패를 credential 무변경 fact로 표시해 호출자에게 전달합니다.
+  // 실패 자체는 절대 삼키지 않습니다(fail-open 금지) — 로그만 남기고 다시 던집니다.
+  async function installAccountBoundaryOrFail(provider) {
+    try {
+      return await installAccountBoundary(provider);
+    } catch (error) {
+      appendDebugLog(
+        `account lifecycle boundary failed (${provider}): ${error?.message || String(error)}`
+      );
+      if (error && typeof error === "object" && error.accountSwitchSafe !== true) {
+        // boundary 설치 실패 시점에는 credential을 아직 건드리지 않았습니다.
+        error.accountSwitchSafe = true;
+      }
+      throw error;
+    }
+  }
+
   // 계정 프로필 실행/전환 결과를 펫 말풍선으로 알려줍니다.
   function showCodexAccountBubble(text) {
     // When the pet is off, surface account errors in the chat window instead of a pet bubble.
@@ -677,6 +763,16 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
     // 프록시가 실제로 config에 주입되어 트래픽이 프록시를 탈 때만 무재시작 경로를 씁니다.
     // (start만 되고 주입이 실패한 상태에서 이 경로로 빠지면 전환이 조용히 무시됩니다.)
     if (codexProxyActive) {
+      let boundary;
+      try {
+        // boundary + old inflight turn 실제 settle까지 대기한 뒤에만 auth를 바꾼다.
+        boundary = await installAccountBoundaryOrFail("codex");
+      } catch (error) {
+        showCodexAccountBubble(
+          `Codex 계정을 전환하지 않았습니다.\n세션 경계를 설치하지 못했습니다.\n${error.message || String(error)}`
+        );
+        return false;
+      }
       try {
         const result = codexAccountSwitcher.switchToProfile(profileKey);
         invalidateProxyAccountsCache();
@@ -688,9 +784,25 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
       } catch (error) {
         showCodexAccountBubble(`Codex auth 전환에 실패했습니다.\n${error.message || String(error)}`);
         return false;
+      } finally {
+        completeAccountBoundary(boundary, "codex");
       }
     }
 
+    let desktopBoundary;
+    try {
+      // boundary + old inflight turn 실제 settle이 먼저다. 실패하면 Codex Desktop을
+      // 멈추지도, auth를 바꾸지도 않는다(아무것도 건드리지 않은 채 fail-closed).
+      desktopBoundary = await installAccountBoundaryOrFail("codex");
+    } catch (error) {
+      showCodexAccountBubble(
+        `Codex 계정을 전환하지 않았습니다.\n세션 경계를 설치하지 못했습니다.\n${error.message || String(error)}`
+      );
+      return false;
+    }
+
+    // stop → auth 교체 → 재실행까지가 하나의 전환 트랜잭션이다. 그 전체 구간 동안
+    // managed admission을 닫아 둔다.
     try {
       showCodexAccountBubble(
         "Codex Desktop App을 멈추고 계정 전환을 준비하는 중입니다."
@@ -738,6 +850,8 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
         `Codex 계정을 전환하지 못했어요.\n${error.message || String(error)}`
       );
       return false;
+    } finally {
+      completeAccountBoundary(desktopBoundary, "codex");
     }
   }
 
@@ -755,7 +869,17 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
   async function switchProviderAccount(provider, profileKey) {
     if (provider === "codex") return switchCodexAccount(profileKey);
     const switcher = provider === "agy" ? antigravityAccountSwitcher : claudeAccountSwitcher;
-    await switcher.switchToProfile(profileKey);
+    // boundary 설치 + old inflight turn 실제 settle까지 대기. 실패하면 여기서
+    // 던져서 switchToProfile(=credential mutation)에 도달하지 않는다.
+    const boundary = await installAccountBoundaryOrFail(provider);
+    try {
+      // switchToProfile은 write 이전에 await snapshotCurrent() 같은 async 구간을
+      // 갖는다. 전환 트랜잭션이 끝날 때까지 admission이 닫혀 있어야 그 구간에
+      // 새 turn이 old credential로 시작하지 않는다.
+      await switcher.switchToProfile(profileKey);
+    } finally {
+      completeAccountBoundary(boundary, provider);
+    }
     clearUsageCache(provider);
     refreshTrayMenu();
     return true;
@@ -802,7 +926,16 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
       } catch {
         // 처음 로그인하는 PC라면 저장할 현재 계정이 없습니다.
       }
-      await antigravityAccountSwitcher.prepareLogin(meta);
+      // boundary 설치 + old inflight turn 실제 settle까지 대기 후에만
+      // prepareLogin(clear + restart = live credential mutation)으로 넘어간다.
+      // 실패하면 던져서 credential을 건드리지 않는다.
+      const boundary = await installAccountBoundaryOrFail("agy");
+      try {
+        // prepareLogin도 clear 이전에 await read() async 구간을 갖는다.
+        await antigravityAccountSwitcher.prepareLogin(meta);
+      } finally {
+        completeAccountBoundary(boundary, "agy");
+      }
       clearUsageCache("agy");
       refreshTrayMenu();
       return true;
@@ -819,8 +952,19 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
         // 처음 로그인하는 PC라면 저장할 현재 계정이 없습니다.
       }
       const scriptPath = writeClaudeLoginScript();
-      const error = await openLoginScript(scriptPath);
-      if (error) throw new Error(error);
+      // 외부 login script가 live credential을 바꾸는 시간 창이 열리기 전에
+      // boundary를 설치하고 old inflight turn이 실제로 끝날 때까지 기다린다.
+      // 실패하면 던져서 login script를 아예 실행하지 않는다.
+      const boundary = await installAccountBoundaryOrFail("claude");
+      try {
+        const error = await openLoginScript(scriptPath);
+        if (error) throw new Error(error);
+      } finally {
+        // launcher 실행이 확정된 시점에 트랜잭션을 닫는다. 외부 터미널에서
+        // 진행되는 로그인 자체는 Agora가 관측할 수 없으므로 그 수명까지
+        // admission을 잠그지 않는다(모든 managed session은 이미 폐기됐다).
+        completeAccountBoundary(boundary, "claude");
+      }
       clearUsageCache("claude");
       return true;
     }
@@ -1042,19 +1186,32 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
     notifySwitch: (account, reason) => {
       // 프록시는 이미 이 계정으로 응답을 스트리밍하는 중입니다. 활성 프로필 영속화(디스크 백업 복사 등
       // 무거운 동기 작업)와 UI 갱신은 응답 중계를 지연시키지 않도록 다음 tick으로 미룹니다.
-      setImmediate(() => {
+      setImmediate(async () => {
+        // 활성 프로필 영속화도 live auth.json을 바꾸는 credential mutation입니다.
+        // boundary 설치 + old inflight turn 실제 settle 이후에만 진행하고,
+        // 실패하면 auth를 건드리지 않습니다(fail-closed).
+        let persistError = null;
+        let boundary;
         try {
+          boundary = await installAccountBoundaryOrFail("codex");
           if (account.key !== "live") {
             codexAccountSwitcher.switchToProfile(account.key);
             invalidateProxyAccountsCache();
             refreshTrayMenu();
           }
         } catch (error) {
+          persistError = error;
           appendDebugLog(`auto-switch persist failed: ${error.message || String(error)}`);
+        } finally {
+          completeAccountBoundary(boundary, "codex");
         }
         appendDebugLog(`codex auto-switch to ${account.key} (${reason})`);
+        // 프록시는 이미 이 계정으로 중계하고 있지만, 활성 프로필 영속화가 실패했다면
+        // "전환 완료"라고 보고하지 않습니다(경계 실패가 성공으로 둔갑하면 안 됩니다).
         showCodexAccountBubble(
-          `Codex 한도가 소진돼 "${account.label}" 계정으로 자동 전환했습니다.\n재시작 없이 바로 적용됐어요.`
+          persistError
+            ? `Codex 한도가 소진돼 "${account.label}" 계정으로 중계 중입니다.\n다만 활성 계정 저장은 실패해서 다음 실행에는 반영되지 않을 수 있어요.\n${persistError.message || String(persistError)}`
+            : `Codex 한도가 소진돼 "${account.label}" 계정으로 자동 전환했습니다.\n재시작 없이 바로 적용됐어요.`
         );
       });
     },

@@ -174,21 +174,22 @@ Recorder   : 새로운 결정을 만들지 않는다.
     ## Requirements
     ...
 
-    ## Constraints
+    ## Implementation Approach
     ...
 
     ## Acceptance Criteria
     ...
 
-    ## Out of Scope
+    ## Verification
     ...
 
-    ## Open Questions / Risks
+    ## Out of Scope
     ...
     ```
 - **Terminal**: `PLAN_READY` / `NEEDS_DECISION`
 
 ### 3.2 Builder — 구현자
+Planner 계약(위 6개 필수 섹션)은 정확한 헤딩으로 반드시 포함해야 하며, 축약 헤딩은 필수 섹션 판정에서 허용되지 않습니다. 각 필수 섹션 아래에는 실질적인 설명이 있어야 합니다.
 
 - **Purpose**: 승인된 Task를 **최소한의 변경으로 정확하게 실행**한다.
 - **Inputs**: Project Rules, Frozen Task Revision, Workspace.
@@ -456,6 +457,33 @@ Retry 또는 Restore 시:
 - 전체 reset(작업 영역 전체를 HEAD로 되돌리기)은 사용하지 않는다.
 - restore와 cleanup은 동일한 안전 경로 해석기를 사용하며 manifest/session/run/workspace 일치와 `..` 탈출을 검증한다. 세션 meta v3의 `professionalRun`이 실행 상태의 기준이며, 기존 `pendingRecovery`는 checkpoint 호환·복구 저널로만 유지한다. 앱 재시작 후 Provider를 자동 호출하지 않는다.
 - git 저장소 판별은 `.git` 항목 존재 여부로 동기 확인하여, 일반(비-git) workspace에서는 git 프로세스를 실행하지 않는다. non-Git 검수는 현재 파일을 읽을 수 있지만 PASS를 자동 완료하지 않고 `DIFF_UNAVAILABLE` 사용자 확인으로 보낸다.
+
+---
+
+**Stage 3 — checkpoint 실패 taxonomy와 3선택지 UX**
+
+- 실패 원인을 enum으로 드러낸다. **각 failure site에서 typed error를 생성**하며, OS raw error code(EACCES/ENOSPC/ENOENT 등)를 최종 reason으로 노출하지 않는다. taxonomy: CHECKPOINT_GIT_FAILED(git 명령 실패) · CHECKPOINT_STORAGE_FAILED(백업 파일 저장 실패) · CHECKPOINT_MANIFEST_FAILED(manifest 기록 실패) · CHECKPOINT_COPY_FAILED(사본 복사/검증 실패) · CHECKPOINT_UNTRACKED_NOT_REGULAR(일반 파일 아님) · CHECKPOINT_UNKNOWN(그 외). catch는 enum 이외의 값을 받지 않는다(fail-closed). 사용자 안내 메시지에도 구체적 원인을 함께 표시한다.
+- 실패 시 반드시 Builder를 시작하지 않고 멈춘다. CHECKPOINT_FAILED 전이는 READY/IMPLEMENTING에서만 가능하며, 상태 노드는 유지한 채 WAITING + stopReason:CHECKPOINT_FAILED로 전환하고 frozenRunId는 유지해 기존 Frozen Run을 재사용한다.
+- 사용자에게 3선택지를 제시한다: ① 재시도(CHECKPOINT_RETRY, 기존 Frozen Run 재사용) ② 무보호 진행(PROCEED_UNPROTECTED, checkpoint 없이 시작하되 checkpointProtection:unavailable_user_approved) ③ 취소(별도 cancel IPC).
+- checkpoint 보호 상태를 evidence/Reviewer/UI까지 end-to-end로 전달한다. checkpointProtection enum: protected | unavailable_non_git | unavailable_checkpoint_failed | unavailable_user_approved. 무보호 실행이면 Reviewer 프롬프트가 사전 workspace snapshot 없음 경고를 붙인다.
+- 무보호 실행을 승인해도 **checkpointFailReason은 지우지 않는다.** 사용자 승인 사실은 별도 영속 필드 userApprovedUnprotectedExecution으로 보존하며, 두 값 모두 evidence에 기록되어 Reviewer가 회귀 검증 신뢰도 제한 사유를 구체적으로 판단할 수 있게 한다.
+- checkpoint 실패 후 재시도·무보호 재개는 **원래 실행 context를 그대로 복원한다.** resume payload에 taskInfo/feedback/maxAutoRevisions를 보존하며, Run 실행 상태(activeRunId/lastRunId)를 기록하려는 호출에 taskPath가 없으면 조용히 성공 처리하지 않고 거부한다(fail-closed). taskInfo 유실로 workflow 인덱스가 갱신되지 않은 채 성공한 것처럼 끝나는 경로를 차단한다.
+
+**Stage 4 — 전문모드 입력 라우팅 + UI 명확화**
+
+- professional-ipc-policy.js: 상태별 허용 IPC를 fail-closed 정책 테이블로 정의한다. 정책에 없는 IPC는 거부된다. 상태는 (node, status) 조합으로 식별한다. **이 테이블은 문서가 아니라 runtime authority다.** chat-ipc.js의 enforceProfessionalPolicy() 게이트를 통해 chat:send · chat:turn:interject · chat:discussion:start · chat:message:handoff가 모두 이 정책을 통과한다.
+- READY 기획 수정: USER_ANSWER_PLAN이 READY+WAITING에서도 허용되며, PLANNING으로 복귀하고 approvedTaskHash를 리셋한다. chat-specialist.js의 answerPlanQuestion이 plan_ready phase에서도 동작하며, 기획 수정 요청으로 구분 표시한다.
+- professional-role-context.js: 역할별 context 경계(sees/excludes)를 중앙 정책으로 정의한다. chat-prompt.js는 이 정책으로 **프롬프트 안내 문구와 실제 context 조립을 모두 결정한다.** includesPromptContext()가 projectContext/workflowContext/memoryContext 포함 여부의 단일 기준이며, 역할별 하드코딩 분기로 중복 정의하지 않는다.
+- 상태별 Composer UX: READY에서 composer가 잠기지 않고 기획 수정 입력이 가능하다. CHECKPOINT_FAILED에서는 선택 대기 안내를 표시한다. 텍스트 전송은 READY에서 specialistPlanAnswer로 라우팅된다.
+
+**Stage 5 — 쉽게 설명 독립 버튼**
+
+- 메시지 액션 영역에 독립 [쉽게 설명] 버튼(`SIMPLIFY_SELF`)을 제공한다. 팝오버 없이 즉시 실행한다.
+  - **같은 저자 + 같은 모델 고정 계약:** 대상은 항상 원문을 작성한 에이전트이며, 다른 에이전트로 대체(fallback)하지 않고 사용할 수 없으면 버튼을 비활성화한다. 실행 모델은 원문 작성 당시의 model/effort를 고정해 재사용한다.
+- [다른 AI에게 전달 → 쉽게 설명] (`SIMPLIFY`): Handoff 팝오버에서 사용자가 선택한 다른 AI가 자신의 현재/설정된 model을 사용하여 원문을 쉽게 설명한다.
+  - 대상 선택 필드를 유지하며, 원문 작성자 모델이 대상 AI에 강제되지 않는다.
+  - `simplifyMeta`({ text, fromAgentId, messageId })를 통해 원문 정보를 대상 에이전트에 전달한다.
+- 백엔드는 chat-room.js에서 `SIMPLIFY_SELF`(원저자/원모델 고정)와 `SIMPLIFY`(선택된 대상 AI)를 분리 처리한다.
 
 ---
 

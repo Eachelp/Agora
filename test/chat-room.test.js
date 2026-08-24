@@ -7,6 +7,26 @@ const { TaskManager } = require("../src/agora/task-manager");
 const turnCheckpoint = require("../src/agora/turn-checkpoint");
 const { ChatRoom } = require("../src/chat/chat-room");
 
+
+function makePlanContract(goal = "목표", extra = "") {
+  return [
+    "## Goal",
+    goal,
+    "## Requirements",
+    "기능 요구사항",
+    "## Implementation Approach",
+    "구현 접근 방식",
+    "## Acceptance Criteria",
+    "완료 수용 기준",
+    "## Verification",
+    "검증 계획",
+    "## Out of Scope",
+    "제외 범위",
+    extra,
+    "STATUS: PLAN_READY",
+  ].filter(Boolean).join("\n");
+}
+
 function makeAgents() {
   return [
     { id: "claude", name: "Claude", aliases: ["claude"], available: true, enabled: true },
@@ -144,7 +164,7 @@ test("빠른 실행도 Frozen Task와 검토 피드백을 유지하며 제한 �
   t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
   const replies = {
     claude: [
-      { ok: true, text: "## 목표\n빠른 실행 보완\nSTATUS: PLAN_READY" },
+      { ok: true, text: makePlanContract("빠른 실행 보완") },
       { ok: true, text: "누락된 검증을 추가하세요.\nVERDICT: FIX_REQUIRED\nISSUES:\n1.\nscope: IN\nseverity: BLOCKING\nlocation: src/a.js\nproblem: 검증 누락\nevidence: 테스트 실패\nimpact: 회귀 가능" },
       { ok: true, text: "통과\nVERDICT: PASS" },
       { ok: true, text: "기록 완료" },
@@ -1700,28 +1720,152 @@ test("이어 발언 모드(independent: false)에서는 같은 턴의 앞선 답
   assert.ok(secondCall.prompt.includes("의 순차 응답"));
 });
 
-test("handoffMessage의 SIMPLIFY intent는 simplifyMeta로 쉬운 말 번역을 요청한다", async () => {
+test("handoffMessage의 SIMPLIFY_SELF intent는 원문 작성자에게 당시 모델로 쉬운 말 번역을 요청한다", async () => {
   const calls = [];
   const room = new ChatRoom({
     agents: makeAgents(),
-    runAgent: fakeRunner({ codex: [{ ok: true, text: "쉽게 풀어서 설명한 내용입니다." }] }, calls),
+    runAgent: fakeRunner({ claude: [{ ok: true, text: "쉽게 풀어서 설명한 내용입니다." }] }, calls),
   });
-  room.messages.push({ id: "msg-complex", authorType: "agent", author: "claude", text: "복잡한 아키텍처 및 뮤텍스 락 설명" });
+  room.messages.push({
+    id: "msg-complex",
+    authorType: "agent",
+    author: "claude",
+    text: "복잡한 아키텍처 및 뮤텍스 락 설명",
+    agentMeta: { model: "sonnet-legacy", effort: "high" },
+  });
 
-  const result = room.handoffMessage("codex", "msg-complex", "SIMPLIFY");
+  // 직접 버튼: 같은 저자 + 같은 모델 고정
+  const result = room.handoffMessage("claude", "msg-complex", "SIMPLIFY_SELF");
   assert.equal(result.ok, true);
   await settle(room);
 
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].agentId, "codex");
+  assert.equal(calls[0].agentId, "claude");
   assert.match(calls[0].prompt, /비개발자도 이해하기 쉽게 풀어주는 통역가/);
   assert.match(calls[0].prompt, /풀어볼 원문 메시지/);
   assert.match(calls[0].prompt, /복잡한 아키텍처 및 뮤텍스 락 설명/);
 
   const responseMsg = room.messages.at(-1);
-  assert.equal(responseMsg.author, "codex");
+  assert.equal(responseMsg.author, "claude");
+  assert.equal(responseMsg.agentMeta.model, "sonnet-legacy");
+  assert.equal(responseMsg.agentMeta.effort, "high");
   assert.ok(responseMsg.simplifyMeta);
   assert.equal(responseMsg.simplifyMeta.messageId, "msg-complex");
+});
+
+test("handoffMessage의 SIMPLIFY_SELF는 원문 작성자가 아닌 에이전트로는 실행되지 않는다(fallback 금지)", async () => {
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({ codex: [{ ok: true, text: "대체 실행" }] }, calls),
+  });
+  room.messages.push({ id: "msg-x", authorType: "agent", author: "claude", text: "원문", agentMeta: { model: "sonnet-3.5" } });
+
+  const result = room.handoffMessage("codex", "msg-x", "SIMPLIFY_SELF");
+  assert.equal(result.ok, false, "다른 에이전트로 대체 실행되면 안 된다");
+  assert.match(result.error, /원문을 작성한 에이전트/);
+  await settle(room);
+  assert.equal(calls.length, 0, "대체 에이전트가 실행되면 안 된다");
+});
+
+test("handoffMessage의 SIMPLIFY_SELF는 원문 모델 메타데이터가 없으면 fail한다(현재 모델 fallback 금지)", async () => {
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({ claude: [{ ok: true, text: "fallback 실행" }] }, calls),
+  });
+  // agentMeta가 없는 레거시 메시지
+  room.messages.push({ id: "msg-nometa", authorType: "agent", author: "claude", text: "원문" });
+
+  const result = room.handoffMessage("claude", "msg-nometa", "SIMPLIFY_SELF");
+  assert.equal(result.ok, false, "모델 메타데이터가 없으면 실패해야 한다");
+  assert.match(result.error, /원문 작성 당시 실제 모델/);
+  await settle(room);
+  assert.equal(calls.length, 0, "fallback 실행되면 안 된다");
+});
+
+test("handoffMessage의 SIMPLIFY_SELF는 default 모델만 있고 resolvedModel이 없으면 fail한다", async () => {
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({ claude: [{ ok: true, text: "fallback 실행" }] }, calls),
+  });
+  room.messages.push({
+    id: "msg-default-only",
+    authorType: "agent",
+    author: "claude",
+    text: "default 모델 원문",
+    agentMeta: { model: "default", effort: "default" },
+  });
+
+  const result = room.handoffMessage("claude", "msg-default-only", "SIMPLIFY_SELF");
+  assert.equal(result.ok, false, "resolvedModel이 없는 default 모델은 fail해야 한다");
+  assert.match(result.error, /원문 작성 당시 실제 모델/);
+  await settle(room);
+  assert.equal(calls.length, 0);
+});
+
+test("handoffMessage의 SIMPLIFY_SELF는 resolvedModel이 있으면 해당 실제 모델을 고정해 재실행한다", async () => {
+  const calls = [];
+  const agents = makeAgents();
+  // 현재 claude의 설정은 opus로 변경된 상태
+  const claudeAgent = agents.find((a) => a.id === "claude");
+  claudeAgent.model = "claude-opus-latest";
+
+  const room = new ChatRoom({
+    agents,
+    runAgent: fakeRunner({ claude: [{ ok: true, text: "resolved 모델로 실행" }] }, calls),
+  });
+  // 원문 작성 당시에는 "default" 설정이었지만 실제로는 resolvedModel("claude-sonnet-legacy")로 실행됨
+  room.messages.push({
+    id: "msg-default-model",
+    authorType: "agent",
+    author: "claude",
+    text: "default 모델 원문",
+    agentMeta: { model: "default", resolvedModel: "claude-sonnet-legacy", effort: "default" },
+  });
+
+  const result = room.handoffMessage("claude", "msg-default-model", "SIMPLIFY_SELF");
+  assert.equal(result.ok, true);
+  await settle(room);
+
+  assert.equal(calls.length, 1);
+  // 현재 설정(claude-opus-latest)으로 drift되지 않고 agentConfig에 실제 원문 모델(claude-sonnet-legacy)이 pin되어야 한다
+  const responseMsg = room.messages.at(-1);
+  assert.equal(responseMsg.agentMeta.model, "claude-sonnet-legacy");
+});
+
+test("handoffMessage의 Handoff SIMPLIFY는 선택한 다른 AI가 자신의 모델로 원문을 쉽게 설명한다", async () => {
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({ codex: [{ ok: true, text: "Codex가 쉽게 풀어서 설명한 내용입니다." }] }, calls),
+  });
+  // 원문은 claude가 sonnet-legacy 모델로 작성
+  room.messages.push({
+    id: "msg-model",
+    authorType: "agent",
+    author: "claude",
+    text: "Claude가 작성한 어려운 원문",
+    agentMeta: { model: "sonnet-legacy", effort: "high" },
+  });
+
+  // Handoff로 codex를 선택해 쉽게 설명 요청
+  const result = room.handoffMessage("codex", "msg-model", "SIMPLIFY");
+  assert.equal(result.ok, true);
+  await settle(room);
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].agentId, "codex");
+  assert.match(calls[0].prompt, /Claude가 작성한 어려운 원문/);
+
+  const responseMsg = room.messages.at(-1);
+  assert.equal(responseMsg.author, "codex");
+  // Claude의 과거 모델(sonnet-legacy)이 Codex에 강제되지 않는다
+  assert.notEqual(responseMsg.agentMeta?.model, "sonnet-legacy");
+  assert.ok(responseMsg.simplifyMeta);
+  assert.equal(responseMsg.simplifyMeta.messageId, "msg-model");
+  assert.equal(responseMsg.simplifyMeta.fromAgentId, "claude");
 });
 
 test("handoffMessage는 다른 AI의 메시지를 대상 에이전트에게 전달해 이어서 답하게 한다", async () => {
@@ -1768,7 +1912,7 @@ test("TASK-007: Planner PLAN_READY 결과로 TASK.md를 만들고 workflow에 �
     runAgent: fakeRunner(
       {
         claude: [
-          { ok: true, text: "## 목표\n로그인\nSTATUS: PLAN_READY" },
+          { ok: true, text: makePlanContract("로그인") },
         ],
         codex: [
           { ok: true, text: "구현 완료\nSTATUS: DONE" },
@@ -1830,7 +1974,7 @@ test("TASK-007: step 모드에서 승인(resume) 후 같은 Frozen Task로 Build
       let reply;
       if (agent.id === "claude" && plannerReply) {
         plannerReply = false;
-        reply = { ok: true, text: "## 목표\n메서드 분리\nSTATUS: PLAN_READY" };
+        reply = { ok: true, text: makePlanContract("메서드 분리") };
       } else if (agent.id === "codex") {
         reply = { ok: true, text: "수정 완료\nSTATUS: DONE" };
       } else {
@@ -1903,7 +2047,7 @@ test("step 모드가 완료·판단 불가로 끝나면 임시 Checkpoint를 정
       let text = "";
       if (agent.id === "claude" && plannerReply) {
         plannerReply = false;
-        text = "## 목표\n정리\nSTATUS: PLAN_READY";
+        text = makePlanContract("정리");
       } else if (agent.id === "codex") {
         text = "구현 완료\nSTATUS: DONE";
       } else {
@@ -2151,7 +2295,7 @@ test("전문 실행 메시지에 Frozen Task 정보(runId/taskId/taskHash)가 �
     taskManager,
     runAgent: fakeRunner(
       {
-        claude: [{ ok: true, text: "## 목표\n로그인\nSTATUS: PLAN_READY" }],
+        claude: [{ ok: true, text: makePlanContract("로그인") }],
         codex: [
           { ok: true, text: "구현 완료\nSTATUS: DONE" },
           { ok: true, text: "검토 통과\nVERDICT: PASS" },
@@ -2209,7 +2353,7 @@ test("버튼형 기획·검수는 Planner와 Reviewer를 차례로 호출하고 
     meta: { workspace },
     taskManager: new TaskManager(),
     runAgent: fakeRunner({
-      claude: [{ ok: true, text: "## 목표\n로그인 화면 개선\nSTATUS: PLAN_READY" }],
+      claude: [{ ok: true, text: makePlanContract("로그인 화면 개선") }],
       codex: [{ ok: true, text: "기획 검수 통과\nVERDICT: PASS" }],
     }, calls),
   });
@@ -2244,8 +2388,8 @@ test("기획 자동 보완은 범위 안의 검수 지적만 제한 횟수 안�
     taskManager: new TaskManager(),
     runAgent: fakeRunner({
       claude: [
-        { ok: true, text: "## 목표\n초안\nSTATUS: PLAN_READY" },
-        { ok: true, text: "## 목표\n검증 조건을 보완한 기획\nSTATUS: PLAN_READY" },
+        { ok: true, text: makePlanContract("초안") },
+        { ok: true, text: makePlanContract("검증 조건을 보완한 기획") },
       ],
       codex: [
         {
@@ -2283,7 +2427,7 @@ test("기획 자동 보완 중에도 Open Question은 사용자에게 반환한�
     meta: { workspace },
     taskManager: new TaskManager(),
     runAgent: fakeRunner({
-      claude: [{ ok: true, text: "## 목표\n초안\nSTATUS: PLAN_READY" }],
+      claude: [{ ok: true, text: makePlanContract("초안") }],
       codex: [{
         ok: true,
         text: "사용자 결정이 필요합니다.\nVERDICT: FIX_REQUIRED\nISSUES:\n1.\nscope: IN\nseverity: BLOCKING\nproblem: 대상 미정\nevidence: 대화에 없음\nimpact: 범위 불명확\n## Open Questions\n1. 어느 화면까지 포함할까요?",
@@ -2316,7 +2460,7 @@ test("구현 자동 보완 스위치 값은 버튼형 구현·검수의 제한 �
     taskManager: new TaskManager(),
     runAgent: fakeRunner({
       claude: [
-        { ok: true, text: "## 목표\n자동 보완 구현\nSTATUS: PLAN_READY" },
+        { ok: true, text: makePlanContract("자동 보완 구현") },
         { ok: true, text: "첫 구현\nSTATUS: DONE" },
         { ok: true, text: "보완 구현\nSTATUS: DONE" },
       ],
@@ -2367,8 +2511,8 @@ test("Open Question은 PLAN_READY 마커가 있어도 답변 대기로 멈추고
     taskManager: new TaskManager(),
     runAgent: fakeRunner({
       claude: [
-        { ok: true, text: "## 목표\n화면 개선\n## Open Question\n1. 어느 화면까지 포함할까요?\nSTATUS: PLAN_READY" },
-        { ok: true, text: "## 목표\n로그인 화면만 개선\nSTATUS: PLAN_READY" },
+        { ok: true, text: makePlanContract("화면 개선", "## Open Question\n1. 어느 화면까지 포함할까요?") },
+        { ok: true, text: makePlanContract("로그인 화면만 개선") },
       ],
       codex: [{ ok: true, text: "검수 통과\nVERDICT: PASS" }],
     }, calls),
@@ -2400,7 +2544,7 @@ test("전체 실행은 기획 검수 통과 뒤 구현·검수·기록까지 같
     taskManager: new TaskManager(),
     runAgent: fakeRunner({
       claude: [
-        { ok: true, text: "## 목표\n전체 실행\nSTATUS: PLAN_READY" },
+        { ok: true, text: makePlanContract("전체 실행") },
         { ok: true, text: "구현 완료\nSTATUS: DONE" },
       ],
       codex: [
@@ -2445,7 +2589,7 @@ test("전체 실행은 Run 결과와 Workflow 수명주기를 함께 저장한�
     },
     runAgent: fakeRunner({
       claude: [
-        { ok: true, text: "## 목표\n수명주기 기록\nSTATUS: PLAN_READY" },
+        { ok: true, text: makePlanContract("수명주기 기록") },
         { ok: true, text: "구현 완료\nSTATUS: DONE" },
       ],
       codex: [
@@ -2484,7 +2628,7 @@ test("Workflow 시작 기록에 실패하면 Builder를 실행하지 않는다",
     onTaskCreated: () => true,
     onProfessionalTaskState: ({ status }) => status !== "in_progress",
     runAgent: fakeRunner({
-      claude: [{ ok: true, text: "## 목표\n저장 실패\nSTATUS: PLAN_READY" }],
+      claude: [{ ok: true, text: makePlanContract("저장 실패") }],
       codex: [{ ok: true, text: "기획 검수 통과\nVERDICT: PASS" }],
     }, calls),
   });
@@ -2514,7 +2658,7 @@ test("Planner TASK 파일은 Workflow 등록 실패 뒤에도 보존하고 TASK_
     taskManager: new TaskManager(),
     onTaskCreated: () => false,
     runAgent: fakeRunner({
-      claude: [{ ok: true, text: "## 목표\n색인 실패\nSTATUS: PLAN_READY" }],
+      claude: [{ ok: true, text: makePlanContract("색인 실패") }],
     }, calls),
   });
 
@@ -2546,7 +2690,7 @@ test("ACT 중 사용자 중지는 변경·Run 결과를 BLOCKED로 남기고 che
     onTaskCreated: () => true,
     runAgent: ({ agent, prompt }) => {
       if (agent.id === "claude" && /전문 모드: 기획 ===/.test(prompt)) {
-        return { promise: Promise.resolve({ ok: true, text: "## 목표\n중지 보존\nSTATUS: PLAN_READY" }), cancel: () => {} };
+        return { promise: Promise.resolve({ ok: true, text: makePlanContract("중지 보존") }), cancel: () => {} };
       }
       if (agent.id === "codex" && /전문 모드: 기획 검수/.test(prompt)) {
         return { promise: Promise.resolve({ ok: true, text: "VERDICT: PASS" }), cancel: () => {} };
@@ -2634,7 +2778,7 @@ test("Professional Reviewer의 FIX_REQUIRED는 자동 복원 대신 BLOCKED로 �
     },
     runAgent: fakeRunner({
       claude: [
-        { ok: true, text: "## 목표\n검수 보류\nSTATUS: PLAN_READY" },
+        { ok: true, text: makePlanContract("검수 보류") },
         { ok: true, text: "구현 완료\nSTATUS: DONE" },
       ],
       codex: [
@@ -2739,7 +2883,7 @@ test("기록 재생성은 RECORDING 대기 상태를 완료로 닫는다", async
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-record-retry-"));
   t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
   const taskManager = new TaskManager();
-  const task = taskManager.createTaskFromPlanner("## 목표\n기록 재생성", workspace);
+  const task = taskManager.createTaskFromPlanner(makePlanContract("기록 재생성"), workspace);
   const runInfo = taskManager.freezeTask({ contentSource: "file", taskPath: task.relativePath }, workspace);
   const room = new ChatRoom({
     agents: makeAgents(),
@@ -2778,7 +2922,7 @@ test("기획 검수 뒤 TASK.md가 바뀌면 Builder를 시작하지 않는다",
     taskManager: new TaskManager(),
     onTaskCreated: () => true,
     runAgent: fakeRunner({
-      claude: [{ ok: true, text: "## 목표\n기획 검수 후 변경\nSTATUS: PLAN_READY" }],
+      claude: [{ ok: true, text: makePlanContract("기획 검수 후 변경") }],
       codex: [{ ok: true, text: "기획 검수 통과\nVERDICT: PASS" }],
     }, calls),
   });
@@ -2804,7 +2948,7 @@ test("Professional Run 시작 상태 저장에 실패하면 Planner를 호출하
     agents: makeAgents(),
     persistProfessionalRun: () => false,
     runAgent: fakeRunner({
-      claude: [{ ok: true, text: "STATUS: PLAN_READY" }],
+      claude: [{ ok: true, text: makePlanContract("시작 실패") }],
       codex: [{ ok: true, text: "VERDICT: PASS" }],
     }, calls),
   });
@@ -2835,7 +2979,7 @@ test("전체 실행의 기획·검수 통과 사이에는 일반 응답을 끼�
     runAgent: ({ agent, prompt }) => {
       calls.push({ agentId: agent.id, prompt });
       if (/전문 모드: 기획 ===/.test(prompt)) {
-        return { promise: Promise.resolve({ ok: true, text: "## 목표\n전체 실행\nSTATUS: PLAN_READY" }), cancel: () => {} };
+        return { promise: Promise.resolve({ ok: true, text: makePlanContract("전체 실행") }), cancel: () => {} };
       }
       if (/전문 모드: 기획 검수/.test(prompt)) {
         return { promise: planReviewPromise, cancel: () => {} };
@@ -2894,9 +3038,9 @@ test("replanBlocked는 keep 선택 시 부분 변경을 유지하고 기획자�
       calls.push({ agentId: agent.id, prompt });
       if (/전문 모드: 기획 ===/.test(prompt)) {
         if (/이전 구현.*막혔습니다/.test(prompt)) {
-          return { promise: Promise.resolve({ ok: true, text: "## 수정 목표\n재기획 완료\nSTATUS: PLAN_READY" }), cancel: () => {} };
+          return { promise: Promise.resolve({ ok: true, text: makePlanContract("재기획 완료") }), cancel: () => {} };
         }
-        return { promise: Promise.resolve({ ok: true, text: "## 초기 목표\n초기 기획\nSTATUS: PLAN_READY" }), cancel: () => {} };
+        return { promise: Promise.resolve({ ok: true, text: makePlanContract("초기 기획") }), cancel: () => {} };
       }
       if (/전문 모드: 기획 검수/.test(prompt)) {
         return { promise: Promise.resolve({ ok: true, text: "기획 통과\nVERDICT: PASS" }), cancel: () => {} };
@@ -2941,7 +3085,7 @@ test("replanBlocked는 restore 선택 시 작업 전으로 복원 후 재기획�
     runAgent: ({ agent, prompt }) => {
       calls.push({ agentId: agent.id, prompt });
       if (/전문 모드: 기획 ===/.test(prompt)) {
-        return { promise: Promise.resolve({ ok: true, text: "## 목표\n기획\nSTATUS: PLAN_READY" }), cancel: () => {} };
+        return { promise: Promise.resolve({ ok: true, text: makePlanContract("기획") }), cancel: () => {} };
       }
       if (/전문 모드: 기획 검수/.test(prompt)) {
         return { promise: Promise.resolve({ ok: true, text: "기획 통과\nVERDICT: PASS" }), cancel: () => {} };
@@ -3038,4 +3182,83 @@ test("Git 저장소인데 checkpoint 생성이 실패하면 Builder를 시작하
   assert.equal(result.ok, false);
   assert.equal(result.stopReason, "CHECKPOINT_FAILED");
   assert.equal(calls.length, 0, "백업 실패 시 Builder를 호출하지 않아야 한다");
+});
+
+
+// ================= Stage C — provider-neutral 승인 seam lifecycle =================
+
+test("승인 seam: interactive 요청은 approval-request를 내보내고 pendingApprovals에 담긴다", async () => {
+  const room = new ChatRoom({ agents: makeAgents(), runAgent: fakeRunner({}) });
+  const reqs = [];
+  room.on("approval-request", (p) => reqs.push(p));
+  const p = room.requestInteractiveApproval({ id: "codex" }, { summary: "명령 실행", detail: "rm x", scope: "action" });
+  assert.equal(reqs.length, 1);
+  assert.equal(reqs[0].retryScope, "action");
+  assert.equal(reqs[0].summary, "명령 실행");
+  assert.equal(room.pendingApprovals.size, 1);
+  room.resolveApproval(reqs[0].approvalId, "deny");
+  assert.equal(await p, false);
+});
+
+test("승인 seam: stopAllSilently는 pending 승인마다 approval-resolved를 정확히 1회 내보내고 dismiss한다", async () => {
+  const room = new ChatRoom({ agents: makeAgents(), runAgent: fakeRunner({}) });
+  const resolved = [];
+  room.on("approval-resolved", (p) => resolved.push(p.approvalId));
+  let reqId = null;
+  room.on("approval-request", (p) => { reqId = p.approvalId; });
+  const controller = new AbortController();
+  const p = room.requestInteractiveApproval({ id: "codex" }, { summary: "s", detail: "d", scope: "action", signal: controller.signal });
+  assert.equal(room.pendingApprovals.size, 1);
+
+  room.stopAllSilently();
+
+  assert.equal(await p, false, "Stop 시 승인 Promise는 false로 resolve");
+  assert.deepEqual(resolved, [reqId], "approval-resolved는 해당 approvalId로 정확히 1회");
+  assert.equal(room.pendingApprovals.size, 0, "pendingApprovals 비워짐");
+  assert.equal(room.resolveApproval(reqId, "approve"), false, "late resolveApproval은 no-op(false)");
+
+  // adapter가 뒤늦게 AbortController를 abort해도 이미 settled -> 중복 approval-resolved 없음
+  controller.abort();
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(resolved, [reqId], "abort 후 중복 approval-resolved 없음");
+});
+
+test("승인 seam: interject 경로도 pending 승인을 dismiss한다(stale 승인 없음)", async () => {
+  const room = new ChatRoom({ agents: makeAgents(), runAgent: fakeRunner({}) });
+  const resolved = [];
+  room.on("approval-resolved", (p) => resolved.push(p.approvalId));
+  let reqId = null;
+  room.on("approval-request", (p) => { reqId = p.approvalId; });
+  const p = room.requestInteractiveApproval({ id: "codex" }, { summary: "s", detail: "d", scope: "action" });
+  room.interject();
+  assert.equal(await p, false);
+  assert.deepEqual(resolved, [reqId]);
+  assert.equal(room.pendingApprovals.size, 0);
+});
+
+test("승인 seam: 정상 approve/deny는 approval-resolved를 내보내지 않는다(클라이언트 dismiss)", async () => {
+  const room = new ChatRoom({ agents: makeAgents(), runAgent: fakeRunner({}) });
+  const resolved = [];
+  room.on("approval-resolved", (p) => resolved.push(p.approvalId));
+  let reqId = null;
+  room.on("approval-request", (p) => { reqId = p.approvalId; });
+  const p = room.requestInteractiveApproval({ id: "codex" }, { summary: "s", detail: "d", scope: "action" });
+  assert.equal(room.resolveApproval(reqId, "approve"), true);
+  assert.equal(await p, true, "approve -> Promise true");
+  assert.equal(resolved.length, 0, "정상 결정은 approval-resolved를 내보내지 않는다");
+  assert.equal(room.pendingApprovals.size, 0);
+});
+
+test("승인 seam: legacy whole-turn requestApproval도 stopAllSilently에서 approval-resolved로 dismiss된다", async () => {
+  const room = new ChatRoom({ agents: makeAgents(), runAgent: fakeRunner({}) });
+  const resolved = [];
+  room.on("approval-resolved", (p) => resolved.push(p.approvalId));
+  let reqId = null;
+  room.on("approval-request", (p) => { reqId = p.approvalId; });
+  const p = room.requestApproval({ id: "codex" }, { summary: "명령 권한" }); // legacy whole-turn seam
+  assert.equal(room.pendingApprovals.size, 1);
+  room.stopAllSilently();
+  assert.equal(await p, false);
+  assert.deepEqual(resolved, [reqId]);
+  assert.equal(room.pendingApprovals.size, 0);
 });

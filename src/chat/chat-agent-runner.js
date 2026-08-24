@@ -1,6 +1,7 @@
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const { StringDecoder } = require("node:string_decoder");
+const { buildRunMetrics } = require("./chat-run-metrics");
 
 // 에이전트 작업은 며칠간 이어질 수도 있으므로 기본 실행 시간 제한을 두지 않습니다.
 // timeoutMs는 테스트나 명시적인 호출자가 양수를 전달한 경우에만 적용됩니다.
@@ -40,6 +41,21 @@ const DEFAULT_SILENCE_WARNING_MS = 5 * 60 * 1000;
 // 위 간격보다 촘촘하게 확인해, 경고가 실제 무음 시각에서 너무 늦게 뜨지 않게 합니다.
 const SILENCE_CHECK_INTERVAL_MS = 30 * 1000;
 
+// ChatRoom이 생성하는 전문 실행 프롬프트의 고정 내부 마커입니다.
+// HarnessAdapter가 도입되기 전까지 runner가 전문 실행 strict-final 여부를 구분하는 데만 씁니다.
+const PROFESSIONAL_PROMPT_MARKER = "=== 전문 모드:";
+
+// fallback 마커 감지는 Agora가 프롬프트 헤더에 넣은 전문 블록만 인정합니다.
+// 일반 채팅에서 사용자가 같은 문자열을 입력하면 그 텍스트는 `=== 대화 ===` 뒤에
+// 놓이므로 strict-final을 켜지 않습니다. 명시적인 requireFinal 값이 있으면 이
+// 추론보다 항상 우선합니다.
+function inferRequireFinalFromPrompt(prompt) {
+  const text = String(prompt || "");
+  const markerIndex = text.indexOf(PROFESSIONAL_PROMPT_MARKER);
+  if (markerIndex < 0) return false;
+  const dialogueIndex = text.indexOf("=== 대화 ===");
+  return dialogueIndex < 0 || markerIndex < dialogueIndex;
+}
 
 // tail buffer가 유지하는 머리 부분 비율. 초반 지시/헤더와 최신 출력이 모두
 // 진단에 필요하므로 양쪽을 남기고 중간만 버립니다.
@@ -158,9 +174,10 @@ function killTree(child, platform = process.platform) {
 }
 
 // 프로바이더 프로세스 1회 실행.
-// - argv는 chat-argv가 만든 검증된 배열이며, 프롬프트는 항상 stdin으로 전달합니다.
+// - argv는 chat-argv가 만든 검증된 배열이며, 프롬프트는 provider transport에 따라 stdin/argv로 전달합니다.
 // - parseLine이 있으면 stdout을 줄 단위로 정규화 이벤트로 바꿔 onEvent로 알립니다.
 // - 최종 답변 우선순위: outputFile(codex -o) → parser의 final → stdout 원문.
+// - 전문 실행은 명시적인 final이 없으면 delta-only 출력을 성공으로 승격하지 않습니다.
 function runAgentProcess({
   commandPath,
   needsShell = false,
@@ -177,13 +194,19 @@ function runAgentProcess({
   onRawChunk = null,
   promptTransport = "stdin",
   silenceWarningMs = DEFAULT_SILENCE_WARNING_MS,
+  requireFinal = null,
 }) {
+  const strictFinal = requireFinal == null
+    ? inferRequireFinalFromPrompt(prompt)
+    : Boolean(requireFinal);
+  const runStartedAt = Date.now();
   let child = null;
   let settled = false;
   let cancelled = false;
   let outputLimitHit = false;
   let timer = null;
   let silenceTimer = null;
+  let explorationWarningRank = 0;
   const commandEvents = [];
   const pendingCommands = [];
 
@@ -204,9 +227,38 @@ function runAgentProcess({
       cleanup();
       const finishedCommands = commandEvents.filter((event) => event.kind === "command-finished");
       const boundedCommands = (finishedCommands.length > 0 ? finishedCommands : commandEvents).slice(-20);
-      resolve(boundedCommands.length > 0
-        ? { ...result, evidence: { commands: boundedCommands } }
-        : result);
+      const telemetry = typeof parseLine?.getTelemetry === "function"
+        ? parseLine.getTelemetry()
+        : null;
+      const hasTelemetry = Boolean(
+        telemetry && (
+          telemetry.commands?.total > 0 ||
+          telemetry.toolSummary?.started > 0 ||
+          telemetry.exploration?.status
+        )
+      );
+      const evidence = boundedCommands.length > 0 || hasTelemetry
+        ? {
+            commands: boundedCommands,
+            ...(telemetry?.commands ? { commandSummary: telemetry.commands } : {}),
+            ...(Array.isArray(telemetry?.tools) ? { tools: telemetry.tools } : {}),
+            ...(telemetry?.toolSummary ? { toolSummary: telemetry.toolSummary } : {}),
+            ...(telemetry?.exploration ? { exploration: telemetry.exploration } : {}),
+          }
+        : null;
+      const baseResult = evidence ? { ...result, evidence } : result;
+      const runMetrics = buildRunMetrics({
+        startedAt: runStartedAt,
+        finishedAt: Date.now(),
+        promptChars: String(prompt || "").length,
+        result: baseResult,
+      });
+      if (typeof onEvent === "function") {
+        try {
+          onEvent({ kind: "run-metrics", metrics: runMetrics });
+        } catch {}
+      }
+      resolve({ ...baseResult, runMetrics });
     };
 
     if (promptTransport === "argv" && needsShell) {
@@ -253,6 +305,33 @@ function runAgentProcess({
       lastActivityAt = Date.now();
       nextSilenceWarnAt = lastActivityAt + silenceWarningMs;
     };
+
+    const notifyExplorationStatus = () => {
+      if (typeof parseLine?.getTelemetry !== "function") return;
+      const exploration = parseLine.getTelemetry()?.exploration;
+      const rank = exploration?.status === "LOOP_DETECTED"
+        ? 2
+        : exploration?.status === "WARNING"
+          ? 1
+          : 0;
+      if (rank <= explorationWarningRank) return;
+      explorationWarningRank = rank;
+      if (rank === 0 || typeof onEvent !== "function") return;
+      const label = rank === 2
+        ? "반복 탐색 루프가 감지되었습니다. 실행은 계속합니다."
+        : "반복 탐색이 늘고 있습니다. 실행은 계속합니다.";
+      try {
+        onEvent({
+          kind: "status",
+          label,
+          exploration: {
+            status: exploration.status,
+            reason: exploration.reason || null,
+          },
+        });
+      } catch {}
+    };
+
     if (Number.isFinite(silenceWarningMs) && silenceWarningMs > 0) {
       silenceTimer = setInterval(() => {
         if (settled) return;
@@ -307,6 +386,9 @@ function runAgentProcess({
         try {
           onEvent(event);
         } catch {}
+      }
+      if (event.kind === "tool-started" || event.kind === "tool-finished") {
+        notifyExplorationStatus();
       }
     };
 
@@ -485,8 +567,23 @@ function runAgentProcess({
         return;
       }
 
+      // 전문 실행은 구조화된 final이 없으면 중간 delta를 완료 결과로 승격하지 않습니다.
+      // 일반 채팅은 CLI 버전 호환을 위해 기존 fallback 동작을 유지합니다.
+      if (strictFinal && parseLine) {
+        const partial = deltaText.trim();
+        finish({
+          ok: false,
+          protocolFailed: true,
+          stopReason: "PROTOCOL_FINAL_MISSING",
+          error: "구조화된 최종 응답을 확인하지 못했습니다.",
+          ...(partial ? { partialText: partial } : {}),
+          output: outputInfo,
+        });
+        return;
+      }
+
       // 정상 종료(code 0, 오류 신호 없음)인데 final 이벤트만 누락된 경우는
-      // 중간 답변을 최종 결과로 승격합니다 (기존 호환성 유지).
+      // 중간 답변을 최종 결과로 승격합니다 (일반 채팅 호환성 유지).
       const fallbackText = deltaText.trim();
       if (fallbackText) {
         finish({ ok: true, text: fallbackText, output: outputInfo });
@@ -528,9 +625,11 @@ module.exports = {
   quoteArgForShell,
   compactArgvPrompt,
   createTailBuffer,
+  inferRequireFinalFromPrompt,
   DEFAULT_TIMEOUT_MS,
   DEFAULT_CAPTURE_OUTPUT_BYTES,
   DEFAULT_HARD_OUTPUT_LIMIT_BYTES,
   DEFAULT_SILENCE_WARNING_MS,
   MAX_ARGV_PROMPT_CHARS,
+  PROFESSIONAL_PROMPT_MARKER,
 };
