@@ -423,3 +423,42 @@ test("승인 화면 요약은 criterion을 생략하지 않고 처분 구성을 
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("controlClass는 D-B 한 곳에서만 계산된다 (§22 — 두 개의 답을 만들지 않는다)", async () => {
+  const root = setupWorkspace();
+  try {
+    const plan = "```json\n" + JSON.stringify([
+      { id: "V1", method: "predicate", statement: "보고서 존재", check: { kind: "exists", path: "report.md" } },
+      { id: "V2", method: "process", statement: "검산", executable: process.execPath, argv: ["-e", "process.exit(0)"] },
+      { id: "V3", method: "process", statement: "없는 도구", executable: "agora-no-such-tool-xyz", argv: [] },
+    ]) + "\n```";
+    const { verification } = await runToVerification(root, translationTask({ plan }));
+    const byId = Object.fromEntries(verification.records.map((r) => [r.criterionId, r]));
+
+    // Agora 자체 read-only 평가 → ENFORCEABLE
+    assert.equal(byId.V1.controlClass, "ENFORCEABLE");
+    // generic subprocess → OBSERVABLE (D-A0 baseline, Charter v0.5)
+    assert.equal(byId.V2.controlClass, "OBSERVABLE");
+    // 실행되지도 못한 검사는 관측할 것이 없다 → NEITHER, 그래서 VERIFIED 불가 (R-2)
+    assert.equal(byId.V3.controlClass, "NEITHER");
+    assert.notEqual(byId.V3.actualDisposition, "VERIFIED");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("계획된 사용자 승인에 '왜 사람이 필요한가'가 함께 붙는다 (§23 · P-3)", () => {
+  const root = setupWorkspace();
+  try {
+    const plan = "```json\n" + JSON.stringify([
+      { id: "V1", method: "human", statement: "외부 메일 발송 승인" },
+    ]) + "\n```";
+    const run = new AssuranceRun({ runId: "RUN-001", runDir: path.join(root, "RUN-001"), root });
+    run.freeze(translationTask({ plan }));
+    const planned = run.approvalSummary().plannedHumanApprovals;
+    assert.equal(planned.length, 1);
+    assert.ok(planned[0].reasons.some((r) => r.includes("되돌릴 수 없는")));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

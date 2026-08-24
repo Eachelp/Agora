@@ -24,12 +24,18 @@
 const { discoverVerificationCapabilities } = require("../verification-capabilities");
 const {
   runVerificationProcess,
-  computeControlClass,
   CONTROL_CLASS,
   RUNNER_ERRORS,
 } = require("../verification-runner");
 const { evaluatePredicate } = require("./artifact-predicate");
 const { routeDisposition, OUTCOMES } = require("./disposition-router");
+// D-B가 controlClass의 단일 권위다(§22). 검증 backend마다 따로 계산하면
+// 같은 질문에 두 개의 답이 생기고, 그중 하나는 반드시 틀리게 된다.
+const {
+  computeResourceControlClass,
+  RESOURCE_KINDS,
+  ACTIONS,
+} = require("./resource-governance");
 
 // process 검증 결과 → outcome.
 // runner가 남긴 사실을 Plan의 기대와 대조하는 자리이며, 여기가 유일한 판정 지점이다.
@@ -104,8 +110,15 @@ async function runVerification(plan, context = {}) {
       const judged = outcomeForProcess(runResult, step.expect);
       outcome = judged.outcome;
       downgradeReason = judged.downgradeReason || null;
-      // subprocess는 OBSERVABLE이 상한이다(Charter v0.5). admission 실패면 NEITHER.
-      controlClass = runResult?.controlClass || CONTROL_CLASS.NEITHER;
+      // subprocess는 OBSERVABLE이 상한이다(Charter v0.5). admission이 실패해
+      // 프로세스가 뜨지도 못했으면 관측할 것도 없으므로 NEITHER다.
+      controlClass = runResult?.ok || runResult?.code === RUNNER_ERRORS.TIMEOUT
+        ? computeResourceControlClass({
+            resourceKind: RESOURCE_KINDS.PROCESS,
+            action: ACTIONS.EXECUTE,
+            containment: context.containment || null,
+          })
+        : CONTROL_CLASS.NEITHER;
       evidence = {
         backend: "process",
         startedAt: runResult?.startedAt ?? null,
@@ -138,7 +151,10 @@ async function runVerification(plan, context = {}) {
       controlClass =
         evaluated.outcome === OUTCOMES.ERROR
           ? CONTROL_CLASS.NEITHER
-          : computeControlClass({ backend: "artifact-predicate", contained: true });
+          : computeResourceControlClass({
+              resourceKind: RESOURCE_KINDS.ARTIFACT,
+              action: ACTIONS.READ,
+            });
       evidence = { ...evaluated, backend: "artifact-predicate" };
     } else {
       // review / human criterion은 검사 대상이 아니다. 라우터가 그대로 흘려보낸다.

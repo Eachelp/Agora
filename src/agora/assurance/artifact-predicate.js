@@ -193,6 +193,10 @@ function extractCsv(abs, args = {}) {
 
 // --- Predicates: 꺼낸 값을 기대와 비교한다 ---
 
+// 비교를 수행할 수 없는 상황. 산출물의 결함(FAIL)이 아니라 계약/평가의 문제이므로
+// ERROR로 올라가 Reviewer 판단으로 라우팅된다.
+class PredicateEvaluationError extends Error {}
+
 function compare(actual, operator, expected) {
   switch (operator) {
     case "==":
@@ -224,11 +228,14 @@ function compare(actual, operator, expected) {
     case "matches":
       try {
         return new RegExp(String(expected)).test(String(actual));
-      } catch {
-        return false;
+      } catch (error) {
+        // 패턴이 잘못되면 "맞지 않음"이 아니라 "확인할 수 없음"이다.
+        // FAIL로 내리면 계약 오류가 산출물 결함으로 보고된다.
+        throw new PredicateEvaluationError(`확인 패턴이 올바르지 않습니다: ${error?.message || expected}`);
       }
     default:
-      return false;
+      // 모르는 비교 방식을 FAIL로 만들지 않는다. 조용한 강등이 된다.
+      throw new PredicateEvaluationError(`알 수 없는 비교 방식입니다: ${operator}`);
   }
 }
 

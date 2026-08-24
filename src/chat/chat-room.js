@@ -704,7 +704,19 @@ class ChatRoom extends EventEmitter {
       purpose,
       parentToken,
     });
-    if (got.ok) return { ok: true, token: got.token, reentered: Boolean(got.reentered) };
+    if (got.ok) {
+      // Stage D-C — workspace 변경 소유권 획득도 provenance 사슬의 한 마디다(§26).
+      // 기록 실패가 실행을 막지는 않는다(관측 실패 ≠ governance 실패).
+      try {
+        this.assuranceRun?.recordWorkspaceMutation({
+          event: got.reentered ? "reentered" : "acquired",
+          resourceId: workspace,
+          holderId: this.sessionId,
+          purpose,
+        });
+      } catch {}
+      return { ok: true, token: got.token, reentered: Boolean(got.reentered) };
+    }
     // 내부 어휘(lease/holder/resourceId)를 사용자 표면으로 내보내지 않는다(Charter §9).
     const error = got.code !== "BUSY"
       ? "작업 폴더 변경 권한을 확인하지 못해 실행을 시작하지 않았습니다."

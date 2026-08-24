@@ -524,3 +524,35 @@ test("차단 사유는 내부 어휘가 아니라 읽을 수 있는 설명으로
   assert.equal(described[0].count, 1);
   assert.ok(described[0].label.includes("검수자"));
 });
+
+test("평가할 수 없는 비교는 FAIL이 아니라 ERROR다 (조용한 강등 금지)", () => {
+  const root = tempRoot();
+  try {
+    fs.writeFileSync(path.join(root, "a.md"), "본문");
+    const caps = discoverVerificationCapabilities();
+
+    // 잘못된 정규식: 계약의 문제이지 산출물의 결함이 아니다.
+    const badPattern = predicate.evaluatePredicate(
+      { kind: "text.matches", target: "a.md", expected: "([unclosed" },
+      { root, capabilities: caps }
+    );
+    assert.equal(badPattern.outcome, "ERROR");
+
+    // 모르는 비교 방식도 마찬가지다.
+    const badOperator = predicate.evaluatePredicate(
+      { kind: "text.lines", target: "a.md", operator: "≈", expected: 1 },
+      { root, capabilities: caps }
+    );
+    assert.equal(badOperator.outcome, "ERROR");
+
+    // ERROR는 VERIFIED가 될 수 없다 (INV-3).
+    const routed = router.routeDisposition({
+      criterion: { plannedMethod: "predicate", plannedDisposition: "VERIFIED", downgradeTo: "REVIEW_REQUIRED" },
+      outcome: badPattern.outcome,
+      controlClass: CONTROL_CLASS.NEITHER,
+    });
+    assert.equal(routed.actualDisposition, "REVIEW_REQUIRED");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -30,6 +30,7 @@ const verificationCore = require("./verification-core");
 const finalDisposition = require("./final-disposition");
 const provenance = require("./provenance");
 const runLineage = require("./run-lineage");
+const resourceGovernance = require("./resource-governance");
 const { discoverVerificationCapabilities, summarizeCapabilities } = require("../verification-capabilities");
 
 const ASSURANCE_STATE_FILENAME = "assurance-state.json";
@@ -343,9 +344,27 @@ class AssuranceRun {
         human: criteria.filter((c) => c.plannedDisposition === "HUMAN_APPROVAL").length,
       },
       // 계획된 사용자 승인은 사전 예고한다(P-3). REPLAN 횟수는 약속하지 않는다.
+      //
+      // human criterion은 되돌릴 수 없는 외부 행동을 뜻하므로, 계획 단계에서도
+      // D-B의 심사를 거쳐 "왜 사람이 필요한지"를 함께 보여 준다(§23).
       plannedHumanApprovals: criteria
         .filter((c) => c.plannedDisposition === "HUMAN_APPROVAL")
-        .map((c) => ({ criterionId: c.criterionId, statement: c.statement })),
+        .map((c) => {
+          const adjudication = resourceGovernance.adjudicateAction(
+            {
+              resourceKind: resourceGovernance.RESOURCE_KINDS.EXTERNAL,
+              action: resourceGovernance.ACTIONS.EXTERNAL_EFFECT,
+              resourceId: c.criterionId,
+              requestedPermission: "workspace-write",
+            },
+            { permissionCap: "workspace-write" }
+          );
+          return {
+            criterionId: c.criterionId,
+            statement: c.statement,
+            reasons: adjudication.ok ? adjudication.approvalReasons : [],
+          };
+        }),
       replanNote: "계약 변경이 필요한 경우 별도 재승인이 발생할 수 있습니다.",
     };
   }
