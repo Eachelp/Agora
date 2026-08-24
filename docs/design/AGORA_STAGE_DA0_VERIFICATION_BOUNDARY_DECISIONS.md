@@ -1,6 +1,6 @@
 # Agora Stage D-A0 — Verification Safety Boundary Decision Log
 
-> 상태: **구현 완료 · 독립 검수 대기**
+> 상태: **D-A0 COMPLETE (2026-08-24 최종 독립 actual-diff 검수 PASS)**
 > 최초 기록: 2026-08-22
 > 기준 브랜치: `feat/stage-da0-verification-boundary`
 > 상위 기준 문서: [AGORA_STAGE_D_ASSURANCE_CHARTER.md](AGORA_STAGE_D_ASSURANCE_CHARTER.md) (v0.5, D-A0 절)
@@ -88,18 +88,37 @@ process + contained             → OBSERVABLE    (시작·종료·출력은 관
 
 **subprocess를 OBSERVABLE로 정직하게 기록하는 것**이 이 단계의 핵심이다. sandbox를 넣어 ENFORCEABLE로 올리는 길도 있지만, 그것은 무게이며 지금 필요하지 않다. D-B가 자원/행동 차원의 통제 신호를 제공하면 그 신호로 다시 계산할 자리를 남겨 두었다.
 
-### 2.6 검증 권한은 worker 이하이면서 절대 write를 넘지 않는다 (INV-2)
+### 2.6 검증 권한 cap과 실제 강제 수준은 다르다 (INV-2, Charter v0.5)
+
+먼저 **논리적 permission cap**을 계산한다. worker 이하이면서 어떤 경우에도 write를 넘지 않는다.
 
 ```text
-verificationPermissionFor(worker) = min(worker, "workspace-read")
+verificationPermissionFor(worker) = min(worker, "workspace-read")   ← 선언된 권한 상한
 
-workspace-write → workspace-read   (worker가 쓸 수 있어도 검증은 못 쓴다)
+workspace-write → workspace-read   (검증은 write 권한을 부여받지 않는다)
 workspace-read  → workspace-read
 chat            → chat             (worker가 더 낮으면 그 이하를 따른다)
 알 수 없음      → null → 실행 거부
 ```
 
-검증이 governance 우회로가 되면 안 된다는 불변식의 강제 지점이다. 계산할 수 없으면 실행하지 않는다.
+**중요**: 이 cap은 검증기에 부여되는 권한의 상한을 선언할 뿐, backend에 따라 실제 강제 수준이 다르다. cap이 `workspace-read`라고 해서 process가 실제로 write를 못 하는 것은 아니다.
+
+```text
+artifact-predicate  ENFORCEABLE
+                    Agora 자신의 read-only 평가. 쓰기 경로 자체가 없으므로
+                    cap이 실제 경계와 일치한다.
+
+process             OBSERVABLE
+                    외부 프로세스는 Agora 프로세스 권한으로 실행된다. Agora는
+                    프로세스 내부의 fs write / network / credential 접근을 OS
+                    수준에서 막지 못한다. cap은 "부여하지 않은 권한"을 선언할 뿐이며,
+                    process가 실제로 workspace를 수정하는 것을 물리적으로 봉쇄하지
+                    않는다.
+```
+
+process backend의 변경은 **막는다고 주장하지 않는다.** 대신 실행 전후 fingerprint로 관측·기록하고(2.8 side-effect accounting), 변경이 관측되면 disposition을 격상할 수 있으며(D-A2), OS-level containment는 D-B에서 런타임 능력에 따라 강화한다. 못 막는 것을 막는다고 말하지 않는 것이 INV-3과 같은 방향이다.
+
+검증이 governance 우회로가 되면 안 된다는 불변식의 강제 지점이다. cap을 계산할 수 없으면 실행하지 않는다.
 
 ### 2.7 Verification Runner Contract
 
@@ -166,8 +185,8 @@ timeout               기본 120s, 상한 600s. 초과 시 process tree kill.
 
 ```text
 test/verification-capabilities.test.js   11 tests
-test/verification-runner.test.js         26 tests (+5: B1·B2 수정 후)
-canonical npm test                       1092 tests / 0 fail / 2 skipped
+test/verification-runner.test.js         28 tests (B1·B2 수정 +5, B1 cwd 수정 +2)
+canonical npm test                       1094 tests / 0 fail / 2 skipped (Windows 실측 GREEN)
 ```
 
 테스트가 실제로 증명하는 것(일부는 실제 프로세스를 띄워 확인한다):
@@ -188,9 +207,13 @@ canonical npm test                       1092 tests / 0 fail / 2 skipped
 
 ---
 
-## 6. 1차 독립 검수 수정 (2026-08-22)
+## 6. 독립 검수 수정 이력 (provenance)
 
-1차 actual-diff 검수에서 세 항목이 BLOCKING으로 돌아왔다.
+발생·수정 이력을 삭제하지 않고 남긴다. 다음 사람이 "왜 이 경계가 이렇게 생겼는지"를 재구성할 수 있어야 한다.
+
+### 6.1 — 1차 actual-diff 검수 (2026-08-22)
+
+1차 검수에서 세 항목이 BLOCKING으로 돌아왔다.
 
 ### B1 — argv의 workspace 파일이 hash 없이 실행 가능
 
@@ -227,9 +250,47 @@ Charter INV-2의 `workspace mutation NO`와 정면 충돌.
 반한다. 실제로 검증 도구가 파일 읽기 권한조차 없을 수 있어 read-only 사본을
 만들어도 의미 없는 경우가 있다.
 
+### 6.2 — 2차 actual-diff 검수 (2026-08-22)
+
+B2·B3는 정리되었으나, B1 수정에 경로 해석 잔여 버그 1건과 문서 버전 표기 불일치가 남았다.
+
+**B1 잔여 — cwd 상대경로 우회**: argv 파일을 `path.resolve(root, arg)`로 풀었는데,
+실제 subprocess는 상대 argv를 `cwd` 기준으로 해석한다. 따라서 `cwd="sub"`,
+`argv=["check.js"]`이면 실제로는 `root/sub/check.js`가 실행되지만 admission은
+`root/check.js`(없음)를 보고 `statSync` 실패 후 건너뛰어 frozenFiles 없이 통과했다.
+B1의 원래 실패 모드가 다른 형태로 살아 있었다.
+
+**수정**: `path.resolve(cwd, arg)`로 실제 실행 semantics와 맞췄다. cwd 상대경로
+regression test 2개 추가(해시 없음 → 거부, 올바른 해시 → 허용).
+
+**문서 정합**: Charter 헤더 v0.4 → v0.5, D-A0 결정 기록 상위 기준 v0.5, 테스트 헤더
+INV-2 문구를 v0.5 OBSERVABLE 의미로 정렬.
+
 ---
 
-## 7. 남은 확인
+## 7. 최종 독립 actual-diff 검수 — PASS (2026-08-24)
 
-- 사용자 Windows 로컬에서 canonical `npm test` GREEN 실측 (Charter §6 DoD 3).
-- actual-diff 독립 검수 PASS (Charter §6 DoD 2).
+```text
+B1 argv hash binding                 FIXED
+B1 cwd-relative path semantics       FIXED
+B2 shell executable bypass           FIXED
+B3 INV-2 containment overclaim       FIXED via Charter v0.5
+Charter/document consistency         FIXED
+
+Final verdict: PASS
+```
+
+DoD (Charter §6) 충족:
+
+- Windows 로컬 canonical `npm test` GREEN 실측 — 1094 tests / 0 fail / 2 skipped (DoD 3).
+- actual-diff 독립 검수 PASS (DoD 2).
+- 결정 기록 작성 완료, provenance 보존 (DoD 4).
+
+**보존해야 할 B3 설계 결정** (다음 사람이 뒤집으면 안 되는 것):
+
+- generic subprocess를 억지로 ENFORCEABLE이라고 부르지 않는다.
+- process verification은 현재 OBSERVABLE이다.
+- 못 막는 것을 막는다고 주장하지 않는다.
+- OS-level containment는 D-B에서 다룬다.
+
+**Stage D-A0 — COMPLETE.** 다음 작업은 D-A1(Assurance Contract, Task schema v2).
