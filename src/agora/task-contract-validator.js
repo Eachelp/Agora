@@ -20,6 +20,30 @@ const REQUIRED_SECTIONS = [
   "Out of Scope",
 ];
 
+// Stage D-A1 renamed two required sections to keep the contract domain-neutral
+// ("Implementation"/"Modules" presume the task is code). Both spellings satisfy
+// the same requirement here; which schema a task actually is gets decided by
+// assurance/task-schema-v2, not by this validator.
+//
+// This is a read-only equivalence. Nothing rewrites an already-frozen contract.
+const REQUIRED_SECTION_EQUIVALENTS = Object.freeze({
+  implementationapproach: ["workapproach"],
+  verification: ["verificationplan"],
+});
+
+// Sections whose body may legitimately be a fenced block. A structured
+// Verification Plan is a ```json block, so treating fence-only content as empty
+// would reject every machine-readable plan.
+//
+// Only a json fence counts. An arbitrary code fence keeps the original meaning
+// ("a section containing only code is empty") — otherwise pasting any snippet
+// would satisfy the Verification requirement without stating a single check.
+const FENCE_IS_CONTENT = new Set(["verification", "verificationplan"]);
+
+function hasJsonFence(rawBody) {
+  return rawBody.some((line) => /^(```|~~~)[ \t]*json\b/i.test(line.trim()));
+}
+
 // Recommended sections: missing heading or empty content => warning only.
 const RECOMMENDED_SECTIONS = [
   "Current State / Evidence",
@@ -105,9 +129,15 @@ function stripFences(lines) {
 
 // Extract the body of a section heading up to the next heading.
 function sectionBody(headings, index, lines) {
+  return stripFences(rawSectionBody(headings, index, lines)).trim();
+}
+
+// Same span, before fences are stripped. Needed to tell "no content at all"
+// apart from "content that is entirely a fenced block".
+function rawSectionBody(headings, index, lines) {
   const start = headings[index].lineIndex + 1;
   const end = index + 1 < headings.length ? headings[index + 1].lineIndex : lines.length;
-  return stripFences(lines.slice(start, end)).trim();
+  return lines.slice(start, end);
 }
 
 // Validate a Task Contract document.
@@ -141,6 +171,9 @@ function validateTaskContract(content) {
 
   function collect(label, required) {
     const keys = new Set(required ? [exactKey(label)] : [...candidateKeys(label)]);
+    if (required) {
+      for (const alias of REQUIRED_SECTION_EQUIVALENTS[exactKey(label)] || []) keys.add(alias);
+    }
     let idx = -1;
     for (let i = 0; i < headings.length; i += 1) {
       if (keys.has(normalizeHeading(headings[i].heading))) {
@@ -152,10 +185,16 @@ function validateTaskContract(content) {
       (required ? missing : warnings).push(label);
       return;
     }
+    const matchedKey = normalizeHeading(headings[idx].heading);
     const body = sectionBody(headings, idx, lines);
     if (!body) {
-      (required ? missing : warnings).push(label);
-      return;
+      // A structured Verification Plan lives entirely inside a ```json fence.
+      // Only treat the section as empty when the fence is absent too.
+      const rawBody = rawSectionBody(headings, idx, lines);
+      if (!(FENCE_IS_CONTENT.has(matchedKey) && hasJsonFence(rawBody))) {
+        (required ? missing : warnings).push(label);
+        return;
+      }
     }
     sections.push({
       key: normalizeHeading(label),

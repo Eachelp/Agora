@@ -291,8 +291,18 @@ function buildAgentPrompt({
       lines.push("- 워크스페이스 작업이면 PLAN_READY 전에 요청과 직접 관련된 파일·호출 경로·테스트를 필요한 범위에서 읽어 현재 상태와 근거를 확인하세요. 작은 작업을 위해 저장소 전체를 훑지는 마세요.");
       lines.push("- 확인하지 못한 사실은 단정하지 말고 `Risks / Open Questions`에 남기세요.");
       lines.push("- 하나의 작업이 하나의 명확한 목표와 완료 조건을 갖도록 큰 작업을 분해하세요.");
-      lines.push("- TASK에는 다음 6개 필수 섹션을 반드시 정확한 헤딩(`## Goal`, `## Requirements`, `## Implementation Approach`, `## Acceptance Criteria`, `## Verification`, `## Out of Scope`)과 함께 본문(코드 블록 제외한 실제 설명)을 포함해 작성하세요.");
-      lines.push("- 다음 보조 섹션의 포함을 권장합니다: `## Current State / Evidence`, `## Affected Modules`, `## Invariants / Must Preserve`, `## Risks / Open Questions`, `## Dependencies`, `## Related Tasks`.");
+      lines.push("- TASK에는 다음 8개 필수 섹션을 반드시 정확한 헤딩(`## Goal`, `## Inputs / Source Data`, `## Requirements`, `## Work Approach`, `## Deliverables`, `## Acceptance Criteria`, `## Verification Plan`, `## Out of Scope`)과 함께 본문(실제 설명)을 포함해 작성하세요.");
+      lines.push("- `## Inputs / Source Data`와 `## Deliverables`는 목록으로 적고, 없으면 생략하지 말고 `- 없음`이라고 명시하세요. 생략과 '없음'은 다른 의미입니다.");
+      lines.push("- 입력 항목은 `` `경로` `` 또는 URL로 적습니다. 작업 중 내용이 바뀌면 안 되는 자료는 `(frozen)`, 실행 시점에 달라질 수 있는 자료는 `(live)`를 붙이세요. 표시가 없으면 파일은 frozen, URL은 live로 처리됩니다.");
+      lines.push("- `## Verification Plan`에는 사람이 읽을 설명과 함께 아래 형식의 ```json 블록을 하나 넣으세요. 이 목록은 승인 시점에 동결되며 이후 아무도 바꿀 수 없습니다.");
+      lines.push('  형식: [{"id":"V1","method":"process|predicate|review|human","statement":"무엇을 확인하는가", ...}]');
+      lines.push('  - `process`: 프로그램 실행으로 확인. `"executable"`과 `"argv"` 배열을 구조화해 적습니다(셸 문자열 금지). 예: {"id":"V1","method":"process","statement":"전체 테스트 통과","executable":"npm","argv":["test"]}');
+      lines.push('  - `predicate`: 산출물을 직접 열어 확인. `"check"`에 `kind`와 `path`를 적습니다. 사용 가능한 kind: exists, absent, hash, text.contains, text.matches, text.section, text.lines, json.path, csv.rows, csv.column. 예: {"id":"V2","method":"predicate","statement":"보고서에 결론 절이 있다","check":{"kind":"text.section","path":"report.md","expected":"결론"}}');
+      lines.push('  - `review`: 기계가 판정할 수 없어 검수자의 판단이 필요한 항목. 예: {"id":"V3","method":"review","statement":"번역 논조가 원문과 맞는가"}');
+      lines.push('  - `human`: 되돌릴 수 없는 외부 행동 등 사용자 승인이 필요한 항목. 꼭 필요할 때만 쓰세요. 승인 남발은 안전장치를 무력화합니다.');
+      lines.push("- 확인할 수 없는 것을 process/predicate로 적지 마세요. 기계가 확정할 수 없는 항목은 정직하게 `review`로 두는 편이 낫습니다.");
+      lines.push("- 이 작업이 특정 토론 결정에서 나왔다면 `결정: D-12, D-15`처럼 결정 id를 적어 기록이 이어지게 하세요.");
+      lines.push("- 다음 보조 섹션의 포함을 권장합니다: `## Current State / Evidence`, `## Affected Resources`, `## Invariants / Must Preserve`, `## Risks / Open Questions`, `## Dependencies`, `## Related Tasks`.");
       lines.push("- 의존하는 다른 작업이나 선행 조건이 있다면 `## Dependencies` 또는 `## Related Tasks`에 명시하세요.");
       lines.push("- 코드를 수정하거나 구현을 시작하지 마세요. 구현 담당자를 자동으로 부르지 마세요.");
       lines.push("- BLOCKING 지적을 해결하지 못하거나 수용하지 않을 때는 TASK를 고친 것처럼 다시 쓰지 마세요. `STATUS: NEEDS_DECISION`과 그 이유·사용자에게 필요한 질문을 반환하고, 기존 TASK.md를 덮어쓰지 마세요.");
@@ -365,6 +375,34 @@ function buildAgentPrompt({
         );
         lines.push(evidence.text);
         lines.push("=== 실행 근거 끝 ===");
+      }
+      // Stage D §19 — Builder의 주장이 아니라 Agora가 실제로 확인한 것과
+      // 확인하지 못한 것을 구조화해 전달한다. 무엇이 강등됐는지도 함께 보인다(R-3).
+      if (specialist.assurance) {
+        const a = specialist.assurance;
+        lines.push("");
+        lines.push("=== Agora 확인 결과 ===");
+        lines.push("아래는 Agora가 승인된 확인 목록에 따라 직접 수행한 결과입니다. 이 결과를 당신의 판단으로 바꾸지 마세요.");
+        if (a.automatic?.length) {
+          lines.push(`[자동 확정됨 ${a.automatic.length}건] ${a.automatic.map((c) => `${c.criterionId}(${c.outcome}) ${c.statement}`).join(" · ")}`);
+        }
+        if (a.reviewRequired?.length) {
+          lines.push(`[당신이 판단할 항목 ${a.reviewRequired.length}건]`);
+          for (const c of a.reviewRequired) {
+            lines.push(`  - ${c.criterionId}: ${c.statement}${c.downgradeReason ? ` (자동 확인 불가: ${c.downgradeReason})` : ""}`);
+          }
+        }
+        if (a.humanApproval?.length) {
+          lines.push(`[사용자 승인 항목 ${a.humanApproval.length}건 — 당신이 대신 승인할 수 없습니다] ${a.humanApproval.map((c) => c.criterionId).join(", ")}`);
+        }
+        if (a.downgrades?.length) {
+          lines.push(`[계획과 달라진 항목 ${a.downgrades.length}건] ${a.downgrades.map((d) => `${d.criterionId}: ${d.plannedDisposition}→${d.actualDisposition}`).join(" · ")}`);
+        }
+        if (a.verificationSideEffects?.length) {
+          lines.push(`⚠ 확인 과정이 산출물을 변경했습니다: ${a.verificationSideEffects.map((s) => s.changedPaths.join(", ")).join(" · ")} (Builder 변경과 구분해 판단하세요)`);
+        }
+        lines.push("=== Agora 확인 결과 끝 ===");
+        lines.push("- 위 [당신이 판단할 항목]을 하나도 빠뜨리지 말고 검토하고, 판단 근거를 본문에 적으세요.");
       }
       lines.push("- 수정이 필요하면 구체적인 파일·문제·수정 방향을 적으세요.");
       lines.push("- 구현자가 작업을 다른 에이전트에게 넘기려 하거나 권한이 없어 실제 변경을 못 했다면, 통과시키지 말고 구현 단계로 되돌리세요.");

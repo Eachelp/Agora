@@ -13,6 +13,8 @@ const {
   executionAxes: professionalExecutionAxes,
   buildProfessionalEvidencePayload,
 } = require("./chat-professional-evidence");
+// Stage D — Assurance & Governance. v1 계약은 legacy 모드로 그대로 흐른다.
+const { AssuranceRun } = require("../agora/assurance/assurance-run");
 
 // checkpoint 실패 taxonomy를 사용자가 이해할 수 있는 한국어 설명으로 바꿉니다.
 // 원인 코드 자체(CHECKPOINT_*)는 evidence/Reviewer 판단에 그대로 쓰이므로
@@ -604,6 +606,173 @@ class SpecialistMixin {
     if (!runInfo || !this.taskManager?.writeRunEvidence) return { ok: true, payload };
     const ok = this.taskManager.writeRunEvidence(runInfo, payload);
     return ok ? { ok: true, payload } : { ok: false, payload };
+  }
+
+  // ---- Stage D — Assurance & Governance 배선 ----
+  //
+  // 다섯 지점만 실행 흐름에 붙는다: 동결 → admission → subject → 검증 → final.
+  // v1 계약은 legacy 모드로 흘러 기존 동작이 그대로 유지된다(Charter §6).
+
+  // 1. 검사 계약 동결 + Builder admission.
+  // 되돌릴 수 없는 상태를 소비하기 전에 수행한다(D-0에서 배운 순서 원칙).
+  beginAssurance({ runInfo, stage = "implementation", round = 1 } = {}) {
+    if (!runInfo?.runDir) {
+      this.assuranceRun = null;
+      return { ok: true };
+    }
+    let assurance;
+    try {
+      assurance = new AssuranceRun({
+        runId: runInfo.runId,
+        runDir: runInfo.runDir,
+        root: this.meta.workspace,
+      });
+      const frozen = assurance.freeze(runInfo.content || "");
+      if (!frozen.ok) {
+        return {
+          ok: false,
+          failure: this.holdAssuranceFailure({
+            stage,
+            round,
+            stopReason: frozen.code || "ASSURANCE_CONTRACT_INVALID",
+            message: frozen.error || "확인 계약을 만들지 못해 실행을 시작하지 않았습니다.",
+          }),
+        };
+      }
+      // frozen input이 승인 시점과 다르면 Run을 시작하지 않는다(§3.1).
+      const admitted = assurance.admitBuilder();
+      if (!admitted.ok) {
+        return {
+          ok: false,
+          failure: this.holdAssuranceFailure({
+            stage,
+            round,
+            stopReason: admitted.code || "FROZEN_INPUT_CHANGED",
+            message: `${admitted.error} 기획을 다시 승인하거나 입력을 원래대로 되돌려 주세요.`,
+          }),
+        };
+      }
+    } catch (error) {
+      // Stage D 자체의 오류가 기존 실행 경로를 무너뜨리지 않게 한다.
+      // 다만 조용히 통과시키지 않고 사실을 남긴다.
+      this.assuranceRun = null;
+      this.appendSystem(`확인 계약을 준비하지 못해 기존 방식으로 진행합니다. (${error?.message || "알 수 없는 오류"})`);
+      return { ok: true };
+    }
+    this.assuranceRun = assurance;
+    return { ok: true, assurance };
+  }
+
+  holdAssuranceFailure({ stage, round, stopReason, message }) {
+    this.assuranceRun = null;
+    this.specialistActive = false;
+    this.emitSpecialistState();
+    this.appendSystem(message);
+    return {
+      ok: false,
+      stage,
+      completedIterations: Math.max(0, (round || 1) - 1),
+      needsUserDecision: true,
+      stopReason,
+    };
+  }
+
+  // 2. Builder 종료 → 결과물 snapshot 확정 → 동결된 검사 실행 (INV-5 · D-A2).
+  async runAssuranceVerification({ changeSnapshot, permission } = {}) {
+    const assurance = this.assuranceRun;
+    if (!assurance?.assured) return null;
+    try {
+      const diff = changeSnapshot?.diff || null;
+      assurance.captureSubject({
+        changedPaths: [
+          ...(diff?.untrackedFiles || []).map((f) => f.path),
+          ...(diff?.changedPaths || []),
+        ],
+        // Git이 없으면 변경 관측이 안 된다는 사실을 정직하게 남긴다.
+        changeObservation: diff?.supported === true ? "observed" : "unsupported_non_git",
+      });
+      // 검증 권한은 Builder가 실제로 쓴 권한에서 유도한다(INV-2).
+      // runner가 min(worker, workspace-read)로 다시 한 번 낮춘다.
+      const workerPermission =
+        permission ||
+        specialistPermissionMode("implementation", this.activeRunAuthorization || "workspace-write") ||
+        "workspace-read";
+      const verification = await assurance.verify({ workerPermission });
+      assurance.persist();
+      return verification;
+    } catch (error) {
+      this.appendSystem(`확인을 끝까지 수행하지 못했습니다. (${error?.message || "알 수 없는 오류"})`);
+      return { ok: false, error: error?.message || null, records: [] };
+    }
+  }
+
+  // 3. Final PASS 집계. 남은 판단이 있으면 통과시키지 않는다(§18).
+  finalizeAssurance() {
+    const assurance = this.assuranceRun;
+    if (!assurance?.assured) return null;
+    try {
+      const result = assurance.finalize();
+      assurance.persist();
+      return result;
+    } catch (error) {
+      this.appendSystem(`최종 확인을 마치지 못했습니다. (${error?.message || "알 수 없는 오류"})`);
+      return null;
+    }
+  }
+
+  // Reviewer에게 넘길 구조화 payload(§19).
+  assuranceReviewPayload() {
+    try {
+      return this.assuranceRun?.reviewerPayload() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  // Reviewer가 PASS를 선언했을 때, 그 판단을 REVIEW_REQUIRED criterion의
+  // resolution으로 기록한 뒤 Final을 집계한다.
+  //
+  // 중요: Reviewer는 **자동 검증 결과를 바꾸지 못한다.** REVIEW_REQUIRED로
+  // 라우팅된 항목만 판정할 수 있고, HUMAN_APPROVAL은 사용자만 해소할 수 있다.
+  applyReviewerAssuranceVerdict(contract) {
+    const assurance = this.assuranceRun;
+    if (!assurance?.assured) return null;
+    try {
+      for (const record of assurance.lastVerification?.records || []) {
+        if (record.actualDisposition !== "REVIEW_REQUIRED") continue;
+        assurance.resolveByReviewer({
+          criterionId: record.criterionId,
+          outcome: contract?.verdict === "PASS" ? "PASS" : "FAIL",
+          rationale: contract?.summary || null,
+        });
+      }
+      return this.finalizeAssurance();
+    } catch (error) {
+      this.appendSystem(`검수 결과를 확인 기록에 반영하지 못했습니다. (${error?.message || "알 수 없는 오류"})`);
+      return null;
+    }
+  }
+
+  // Final 집계가 막았을 때 안전하게 멈춘다. 변경은 그대로 두고 무엇이
+  // 남았는지 사용자 언어로 알린다(§9 — 내부 어휘를 노출하지 않는다).
+  holdForAssuranceBlocked({ runInfo, taskInfo, checkpoint, round, changes, final }) {
+    const {
+      describeBlockers,
+    } = require("../agora/assurance/final-disposition");
+    const lines = describeBlockers(final).map((b) => `- ${b.label}: ${b.count}건`);
+    const message = final.verdict === "INVALIDATED"
+      ? `확인을 마친 뒤 결과물이나 입력 자료가 바뀌어 완료로 처리할 수 없습니다.\n${lines.join("\n")}\n\n변경을 되돌리거나 다시 확인해 주세요.`
+      : `아직 남은 확인이 있어 완료로 처리하지 않았습니다.\n${lines.join("\n")}`;
+    return this.holdForRecovery({
+      runInfo,
+      taskInfo,
+      checkpoint,
+      stage: "review",
+      round,
+      stopReason: final.verdict === "INVALIDATED" ? "ASSURANCE_INVALIDATED" : "ASSURANCE_BLOCKED",
+      changes,
+      message,
+    });
   }
 
   prepareReviewEvidence({ runInfo, builderResult, diff, round, provider }) {
@@ -2241,6 +2410,12 @@ class SpecialistMixin {
       }
     }
 
+    // Stage D — 실행 계약과 함께 **검사 계약도** 동결한다(INV-1).
+    // 되돌릴 수 없는 상태(checkpoint·Builder)를 소비하기 전에 수행한다.
+    // v1 Task는 legacy 모드로 통과하며 아무것도 막지 않는다(Charter §6).
+    const assuranceGate = this.beginAssurance({ runInfo, stage: "implementation", round });
+    if (!assuranceGate.ok) return assuranceGate.failure;
+
     // TASK-006: Builder 실행 직전 workspace 상태를 보존합니다.
     // 지원되지 않는 workspace(git 아님/없음)라면 checkpoint를 만들지 않고 진행합니다.
     if (this.persistRecovery && !this.persistRecoveryState(this.recoveryFor(null, {
@@ -2588,6 +2763,13 @@ class SpecialistMixin {
         message: "작업 목록 상태를 저장하지 못해 검수를 시작하지 않았습니다. 변경과 복구 정보는 그대로 유지합니다.",
       });
     }
+    // Stage D — Builder가 만든 실제 결과물에 대해 동결된 검사를 수행한다.
+    // 여기서 나온 판정은 모두 이 시점의 결과물 snapshot에 귀속된다(INV-5).
+    await this.runAssuranceVerification({
+      changeSnapshot,
+      permission: implementation.permission,
+    });
+
     reviewEvidence = this.prepareReviewEvidence({
       runInfo,
       builderResult,
@@ -2626,6 +2808,9 @@ class SpecialistMixin {
             ...this.executionAxes({ builderResult, diff: changeSnapshot.diff }),
           },
           evidence: reviewEvidence.payload,
+          // Stage D §19 — Builder의 주장만 보여주지 않는다. 무엇이 자동으로
+          // 확정됐고 무엇이 Reviewer 판단으로 남았는지, 무엇이 강등됐는지 함께 준다.
+          assurance: this.assuranceReviewPayload(),
         },
         agentConfig: review.agentConfig,
       });
@@ -2661,6 +2846,19 @@ class SpecialistMixin {
 
       const contract = this.parseReviewContract(reviewResult.text || "", reviewResult.specialistSignal);
       if (contract.verdict === "PASS") {
+        // Stage D §18 — Reviewer의 PASS만으로 Run이 통과하지 않는다.
+        // 자동검사 FAIL·미해결 항목·결과물 변경이 남아 있으면 여기서 막힌다.
+        const assuranceFinal = this.applyReviewerAssuranceVerdict(contract);
+        if (assuranceFinal && !assuranceFinal.finalPass) {
+          return this.holdForAssuranceBlocked({
+            runInfo,
+            taskInfo,
+            checkpoint,
+            round,
+            changes: changeSnapshot,
+            final: assuranceFinal,
+          });
+        }
         if (this.strictReviewDiff && changeSnapshot.diff.status === "UNSUPPORTED") {
           return this.holdForDegradedReview({
             runInfo,
@@ -3000,6 +3198,17 @@ class SpecialistMixin {
         changes: changeSnapshot,
         message: "작업 완료 상태를 저장하지 못해 checkpoint를 유지합니다. 변경은 그대로 남아 있습니다.",
       });
+    }
+
+    // Stage D-C — Recorder 결과까지 provenance에 남긴다. 이 기록이 있어야
+    // "왜 PASS였는가"의 마지막 고리가 이어진다(§26).
+    if (this.assuranceRun?.assured) {
+      try {
+        this.assuranceRun.recordRecorder({ ok: Boolean(recorderResult?.ok) });
+        this.assuranceRun.persist();
+      } catch {
+        // 기록 실패는 governance 실패가 아니다. 실행을 무너뜨리지 않는다.
+      }
     }
 
     const completedTransition = this.transitionProfessional({ type: "RECORDER_DONE" });

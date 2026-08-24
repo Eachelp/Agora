@@ -91,10 +91,29 @@ class AssuranceLedger {
     });
   }
 
+  // 이 criterion이 실제로 어떤 처분으로 라우팅됐는가. 없으면 null.
+  _routedDispositionFor(criterionId) {
+    const executions = this._records.filter(
+      (r) => r.criterionId === criterionId && r.type === RECORD_TYPES.EXECUTION
+    );
+    return executions.length > 0 ? executions[executions.length - 1].actualDisposition : null;
+  }
+
   // Reviewer의 판정. 기존 execution을 수정하지 않고 그 위에 쌓는다.
+  //
+  // **Reviewer는 사용자 승인을 대신할 수 없다(§20).** HUMAN_APPROVAL로 라우팅된
+  // criterion에 Reviewer 판정을 쌓으면 승인 관문이 무력화되므로 거부한다.
+  // 조용히 무시하지 않고 거부 사실을 돌려준다.
   appendReviewerResolution({ criterionId, outcome, rationale = null, assuranceSubjectRef = null, actor = "reviewer" }) {
     if (!RESOLUTION_OUTCOMES.includes(outcome)) {
       return { ok: false, error: `알 수 없는 판정입니다: ${outcome}` };
+    }
+    if (this._routedDispositionFor(criterionId) === "HUMAN_APPROVAL") {
+      return {
+        ok: false,
+        code: "HUMAN_APPROVAL_REQUIRED",
+        error: `이 항목은 사용자 승인이 필요합니다: ${criterionId}`,
+      };
     }
     return {
       ok: true,
@@ -193,8 +212,16 @@ class AssuranceLedger {
 
     const human = [...live].reverse().find((r) => r.type === RECORD_TYPES.HUMAN_APPROVAL);
     if (human) return { ...routing, ...human, resolvedBy: human.type, resolved: true };
+
     const reviewer = [...live].reverse().find((r) => r.type === RECORD_TYPES.REVIEWER_RESOLUTION);
-    if (reviewer) return { ...routing, ...reviewer, resolvedBy: reviewer.type, resolved: true };
+    if (reviewer) {
+      // 방어선: 외부에서 로드된 기록에 Reviewer 판정이 섞여 있어도 사용자 승인
+      // 관문을 대신하지 못한다(§20). append 시점 거부와 같은 규칙이다.
+      if (routing.actualDisposition === "HUMAN_APPROVAL") {
+        return { ...routing, ...reviewer, resolvedBy: reviewer.type, resolved: false };
+      }
+      return { ...routing, ...reviewer, resolvedBy: reviewer.type, resolved: true };
+    }
     const execution = lastExecution;
     if (!execution) return null;
     return {
