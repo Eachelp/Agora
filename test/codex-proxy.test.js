@@ -40,6 +40,55 @@ function startUpstream(handler) {
   });
 }
 
+// --- WebSocket 터널 테스트용 결정적 정리 ---
+//
+// `server.close()`는 **새 연결만 막는다.** 이미 upgrade된 소켓은 그대로 살아 있어,
+// 프록시가 터널을 끊는 순간 그 소켓이 ECONNRESET을 낸다. 그 시점이 테스트 함수가
+// 반환된 뒤이면 node:test가 "테스트 종료 후 비동기 활동"으로 잡아 파일 전체를
+// 실패시킨다(에러 리스너가 없으면 uncaughtException이 되기 때문).
+//
+// 그래서 두 가지를 함께 한다: 소켓마다 error를 흡수하고, 테스트가 끝나기 전에
+// 우리 쪽 소켓을 직접 끊는다. 대기(sleep)로 덮지 않는다.
+function trackServerSockets(server) {
+  const sockets = new Set();
+  const track = (socket) => {
+    if (!socket || sockets.has(socket)) return;
+    sockets.add(socket);
+    // 상대가 RST로 끊는 것은 이 테스트에서 정상 종료 경로다. 실패로 만들지 않는다.
+    socket.on("error", () => {});
+    socket.once("close", () => sockets.delete(socket));
+  };
+  server.on("connection", track);
+  server.on("upgrade", (_request, socket) => track(socket));
+  return {
+    destroyAll() {
+      for (const socket of [...sockets]) socket.destroy();
+      sockets.clear();
+    },
+  };
+}
+
+// 살아 있는 소켓을 먼저 끊고 close 완료까지 기다린다.
+// 소켓이 남아 있으면 close 콜백은 영원히 오지 않는다.
+async function closeServer(server, tracker) {
+  tracker?.destroyAll();
+  await new Promise((resolve) => server.close(resolve));
+}
+
+// timeout handle을 잡아 두고 성공·실패 어느 쪽이든 반드시 해제한다.
+// 해제하지 않으면 타이머가 이벤트 루프를 붙잡아 테스트 파일이 그 시간만큼
+// 늘어지고, 그 사이에 터널 정리 오류가 테스트 밖으로 새어 나온다.
+function withDeadline(ms, message, executor) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    const settle = (fn) => (value) => {
+      clearTimeout(timer);
+      fn(value);
+    };
+    executor(settle(resolve), settle(reject));
+  });
+}
+
 test("config 주입은 루트 영역의 첫 테이블 앞에 marker와 base_url을 넣는다", () => {
   const content = ['model = "gpt-5"', "", "[plugins.chrome]", 'x = "y"'].join("\n");
   const result = injectBaseUrl(content, 10161);
@@ -321,12 +370,16 @@ test("WebSocket 업그레이드는 인증을 갈아끼운 원시 터널로 중�
   const net = require("node:net");
   let upgradeHeaders = null;
   const upstream = http.createServer();
+  const upstreamSockets = trackServerSockets(upstream);
   upstream.on("upgrade", (request, socket) => {
     upgradeHeaders = request.headers;
     socket.write(
       "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
     );
-    socket.on("data", (chunk) => socket.write(`echo:${chunk}`));
+    // 터널이 끊긴 뒤 도착한 write는 무시한다(정상 종료 경로).
+    socket.on("data", (chunk) => {
+      if (!socket.destroyed) socket.write(`echo:${chunk}`);
+    });
   });
   await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
 
@@ -337,10 +390,11 @@ test("WebSocket 업그레이드는 인증을 갈아끼운 원시 터널로 중�
   });
   const proxyPort = await proxy.start();
 
+  let client = null;
   try {
-    const result = await new Promise((resolve, reject) => {
-      const socket = net.connect(proxyPort, "127.0.0.1", () => {
-        socket.write(
+    const result = await withDeadline(5000, "websocket test timeout", (resolve, reject) => {
+      client = net.connect(proxyPort, "127.0.0.1", () => {
+        client.write(
           [
             "GET /v1/responses HTTP/1.1",
             `Host: 127.0.0.1:${proxyPort}`,
@@ -356,20 +410,19 @@ test("WebSocket 업그레이드는 인증을 갈아끼운 원시 터널로 중�
       });
       let data = "";
       let sentPayload = false;
-      socket.on("data", (chunk) => {
+      client.on("data", (chunk) => {
         data += chunk;
         if (!sentPayload && data.includes("101")) {
           sentPayload = true;
-          socket.write("ping");
+          client.write("ping");
           return;
         }
-        if (data.includes("echo:ping")) {
-          socket.destroy();
-          resolve(data);
-        }
+        // 소켓 정리는 finally가 맡는다. 여기서 destroy하면 그 뒤의 터널
+        // teardown이 테스트 밖에서 일어난다.
+        if (data.includes("echo:ping")) resolve(data);
       });
-      socket.once("error", reject);
-      setTimeout(() => reject(new Error("websocket test timeout")), 5000);
+      // resolve 이후에 도착하는 RST도 이 리스너가 흡수한다(reject는 무시된다).
+      client.on("error", reject);
     });
 
     assert.match(result, /101 Switching Protocols/);
@@ -377,8 +430,11 @@ test("WebSocket 업그레이드는 인증을 갈아끼운 원시 터널로 중�
     assert.equal(upgradeHeaders.authorization, "Bearer token-a");
     assert.equal(upgradeHeaders["chatgpt-account-id"], "id-token-a");
   } finally {
+    // 클라이언트를 먼저 끊어 프록시 teardown을 유발하고, 우리 쪽 upstream
+    // 소켓도 직접 끊은 뒤 close 완료까지 기다린다.
+    client?.destroy();
     proxy.stop();
-    upstream.close();
+    await closeServer(upstream, upstreamSockets);
   }
 });
 
@@ -447,9 +503,12 @@ test("WebSocket 핸드셰이크 중 upstream이 닫으면 hang하지 않고 다�
       return;
     }
     socket.on("data", () => {
-      socket.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n");
+      if (!socket.destroyed) {
+        socket.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n");
+      }
     });
   });
+  const upstreamSockets = trackServerSockets(upstream);
   await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
 
   const proxy = poolProxy({
@@ -462,27 +521,26 @@ test("WebSocket 핸드셰이크 중 upstream이 닫으면 hang하지 않고 다�
   });
   const proxyPort = await proxy.start();
 
+  let client = null;
   try {
-    const status = await new Promise((resolve, reject) => {
-      const socket = net.connect(proxyPort, "127.0.0.1", () => {
-        socket.write(
+    const status = await withDeadline(4000, "hang: no response", (resolve, reject) => {
+      client = net.connect(proxyPort, "127.0.0.1", () => {
+        client.write(
           "GET /v1/responses HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n"
         );
       });
       let data = "";
-      socket.on("data", (chunk) => {
+      client.on("data", (chunk) => {
         data += chunk;
-        if (data.includes("\r\n")) {
-          socket.destroy();
-          resolve(data.split("\r\n")[0]);
-        }
+        // 소켓 정리는 finally가 맡는다.
+        if (data.includes("\r\n")) resolve(data.split("\r\n")[0]);
       });
-      socket.once("error", reject);
-      setTimeout(() => reject(new Error("hang: no response")), 4000);
+      client.on("error", reject);
     });
     assert.match(status, /101/);
   } finally {
+    client?.destroy();
     proxy.stop();
-    upstream.close();
+    await closeServer(upstream, upstreamSockets);
   }
 });
