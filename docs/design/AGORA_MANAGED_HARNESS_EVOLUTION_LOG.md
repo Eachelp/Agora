@@ -1,6 +1,6 @@
 # Agora — Managed Harness Runtime 개발일지 및 확장 기준
 
-> 상태: **Stage A/B 완료 · Professional 안정화 Stage 1~5 COMPLETE · Stage C Managed Harness Runtime COMPLETE (Session Invalidation / Lifecycle 포함 · FINAL PASS — AGORA_STAGE_C_FINAL_REVIEW.md) · 다음: Stage D — AGORA_STAGE_D_ASSURANCE_CHARTER.md**
+> 상태: **Stage A/B 완료 · Professional 안정화 Stage 1~5 COMPLETE · Stage C Managed Harness Runtime COMPLETE (Session Invalidation / Lifecycle 포함 · FINAL PASS — AGORA_STAGE_C_FINAL_REVIEW.md) · Stage D Assurance & Governance COMPLETE (D-0 · D-A0 · D-A1 · D-A2 · D-B · D-C — AGORA_STAGE_D_ASSURANCE_DECISIONS.md) · 다음: M-track (M2 derived Memory Bank · M3 AGENTS.md/CLAUDE.md export)**
 > 최초 작성: 2026-08-16
 > 최종 안정화 기준일: 2026-08-18
 > 대상 브랜치: `feat/multi-harness-runtime`

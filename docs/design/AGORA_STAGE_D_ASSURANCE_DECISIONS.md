@@ -1,9 +1,10 @@
 # Agora Stage D — Assurance & Governance Decision Log (D-A1 · D-A2 · D-B · D-C)
 
-> 상태: **구현 완료 · 독립 검수 대기**
+> 상태: **Stage D COMPLETE (2026-08-25 최종 독립 actual-diff 검수 PASS)**
 > 최초 기록: 2026-08-24
 > 기준 브랜치: `feat/stage-d-assurance-governance`
-> 상위 기준 문서: [AGORA_STAGE_D_ASSURANCE_CHARTER.md](AGORA_STAGE_D_ASSURANCE_CHARTER.md) (v0.5)
+> Stage D implementation HEAD: `43ecf40`
+> 상위 기준 문서: [AGORA_STAGE_D_ASSURANCE_CHARTER.md](AGORA_STAGE_D_ASSURANCE_CHARTER.md) (v0.5, 무변경)
 > 직전 baseline: D-A0 COMPLETE `35b2fee`
 > 선행 결정 기록: [D-0](AGORA_STAGE_D0_WORKSPACE_LEASE_DECISIONS.md) · [D-A0](AGORA_STAGE_DA0_VERIFICATION_BOUNDARY_DECISIONS.md)
 
@@ -409,7 +410,8 @@ test/assurance-end-to-end.test.js         18 tests
 test/assurance-repair-regression.test.js  17 tests  (1차 검수 B2·B4·B6~B9)
 test/assurance-step-mode.test.js           8 tests  (1차 검수 B1·B5, production 진입점)
 test/assurance-repair2-regression.test.js 12 tests  (2·3차 검수 B3·B5·B7)
-canonical npm test                        1230 / 0 fail / 2 skipped
+
+canonical npm test (Windows 실측)         1230 tests / 1228 pass / 0 fail / 2 skipped
 ```
 
 end-to-end 테스트가 실제로 증명하는 것(Charter §34):
@@ -650,7 +652,107 @@ URL/API                      → 기록 없음. 외부 metadata가 보고되면 
 
 ---
 
-## 15. 남은 확인
+## 15. Stage D CLOSEOUT — 최종 독립 검수 PASS (2026-08-25)
 
-- 사용자 Windows 로컬에서 canonical `npm test` GREEN 실측 (Charter §6 DoD 3).
-- 4차 actual-diff 독립 검수 PASS (Charter §6 DoD 2).
+```text
+Stage D implementation HEAD    43ecf40
+Independent actual-diff review PASS
+Windows canonical npm test     1230 tests / 1228 pass / 0 fail / 2 skipped
+                               duration 33385ms
+```
+
+### 15.1 blocker 최종 판정
+
+1차 검수가 찾은 9건과 이후 2·3·4차 repair review에서 이어진 지적이 모두 닫혔다.
+
+```text
+B1  step mode Stage D bypass                          FIXED
+B2  v2 intent → silent legacy downgrade               FIXED
+B3  assurance runtime/persist fail-open               FIXED
+B4  auto revision without re-verification             FIXED
+B5  HUMAN_APPROVAL workflow continuation              FIXED
+B6  D-B pre-action governance gate                    FIXED
+B7  frozen/live input semantics and retrieval provenance  FIXED
+B8  unverifiable assurance-subject recheck            FIXED
+B9  D-C lineage/invalidation/mutation provenance wiring    FIXED
+
+Final verdict: PASS
+```
+
+수정 이력은 §12(1차) · §13(2차) · §14(3차)에 그대로 남아 있다. **결함이 있었다는
+사실과 어떻게 닫혔는지를 지우지 않는다** — 그것이 이 단계에서 만든 R-8의 정신이고,
+다음 사람이 "왜 이 배선이 이렇게 생겼는지"를 재구성하는 근거다.
+
+특히 되풀이해서 배운 것 하나: **모듈이 아니라 배선이 문제였다.** 1차 검수의 9건 중
+대부분은 조각의 결함이 아니라 조각이 실제 실행 경로에 붙지 않았거나, 붙었는데
+실패를 검사하지 않은 것이었다. 다음 단계에서도 "만들었다"와 "연결되어 작동한다"를
+같은 것으로 취급하면 안 된다.
+
+### 15.2 Stage D가 최종적으로 보증하는 것
+
+```text
+Frozen Task v2 + Frozen Verification Plan
+    승인 시점에 계약과 검사가 함께 동결된다. 이후 Builder·Reviewer·
+    auto-revision 누구도 검사 항목을 바꾸지 못한다.
+
+frozen / live input binding
+    frozen은 admission과 Final 직전에 재대조된다. live는 막지 않되 실제로
+    무엇을 썼는지 관측 가능한 범위에서 기록하고, 관측하지 못한 것은
+    기록을 만들지 않는다.
+
+Assurance Subject
+    모든 판정이 특정 결과물 snapshot에 귀속된다. 결과물이 바뀌면 기존
+    판정은 무효화되고 기록은 남는다.
+
+Process Verification / Artifact Predicate
+    엔진은 둘뿐이다. 도메인 지식은 Frozen Task가 공급하며 core에 도메인
+    Verifier를 만들지 않는다.
+
+planned vs actual disposition
+    계획과 실제를 분리 기록한다. 정직한 강등이 조용한 강등이 되지 않는다.
+
+Reviewer / Human resolution
+    append-only. Reviewer는 사용자 승인을 대신할 수 없고, 사용자는 자신의
+    승인으로 실제 workflow를 완료까지 이어갈 수 있다.
+
+subject / input final recheck
+    기록 직전에 다시 확인한다. "같다고 확인하지 못함"은 "같음"이 아니다.
+
+Resource & Capability Governance
+    controlClass는 실제 runtime enforcement에서 계산되는 단일 권위이며,
+    되돌릴 수 없는 외부 행동은 사전 사용자 승인 없이 실행되지 않는다.
+
+append-only provenance / typed Run lineage
+    실행이 실제로 남긴 사실만 이어 붙인다. 과거 사실을 소급 생성하지 않는다.
+
+audit reconstruction
+    특정 Run이 왜 PASS였는지를 저장된 사실만으로 재구성할 수 있고,
+    기록되지 않은 것은 `missingFacts`로 정직하게 드러난다.
+```
+
+그리고 이 전부가 **코딩 과업에 종속되지 않는다.** 번역·조사·보고서·데이터 과업이
+같은 계약·검증·권한·기록 경로로 흐른다는 것을 end-to-end 테스트가 고정한다.
+
+### 15.3 알려진 한계 — 결함이 아니라 선언된 경계다
+
+아래는 이번 검수에서 모두 ACCEPT된 항목이며, **결함으로 재분류하지 않는다.**
+§10의 서술이 유효하며 여기서는 목록으로만 다시 확인한다.
+
+```text
+process verification = OBSERVABLE        Charter v0.5가 선언한 경계
+OS-level sandbox 없음                    D-B §24 — 강제 가능할 때만 올린다
+predicate vocabulary 제한                필요가 확인되면 primitive를 추가한다
+non-Git workspace의 change observation   강등되며 그 사실이 기록된다
+Reviewer resolution criterion granularity 아직 거칠다(VERDICT 계약 확장 필요)
+M2 / M3                                  Stage D 범위 밖
+```
+
+### 15.4 Charter
+
+**Charter v0.5는 변경하지 않았다.** Stage D 전 구간이 v0.5의 의미 계약 안에서
+구현되었으며, 새 amendment는 만들지 않았다.
+
+### 15.5 다음
+
+Stage D는 여기서 닫힌다. 다음 작업은 M-track(M2 derived Memory Bank,
+M3 AGENTS.md/CLAUDE.md export)이며, Agora의 세 번째 기둥인 장기기억으로 이어진다.
