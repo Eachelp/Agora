@@ -290,12 +290,54 @@ function hashText(text) {
 
 // 문서가 v2 계약인지, v1인지 판정한다. v1 문서를 v2로 가장하지 않는다.
 function detectSchemaVersion(content) {
+  return classifyTaskSchema(content).schemaVersion;
+}
+
+// v2에만 존재하는 헤딩. 하나라도 나타나면 작성자는 v2를 쓰려던 것이다.
+// (Work Approach / Verification Plan은 v1 헤딩의 대체 이름이므로 여기 포함된다 —
+// v1 문서는 Implementation Approach / Verification을 쓴다.)
+const V2_MARKER_HEADINGS = Object.freeze([
+  "Inputs / Source Data",
+  "Deliverables",
+  "Work Approach",
+  "Verification Plan",
+  "Affected Resources",
+]);
+
+const SCHEMA_INTENT = Object.freeze({
+  LEGACY_V1: "LEGACY_V1",           // v2 흔적이 없다 → 기존 경로로 흘린다
+  V2_COMPLETE: "V2_COMPLETE",       // v2 필수 섹션을 모두 갖췄다
+  V2_INCOMPLETE: "V2_INCOMPLETE",   // v2를 쓰려다 빠뜨렸다 → 계약 오류이지 구형 과업이 아니다
+});
+
+// **v2를 표방한 계약이 조용히 legacy로 내려가면 결함이다.**
+//
+// 단순히 "Inputs와 Deliverables가 둘 다 있으면 v2"로 판정하면, v2 어휘를 쓰면서
+// 그 두 섹션만 빠뜨린 문서가 v1으로 읽혀 Stage D를 통째로 우회한다. 그래서
+// "v2를 쓰려 했는가(intent)"와 "v2로서 완전한가(complete)"를 분리한다.
+function classifyTaskSchema(content) {
   const sections = splitSections(content);
-  const hasV2Only = ["Inputs / Source Data", "Deliverables"].every((label) => {
+  const present = (label) => {
     const section = findSection(sections, label);
     return Boolean(section && hasSubstance(section));
+  };
+
+  // marker는 **정식 이름으로 나타났을 때만** v2 의도로 본다.
+  // alias(Implementation Approach 등)로 매칭된 것은 v1 문서다.
+  const markers = V2_MARKER_HEADINGS.filter((label) => {
+    const section = findSection(sections, label);
+    return Boolean(section && !section.matchedAlias && hasSubstance(section));
   });
-  return hasV2Only ? 2 : 1;
+
+  if (markers.length === 0) {
+    return { intent: SCHEMA_INTENT.LEGACY_V1, schemaVersion: 1, markers, missing: [] };
+  }
+
+  const missing = V2_REQUIRED_SECTIONS.filter((label) => !present(label));
+  if (missing.length === 0) {
+    return { intent: SCHEMA_INTENT.V2_COMPLETE, schemaVersion: 2, markers, missing };
+  }
+  return { intent: SCHEMA_INTENT.V2_INCOMPLETE, schemaVersion: 2, markers, missing };
 }
 
 // v2 계약을 읽어 구조화한다. 파싱 실패를 통과로 만들지 않는다.
@@ -368,6 +410,9 @@ module.exports = {
   canonicalizeTaskContent,
   hashText,
   detectSchemaVersion,
+  classifyTaskSchema,
+  SCHEMA_INTENT,
+  V2_MARKER_HEADINGS,
   parseTaskV2,
   parseDecisionIds,
 };

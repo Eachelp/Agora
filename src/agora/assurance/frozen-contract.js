@@ -80,6 +80,24 @@ function buildFrozenContract(taskContent, context = {}) {
     };
   }
 
+  // frozen인데 지문을 뜰 수 없는 입력(디렉터리·URL·너무 큼·읽기 불가)도 계약을
+  // 성립시키지 않는다. "같은 입력이어야 한다"를 확인할 수단이 없으면서 계약만
+  // 통과시키면 frozen은 이름뿐이고, 재대조는 SKIPPED로 조용히 넘어간다(B7).
+  //
+  // 진행하려면 Plan이 그 입력을 live로 선언하거나(달라도 된다고 인정하거나),
+  // 지문을 뜰 수 있는 대상으로 바꿔야 한다 — 둘 다 사용자 재승인 경로다.
+  if (binding.unboundFrozen.length > 0) {
+    return {
+      ok: false,
+      code: "FROZEN_INPUT_UNVERIFIABLE",
+      unverifiableInputs: binding.unboundFrozen,
+      error:
+        `승인된 입력이 같은 내용인지 확인할 수 없습니다: ${binding.unboundFrozen
+          .map((b) => `${b.locator}(${b.reason || "unsupported"})`)
+          .join(", ")}`,
+    };
+  }
+
   const contract = {
     schemaVersion: CONTRACT_SCHEMA_VERSION,
     taskSchemaVersion: taskSchema.TASK_SCHEMA_VERSION,

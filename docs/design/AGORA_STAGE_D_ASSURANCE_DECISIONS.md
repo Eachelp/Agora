@@ -372,8 +372,9 @@ FAIL·미해결 항목·결과물 변경이 남아 있으면 `holdForAssuranceBl
 ## 9. 의도적으로 하지 않은 것
 
 - **M2 Derived Memory Bank · M3 AGENTS.md/CLAUDE.md export.** 이번 범위는 Stage D만이다(§33).
-- **HUMAN_APPROVAL의 UI 흐름.** criterion 해소 API(`resolveByHuman`)와 사전 예고
-  데이터는 있으나 승인 화면 자체는 렌더링 계층의 몫이다. Charter §9의 원자료는 모두 제공한다.
+- **HUMAN_APPROVAL의 승인 화면 렌더링.** 조회·해소 경로는 IPC와 preload까지
+  노출되어 있다(1차 검수 B5 수정). 그 위의 화면 구성만 렌더링 계층의 몫이며,
+  Charter §9의 원자료는 모두 제공한다.
 - **live input의 자동 retrieval.** Agora가 입력을 대신 가져오지 않는다. retrieval
   metadata를 받아 기록할 뿐이다.
 - **OS-level containment.** D-A0에서 D-B로 이연했고, D-B에서도 §24에 따라 신호가
@@ -402,10 +403,12 @@ FAIL·미해결 항목·결과물 변경이 남아 있으면 `holdForAssuranceBl
 
 ```text
 test/assurance-contract-da1.test.js       25 tests
-test/assurance-verification-da2.test.js   32 tests
+test/assurance-verification-da2.test.js   33 tests
 test/assurance-governance-dbc.test.js     23 tests
 test/assurance-end-to-end.test.js         18 tests
-canonical npm test                        1193 / 0 fail / 2 skipped
+test/assurance-repair-regression.test.js  17 tests  (1차 검수 B2·B4·B6~B9)
+test/assurance-step-mode.test.js           8 tests  (1차 검수 B1·B5, production 진입점)
+canonical npm test                        1219 / 0 fail / 2 skipped
 ```
 
 end-to-end 테스트가 실제로 증명하는 것(Charter §34):
@@ -427,7 +430,114 @@ end-to-end 테스트가 실제로 증명하는 것(Charter §34):
 
 ---
 
-## 12. 남은 확인
+## 12. 1차 독립 검수 수정 (2026-08-24)
+
+1차 검수는 "Stage D가 실제 professional execution에서 끝까지 작동하는가"만 봤고,
+9건이 BLOCKING으로 돌아왔다. 모듈은 대체로 통과했고 **통합 배선**이 문제였다.
+
+세 덩어리로 묶인다: (1) 모든 실행 경로를 Stage D에 붙이기, (2) 사람·입력·행동
+경계 완성, (3) 실제 실행 사실을 D-C에 끝까지 연결.
+
+### B1 — step mode가 Stage D를 통째로 우회
+
+`resumeStepPhaseInner()`가 `runExecutionBlock()`을 타지 않으므로 계약 동결·
+subject·검증·Final이 전부 빠졌다. `review_pass`는 Final 없이 Recorder로 갔다.
+
+**이것은 D-0에서 이미 본 실패 모드의 재발이다** — step 전용 우회 경로.
+
+**수정**: `freezeOnce()` 안에서 checkpoint보다 **먼저** `beginAssurance()`를
+호출한다(block 경로와 동일한 admission 순서). Builder 종료 지점 두 곳(최초·보완)
+에서 subject 확정 + 검증을 수행하고, `review_pass`에서 Final을 집계한다.
+step은 단계 사이에 메모리가 끊기므로 `ensureAssuranceRun()`이 RUN 폴더에서
+복원한다.
+
+### B2 — v2 intent가 조용히 legacy로 강등
+
+"Inputs와 Deliverables가 둘 다 있으면 v2"라는 판정 때문에, v2 어휘를 쓰면서 그
+두 섹션만 빠뜨린 문서가 v1으로 읽혀 Stage D를 우회했다.
+
+**수정**: `classifyTaskSchema()`가 `LEGACY_V1 / V2_COMPLETE / V2_INCOMPLETE`를
+구분한다. v2 marker 헤딩이 **정식 이름으로** 나타나면 v2 intent이며, 필수 섹션
+누락은 legacy가 아니라 `TASK_CONTRACT_INCOMPLETE`다. alias로 매칭된 것(v1 문서)은
+marker로 세지 않는다.
+
+### B3 — Stage D 내부 오류가 v2에서도 fail-open
+
+`beginAssurance`의 catch가 예외를 legacy 승격으로 처리했고, `runAssuranceVerification`
+결과를 caller가 검사하지 않았으며, `applyReviewerAssuranceVerdict`가 오류 시 `null`을
+반환해 caller의 `if (final && !final.finalPass)`를 그대로 통과했다.
+
+**수정**: v2 intent가 확인된 뒤의 어떤 실패도 legacy 승격 사유가 아니다. 검증·
+최종 집계 오류는 `null`이 아니라 `finalPass: false`로 명시한다. caller는 검증
+실패를 검사해 `holdForAssuranceBlocked`로 보낸다.
+
+### B4 — auto revision 후 재검증 없음
+
+Reviewer FIX_REQUIRED → Builder 재실행 후 diff·evidence는 갱신됐지만 검증은
+그대로였다. Reviewer는 결과물 B를 보는데 판정 원장은 A에 머물렀다.
+
+**수정**: Builder가 다시 실행되는 지점마다 `runAssuranceVerification()`을 다시
+호출한다. `captureSubject()`는 subject가 교체되면 이전 subject에 귀속된 판정을
+자동으로 무효화한다(기존 기록은 지우지 않는다 — R-8). 결과적으로
+`FAIL → INVALIDATED → PASS` 세 기록이 남는다.
+
+### B5 — HUMAN_APPROVAL을 사용자가 풀 방법이 없음
+
+원장 방어(Reviewer 대리 해소 차단)는 PASS였으나, 사용자가 승인할 production
+경로가 없어 Run이 영원히 막혔다.
+
+**수정**: `pendingHumanApprovals()` / `resolveHumanApproval()`을 room에 추가하고
+`chat:specialist:pending-approvals` · `chat:specialist:resolve-approval` IPC와
+preload 브리지로 노출했다. 승인 직후 결과물을 재확인해 승인이 어떤 결과물에
+귀속되는지 확정한다(INV-5). 자동 확정된 항목은 이 경로로 건드릴 수 없다.
+
+### B6 — D-B 관문이 실제 행동 앞에 없음
+
+`admitAction()`은 잘 만들어졌지만 실제 실행을 gate하지 않았다.
+
+**수정**: Agora가 오늘 실제로 가진 두 action surface에 붙였다.
+
+```text
+workspace mutate   lease 획득 직후 심사 → 승인 필요하면 소유권을 돌려주고 거부
+process execute    runner admission보다 앞서 심사 → 승인 없으면 UNSUPPORTED로 강등
+```
+
+심사는 **소유권 확보 뒤**에 한다 — "lease를 든 상태에서 이 행동이 허용되는가"가
+실제 질문이기 때문이다. 범용 interceptor는 만들지 않았다(§21).
+
+### B7 — frozen/live 계약이 실제로 강제되지 않음
+
+frozen인데 지문을 뜰 수 없는 입력(URL·디렉터리·너무 큼·읽기 불가)이 계약을
+통과했고, 재대조에서 `SKIPPED`로 처리되어 `ok: true`를 유지했다.
+
+**수정**: `buildFrozenContract()`가 `FROZEN_INPUT_UNVERIFIABLE`로 막는다. 재대조는
+`SKIPPED`와 `UNVERIFIABLE`을 구분하고 후자를 변경으로 센다 — **"볼 필요가 없다"와
+"봐야 하는데 못 봤다"는 다른 사실이다.**
+
+### B8 — subject recheck가 '확인 불가'를 성공으로 처리
+
+판정 당시 읽혔던 산출물이 Final 직전에 읽히지 않아도 `continue`로 넘어가
+`recheck ok`가 됐다.
+
+**수정**: `UNSUPPORTED / OUTSIDE / DIRECTORY`를 `unverifiable: true`로 변경 목록에
+넣는다. INV-5의 재확인에서 "같다고 확인하지 못함"은 "같음"이 아니다.
+
+### B9 — D-C에 실제 사실이 연결되지 않음
+
+typed lineage는 API 수준에 머물렀고, invalidation은 원장에만 남아 D-C가
+`PASS → INVALIDATED → 재검사 PASS`를 재구성하지 못했다.
+
+**수정**:
+- `REPLAN_RESET`이 `parentRunId` + `lineageRelation: "replan"`을 남기고,
+  `beginAssurance`가 그것을 `freeze()`에 전달한다(`carriedFromRunId`는 호환 유지).
+- `ProvenanceLog`에 `invalidation` event type을 추가하고, 무효화는 원장과
+  provenance **양쪽**에 기록한다(`invalidateAgainst()`).
+- `explainRun()`은 execution outcome에서 유추하지 않고 전용 event를 읽는다.
+- graph projection에 `invalidates` 간선이 생긴다.
+
+---
+
+## 13. 남은 확인
 
 - 사용자 Windows 로컬에서 canonical `npm test` GREEN 실측 (Charter §6 DoD 3).
-- actual-diff 독립 검수 PASS (Charter §6 DoD 2).
+- 2차 actual-diff 독립 검수 PASS (Charter §6 DoD 2).

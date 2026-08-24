@@ -37,6 +37,9 @@ const RECHECK_RESULTS = Object.freeze({
   DISAPPEARED: "DISAPPEARED",
   APPEARED: "APPEARED",
   SKIPPED: "SKIPPED", // live 입력은 재대조 대상이 아니다
+  // frozen인데 같은지 확인할 수단이 없다. SKIPPED와 구분한다 —
+  // "볼 필요가 없다"와 "봐야 하는데 못 봤다"는 다른 사실이다.
+  UNVERIFIABLE: "UNVERIFIABLE",
 });
 
 const MAX_FINGERPRINT_BYTES = 64 * 1024 * 1024;
@@ -140,6 +143,11 @@ function bindInputs(inputs = [], context = {}) {
     // frozen인데 대상이 없으면 그 자체가 계약 문제다. 승인 화면이 알아야 한다.
     missingFrozen: bindings.filter((b) => b.mode === "frozen" && b.state === BINDING_STATES.MISSING)
       .map((b) => b.locator),
+    // frozen인데 지문을 뜰 수 없는 입력. 재대조가 불가능하므로 frozen 계약을
+    // 실제로 보증할 수 없다 — 계약 단계에서 걸러야 한다.
+    unboundFrozen: bindings
+      .filter((b) => b.mode === "frozen" && b.state === BINDING_STATES.UNSUPPORTED)
+      .map((b) => ({ inputId: b.inputId, locator: b.locator, reason: b.reason || "unsupported" })),
   };
 }
 
@@ -155,26 +163,39 @@ function recheckFrozenInputs(binding, context = {}) {
       results.push({ inputId: bound.inputId, locator: bound.locator, result: RECHECK_RESULTS.SKIPPED });
       continue;
     }
+    // frozen 입력에 대해 "같다고 확인하지 못함"을 "같음"으로 취급하지 않는다.
+    // 계약 단계(buildFrozenContract)가 이런 입력을 이미 거르지만, 저장된 계약을
+    // 다시 읽는 경로에서도 같은 규칙이 서야 한다.
     if (bound.state === BINDING_STATES.UNSUPPORTED) {
-      // 애초에 고정하지 못한 입력이다. 바뀌었는지 알 수 없다고 정직하게 남긴다.
       results.push({
         inputId: bound.inputId,
         locator: bound.locator,
-        result: RECHECK_RESULTS.SKIPPED,
+        result: RECHECK_RESULTS.UNVERIFIABLE,
         reason: bound.reason || "unsupported",
       });
       continue;
     }
     if (!root) {
-      results.push({ inputId: bound.inputId, locator: bound.locator, result: RECHECK_RESULTS.SKIPPED, reason: "no-workspace" });
+      results.push({ inputId: bound.inputId, locator: bound.locator, result: RECHECK_RESULTS.UNVERIFIABLE, reason: "no-workspace" });
       continue;
     }
     const abs = path.resolve(root, bound.locator);
     if (!isInside(root, abs)) {
-      results.push({ inputId: bound.inputId, locator: bound.locator, result: RECHECK_RESULTS.SKIPPED, reason: "outside-workspace" });
+      results.push({ inputId: bound.inputId, locator: bound.locator, result: RECHECK_RESULTS.UNVERIFIABLE, reason: "outside-workspace" });
       continue;
     }
     const current = fingerprintFile(abs);
+    if (current.state === BINDING_STATES.UNSUPPORTED) {
+      // 승인 시점에는 읽혔는데 지금은 읽을 수 없다. 같다고 말할 근거가 없다.
+      results.push({
+        inputId: bound.inputId,
+        locator: bound.locator,
+        result: RECHECK_RESULTS.UNVERIFIABLE,
+        reason: current.reason || "unsupported",
+        expected: bound.sha256,
+      });
+      continue;
+    }
 
     if (bound.state === BINDING_STATES.MISSING) {
       // 없던 입력이 생겼다. 이것도 "승인 시점과 다른 입력"이다.
@@ -209,7 +230,9 @@ function recheckFrozenInputs(binding, context = {}) {
   const changed = results.filter((r) =>
     r.result === RECHECK_RESULTS.MISMATCH ||
     r.result === RECHECK_RESULTS.DISAPPEARED ||
-    r.result === RECHECK_RESULTS.APPEARED
+    r.result === RECHECK_RESULTS.APPEARED ||
+    // 확인하지 못한 것을 통과로 세지 않는다.
+    r.result === RECHECK_RESULTS.UNVERIFIABLE
   );
 
   return {

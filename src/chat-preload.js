@@ -44,6 +44,8 @@ const INVOKE = Object.freeze({
   SPECIALIST_BLOCKED: "chat:specialist:blocked",
   SPECIALIST_BLOCK_DETAILS: "chat:specialist:block-details",
   SPECIALIST_REPLAN_BLOCKED: "chat:specialist:replan-blocked",
+  SPECIALIST_PENDING_APPROVALS: "chat:specialist:pending-approvals",
+  SPECIALIST_RESOLVE_APPROVAL: "chat:specialist:resolve-approval",
   TASK_OPEN_FILE: "chat:task:open-file",
   TASK_READ_FILE: "chat:task:read-file",
   MESSAGE_HANDOFF: "chat:message:handoff",
@@ -141,6 +143,12 @@ contextBridge.exposeInMainWorld("chatApi", {
     ipcRenderer.invoke(INVOKE.SPECIALIST_BLOCK_DETAILS, { sessionId }),
   specialistReplanBlocked: (sessionId, workspaceAction) =>
     ipcRenderer.invoke(INVOKE.SPECIALIST_REPLAN_BLOCKED, { sessionId, workspaceAction }),
+  // Stage D §20 — 사용자 승인이 필요한 확인 항목의 조회/해소.
+  // Reviewer가 대신 풀 수 없는 항목이므로 사용자 경로가 반드시 있어야 한다.
+  specialistPendingApprovals: (sessionId) =>
+    ipcRenderer.invoke(INVOKE.SPECIALIST_PENDING_APPROVALS, { sessionId }),
+  specialistResolveApproval: (sessionId, criterionId, approved, note) =>
+    ipcRenderer.invoke(INVOKE.SPECIALIST_RESOLVE_APPROVAL, { sessionId, criterionId, approved, note }),
   openTaskFile: (sessionId, taskPath) =>
     ipcRenderer.invoke(INVOKE.TASK_OPEN_FILE, { sessionId, taskPath }),
   readTaskFile: (sessionId, taskPath) =>

@@ -84,9 +84,27 @@ class AssuranceRun {
       });
     }
 
-    if (taskSchema.detectSchemaVersion(taskContent) !== taskSchema.TASK_SCHEMA_VERSION) {
+    const classified = taskSchema.classifyTaskSchema(taskContent);
+
+    // v2 흔적이 전혀 없는 문서만 legacy로 흘린다.
+    if (classified.intent === taskSchema.SCHEMA_INTENT.LEGACY_V1) {
       this.mode = MODES.LEGACY;
       return { ok: true, mode: MODES.LEGACY, reason: "v1 계약이므로 기존 경로로 실행합니다." };
+    }
+
+    // 여기서부터는 작성자가 v2를 쓰려 한 문서다. 이후의 어떤 실패도
+    // legacy 승격 사유가 되지 않는다(B2·B3).
+    this.mode = MODES.ASSURED;
+    this.schemaIntent = classified.intent;
+
+    if (classified.intent === taskSchema.SCHEMA_INTENT.V2_INCOMPLETE) {
+      return {
+        ok: false,
+        mode: MODES.ASSURED,
+        code: "TASK_CONTRACT_INCOMPLETE",
+        missing: classified.missing,
+        error: `실행 계약(Task)에 필수 섹션이 빠졌습니다: ${classified.missing.join(", ")}`,
+      };
     }
 
     const built = frozenContract.buildFrozenContract(taskContent, { root: this.root, now: this.now() });
@@ -96,7 +114,6 @@ class AssuranceRun {
       return { ok: false, mode: MODES.ASSURED, ...built };
     }
 
-    this.mode = MODES.ASSURED;
     this.contract = built.contract;
     this.plan = { criteria: built.contract.verificationPlan.criteria, structured: built.contract.verificationPlan.structured };
 
@@ -144,7 +161,7 @@ class AssuranceRun {
   }
 
   // --- 3. Assurance Subject 확정 (Builder 종료 직후) ---
-  captureSubject({ changedPaths = [], changeObservation = "unknown", excludedPrefixes = [] } = {}) {
+  captureSubject({ changedPaths = [], changeObservation = "unknown", excludedPrefixes = [], reason = null } = {}) {
     if (!this.assured) return { ok: true, mode: MODES.LEGACY, subject: null };
     this.previousSubjectRef = this.subject?.assuranceSubjectRef || null;
     this.subject = assuranceSubject.createAssuranceSubject({
@@ -163,7 +180,40 @@ class AssuranceRun {
       changeObservation: this.subject.changeObservation,
       previousSubjectRef: this.previousSubjectRef,
     });
+
+    // 결과물이 교체되면(auto-revision 등) 이전 결과물에 귀속된 판정은 더 이상
+    // 이 결과물에 대한 판정이 아니다. 기존 기록을 지우지 않고 무효화를 추가한다(R-8).
+    if (this.previousSubjectRef && this.previousSubjectRef !== this.subject.assuranceSubjectRef) {
+      this.invalidateAgainst({
+        previousSubjectRef: this.previousSubjectRef,
+        reason: reason || "결과물이 다시 만들어져 이전 확인 결과가 이 결과물에 적용되지 않습니다.",
+      });
+    }
+
     return { ok: true, subject: this.subject, summary: assuranceSubject.summarizeSubject(this.subject) };
+  }
+
+  // 무효화는 원장과 provenance **양쪽**에 남는다.
+  // 원장에만 남기면 D-C가 "PASS → INVALIDATED → 재검사 PASS"를 재구성하지 못한다(B9).
+  invalidateAgainst({ previousSubjectRef, reason }) {
+    const criterionIds = (this.plan?.criteria || []).map((c) => c.criterionId);
+    if (criterionIds.length === 0) return [];
+    const entries = this.ledger.appendInvalidation({
+      criterionIds,
+      reason,
+      previousSubjectRef,
+      assuranceSubjectRef: this.assuranceSubjectRef,
+    });
+    for (const criterionId of criterionIds) {
+      this.provenance.recordInvalidation({
+        runId: this.runId,
+        criterionId,
+        reason,
+        previousSubjectRef,
+        assuranceSubjectRef: this.assuranceSubjectRef,
+      });
+    }
+    return entries;
   }
 
   // --- 4. 검증 실행 ---
@@ -247,12 +297,9 @@ class AssuranceRun {
 
     // subject가 바뀌었으면 기존 판정을 무효화한다. 기존 기록은 지우지 않는다(R-8).
     if (!subjectRecheck.ok) {
-      const criterionIds = (this.plan.criteria || []).map((c) => c.criterionId);
-      this.ledger.appendInvalidation({
-        criterionIds,
-        reason: `판정 이후 결과물이 바뀌었습니다: ${subjectRecheck.changed.map((c) => c.path).join(", ")}`,
+      this.invalidateAgainst({
         previousSubjectRef: this.assuranceSubjectRef,
-        assuranceSubjectRef: this.assuranceSubjectRef,
+        reason: `판정 이후 결과물이 바뀌었습니다: ${subjectRecheck.changed.map((c) => c.path).join(", ")}`,
       });
     }
 

@@ -26,6 +26,9 @@ const NODE_TYPES = Object.freeze({
   WORKSPACE_MUTATION: "workspaceMutation",
   ASSURANCE_SUBJECT: "assuranceSubject",
   CRITERION_EXECUTION: "criterionExecution",
+  // 판정 무효화도 사실이다. 원장에만 남기면 "PASS → INVALIDATED → 재검사 PASS"를
+  // 저장된 사실만으로 재구성할 수 없다.
+  INVALIDATION: "invalidation",
   REVIEWER_RESOLUTION: "reviewerResolution",
   HUMAN_APPROVAL: "humanApproval",
   FINAL_DISPOSITION: "finalDisposition",
@@ -128,6 +131,13 @@ class ProvenanceLog {
       downgradeReason: record.downgradeReason || null,
       capabilitySnapshotRef: record.capabilitySnapshotRef || null,
       assuranceSubjectRef: record.assuranceSubjectRef || null,
+    });
+  }
+
+  recordInvalidation({ runId, criterionId, reason, previousSubjectRef = null, assuranceSubjectRef = null }) {
+    return this.append(NODE_TYPES.INVALIDATION, {
+      runId, criterionId, reason, previousSubjectRef, assuranceSubjectRef,
+      criterionOutcome: "INVALIDATED",
     });
   }
 
@@ -253,6 +263,16 @@ function projectGraph(log, { runId = null } = {}) {
         }
         break;
       }
+      case NODE_TYPES.INVALIDATION: {
+        const key = ensure(NODE_TYPES.INVALIDATION, `${event.criterionId}@${event.at}`, {
+          criterionId: event.criterionId, reason: event.reason || null,
+        });
+        if (event.previousSubjectRef) {
+          link(key, ensure(NODE_TYPES.ASSURANCE_SUBJECT, event.previousSubjectRef), "invalidates");
+        }
+        link(runKey, key, "invalidated");
+        break;
+      }
       case NODE_TYPES.REVIEWER_RESOLUTION:
       case NODE_TYPES.HUMAN_APPROVAL: {
         const key = ensure(event.type, `${event.criterionId}@${event.at}`, {
@@ -348,10 +368,15 @@ function explainRun(log, runId) {
       .map((e) => ({ criterionId: e.criterionId, from: e.plannedDisposition, to: e.actualDisposition, reason: e.downgradeReason })),
     capabilitySnapshotRef: capability?.snapshotId || null,
 
-    // 판정 중 결과물이 바뀌거나 무효화된 적이 있는가
-    invalidations: executions
-      .filter((e) => e.criterionOutcome === "INVALIDATED")
-      .map((e) => ({ criterionId: e.criterionId, at: e.at })),
+    // 판정 중 결과물이 바뀌거나 무효화된 적이 있는가.
+    // 무효화는 전용 event로 남으므로 execution outcome에서 유추하지 않는다.
+    invalidations: all(NODE_TYPES.INVALIDATION).map((e) => ({
+      criterionId: e.criterionId,
+      reason: e.reason || null,
+      previousSubjectRef: e.previousSubjectRef || null,
+      assuranceSubjectRef: e.assuranceSubjectRef || null,
+      at: e.at,
+    })),
     subjectChanges: subjects.filter((s) => s.previousSubjectRef).length,
 
     // 어떤 revision/replan lineage를 거쳤는가

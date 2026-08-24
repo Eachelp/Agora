@@ -2098,6 +2098,39 @@ function roomMeta(meta) {
       })
     );
 
+    // Stage D §20 — 사용자 승인이 필요한 확인 항목을 조회한다.
+    // Reviewer는 이 항목을 대신 해소할 수 없으므로(Charter §20), 사용자가
+    // 직접 풀 수 있는 경로가 반드시 있어야 한다.
+    ipcMain.handle(
+      "chat:specialist:pending-approvals",
+      wrap(async ({ sessionId }) => {
+        requireSession(sessionId);
+        const room = getRoom(sessionId);
+        return { pending: room.pendingHumanApprovals() };
+      })
+    );
+
+    // 사용자가 승인하거나 거부한다. 승인 직후 결과물을 재확인해 이 승인이
+    // 어떤 결과물에 귀속되는지 확정한다(INV-5).
+    ipcMain.handle(
+      "chat:specialist:resolve-approval",
+      wrap(async ({ sessionId, criterionId, approved, note }) => {
+        requireSession(sessionId);
+        const room = getRoom(sessionId);
+        const result = room.resolveHumanApproval({
+          criterionId,
+          approved: Boolean(approved),
+          note: note || null,
+        });
+        if (!result.ok) throw new Error(result.error || "승인을 처리하지 못했습니다.");
+        return {
+          ...result,
+          pending: room.pendingHumanApprovals(),
+          specialist: room.specialistState(),
+        };
+      })
+    );
+
     // BLOCKED 재기획: 현재 변경을 유지(keep)하거나 작업 전으로 복원(restore)한 뒤
     // 막힌 사유를 기획자에게 전달해 재기획을 시작합니다.
     ipcMain.handle(

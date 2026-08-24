@@ -58,6 +58,10 @@ function createProfessionalRun(options = {}) {
     stages: options.stages || null,
     checkpointId: options.checkpointId || null,
     carriedFromRunId: options.carriedFromRunId || null,
+    // Stage D-C §27 — typed lineage. 옛 Run은 이 필드가 없고
+    // run-lineage.readLineage()가 carriedFromRunId를 carry로 읽어 준다.
+    parentRunId: options.parentRunId || null,
+    lineageRelation: options.lineageRelation || null,
     planRound: Number.isInteger(options.planRound) ? Math.max(1, options.planRound) : 1,
     implementationRound: Number.isInteger(options.implementationRound) ? Math.max(0, options.implementationRound) : 0,
     planRevisionCount: Number.isInteger(options.planRevisionCount) ? Math.max(0, options.planRevisionCount) : 0,
@@ -386,7 +390,13 @@ function transitionProfessionalRun(current, event = {}) {
       next.planRevisionCount = 0;
       next.implementationRound = 0;
       next.implementationRevisionCount = 0;
-      if (event.carriedFromRunId) next.carriedFromRunId = event.carriedFromRunId;
+      if (event.carriedFromRunId) {
+        next.carriedFromRunId = event.carriedFromRunId;
+        // Stage D-C §27 — 왜 이어졌는지를 typed relation으로 남긴다.
+        // carriedFromRunId는 호환을 위해 그대로 유지한다.
+        next.parentRunId = event.carriedFromRunId;
+        next.lineageRelation = "replan";
+      }
       break;
     }
     default:

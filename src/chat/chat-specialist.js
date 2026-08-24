@@ -14,7 +14,8 @@ const {
   buildProfessionalEvidencePayload,
 } = require("./chat-professional-evidence");
 // Stage D — Assurance & Governance. v1 계약은 legacy 모드로 그대로 흐른다.
-const { AssuranceRun } = require("../agora/assurance/assurance-run");
+const { AssuranceRun, MODES } = require("../agora/assurance/assurance-run");
+const { readLineage: readRunLineage } = require("../agora/assurance/run-lineage");
 
 // checkpoint 실패 taxonomy를 사용자가 이해할 수 있는 한국어 설명으로 바꿉니다.
 // 원인 코드 자체(CHECKPOINT_*)는 evidence/Reviewer 판단에 그대로 쓰이므로
@@ -615,32 +616,43 @@ class SpecialistMixin {
 
   // 1. 검사 계약 동결 + Builder admission.
   // 되돌릴 수 없는 상태를 소비하기 전에 수행한다(D-0에서 배운 순서 원칙).
-  beginAssurance({ runInfo, stage = "implementation", round = 1 } = {}) {
+  beginAssurance({ runInfo, stage = "implementation", round = 1, lineage = null } = {}) {
     if (!runInfo?.runDir) {
       this.assuranceRun = null;
       return { ok: true };
     }
-    let assurance;
+    const assurance = new AssuranceRun({
+      runId: runInfo.runId,
+      runDir: runInfo.runDir,
+      root: this.meta.workspace,
+    });
+    let frozen;
     try {
-      assurance = new AssuranceRun({
-        runId: runInfo.runId,
-        runDir: runInfo.runDir,
-        root: this.meta.workspace,
-      });
-      const frozen = assurance.freeze(runInfo.content || "");
-      if (!frozen.ok) {
-        return {
-          ok: false,
-          failure: this.holdAssuranceFailure({
-            stage,
-            round,
-            stopReason: frozen.code || "ASSURANCE_CONTRACT_INVALID",
-            message: frozen.error || "확인 계약을 만들지 못해 실행을 시작하지 않았습니다.",
-          }),
-        };
-      }
+      frozen = assurance.freeze(runInfo.content || "", { lineage });
+    } catch (error) {
+      // 예외 자체는 v1/v2를 구분해 주지 않는다. 문서가 v2를 표방했는지 먼저 보고
+      // 판단해야 v2가 예외 하나로 legacy로 승격되는 것을 막을 수 있다(B3).
+      frozen = {
+        ok: false,
+        mode: assurance.assured ? MODES.ASSURED : null,
+        code: "ASSURANCE_INTERNAL_ERROR",
+        error: error?.message || "확인 계약을 준비하지 못했습니다.",
+      };
+    }
+
+    if (frozen.ok) {
+      this.assuranceRun = assurance;
+      // 승인·조회 경로가 이 Run을 찾을 수 있게 남긴다(step은 단계 사이에 끊긴다).
+      this.lastRunInfo = runInfo;
+      if (!assurance.assured) return { ok: true, assurance };
+
       // frozen input이 승인 시점과 다르면 Run을 시작하지 않는다(§3.1).
-      const admitted = assurance.admitBuilder();
+      let admitted;
+      try {
+        admitted = assurance.admitBuilder();
+      } catch (error) {
+        admitted = { ok: false, code: "ASSURANCE_INTERNAL_ERROR", error: error?.message || null };
+      }
       if (!admitted.ok) {
         return {
           ok: false,
@@ -648,19 +660,53 @@ class SpecialistMixin {
             stage,
             round,
             stopReason: admitted.code || "FROZEN_INPUT_CHANGED",
-            message: `${admitted.error} 기획을 다시 승인하거나 입력을 원래대로 되돌려 주세요.`,
+            message: `${admitted.error || "승인된 입력을 확인하지 못했습니다."} 기획을 다시 승인하거나 입력을 원래대로 되돌려 주세요.`,
           }),
         };
       }
-    } catch (error) {
-      // Stage D 자체의 오류가 기존 실행 경로를 무너뜨리지 않게 한다.
-      // 다만 조용히 통과시키지 않고 사실을 남긴다.
+      assurance.persist();
+      return { ok: true, assurance };
+    }
+
+    // **v2를 표방한 계약의 실패는 legacy 승격 사유가 아니다(B2·B3).**
+    // v1 문서에서만 기존 경로로 흘린다.
+    if (frozen.mode !== MODES.ASSURED) {
       this.assuranceRun = null;
-      this.appendSystem(`확인 계약을 준비하지 못해 기존 방식으로 진행합니다. (${error?.message || "알 수 없는 오류"})`);
+      this.appendSystem(`확인 계약을 준비하지 못해 기존 방식으로 진행합니다. (${frozen.error || "알 수 없는 오류"})`);
       return { ok: true };
     }
-    this.assuranceRun = assurance;
-    return { ok: true, assurance };
+    return {
+      ok: false,
+      failure: this.holdAssuranceFailure({
+        stage,
+        round,
+        stopReason: frozen.code || "ASSURANCE_CONTRACT_INVALID",
+        message: frozen.error || "확인 계약을 만들지 못해 실행을 시작하지 않았습니다.",
+      }),
+    };
+  }
+
+  // 현재 Run이 어떤 Run에서 이어졌는지. 옛 기록은 carriedFromRunId만 갖고 있으므로
+  // run-lineage가 그것을 carry로 읽어 준다(저장된 값을 고치지 않는다 · §27).
+  professionalLineage() {
+    const run = this.professionalRun;
+    if (!run) return null;
+    const read = readRunLineage(run);
+    return read.parentRunId ? { parentRunId: read.parentRunId, lineageRelation: read.lineageRelation } : null;
+  }
+
+  // step 모드는 단계 사이에 사용자를 기다리므로 메모리 상태가 끊길 수 있다.
+  // 동결된 계약과 판정 원장은 RUN 폴더에 남아 있으므로 거기서 복원한다.
+  ensureAssuranceRun(runInfo) {
+    if (this.assuranceRun) return this.assuranceRun;
+    if (!runInfo?.runDir) return null;
+    try {
+      const loaded = AssuranceRun.load(runInfo.runDir, { root: this.meta.workspace });
+      if (loaded) this.assuranceRun = loaded;
+      return loaded;
+    } catch {
+      return null;
+    }
   }
 
   holdAssuranceFailure({ stage, round, stopReason, message }) {
@@ -678,8 +724,11 @@ class SpecialistMixin {
   }
 
   // 2. Builder 종료 → 결과물 snapshot 확정 → 동결된 검사 실행 (INV-5 · D-A2).
-  async runAssuranceVerification({ changeSnapshot, permission } = {}) {
-    const assurance = this.assuranceRun;
+  //
+  // Builder가 다시 실행될 때마다 호출된다. 새 결과물에는 새 subject와 새 검증이
+  // 붙고, 이전 기록은 지워지지 않는다(R-8).
+  async runAssuranceVerification({ changeSnapshot, permission, runInfo = null } = {}) {
+    const assurance = this.ensureAssuranceRun(runInfo);
     if (!assurance?.assured) return null;
     try {
       const diff = changeSnapshot?.diff || null;
@@ -707,23 +756,95 @@ class SpecialistMixin {
   }
 
   // 3. Final PASS 집계. 남은 판단이 있으면 통과시키지 않는다(§18).
-  finalizeAssurance() {
-    const assurance = this.assuranceRun;
+  //
+  // 실패해도 null을 돌려주지 않는다. null은 caller에게 "assured가 아니다"로
+  // 읽혀 그대로 통과되므로, 오류는 finalPass:false로 명시해야 한다(B3).
+  finalizeAssurance(runInfo = null) {
+    const assurance = this.ensureAssuranceRun(runInfo);
     if (!assurance?.assured) return null;
     try {
       const result = assurance.finalize();
       assurance.persist();
       return result;
     } catch (error) {
-      this.appendSystem(`최종 확인을 마치지 못했습니다. (${error?.message || "알 수 없는 오류"})`);
-      return null;
+      return {
+        verdict: "BLOCKED",
+        finalPass: false,
+        blockers: [{ reason: "ASSURANCE_INTERNAL_ERROR", detail: error?.message || null }],
+        summary: null,
+      };
     }
   }
 
-  // Reviewer에게 넘길 구조화 payload(§19).
-  assuranceReviewPayload() {
+  // Recorder 결과를 provenance에 남긴다. 기록 실패는 governance 실패가 아니므로
+  // 실행을 무너뜨리지 않는다(관측 실패 ≠ 통제 실패).
+  recordAssuranceRecorder({ runInfo = null, ok = false } = {}) {
     try {
-      return this.assuranceRun?.reviewerPayload() || null;
+      const assurance = this.ensureAssuranceRun(runInfo);
+      if (!assurance?.assured) return;
+      assurance.recordRecorder({ ok });
+      assurance.persist();
+    } catch {}
+  }
+
+  // ---- B5 — 사용자 승인 진입점 ----
+  //
+  // Reviewer는 HUMAN_APPROVAL criterion을 대신 해소할 수 없다(§20). 그러면
+  // 사용자가 직접 풀 수 있어야 하며, 그 경로가 없으면 Run이 영원히 막힌다.
+
+  // 지금 사용자 승인을 기다리는 항목. UI가 이것을 그대로 보여 준다(§9 P-2).
+  pendingHumanApprovals() {
+    const assurance = this.ensureAssuranceRun(this.currentRunInfo());
+    if (!assurance?.assured) return [];
+    const pending = [];
+    for (const criterion of assurance.plan?.criteria || []) {
+      const effective = assurance.ledger.effectiveFor(criterion.criterionId, {
+        assuranceSubjectRef: assurance.assuranceSubjectRef,
+      });
+      if (!effective) continue;
+      if (effective.actualDisposition !== "HUMAN_APPROVAL" || effective.resolved) continue;
+      pending.push({
+        criterionId: criterion.criterionId,
+        statement: criterion.statement,
+        // 왜 사람이 필요한지도 함께 준다(§23).
+        reasons: effective.downgradeReason ? [effective.downgradeReason] : [],
+      });
+    }
+    return pending;
+  }
+
+  // 사용자가 승인/거부한다. Reviewer도 Builder도 이 경로를 대신 호출할 수 없다.
+  resolveHumanApproval({ criterionId, approved, note = null } = {}) {
+    const runInfo = this.currentRunInfo();
+    const assurance = this.ensureAssuranceRun(runInfo);
+    if (!assurance?.assured) {
+      return { ok: false, error: "이 실행에는 승인할 확인 항목이 없습니다." };
+    }
+    const pending = this.pendingHumanApprovals();
+    if (!pending.some((p) => p.criterionId === criterionId)) {
+      return { ok: false, error: "지금 승인할 수 있는 항목이 아닙니다." };
+    }
+    const appended = assurance.resolveByHuman({
+      criterionId,
+      outcome: approved ? "PASS" : "FAIL",
+      note,
+    });
+    if (!appended.ok) return appended;
+    assurance.persist();
+    // 승인 직후 결과물을 재확인해 승인이 어떤 결과물에 붙었는지 확정한다(INV-5).
+    const final = this.finalizeAssurance(runInfo);
+    this.emitSpecialistState();
+    return { ok: true, criterionId, approved: Boolean(approved), final };
+  }
+
+  currentRunInfo() {
+    return this.specialistResume?.runInfo || this.lastRunInfo || null;
+  }
+
+  // Reviewer에게 넘길 구조화 payload(§19).
+  assuranceReviewPayload(runInfo = null) {
+    try {
+      return this.ensureAssuranceRun(runInfo)?.reviewerPayload() || null;
     } catch {
       return null;
     }
@@ -734,8 +855,8 @@ class SpecialistMixin {
   //
   // 중요: Reviewer는 **자동 검증 결과를 바꾸지 못한다.** REVIEW_REQUIRED로
   // 라우팅된 항목만 판정할 수 있고, HUMAN_APPROVAL은 사용자만 해소할 수 있다.
-  applyReviewerAssuranceVerdict(contract) {
-    const assurance = this.assuranceRun;
+  applyReviewerAssuranceVerdict(contract, runInfo = null) {
+    const assurance = this.ensureAssuranceRun(runInfo);
     if (!assurance?.assured) return null;
     try {
       for (const record of assurance.lastVerification?.records || []) {
@@ -746,10 +867,16 @@ class SpecialistMixin {
           rationale: contract?.summary || null,
         });
       }
-      return this.finalizeAssurance();
+      return this.finalizeAssurance(runInfo);
     } catch (error) {
-      this.appendSystem(`검수 결과를 확인 기록에 반영하지 못했습니다. (${error?.message || "알 수 없는 오류"})`);
-      return null;
+      // 반영에 실패했으면 판정이 원장에 남지 않았다는 뜻이다.
+      // null을 돌려 통과시키면 검수 결과 없이 Run이 완료된다(B3).
+      return {
+        verdict: "BLOCKED",
+        finalPass: false,
+        blockers: [{ reason: "ASSURANCE_INTERNAL_ERROR", detail: error?.message || null }],
+        summary: null,
+      };
     }
   }
 
@@ -1829,6 +1956,22 @@ class SpecialistMixin {
           throw error;
         }
       }
+      // Stage D — 실행 계약과 함께 검사 계약도 동결한다(INV-1).
+      // checkpoint·Builder 같은 되돌릴 수 없는 상태를 소비하기 **전에** 수행한다.
+      // block 경로와 동일한 순서이며, step만 예외를 두지 않는다(B1).
+      const assuranceGate = this.beginAssurance({
+        runInfo,
+        stage: "implementation",
+        round: 1,
+        lineage: this.professionalLineage(),
+      });
+      if (!assuranceGate.ok) {
+        const error = new Error("확인 계약을 준비하지 못했습니다.");
+        error.code = "ASSURANCE_BLOCKED";
+        error.failure = assuranceGate.failure;
+        throw error;
+      }
+
       // Checkpoint 생성 전 저널을 먼저 남겨, 생성 중 종료도 자동 재개하지 않고
       // 사용자 선택 상태로 복원할 수 있게 합니다.
       const recoveryContext = {
@@ -1925,6 +2068,10 @@ class SpecialistMixin {
             this.appendSystem("작업 전 상태 백업(checkpoint)을 만들지 못해 전문 실행을 시작하지 않았습니다. 워크스페이스의 Git 상태를 확인해 주세요.");
             return { ok: false, stage: "implementation", completedIterations: 0, needsUserDecision: true, stopReason: "CHECKPOINT_FAILED" };
           }
+          if (error?.code === "ASSURANCE_BLOCKED") {
+            // beginAssurance가 이미 사용자에게 사유를 알리고 상태를 정리했다.
+            return error.failure;
+          }
           if (error?.code === "TASK_CONTRACT_INCOMPLETE") {
             const missing = error?.missing || error?.contractCheck?.missing || [];
             const missingStr = missing.length > 0 ? missing.join(", ") : "필수 섹션 누락 또는 내용 없음";
@@ -2019,6 +2166,28 @@ class SpecialistMixin {
             message: "변경(Diff)을 수집하지 못해 검수를 시작할 수 없습니다. 변경은 그대로 남아 있습니다. 아래에서 다음 처리를 선택해 주세요.",
           });
         }
+        // Stage D — 결과물 snapshot 확정 + 동결된 검사 실행(INV-5 · D-A2).
+        // 사용자를 기다리기 **전에** 수행한다. 대기 중 결과물이 바뀌면 판정 직전
+        // 재확인이 그것을 잡아낸다. 보완 실행에서도 같은 지점이 다시 돈다(B4).
+        const stepVerification = await this.runAssuranceVerification({
+          changeSnapshot,
+          permission: implementation.permission,
+          runInfo,
+        });
+        if (stepVerification && stepVerification.ok === false) {
+          return this.holdForAssuranceBlocked({
+            runInfo,
+            taskInfo,
+            checkpoint,
+            round: 1,
+            changes: changeSnapshot,
+            final: {
+              verdict: "BLOCKED",
+              blockers: [{ reason: "ASSURANCE_INTERNAL_ERROR", detail: stepVerification.error || null }],
+            },
+          });
+        }
+
         this.specialistResume = {
           ...resume,
           phase: "builder_done",
@@ -2086,6 +2255,9 @@ class SpecialistMixin {
             changes: resume.builderDiff?.status || "UNSUPPORTED",
             axes: this.executionAxes({ builderResult: stepBuilderResult, diff: resume.builderDiff }),
             evidence: stepEvidence.payload,
+            // Stage D §19 — step에서도 Reviewer는 Agora가 확인한 것과 확인하지
+            // 못한 것을 함께 받는다. block 경로와 같은 payload다.
+            assurance: this.assuranceReviewPayload(runInfo),
           },
           agentConfig: review.agentConfig,
         });
@@ -2118,6 +2290,20 @@ class SpecialistMixin {
         }
         const contract = this.parseReviewContract(reviewResult.text || "", reviewResult.specialistSignal);
         if (contract.verdict === "PASS") {
+          // Stage D §18 — step에서도 Reviewer의 PASS만으로 Run이 통과하지 않는다.
+          // 자동검사 FAIL·미해결 항목·결과물 변경이 남으면 여기서 막힌다(B1).
+          const stepFinal = this.applyReviewerAssuranceVerdict(contract, runInfo);
+          if (stepFinal && !stepFinal.finalPass) {
+            retainCheckpoint = Boolean(checkpoint?.supported);
+            return this.holdForAssuranceBlocked({
+              runInfo,
+              taskInfo,
+              checkpoint,
+              round: 1,
+              changes: resume.builderDiff,
+              final: stepFinal,
+            });
+          }
           if (this.strictReviewDiff && resume.builderDiff?.status === "UNSUPPORTED") {
             const degraded = this.holdForDegradedReview({
               runInfo,
@@ -2223,6 +2409,28 @@ class SpecialistMixin {
             message: "보완 후 변경(Diff)을 수집하지 못해 검수를 시작할 수 없습니다. 변경은 그대로 남아 있습니다. 아래에서 다음 처리를 선택해 주세요.",
           });
         }
+        // Stage D — 결과물 snapshot 확정 + 동결된 검사 실행(INV-5 · D-A2).
+        // 사용자를 기다리기 **전에** 수행한다. 대기 중 결과물이 바뀌면 판정 직전
+        // 재확인이 그것을 잡아낸다. 보완 실행에서도 같은 지점이 다시 돈다(B4).
+        const stepVerification = await this.runAssuranceVerification({
+          changeSnapshot,
+          permission: implementation.permission,
+          runInfo,
+        });
+        if (stepVerification && stepVerification.ok === false) {
+          return this.holdForAssuranceBlocked({
+            runInfo,
+            taskInfo,
+            checkpoint,
+            round: 1,
+            changes: changeSnapshot,
+            final: {
+              verdict: "BLOCKED",
+              blockers: [{ reason: "ASSURANCE_INTERNAL_ERROR", detail: stepVerification.error || null }],
+            },
+          });
+        }
+
         this.specialistResume = {
           ...resume,
           phase: "builder_done",
@@ -2277,6 +2485,8 @@ class SpecialistMixin {
             return { ok: true, completedIterations: 1, recorded: false, recording: recorderResult?.text || "", recordError };
           }
         }
+        // Stage D-C — step에서도 Recorder 결과가 provenance 사슬을 닫는다(§26).
+        this.recordAssuranceRecorder({ runInfo, ok: Boolean(recorderResult?.ok) });
         this.specialistActive = false;
         this.appendSystem("전문 모드 구현·검토·기록이 완료되었습니다.");
         return { ok: true, completedIterations: 1, recorded: Boolean(recorderResult?.ok), recording: recorderResult?.text || "" };
@@ -2413,7 +2623,12 @@ class SpecialistMixin {
     // Stage D — 실행 계약과 함께 **검사 계약도** 동결한다(INV-1).
     // 되돌릴 수 없는 상태(checkpoint·Builder)를 소비하기 전에 수행한다.
     // v1 Task는 legacy 모드로 통과하며 아무것도 막지 않는다(Charter §6).
-    const assuranceGate = this.beginAssurance({ runInfo, stage: "implementation", round });
+    const assuranceGate = this.beginAssurance({
+      runInfo,
+      stage: "implementation",
+      round,
+      lineage: this.professionalLineage(),
+    });
     if (!assuranceGate.ok) return assuranceGate.failure;
 
     // TASK-006: Builder 실행 직전 workspace 상태를 보존합니다.
@@ -2765,10 +2980,24 @@ class SpecialistMixin {
     }
     // Stage D — Builder가 만든 실제 결과물에 대해 동결된 검사를 수행한다.
     // 여기서 나온 판정은 모두 이 시점의 결과물 snapshot에 귀속된다(INV-5).
-    await this.runAssuranceVerification({
+    const firstVerification = await this.runAssuranceVerification({
       changeSnapshot,
       permission: implementation.permission,
+      runInfo,
     });
+    if (firstVerification && firstVerification.ok === false) {
+      return this.holdForAssuranceBlocked({
+        runInfo,
+        taskInfo,
+        checkpoint,
+        round,
+        changes: changeSnapshot,
+        final: {
+          verdict: "BLOCKED",
+          blockers: [{ reason: "ASSURANCE_INTERNAL_ERROR", detail: firstVerification.error || null }],
+        },
+      });
+    }
 
     reviewEvidence = this.prepareReviewEvidence({
       runInfo,
@@ -3106,6 +3335,28 @@ class SpecialistMixin {
           result: revisedBuilderTransition,
         });
       }
+      // Stage D — 보완된 결과물은 **새 결과물**이다. 새 subject를 확정하고
+      // 동결된 검사를 다시 수행한다. 이전 판정은 지우지 않고 그 위에 쌓인다(R-8).
+      // 이것이 없으면 Reviewer는 B를 보는데 판정 원장은 A에 머문다(B4).
+      const revisionVerification = await this.runAssuranceVerification({
+        changeSnapshot,
+        permission: implementation.permission,
+        runInfo,
+      });
+      if (revisionVerification && revisionVerification.ok === false) {
+        return this.holdForAssuranceBlocked({
+          runInfo,
+          taskInfo,
+          checkpoint,
+          round,
+          changes: changeSnapshot,
+          final: {
+            verdict: "BLOCKED",
+            blockers: [{ reason: "ASSURANCE_INTERNAL_ERROR", detail: revisionVerification.error || null }],
+          },
+        });
+      }
+
       reviewEvidence = this.prepareReviewEvidence({
         runInfo,
         builderResult,
@@ -3202,14 +3453,7 @@ class SpecialistMixin {
 
     // Stage D-C — Recorder 결과까지 provenance에 남긴다. 이 기록이 있어야
     // "왜 PASS였는가"의 마지막 고리가 이어진다(§26).
-    if (this.assuranceRun?.assured) {
-      try {
-        this.assuranceRun.recordRecorder({ ok: Boolean(recorderResult?.ok) });
-        this.assuranceRun.persist();
-      } catch {
-        // 기록 실패는 governance 실패가 아니다. 실행을 무너뜨리지 않는다.
-      }
-    }
+    this.recordAssuranceRecorder({ runInfo, ok: Boolean(recorderResult?.ok) });
 
     const completedTransition = this.transitionProfessional({ type: "RECORDER_DONE" });
     if (!completedTransition.ok) {

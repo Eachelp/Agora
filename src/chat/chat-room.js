@@ -13,6 +13,13 @@ const {
 const { TaskManager, hashText } = require("../agora/task-manager");
 const { REQUIRED_SECTIONS, validateTaskContract } = require("../agora/task-contract-validator");
 const { describeWorkspaceChanges } = require("../agora/workspace-diff");
+// Stage D-B — 자원/행동 심사. 실제 변경 직전에 이 관문을 통과해야 한다(§23).
+const {
+  adjudicateAction,
+  admitAction,
+  RESOURCE_KINDS,
+  ACTIONS,
+} = require("../agora/assurance/resource-governance");
 const {
   installSpecialistMethods,
   safeBlockReason,
@@ -705,6 +712,33 @@ class ChatRoom extends EventEmitter {
       parentToken,
     });
     if (got.ok) {
+      // Stage D-B §23 — 소유권을 얻었다고 곧바로 변경해도 되는 것은 아니다.
+      // 실제 변경 직전에 자원/행동 심사를 통과해야 한다. 심사는 소유권을 확보한
+      // 뒤에 한다 — "lease를 든 상태에서 이 행동이 허용되는가"가 실제 질문이다.
+      const adjudication = adjudicateAction(
+        {
+          resourceKind: RESOURCE_KINDS.WORKSPACE,
+          action: ACTIONS.MUTATE,
+          resourceId: workspace,
+          requestedPermission: "workspace-write",
+        },
+        {
+          permissionCap: "workspace-write",
+          leaseHeld: true,
+          checkpointProtected: this.professionalRun?.checkpointProtection === "protected",
+        }
+      );
+      const admitted = admitAction(adjudication, { humanApprovalGranted: false });
+      if (!admitted.ok) {
+        // 사전 승인이 필요한 행동을 승인 없이 실행하지 않는다. 소유권은 돌려준다.
+        this.mutationLease.release(got.token);
+        return {
+          ok: false,
+          code: admitted.code,
+          error: admitted.error || "이 작업은 사용자 승인이 필요합니다.",
+        };
+      }
+
       // Stage D-C — workspace 변경 소유권 획득도 provenance 사슬의 한 마디다(§26).
       // 기록 실패가 실행을 막지는 않는다(관측 실패 ≠ governance 실패).
       try {
@@ -713,6 +747,7 @@ class ChatRoom extends EventEmitter {
           resourceId: workspace,
           holderId: this.sessionId,
           purpose,
+          controlClass: adjudication.controlClass,
         });
       } catch {}
       return { ok: true, token: got.token, reentered: Boolean(got.reentered) };

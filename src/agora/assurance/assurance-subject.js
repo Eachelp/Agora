@@ -172,12 +172,29 @@ function recheckSubject(subject, options = {}) {
   const changed = [];
 
   for (const entry of subject?.entries || []) {
-    // 애초에 지문을 못 뜬 항목은 "바뀌었는지 모른다"로 남긴다.
+    // 애초에 지문을 못 뜬 항목은 확정된 판정의 근거가 아니므로 대조 대상이 아니다.
     if (entry.state !== "PRESENT" && entry.state !== "ABSENT") continue;
+
     const current = root
       ? fingerprintOne(root, entry.path)
-      : { state: "UNSUPPORTED", sha256: null };
-    if (current.state === "UNSUPPORTED") continue;
+      : { state: "UNSUPPORTED", sha256: null, reason: "no-workspace" };
+
+    // **"같다고 확인하지 못함"을 "같음"으로 취급하지 않는다(INV-5).**
+    // 판정 당시 읽혔던 산출물이 지금 읽히지 않는다면, 그 판정이 여전히 그
+    // 결과물에 귀속된다고 말할 근거가 없다.
+    if (current.state === "UNSUPPORTED" || current.state === "OUTSIDE" || current.state === "DIRECTORY") {
+      changed.push({
+        path: entry.path,
+        was: entry.state,
+        now: current.state,
+        expectedSha256: entry.sha256,
+        actualSha256: null,
+        unverifiable: true,
+        reason: current.reason || current.state,
+      });
+      continue;
+    }
+
     if (current.state !== entry.state || current.sha256 !== entry.sha256) {
       changed.push({
         path: entry.path,

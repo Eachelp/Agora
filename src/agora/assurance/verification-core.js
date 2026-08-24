@@ -33,6 +33,8 @@ const { routeDisposition, OUTCOMES } = require("./disposition-router");
 // 같은 질문에 두 개의 답이 생기고, 그중 하나는 반드시 틀리게 된다.
 const {
   computeResourceControlClass,
+  adjudicateAction,
+  admitAction,
   RESOURCE_KINDS,
   ACTIONS,
 } = require("./resource-governance");
@@ -86,6 +88,43 @@ async function runVerification(plan, context = {}) {
 
     if (criterion.plannedMethod === "process") {
       const step = criterion.step || {};
+
+      // D-B §23 — 프로세스를 띄우는 것도 자원 행동이다. runner의 admission보다
+      // 앞서 "이 행동이 애초에 허용되는가"를 심사한다. 승인이 필요한 행동을
+      // 승인 없이 실행하지 않는다.
+      const adjudication = adjudicateAction(
+        {
+          resourceKind: RESOURCE_KINDS.PROCESS,
+          action: ACTIONS.EXECUTE,
+          resourceId: step.executable || null,
+          requestedPermission: context.workerPermission || "workspace-read",
+        },
+        { permissionCap: context.workerPermission || "workspace-read", containment: context.containment || null }
+      );
+      const admitted = admitAction(adjudication, {
+        humanApprovalGranted: Boolean(context.humanApprovalGranted),
+      });
+      if (!admitted.ok) {
+        // 실행하지 못했으므로 확정된 것이 없다. FAIL이 아니라 사람에게 보낸다.
+        const routed = routeDisposition({
+          criterion,
+          outcome: OUTCOMES.UNSUPPORTED,
+          controlClass: CONTROL_CLASS.NEITHER,
+          downgradeReason: admitted.error || "이 검사는 사용자 승인 없이 실행할 수 없습니다.",
+        });
+        const blockedRecord = {
+          criterionId: criterion.criterionId,
+          statement: criterion.statement,
+          ...routed,
+          capabilitySnapshotRef: capabilities?.snapshotId || null,
+          assuranceSubjectRef,
+          evidence: { backend: "process", blocked: true, code: admitted.code, error: admitted.error || null },
+        };
+        records.push(blockedRecord);
+        if (ledger) ledger.appendExecution({ ...blockedRecord, assuranceSubjectRef });
+        continue;
+      }
+
       const runResult = await runVerificationProcess(
         {
           executable: step.executable,
