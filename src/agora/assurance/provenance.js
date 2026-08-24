@@ -22,6 +22,9 @@ const NODE_TYPES = Object.freeze({
   VERIFICATION_PLAN: "verificationPlan",
   RUN: "run",
   INPUT: "input",
+  // live 입력의 실제 사용 기록. freeze 시점의 binding과는 다른 사실이다 —
+  // "무엇을 쓰기로 했는가"와 "실제로 무엇을 썼는가"를 섞지 않는다.
+  INPUT_RETRIEVAL: "inputRetrieval",
   CAPABILITY_SNAPSHOT: "capabilitySnapshot",
   WORKSPACE_MUTATION: "workspaceMutation",
   ASSURANCE_SUBJECT: "assuranceSubject",
@@ -101,6 +104,14 @@ class ProvenanceLog {
       inputs: bindings.map((b) => ({
         inputId: b.inputId, locator: b.locator, mode: b.mode, state: b.state, sha256: b.sha256 || null,
       })),
+    });
+  }
+
+  recordInputRetrieval({ runId, inputId, locator, retrievedAt, version = null, etag = null, contentHash = null, note = null }) {
+    return this.append(NODE_TYPES.INPUT_RETRIEVAL, {
+      runId, inputId, locator, retrievedAt, version, etag, contentHash, note,
+      // Agora가 내용을 실제로 확인했는지. 확인 못 한 것을 확인한 것처럼 만들지 않는다.
+      observed: Boolean(contentHash),
     });
   }
 
@@ -230,6 +241,14 @@ function projectGraph(log, { runId = null } = {}) {
         }
         break;
       }
+      case NODE_TYPES.INPUT_RETRIEVAL: {
+        const key = ensure(NODE_TYPES.INPUT_RETRIEVAL, `${event.inputId}@${event.at}`, {
+          inputId: event.inputId, observed: event.observed, contentHash: event.contentHash || null,
+        });
+        link(ensure(NODE_TYPES.INPUT, event.inputId), key, "retrieved-as");
+        link(key, runKey, "used-by");
+        break;
+      }
       case NODE_TYPES.CAPABILITY_SNAPSHOT:
         link(ensure(NODE_TYPES.CAPABILITY_SNAPSHOT, event.snapshotId), runKey, "measured-for");
         break;
@@ -335,8 +354,20 @@ function explainRun(log, runId) {
     decisionIds: task?.decisionIds || [],
     planStructured: plan?.structured ?? null,
 
-    // 어떤 input을 썼는가
+    // 어떤 input을 쓰기로 했는가 (freeze 시점의 binding)
     inputs: inputs?.inputs || [],
+    // 그리고 실제로 무엇을 썼는가 (live 입력의 retrieval 이력).
+    // observed:false는 "Agora가 내용을 못 봤다"는 사실 자체가 답이다.
+    inputRetrievals: all(NODE_TYPES.INPUT_RETRIEVAL).map((e) => ({
+      inputId: e.inputId,
+      locator: e.locator,
+      retrievedAt: e.retrievedAt,
+      version: e.version,
+      etag: e.etag,
+      contentHash: e.contentHash,
+      observed: Boolean(e.observed),
+      note: e.note || null,
+    })),
 
     // 어떤 결과 snapshot을 검사했는가
     subjects: subjects.map((s) => ({

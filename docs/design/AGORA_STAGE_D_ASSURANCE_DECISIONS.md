@@ -408,7 +408,8 @@ test/assurance-governance-dbc.test.js     23 tests
 test/assurance-end-to-end.test.js         18 tests
 test/assurance-repair-regression.test.js  17 tests  (1차 검수 B2·B4·B6~B9)
 test/assurance-step-mode.test.js           8 tests  (1차 검수 B1·B5, production 진입점)
-canonical npm test                        1219 / 0 fail / 2 skipped
+test/assurance-repair2-regression.test.js 11 tests  (2차 검수 B3·B5·B7)
+canonical npm test                        1229 / 0 fail / 2 skipped
 ```
 
 end-to-end 테스트가 실제로 증명하는 것(Charter §34):
@@ -537,7 +538,82 @@ typed lineage는 API 수준에 머물렀고, invalidation은 원장에만 남아
 
 ---
 
-## 13. 남은 확인
+## 13. 2차 독립 검수 수정 (2026-08-24)
+
+2차 검수에서 6건은 닫혔고 3건이 "절반만 닫혔다"로 남았다. 세 건 모두 새 요구사항이
+아니라 1차 B3/B5/B7의 나머지 절반이다.
+
+### B3(2차) — `persist()` 실패가 아직 fail-open
+
+예외와 검증/최종 오류는 1차에서 닫혔으나, `persist()` 결과를 caller가 검사하지
+않아 디스크 오류·권한 실패 상태로 v2 Run이 PASS까지 갈 수 있었다.
+
+**이것은 D-C와 정면으로 충돌한다.** D-C의 목표는 "왜 PASS였는가를 기록만으로
+재구성"인데, 기록이 없는 PASS는 사후에 설명할 수 없는 PASS다.
+
+**수정**: canonical state(계약·원장·판정)의 저장 실패를 fail-closed로 만들었다.
+
+```text
+freeze/admission 후 persist 실패  → ASSURANCE_STATE_WRITE_FAILED · 실행 시작 안 함
+verification 후 persist 실패      → 검수로 넘어가지 않음
+finalize 후 persist 실패          → finalPass:false
+human approval 후 persist 실패    → 승인하지 않은 것으로 처리
+```
+
+Recorder의 부가 기록(`recordAssuranceRecorder`)은 그대로 best-effort다 —
+관측 실패이지 통제 실패가 아니다.
+
+### B5(2차) — 승인이 assurance만 풀고 workflow는 BLOCKED에 남음
+
+`holdForAssuranceBlocked`가 `holdForRecovery`로 들어가 Run을 BLOCKED로 만들었고,
+`resolveHumanApproval`은 그 상태를 풀지 않았다. 승인해도 Recorder·COMPLETED에
+도달하지 못했다.
+
+**핵심 판단**: 남은 것이 **사용자 승인뿐이면 그것은 실패가 아니라 계획된 대기**다.
+승인 화면에서 이미 예고한 지점이므로(§9 P-3) BLOCKED로 만들면 안 된다.
+
+**수정**:
+
+```text
+blockers가 전부 UNRESOLVED_HUMAN_APPROVAL
+  → pauseForHumanApproval()  (BLOCKED 아님, phase=awaiting_human_approval)
+  → 승인 전 resume은 거부 (§20)
+  → 승인 + Final PASS → phase=review_pass, resumable
+  → 기록 직전 재확인 → Recorder → COMPLETED
+```
+
+block/auto는 FSM을 `runExecutionBlockInner`가 구동하는데 승인 대기로 그 함수를
+빠져나왔으므로, 재개 시 남은 전이(REVIEW_PASS → RECORDING → RECORDER_DONE)를
+`resumedFromApproval` 표시로 이어받는다. step legacy 경로는 원래 FSM을 구동하지
+않으므로 건드리지 않았다 — 없는 상태를 지어내지 않는다.
+
+기록 직전에도 Final을 다시 집계한다. 승인 이후 결과물이 바뀌면 그 승인은 이
+결과물에 대한 것이 아니기 때문이다(INV-5).
+
+### B7(2차) — live retrieval provenance seam 없음
+
+frozen 쪽은 1차에서 닫혔으나, live 계약의 의미("달라도 되지만 실제로 무엇을
+썼는지는 남긴다")를 강제하는 production seam이 없었다.
+
+**수정**: 두 경로를 만들었다.
+
+```text
+1) Agora가 관측 가능한 것 (작업 폴더 안의 live 파일)
+   → Builder 종료 시 captureLiveInputUse()가 사용 시점 지문을 남긴다
+
+2) 외부에서 온 metadata (etag/version/contentHash)
+   → recordLiveInputRetrieval() + IPC/preload로 받아 append
+```
+
+**Agora가 URL을 대신 가져오지는 않는다**(non-goal 유지). 관측할 수 없는 입력은
+`observed: false`와 사유를 남긴다 — 관측한 척하지 않는 것이 INV-3과 같은 방향이다.
+
+`inputRetrieval`을 provenance 1급 event로 만들어 "무엇을 쓰기로 했는가(binding)"와
+"실제로 무엇을 썼는가(retrieval)"를 섞지 않았다.
+
+---
+
+## 14. 남은 확인
 
 - 사용자 Windows 로컬에서 canonical `npm test` GREEN 실측 (Charter §6 DoD 3).
-- 2차 actual-diff 독립 검수 PASS (Charter §6 DoD 2).
+- 3차 actual-diff 독립 검수 PASS (Charter §6 DoD 2).

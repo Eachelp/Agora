@@ -216,6 +216,57 @@ class AssuranceRun {
     return entries;
   }
 
+  // --- live input retrieval (Charter §3.1) ---
+  //
+  // live 계약의 의미는 "안 얼려도 된다"가 아니라 **"달라도 되지만 실제로 무엇을
+  // 썼는지는 남긴다"**이다. Agora가 URL을 대신 가져오지는 않지만(non-goal),
+  // 실제 사용 사실은 기록되어야 감사에서 "그때 무엇을 봤는가"를 답할 수 있다.
+  //
+  // 두 경로가 있다:
+  //   1) Agora가 직접 관측 가능한 것(작업 폴더 안의 live 파일) → 사용 시점 지문
+  //   2) 외부에서 온 metadata(etag/version) → 그대로 받아 append
+  recordLiveRetrieval(inputId, metadata = {}) {
+    if (!this.assured) return { ok: false, error: "이 실행에는 입력 계약이 없습니다." };
+    const appended = inputBinding.recordLiveRetrieval(this.contract.inputBinding, inputId, metadata);
+    if (!appended.ok) return appended;
+    const bound = this.contract.inputBinding.bindings.find((b) => b.inputId === inputId);
+    this.provenance.recordInputRetrieval({
+      runId: this.runId,
+      inputId,
+      locator: bound?.locator || null,
+      ...appended.entry,
+    });
+    return appended;
+  }
+
+  // 실행 시점에 Agora가 관측할 수 있는 live 입력의 사용 사실을 남긴다.
+  // 관측할 수 없는 것(URL 등)은 **관측하지 못했다고** 남긴다 — 지어내지 않는다.
+  captureLiveInputUse({ now = null } = {}) {
+    if (!this.assured) return [];
+    const captured = [];
+    for (const bound of this.contract.inputBinding.bindings || []) {
+      if (bound.mode !== "live") continue;
+      if (bound.kind === "path" && this.root) {
+        const fingerprint = inputBinding.fingerprintFile(path.resolve(this.root, bound.locator));
+        const recorded = this.recordLiveRetrieval(bound.inputId, {
+          retrievedAt: Number.isFinite(now) ? now : this.now(),
+          contentHash: fingerprint.sha256,
+          note: fingerprint.sha256 ? null : `관측 불가: ${fingerprint.reason || fingerprint.state}`,
+        });
+        if (recorded.ok) captured.push({ inputId: bound.inputId, observed: Boolean(fingerprint.sha256) });
+        continue;
+      }
+      // Agora가 내용을 볼 수 없는 live 입력. 사용됐다는 사실과 못 봤다는 사실을 남긴다.
+      const recorded = this.recordLiveRetrieval(bound.inputId, {
+        retrievedAt: Number.isFinite(now) ? now : this.now(),
+        contentHash: null,
+        note: "Agora가 내용을 관측할 수 없는 입력입니다.",
+      });
+      if (recorded.ok) captured.push({ inputId: bound.inputId, observed: false });
+    }
+    return captured;
+  }
+
   // --- 4. 검증 실행 ---
   async verify({ workerPermission = "workspace-read", env, platform } = {}) {
     if (!this.assured) return { ok: true, mode: MODES.LEGACY, records: [] };

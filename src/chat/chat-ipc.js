@@ -2110,6 +2110,29 @@ function roomMeta(meta) {
       })
     );
 
+    // Stage D §3.1 — live 입력의 실제 사용 기록.
+    // Agora가 URL을 대신 가져오지는 않지만, 무엇을 썼는지 보고받으면 남긴다.
+    ipcMain.handle(
+      "chat:specialist:record-input-retrieval",
+      wrap(async ({ sessionId, inputId, version, etag, contentHash, note }) => {
+        requireSession(sessionId);
+        const room = getRoom(sessionId);
+        const result = room.recordLiveInputRetrieval({ inputId, version, etag, contentHash, note });
+        if (!result.ok) throw new Error(result.error || "입력 사용 기록을 저장하지 못했습니다.");
+        return result;
+      })
+    );
+
+    // 감사 조회: 이 Run이 쓰기로 한 입력과 실제로 쓴 입력.
+    ipcMain.handle(
+      "chat:specialist:input-usage",
+      wrap(async ({ sessionId }) => {
+        requireSession(sessionId);
+        const room = getRoom(sessionId);
+        return { usage: room.assuranceInputUsage() };
+      })
+    );
+
     // 사용자가 승인하거나 거부한다. 승인 직후 결과물을 재확인해 이 승인이
     // 어떤 결과물에 귀속되는지 확정한다(INV-5).
     ipcMain.handle(

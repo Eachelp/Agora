@@ -46,6 +46,8 @@ const INVOKE = Object.freeze({
   SPECIALIST_REPLAN_BLOCKED: "chat:specialist:replan-blocked",
   SPECIALIST_PENDING_APPROVALS: "chat:specialist:pending-approvals",
   SPECIALIST_RESOLVE_APPROVAL: "chat:specialist:resolve-approval",
+  SPECIALIST_RECORD_INPUT_RETRIEVAL: "chat:specialist:record-input-retrieval",
+  SPECIALIST_INPUT_USAGE: "chat:specialist:input-usage",
   TASK_OPEN_FILE: "chat:task:open-file",
   TASK_READ_FILE: "chat:task:read-file",
   MESSAGE_HANDOFF: "chat:message:handoff",
@@ -149,6 +151,11 @@ contextBridge.exposeInMainWorld("chatApi", {
     ipcRenderer.invoke(INVOKE.SPECIALIST_PENDING_APPROVALS, { sessionId }),
   specialistResolveApproval: (sessionId, criterionId, approved, note) =>
     ipcRenderer.invoke(INVOKE.SPECIALIST_RESOLVE_APPROVAL, { sessionId, criterionId, approved, note }),
+  // Stage D §3.1 — live 입력의 실제 사용 기록/조회.
+  specialistRecordInputRetrieval: (sessionId, inputId, metadata = {}) =>
+    ipcRenderer.invoke(INVOKE.SPECIALIST_RECORD_INPUT_RETRIEVAL, { sessionId, inputId, ...metadata }),
+  specialistInputUsage: (sessionId) =>
+    ipcRenderer.invoke(INVOKE.SPECIALIST_INPUT_USAGE, { sessionId }),
   openTaskFile: (sessionId, taskPath) =>
     ipcRenderer.invoke(INVOKE.TASK_OPEN_FILE, { sessionId, taskPath }),
   readTaskFile: (sessionId, taskPath) =>

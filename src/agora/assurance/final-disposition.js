@@ -205,6 +205,9 @@ function describeBlockers(result) {
     [BLOCK_REASONS.SUBJECT_MISMATCH]: "다른 결과물에 대한 판정",
     [BLOCK_REASONS.NO_CRITERIA]: "확인 항목이 없음",
     [BLOCK_REASONS.PLAN_TAMPERED]: "승인된 확인 목록이 실행 중 바뀜",
+    // 배선 계층이 만드는 사유. 기록하지 못한 판정은 통과시키지 않는다(B3).
+    ASSURANCE_STATE_WRITE_FAILED: "확인 기록을 저장하지 못함",
+    ASSURANCE_INTERNAL_ERROR: "확인을 끝까지 수행하지 못함",
   };
   return [...counts.entries()].map(([reason, count]) => ({
     reason,

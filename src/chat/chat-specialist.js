@@ -664,7 +664,21 @@ class SpecialistMixin {
           }),
         };
       }
-      assurance.persist();
+      // canonical state를 남기지 못했으면 진행하지 않는다(B3).
+      // 계약·원장·판정이 디스크에 없으면 D-C가 "왜 PASS였는가"를 재구성할 수
+      // 없고, 그 상태로 통과시키는 것은 Stage D의 목적 자체를 무너뜨린다.
+      const persisted = assurance.persist();
+      if (!persisted.ok) {
+        return {
+          ok: false,
+          failure: this.holdAssuranceFailure({
+            stage,
+            round,
+            stopReason: "ASSURANCE_STATE_WRITE_FAILED",
+            message: `확인 기록을 저장하지 못해 실행을 시작하지 않았습니다. (${persisted.error || "저장 실패"})`,
+          }),
+        };
+      }
       return { ok: true, assurance };
     }
 
@@ -731,6 +745,10 @@ class SpecialistMixin {
     const assurance = this.ensureAssuranceRun(runInfo);
     if (!assurance?.assured) return null;
     try {
+      // Charter §3.1 — live 입력은 "달라도 되지만 실제로 무엇을 썼는지는 남긴다".
+      // Builder가 끝난 시점이 그 관측의 자리다. 관측 못 하는 입력은 못 했다고 남긴다.
+      assurance.captureLiveInputUse();
+
       const diff = changeSnapshot?.diff || null;
       assurance.captureSubject({
         changedPaths: [
@@ -747,7 +765,16 @@ class SpecialistMixin {
         specialistPermissionMode("implementation", this.activeRunAuthorization || "workspace-write") ||
         "workspace-read";
       const verification = await assurance.verify({ workerPermission });
-      assurance.persist();
+      // 검증 결과를 남기지 못했으면 그 결과는 없는 것과 같다(B3).
+      const persisted = assurance.persist();
+      if (!persisted.ok) {
+        return {
+          ok: false,
+          code: "ASSURANCE_STATE_WRITE_FAILED",
+          error: `확인 결과를 저장하지 못했습니다. (${persisted.error || "저장 실패"})`,
+          records: verification?.records || [],
+        };
+      }
       return verification;
     } catch (error) {
       this.appendSystem(`확인을 끝까지 수행하지 못했습니다. (${error?.message || "알 수 없는 오류"})`);
@@ -764,7 +791,17 @@ class SpecialistMixin {
     if (!assurance?.assured) return null;
     try {
       const result = assurance.finalize();
-      assurance.persist();
+      // Final 판정을 남기지 못했으면 통과시키지 않는다(B3).
+      // 기록되지 않은 PASS는 사후에 설명할 수 없는 PASS다.
+      const persisted = assurance.persist();
+      if (!persisted.ok) {
+        return {
+          verdict: "BLOCKED",
+          finalPass: false,
+          blockers: [{ reason: "ASSURANCE_STATE_WRITE_FAILED", detail: persisted.error || null }],
+          summary: result?.summary || null,
+        };
+      }
       return result;
     } catch (error) {
       return {
@@ -793,8 +830,8 @@ class SpecialistMixin {
   // 사용자가 직접 풀 수 있어야 하며, 그 경로가 없으면 Run이 영원히 막힌다.
 
   // 지금 사용자 승인을 기다리는 항목. UI가 이것을 그대로 보여 준다(§9 P-2).
-  pendingHumanApprovals() {
-    const assurance = this.ensureAssuranceRun(this.currentRunInfo());
+  pendingHumanApprovals(runInfo = null) {
+    const assurance = this.ensureAssuranceRun(runInfo || this.currentRunInfo());
     if (!assurance?.assured) return [];
     const pending = [];
     for (const criterion of assurance.plan?.criteria || []) {
@@ -830,15 +867,65 @@ class SpecialistMixin {
       note,
     });
     if (!appended.ok) return appended;
-    assurance.persist();
+    // 승인 기록을 남기지 못했으면 승인하지 않은 것이다(B3).
+    const persisted = assurance.persist();
+    if (!persisted.ok) {
+      return { ok: false, code: "ASSURANCE_STATE_WRITE_FAILED", error: `승인을 저장하지 못했습니다. (${persisted.error || "저장 실패"})` };
+    }
     // 승인 직후 결과물을 재확인해 승인이 어떤 결과물에 붙었는지 확정한다(INV-5).
     const final = this.finalizeAssurance(runInfo);
+
+    // **승인이 assurance만 풀고 Run을 BLOCKED에 남겨두면 안 된다(B5).**
+    // Final PASS가 되면 정상 경로의 다음 단계(기록)로 이어질 수 있게 한다.
+    let resumable = false;
+    if (final?.finalPass && this.specialistResume?.phase === "awaiting_human_approval") {
+      this.specialistResume = {
+        ...this.specialistResume,
+        phase: "review_pass",
+        // 승인으로 재개된 실행임을 표시한다. block/auto는 FSM 전이를
+        // runExecutionBlockInner가 하는데, 승인 대기로 그 함수를 빠져나왔으므로
+        // 기록 단계에서 남은 전이를 대신 이어야 Run이 완료된다.
+        resumedFromApproval: true,
+      };
+      resumable = true;
+    }
     this.emitSpecialistState();
-    return { ok: true, criterionId, approved: Boolean(approved), final };
+    return {
+      ok: true,
+      criterionId,
+      approved: Boolean(approved),
+      final,
+      // UI가 곧바로 이어서 진행할 수 있는지 알려 준다.
+      resumable,
+      pending: this.pendingHumanApprovals(runInfo),
+    };
   }
 
   currentRunInfo() {
     return this.specialistResume?.runInfo || this.lastRunInfo || null;
+  }
+
+  // 외부에서 온 live input retrieval metadata를 기록한다(Charter §3.1).
+  // Agora가 URL을 대신 가져오지는 않지만, 무엇을 썼는지 보고받으면 남긴다.
+  recordLiveInputRetrieval({ inputId, version = null, etag = null, contentHash = null, note = null } = {}) {
+    const runInfo = this.currentRunInfo();
+    const assurance = this.ensureAssuranceRun(runInfo);
+    if (!assurance?.assured) return { ok: false, error: "이 실행에는 입력 계약이 없습니다." };
+    const recorded = assurance.recordLiveRetrieval(inputId, { version, etag, contentHash, note });
+    if (!recorded.ok) return recorded;
+    const persisted = assurance.persist();
+    if (!persisted.ok) {
+      return { ok: false, code: "ASSURANCE_STATE_WRITE_FAILED", error: persisted.error || "저장 실패" };
+    }
+    return { ok: true, inputId, entry: recorded.entry };
+  }
+
+  // 감사 조회: 이 Run이 실제로 어떤 입력을 썼는가.
+  assuranceInputUsage() {
+    const assurance = this.ensureAssuranceRun(this.currentRunInfo());
+    if (!assurance?.assured) return null;
+    const explained = assurance.explain();
+    return { declared: explained.inputs, retrievals: explained.inputRetrievals };
   }
 
   // Reviewer에게 넘길 구조화 payload(§19).
@@ -882,10 +969,64 @@ class SpecialistMixin {
 
   // Final 집계가 막았을 때 안전하게 멈춘다. 변경은 그대로 두고 무엇이
   // 남았는지 사용자 언어로 알린다(§9 — 내부 어휘를 노출하지 않는다).
-  holdForAssuranceBlocked({ runInfo, taskInfo, checkpoint, round, changes, final }) {
+  // 남은 것이 **사용자 승인뿐**이면 그것은 실패가 아니라 계획된 대기다.
+  // 승인 화면에서 이미 예고한 지점이므로(§9 P-3) Run을 BLOCKED로 만들지 않고,
+  // 승인 후 정상 경로의 다음 단계(기록)로 이어질 수 있는 대기 상태로 둔다.
+  pauseForHumanApproval({ runInfo, taskInfo, checkpoint, stages, mode, pending, changes = null, builderEvidence = null }) {
+    // REVIEWING/WAITING은 기존 FSM이 이미 아는 정상 대기 상태다.
+    // 전이가 성립하지 않는 실행(step legacy 등)에서는 FSM을 건드리지 않고
+    // resume 상태만으로 대기한다 — 없는 상태를 지어내지 않는다.
+    this.transitionProfessional({ type: "REVIEW_UNKNOWN", stopReason: "HUMAN_APPROVAL_REQUIRED" });
+    this.specialistResume = {
+      ...(this.specialistResume || {}),
+      stages: stages || this.stagesForSpecialist(),
+      // 승인 후 이어지는 것은 "기록" 한 단계뿐이므로 step phase 기계를 쓴다.
+      mode: "step",
+      phase: "awaiting_human_approval",
+      runInfo,
+      taskInfo: taskInfo || null,
+      checkpoint,
+      maxAutoRevisions: 0,
+      // 기록 단계가 필요로 하는 것들. block/auto에서 넘어온 경우 resume에 없다.
+      builderChanges: this.specialistResume?.builderChanges ?? changes?.text ?? "",
+      builderDiff: this.specialistResume?.builderDiff ?? changes?.diff ?? null,
+      builderEvidence: this.specialistResume?.builderEvidence ?? builderEvidence ?? null,
+    };
+    this.specialistActive = false;
+    this.emitSpecialistState();
+    const lines = pending.map((p) => `- ${p.statement}`);
+    this.appendSystem(
+      `승인이 필요한 항목이 남았습니다. 확인 후 승인해 주시면 기록하고 완료합니다.\n${lines.join("\n")}`
+    );
+    return {
+      ok: false,
+      stage: "review",
+      completedIterations: 1,
+      needsUserDecision: true,
+      stopReason: "HUMAN_APPROVAL_REQUIRED",
+      pendingApprovals: pending,
+    };
+  }
+
+  holdForAssuranceBlocked({ runInfo, taskInfo, checkpoint, round, changes, final, stages = null, mode = null }) {
     const {
       describeBlockers,
+      BLOCK_REASONS,
     } = require("../agora/assurance/final-disposition");
+
+    // 사용자 승인만 남았다면 막지 않고 기다린다(B5).
+    const blockers = final?.blockers || [];
+    const onlyHumanApproval =
+      blockers.length > 0 &&
+      blockers.every((b) => b.reason === BLOCK_REASONS.UNRESOLVED_HUMAN_APPROVAL);
+    if (onlyHumanApproval) {
+      const pending = this.pendingHumanApprovals(runInfo);
+      if (pending.length > 0) {
+        return this.pauseForHumanApproval({
+          runInfo, taskInfo, checkpoint, stages, mode, pending, changes,
+        });
+      }
+    }
     const lines = describeBlockers(final).map((b) => `- ${b.label}: ${b.count}건`);
     const message = final.verdict === "INVALIDATED"
       ? `확인을 마친 뒤 결과물이나 입력 자료가 바뀌어 완료로 처리할 수 없습니다.\n${lines.join("\n")}\n\n변경을 되돌리거나 다시 확인해 주세요.`
@@ -2302,6 +2443,9 @@ class SpecialistMixin {
               round: 1,
               changes: resume.builderDiff,
               final: stepFinal,
+              // 승인만 남았다면 기록 단계로 이어질 수 있어야 한다(B5).
+              stages,
+              mode: resume.mode,
             });
           }
           if (this.strictReviewDiff && resume.builderDiff?.status === "UNSUPPORTED") {
@@ -2449,6 +2593,24 @@ class SpecialistMixin {
         return { ok: false, stage: "implementation", completedIterations: 2, needsUserDecision: true, stopReason: "BUILDER_DONE" };
       }
 
+      // 승인 대기 중에는 그냥 진행할 수 없다. Reviewer도 Builder도 이 관문을
+      // 우회하지 못하며, 사용자가 승인해야 phase가 review_pass로 바뀐다(§20).
+      if (resume.phase === "awaiting_human_approval") {
+        const pending = this.pendingHumanApprovals(runInfo);
+        this.specialistResume = resume;
+        this.specialistActive = false;
+        this.emitSpecialistState();
+        this.appendSystem("아직 승인하지 않은 항목이 있어 기록을 시작하지 않았습니다.");
+        return {
+          ok: false,
+          stage: "review",
+          completedIterations: 1,
+          needsUserDecision: true,
+          stopReason: "HUMAN_APPROVAL_REQUIRED",
+          pendingApprovals: pending,
+        };
+      }
+
       if (resume.phase === "review_pass") {
         const frozenCheck = this.validateFrozenTask(runInfo);
         if (!frozenCheck.ok) {
@@ -2461,6 +2623,31 @@ class SpecialistMixin {
             error: frozenCheck.error,
           });
         }
+        // Stage D §16 — 기록·완료 직전에 마지막으로 재확인한다. 승인 이후에도
+        // 결과물이 바뀔 수 있고, 그러면 그 승인은 이 결과물에 대한 것이 아니다.
+        const finalBeforeRecord = this.finalizeAssurance(runInfo);
+        if (finalBeforeRecord && !finalBeforeRecord.finalPass) {
+          return this.holdForAssuranceBlocked({
+            runInfo,
+            taskInfo,
+            checkpoint,
+            round: 1,
+            changes: resume.builderDiff,
+            final: finalBeforeRecord,
+            stages,
+            mode: resume.mode,
+          });
+        }
+
+        // 승인으로 재개된 실행은 professional FSM의 남은 전이를 이어받는다.
+        // 이것이 없으면 승인 후 Run이 REVIEWING에 영원히 남는다(B5).
+        if (resume.resumedFromApproval && this.professionalRun) {
+          this.transitionProfessional({ type: "REVIEW_PASS" });
+          if (this.professionalRun?.status === "WAITING") {
+            this.transitionProfessional({ type: "USER_CONTINUE_RECORD" });
+          }
+        }
+
         // Recorder 실행 후 완료.
         let recorderResult = null;
         if (recorder?.agent) {
@@ -2487,6 +2674,9 @@ class SpecialistMixin {
         }
         // Stage D-C — step에서도 Recorder 결과가 provenance 사슬을 닫는다(§26).
         this.recordAssuranceRecorder({ runInfo, ok: Boolean(recorderResult?.ok) });
+        if (resume.resumedFromApproval && this.professionalRun) {
+          this.transitionProfessional({ type: "RECORDER_DONE" });
+        }
         this.specialistActive = false;
         this.appendSystem("전문 모드 구현·검토·기록이 완료되었습니다.");
         return { ok: true, completedIterations: 1, recorded: Boolean(recorderResult?.ok), recording: recorderResult?.text || "" };
@@ -3086,6 +3276,9 @@ class SpecialistMixin {
             round,
             changes: changeSnapshot,
             final: assuranceFinal,
+            // block/auto도 승인만 남았다면 기록 단계로 이어질 수 있어야 한다(B5).
+            stages,
+            mode,
           });
         }
         if (this.strictReviewDiff && changeSnapshot.diff.status === "UNSUPPORTED") {
