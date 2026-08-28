@@ -46,5 +46,10 @@ async function main() {
 
 main().catch((error) => {
   console.error(error);
-  process.exitCode = 1;
+  // 즉시 종료로 실패를 강제합니다. exitCode 지정만으로도 보통은 충분하지만
+  // (Windows 로컬의 얕은 실패 경로에서는 exit 1 전달을 실측 확인),
+  // v1.1.0 macOS 릴리스에서는 깊은 패키징 경로(IconConversionError)의 실패가
+  // exitCode를 통해 CI 스텝에 전달되지 않고 스텝이 성공 처리된 사례가 있어
+  // fail-closed 방어로 catch 시점에 바로 종료합니다.
+  process.exit(1);
 });

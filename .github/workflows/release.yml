@@ -1,8 +1,15 @@
 name: Release
 
-# v* 태그를 푸시하면 각 OS의 네이티브 러너에서 패키지를 만들어
-# 같은 GitHub Release에 첨부합니다. 빌드 산출물은 러너에서 gh CLI로
-# 곧바로 릴리스에 올리며, 워크플로 아티팩트 저장소를 중계로 쓰지 않습니다.
+# Agora의 릴리스는 "태그가 붙은 repository state"입니다. GitHub Release의 본체는
+# 안정 버전 표시·변경사항 기록·source 아카이브이고, 네이티브 패키지는 편의용입니다.
+#
+# 패키징 tier:
+#   required — Windows(exe), Linux(AppImage): 이 둘이 성공해야 publish됩니다.
+#   optional — macOS(dmg): 성공하면 첨부하고, 실패해도 publish를 막지 않습니다.
+#
+# v* 태그를 푸시하면 각 OS의 네이티브 러너에서 패키지를 만들어 같은 GitHub
+# Release에 첨부합니다. 빌드 산출물은 러너에서 gh CLI로 곧바로 릴리스에 올리며,
+# 워크플로 아티팩트 저장소를 중계로 쓰지 않습니다.
 on:
   push:
     tags:
@@ -20,7 +27,7 @@ env:
   TAG: ${{ github.ref_name }}
 
 jobs:
-  # 1) 먼저 초안 릴리스를 만들어 세 러너가 올릴 대상을 확정합니다.
+  # 1) 먼저 초안 릴리스를 만들어 러너들이 올릴 대상을 확정합니다.
   draft:
     runs-on: ubuntu-latest
     steps:
@@ -35,7 +42,7 @@ jobs:
             gh release create "$TAG" --draft --title "Agora $TAG" --generate-notes
           fi
 
-  # 2) OS별 네이티브 패키지 빌드 후 초안 릴리스에 직접 업로드.
+  # 2) required tier — Windows/Linux 패키지 빌드 후 초안 릴리스에 직접 업로드.
   build:
     needs: draft
     strategy:
@@ -46,8 +53,6 @@ jobs:
             artifact: artifacts/*.exe
           - os: ubuntu-latest
             artifact: artifacts/*.AppImage
-          - os: macos-latest
-            artifact: artifacts/*.dmg
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -74,9 +79,6 @@ jobs:
             || sudo apt-get install -y xvfb libgtk-3-0 libnss3 libatk-bridge2.0-0 libdrm2 libgbm1 libxkbcommon0 libasound2
 
       - name: Build native package
-        env:
-          # 서명 인증서가 없으므로 자동 탐색을 꺼서 macOS 빌드가 멈추지 않게 합니다.
-          CSC_IDENTITY_AUTO_DISCOVERY: false
         run: npm run dist
 
       # AppImage는 실행에 FUSE가 필요하므로, 같은 빌드의 linux-unpacked 바이너리로
@@ -102,7 +104,39 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$TAG" ${{ matrix.artifact }} --clobber
 
-  # 3) 세 패키지가 모두 붙은 뒤에만 초안을 공개합니다.
+  # 2-옵션) optional tier — macOS(dmg). experimental이라 release gate에 넣지 않습니다.
+  # continue-on-error로 실패는 job에 기록만 남고 워크플로/publish는 막지 않습니다.
+  # (v1.1.0에서 macOS는 아이콘 512px 요건(ERR_ICON_TOO_SMALL)으로 실패한 이력이 있음)
+  build-macos:
+    needs: draft
+    runs-on: macos-latest
+    continue-on-error: true
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm test
+
+      - name: Build native package
+        env:
+          # 서명 인증서가 없으므로 자동 탐색을 꺼서 macOS 빌드가 멈추지 않게 합니다.
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: npm run dist
+
+      - name: Upload package to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" artifacts/*.dmg --clobber
+
+  # 3) required 패키지(Windows/Linux)가 모두 붙으면 초안을 공개합니다.
+  #    macOS는 gate에 포함하지 않습니다 — 성공 시 dmg가 추가로 첨부될 뿐입니다.
   publish:
     needs: build
     runs-on: ubuntu-latest
