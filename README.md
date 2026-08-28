@@ -29,18 +29,19 @@ Agora는 **Windows를 우선 지원하는 repository-distributed local applicati
 
 ## Windows에서 사용하기
 
-저장소를 원하는 위치에 내려받은 뒤(ZIP 다운로드 또는 `git clone`), 폴더 안의 스크립트를 더블클릭합니다.
+**권장 설치 — `git clone`으로 받은 폴더**
 
-1. **`Agora-설치하기.bat`** — 최초 1회. 실행 환경(Git/Node.js/필수 CLI)을 점검하고 의존성 설치와 바탕화면 바로가기 생성까지 진행합니다.
+1. **`Agora-설치하기.bat`** — 최초 1회. 실행 환경(Git/Node.js/CLI)을 점검하고 의존성 설치와 바탕화면 바로가기 생성까지 진행합니다.
 2. **`Agora-업데이트.bat`** — 이후 업데이트. 최신 main을 안전하게 받아 반영합니다.
+
+**ZIP 다운로드로 받은 폴더**
+
+- 설치와 실행은 동일하게 가능합니다 (`Agora-설치하기.bat`).
+- 자동 업데이트는 지원하지 않습니다. 새 버전은 ZIP을 다시 내려받아 폴더를 교체해야 합니다.
 
 Releases의 `Agora-<버전>.exe`(portable 실행 파일)는 편의용 대안입니다.
 
-처음 실행한 PC에서는 다음 CLI를 각각 설치하고 로그인해야 합니다.
-
-- Claude Code (`claude`)
-- Codex CLI (`codex`)
-- Antigravity CLI (`agy`)
+**AI CLI 로그인** — Codex(`codex`) / Claude Code(`claude`) / Antigravity(`agy`) 중 실제로 사용할 에이전트의 CLI만 설치·로그인하면 됩니다. 설치기가 없는 CLI를 알려주고 설치를 도와줍니다.
 
 Antigravity IDE와 `agy` CLI는 별개입니다. IDE만 설치되어 있으면 Agora의 Antigravity 에이전트를 실행할 수 없습니다.
 
