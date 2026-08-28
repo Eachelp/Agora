@@ -25,8 +25,8 @@ const { buildWindowsCodexLaunchScript } = require("../codex-desktop-launch");
 const { linuxTerminalInvocation, writeUnixLoginScript } = require("../unix-login");
 
 // Codex/Claude/AGY 계정 전환, 로그인 스크립트 생성, Codex 로컬 프록시 제어를 모아 놓은
-// 모듈입니다. main.js는 이 모듈을 조립만 하고, 펫 창·말풍선·트레이 같은 UI는 소유하지
-// 않습니다 — 그 UI들을 다루는 함수/상태는 ui 인자로 주입받습니다.
+// 모듈입니다. 이 모듈은 트레이·채팅 창 같은 UI를 소유하지 않습니다 — 그 UI들을 다루는
+// 함수/상태는 ui 인자로 주입받고, 사용자 안내는 채팅 창 시스템 공지로 전달합니다.
 
 // Codex 계정 전환 뒤 Codex Desktop App을 다시 띄우는 설정입니다.
 // codex-auth/codex-profile류 스위처들은 auth를 바꾼 뒤 실행 중인 클라이언트를 재시작해야
@@ -46,35 +46,20 @@ const CODEX_DESKTOP_RESTART_CONFIG = Object.freeze({
 const PROXY_ACCOUNTS_TTL_MS = 1500;
 
 // ui: main.js가 소유한 UI/설정 계층에 대한 접근을 주입받는 인자입니다.
-//   electron: { app, shell, Menu }
-//   isPetEnabled, openChatWindow, showPetWindowFromTray, showBubble,
-//   restoreActiveActivityBubble, playReaction, refreshTrayMenu,
-//   readSettings, writeSettings
-//   getBubbleWindow, getPetWindow — 현재 창 인스턴스 조회(메뉴 팝업 대상 선택용)
-//   getBubbleHideTimer, setBubbleHideTimer — bubbleWindow와 공유하는 자동 숨김 타이머
+//   electron: { app, shell }
+//   openChatWindow, refreshTrayMenu, readSettings, writeSettings
 //   getChatFeature — chat/chat-ipc.js가 만든 chatFeature (showSystemNotice용).
 //     chatFeature 생성 시점의 prepareAgent 콜백이 이 모듈의 prepareChatAgent를 먼저
 //     참조해야 해서(순환 초기화), main.js는 chatFeature 생성 후에 이 함수를 호출하고
 //     getChatFeature는 그 결과를 지연 조회합니다.
-//   bubbleDoneAutoHideMs — 계정/오류 말풍선 자동 숨김 지연(ms)
 function createAccountSwitching(ui) {
   const {
-    electron: { app, shell, Menu },
-    isPetEnabled,
+    electron: { app, shell },
     openChatWindow,
-    showPetWindowFromTray,
-    showBubble,
-    restoreActiveActivityBubble,
-    playReaction,
     refreshTrayMenu,
     readSettings,
     writeSettings,
-    getBubbleWindow,
-    getPetWindow,
-    getBubbleHideTimer,
-    setBubbleHideTimer,
     getChatFeature,
-    bubbleDoneAutoHideMs,
   } = ui;
 
   // userData에 남기는 간단한 디버그 로그입니다.
@@ -448,7 +433,7 @@ Write-Output "Stopped $($processes.Count) AGY process(es)."
   // 대신 pending profile CODEX_HOME을 만든 뒤 별도 터미널에서 `codex login`을 한 번만 실행합니다.
   async function openCodexLoginTerminal() {
     if (codexLoginLaunchInProgress) {
-      showCodexAccountBubble("이미 Codex 로그인 터미널을 여는 중입니다.");
+      showAccountNotice("이미 Codex 로그인 터미널을 여는 중입니다.");
       return false;
     }
 
@@ -463,7 +448,7 @@ Write-Output "Stopped $($processes.Count) AGY process(es)."
       const profile = codexAccountSwitcher.createLoginProfile();
       const scriptPath = writeCodexLoginScript(profile);
 
-      showCodexAccountBubble(
+      showAccountNotice(
         "새 Codex 로그인 터미널을 여는 중입니다."
       );
 
@@ -473,18 +458,18 @@ Write-Output "Stopped $($processes.Count) AGY process(es)."
       appendDebugLog(`login terminal ShellExecute: ${error || "ok"}`);
 
       if (error) {
-        showCodexAccountBubble(
+        showAccountNotice(
           `Codex 로그인 터미널을 열지 못했어요.\n직접 이 파일을 실행해 주세요:\n${scriptPath}\n\n${error}`
         );
         return false;
       }
 
-      showCodexAccountBubble(
+      showAccountNotice(
         "Codex 로그인 터미널을 열었어요.\n로그인이 끝나면 '전환' 목록에 실제 계정명으로 나타납니다."
       );
       return true;
     } catch (error) {
-      showCodexAccountBubble(
+      showAccountNotice(
         `Codex 로그인 터미널을 열지 못했어요.\n${error.message || String(error)}`
       );
       return false;
@@ -668,79 +653,13 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
     }
   }
 
-  // 계정 프로필 실행/전환 결과를 펫 말풍선으로 알려줍니다.
-  function showCodexAccountBubble(text) {
-    // When the pet is off, surface account errors in the chat window instead of a pet bubble.
-    if (!isPetEnabled()) {
-      openChatWindow();
-      const chatFeature = getChatFeature();
-      if (chatFeature && typeof chatFeature.showSystemNotice === "function") {
-        chatFeature.showSystemNotice(text);
-      }
-      return;
+  // 계정 프로필 실행/전환 결과를 채팅 창의 시스템 공지로 알려줍니다.
+  function showAccountNotice(text) {
+    openChatWindow();
+    const chatFeature = getChatFeature();
+    if (chatFeature && typeof chatFeature.showSystemNotice === "function") {
+      chatFeature.showSystemNotice(text);
     }
-
-    clearTimeout(getBubbleHideTimer());
-    setBubbleHideTimer(null);
-
-    showPetWindowFromTray();
-    showBubble({
-      kind: "activity",
-      title: "Codex 계정",
-      busy: false,
-      text,
-    });
-
-    setBubbleHideTimer(setTimeout(() => {
-      restoreActiveActivityBubble();
-    }, bubbleDoneAutoHideMs));
-  }
-
-  // 현재 live ~/.codex/auth.json을 Agora 저장소에 저장합니다.
-  function saveCurrentCodexAccount() {
-    try {
-      const profile = codexAccountSwitcher.saveCurrentAccount();
-      invalidateProxyAccountsCache();
-      refreshTrayMenu();
-      showCodexAccountBubble(
-        `"${profile.label}" 계정을 저장했습니다.\n전환 목록에는 로그인된 계정만 표시됩니다.`
-      );
-    } catch (error) {
-      showCodexAccountBubble(
-        `현재 Codex 계정을 저장하지 못했어요.\n${error.message || String(error)}`
-      );
-    }
-  }
-
-  // 저장된 계정 목록을 네이티브 메뉴로 띄웁니다.
-  // auth.json이 없는 pending/빈 프로필은 codex-account-switcher.js에서 제거되어 여기에 나오지 않습니다.
-  function showCodexAccountSwitchMenu() {
-    clearTimeout(getBubbleHideTimer());
-    setBubbleHideTimer(null);
-
-    const profiles = codexAccountSwitcher.listProfiles();
-
-    if (profiles.length === 0) {
-      showCodexAccountBubble(
-        "저장된 Codex 계정이 없습니다.\n먼저 '현재 저장'을 누르거나 '계정 추가'로 새 계정에 로그인하세요."
-      );
-      return;
-    }
-
-    const template = profiles.map((profile) => ({
-      label: formatCodexAccountLabel(profile),
-      type: "radio",
-      checked: profile.active,
-      enabled: profile.hasAuth,
-      click: () => switchCodexAccount(profile.key),
-    }));
-
-    const bubbleWindow = getBubbleWindow();
-    Menu.buildFromTemplate(template).popup({
-      window: bubbleWindow && !bubbleWindow.isDestroyed() && bubbleWindow.isVisible()
-        ? bubbleWindow
-        : getPetWindow(),
-    });
   }
 
   // 실제 계정 전환입니다.
@@ -754,7 +673,7 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
 
     if (proxyModeRequested && !codexProxyActive) {
       const reason = codexProxyLastError?.message || "프록시가 아직 활성화되지 않았습니다.";
-      showCodexAccountBubble(
+      showAccountNotice(
         `Codex 계정을 전환하지 않았습니다.\n재시작 없는 프록시 모드 시작에 실패했습니다.\n${reason}`
       );
       return false;
@@ -768,7 +687,7 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
         // boundary + old inflight turn 실제 settle까지 대기한 뒤에만 auth를 바꾼다.
         boundary = await installAccountBoundaryOrFail("codex");
       } catch (error) {
-        showCodexAccountBubble(
+        showAccountNotice(
           `Codex 계정을 전환하지 않았습니다.\n세션 경계를 설치하지 못했습니다.\n${error.message || String(error)}`
         );
         return false;
@@ -777,12 +696,12 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
         const result = codexAccountSwitcher.switchToProfile(profileKey);
         invalidateProxyAccountsCache();
         refreshTrayMenu();
-        showCodexAccountBubble(
+        showAccountNotice(
           `"${result.profile.label}" 계정으로 전환했습니다.\n프록시 모드: 재시작 없이 다음 요청부터 바로 적용됩니다.`
         );
         return true;
       } catch (error) {
-        showCodexAccountBubble(`Codex auth 전환에 실패했습니다.\n${error.message || String(error)}`);
+        showAccountNotice(`Codex auth 전환에 실패했습니다.\n${error.message || String(error)}`);
         return false;
       } finally {
         completeAccountBoundary(boundary, "codex");
@@ -795,7 +714,7 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
       // 멈추지도, auth를 바꾸지도 않는다(아무것도 건드리지 않은 채 fail-closed).
       desktopBoundary = await installAccountBoundaryOrFail("codex");
     } catch (error) {
-      showCodexAccountBubble(
+      showAccountNotice(
         `Codex 계정을 전환하지 않았습니다.\n세션 경계를 설치하지 못했습니다.\n${error.message || String(error)}`
       );
       return false;
@@ -804,7 +723,7 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
     // stop → auth 교체 → 재실행까지가 하나의 전환 트랜잭션이다. 그 전체 구간 동안
     // managed admission을 닫아 둔다.
     try {
-      showCodexAccountBubble(
+      showAccountNotice(
         "Codex Desktop App을 멈추고 계정 전환을 준비하는 중입니다."
       );
 
@@ -835,18 +754,18 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
           ? `Codex Desktop 종료 확인은 실패했지만 auth 교체는 진행했습니다.\n${stopError.message || String(stopError)}\n`
           : "";
 
-        showCodexAccountBubble(
+        showAccountNotice(
           `"${result.profile.label}" 계정으로 전환했습니다.\n${stopText}${launchText}\n열려 있던 Codex CLI 터미널은 새로 시작해야 적용됩니다.`
         );
         return true;
       } catch (switchError) {
-        showCodexAccountBubble(
+        showAccountNotice(
           `Codex auth 전환에 실패했습니다.\n${switchError.message || String(switchError)}`
         );
         return false;
       }
     } catch (error) {
-      showCodexAccountBubble(
+      showAccountNotice(
         `Codex 계정을 전환하지 못했어요.\n${error.message || String(error)}`
       );
       return false;
@@ -973,14 +892,7 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
   }
 
   function showProviderAccountError(providerLabel, error) {
-    playReaction("failed");
-    showBubble({
-      kind: "activity",
-      title: `${providerLabel} 계정`,
-      busy: false,
-      text: error?.message || String(error),
-    });
-    setBubbleHideTimer(setTimeout(restoreActiveActivityBubble, bubbleDoneAutoHideMs));
+    showAccountNotice(`${providerLabel} 계정 오류\n${error?.message || String(error)}`);
   }
 
   function buildSimpleProviderSubmenu(switcher, provider, providerLabel) {
@@ -1100,7 +1012,7 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
         codexProxyActive = true;
         codexProxyLastError = null;
         writeSettings({ codexProxyMode: true });
-        showCodexAccountBubble(
+        showAccountNotice(
           "재시작 없는 전환(프록시)을 켰습니다.\n실행 중인 Codex CLI/앱은 한 번만 다시 시작하면 이후 전환부터는 재시작이 필요 없습니다."
         );
       } else {
@@ -1109,11 +1021,11 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
         codexProxyActive = false;
         codexProxyLastError = null;
         writeSettings({ codexProxyMode: false });
-        showCodexAccountBubble("재시작 없는 전환(프록시)을 껐습니다.\nCodex는 원래 방식으로 되돌아갑니다.");
+        showAccountNotice("재시작 없는 전환(프록시)을 껐습니다.\nCodex는 원래 방식으로 되돌아갑니다.");
       }
     } catch (error) {
       appendDebugLog(`codex proxy toggle failed: ${error.message || String(error)}`);
-      showCodexAccountBubble(`프록시 모드 전환에 실패했습니다.\n${error.message || String(error)}`);
+      showAccountNotice(`프록시 모드 전환에 실패했습니다.\n${error.message || String(error)}`);
       if (enabled) {
         // 주입이 실패했으면 Codex가 반쯤 걸린 상태가 되지 않도록 config를 원복하고 완전히 끕니다.
         codexProxyActive = false;
@@ -1208,7 +1120,7 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
         appendDebugLog(`codex auto-switch to ${account.key} (${reason})`);
         // 프록시는 이미 이 계정으로 중계하고 있지만, 활성 프로필 영속화가 실패했다면
         // "전환 완료"라고 보고하지 않습니다(경계 실패가 성공으로 둔갑하면 안 됩니다).
-        showCodexAccountBubble(
+        showAccountNotice(
           persistError
             ? `Codex 한도가 소진돼 "${account.label}" 계정으로 중계 중입니다.\n다만 활성 계정 저장은 실패해서 다음 실행에는 반영되지 않을 수 있어요.\n${persistError.message || String(persistError)}`
             : `Codex 한도가 소진돼 "${account.label}" 계정으로 자동 전환했습니다.\n재시작 없이 바로 적용됐어요.`
@@ -1242,8 +1154,6 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
     restoreCodexProxyMode,
     teardownCodexProxyOnQuit,
     openCodexLoginTerminal,
-    saveCurrentCodexAccount,
-    showCodexAccountSwitchMenu,
     switchCodexAccount,
     buildProviderAccountSubmenu,
     switchProviderAccount,

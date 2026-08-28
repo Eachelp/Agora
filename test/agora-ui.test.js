@@ -6,11 +6,24 @@ const path = require("node:path");
 const ROOT = path.join(__dirname, "..");
 const read = (file) => fs.readFileSync(path.join(ROOT, file), "utf8");
 
-test("Agora는 펫을 기본으로 만들지 않고 채팅으로 시작한다", () => {
+test("Agora는 채팅으로 시작하고 CodePet 레거시가 남아 있지 않다", () => {
   const main = read("src/main.js");
-  assert.match(main, /function isPetEnabled\(\)[\s\S]*?petEnabled === true/);
-  assert.match(main, /const petEnabled = isPetEnabled\(\);[\s\S]*?if \(petEnabled\) \{[\s\S]*?createWindow\(\);/);
-  assert.match(main, /!petEnabled && !process\.argv\.includes\("--settings"\)[\s\S]*?openChatWindow\(\)/);
+  assert.match(main, /app\.whenReady\(\)[\s\S]*?openChatWindow\(\)/);
+  // --settings만 넘기면 설정 창만 뜨고, 그 외에는 항상 채팅 창을 엽니다.
+  assert.match(main, /--settings[\s\S]*?openSettingsWindow\(\)/);
+  // 펫/말풍선/워처 레거시는 완전히 제거되었습니다.
+  assert.doesNotMatch(main, /isPetEnabled|petWindow|bubbleWindow|Watcher|movement|sprite/i);
+  for (const removed of [
+    "src/renderer.js",
+    "src/index.html",
+    "src/preload.js",
+    "src/bubble.js",
+    "src/codex-watcher.js",
+    "src/agora/pet-sprites.js",
+    "src/default-pet",
+  ]) {
+    assert.ok(!fs.existsSync(path.join(ROOT, removed)), `${removed}는 삭제되어야 합니다`);
+  }
 });
 
 test("채팅 화면의 설정 버튼이 기존 설정 창을 연다", () => {
@@ -37,8 +50,9 @@ test("창을 닫아도 트레이 앱은 다음 실행에서 채팅창을 다시 
   const main = read("src/main.js");
   assert.match(main, /app\.requestSingleInstanceLock\(\)/);
   assert.match(main, /second-instance[\s\S]*?openChatWindow\(\)/);
-  assert.match(main, /app\.on\("before-quit"[\s\S]*?codexWatcher\.stop\(\)/);
-  assert.doesNotMatch(main, /app\.on\("window-all-closed"[\s\S]*?codexWatcher\.stop\(\)/);
+  // 창이 모두 닫혀도 "완전 종료" 전에는 트레이 프로세스가 남습니다.
+  assert.match(main, /app\.on\("window-all-closed"[\s\S]*?if \(isQuitting\)/);
+  assert.match(main, /app\.on\("before-quit"[\s\S]*?chatFeature\.shutdown\(\)/);
 });
 
 test("Agora 화면 재배치는 기존 채팅 제어 연결을 유지한다", () => {

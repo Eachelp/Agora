@@ -117,21 +117,11 @@ function makeSwitching(t, { pathOverride, chatFeature } = {}) {
     electron: {
       app: { getPath: () => userData },
       shell: { openPath: async () => "" },
-      Menu: { buildFromTemplate: () => ({ popup() {} }) },
     },
-    isPetEnabled: () => false,
     openChatWindow: () => {},
-    showPetWindowFromTray: () => {},
-    showBubble: () => {},
-    restoreActiveActivityBubble: () => {},
-    playReaction: () => {},
     refreshTrayMenu: () => {},
     readSettings: () => ({}),
     writeSettings: () => {},
-    getBubbleWindow: () => null,
-    getPetWindow: () => null,
-    getBubbleHideTimer: () => null,
-    setBubbleHideTimer: () => {},
     getChatFeature: () => chatFeature || ({
       // 전환 handle 계약을 지키는 최소 double: begin에 해당하는 통지 + complete().
       notifyProviderAccountChanged: async (provider) => {
@@ -140,7 +130,6 @@ function makeSwitching(t, { pathOverride, chatFeature } = {}) {
       },
       showSystemNotice: () => {},
     }),
-    bubbleDoneAutoHideMs: 1,
   });
   return { switching, notifications, home };
 }
