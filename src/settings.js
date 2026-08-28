@@ -86,16 +86,14 @@ function applyAppearance(appearance, fontFamily = appearance?.fontFamily || "") 
 
   // 글꼴 미리보기 카드는 테마의 카드/글자 색을 따라갑니다.
   if (appearance?.uiTheme?.surface) {
-    rootElement.style.setProperty("--bubble-bg", appearance.uiTheme.surface);
+    rootElement.style.setProperty("--preview-bg", appearance.uiTheme.surface);
   } else {
-    rootElement.style.removeProperty("--bubble-bg");
+    rootElement.style.removeProperty("--preview-bg");
   }
   if (appearance?.uiTheme?.ink) {
-    rootElement.style.setProperty("--bubble-ink", appearance.uiTheme.ink);
-    rootElement.style.setProperty("--bubble-muted", appearance.uiTheme.muted || appearance.uiTheme.ink);
+    rootElement.style.setProperty("--preview-ink", appearance.uiTheme.ink);
   } else {
-    rootElement.style.removeProperty("--bubble-ink");
-    rootElement.style.removeProperty("--bubble-muted");
+    rootElement.style.removeProperty("--preview-ink");
   }
 }
 
