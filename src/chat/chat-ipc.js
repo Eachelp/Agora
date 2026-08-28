@@ -502,6 +502,18 @@ function createChatFeature(options) {
     }
   }
 
+  // 프로젝트 트리 사이드바용: 모든 세션을 프로젝트별로 묶어 내려줍니다.
+  function sessionsByProjectPayload() {
+    if (!ensureStore()) return {};
+    const grouped = {};
+    for (const entry of store.listSessions()) {
+      const projectId = projectIdForMeta(entry);
+      if (!grouped[projectId]) grouped[projectId] = [];
+      grouped[projectId].push(entry);
+    }
+    return grouped;
+  }
+
   function sessionsPayload() {
     const activeProjectId = getActiveProjectId();
     const list = listSessionsForProject(activeProjectId);
@@ -510,6 +522,7 @@ function createChatFeature(options) {
       workflow: workflowForProject(activeProjectId),
       activeProjectId,
       sessions: list,
+      sessionsByProject: sessionsByProjectPayload(),
       activeSessionId: getActiveSessionId(activeProjectId),
       readOnly: Boolean(store?.readOnly || storeError || projectStoreError || workflowStoreError || memoryStoreError),
     };
@@ -1706,9 +1719,11 @@ function roomMeta(meta) {
 
     ipcMain.handle(
       "chat:sessions:create",
-      wrap(async () => {
+      wrap(async ({ projectId } = {}) => {
         if (!ensureStore()) throw new Error(storeError || "저장소를 사용할 수 없습니다.");
-        const meta = createSessionForProject();
+        // 트리 사이드바의 프로젝트별 + 버튼이 대상 프로젝트를 지정합니다.
+        // 지정이 없으면 기존처럼 활성 프로젝트에 만듭니다.
+        const meta = createSessionForProject(projectId ? requireProject(projectId).id : undefined);
         setActiveSessionId(meta.id);
         await ensureCapabilityService().discover();
         return { ...sessionsPayload(), session: sessionState(meta.id) };

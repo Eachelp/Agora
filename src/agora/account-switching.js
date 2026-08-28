@@ -908,10 +908,11 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
   }
 
   function buildProviderAccountSubmenu() {
+    // 순서는 provider-capabilities/레일/사용량과 같은 Claude → Codex → AGY로 고정합니다.
     return [
+      { label: "Claude", submenu: buildSimpleProviderSubmenu(claudeAccountSwitcher, "claude", "Claude") },
       { label: "Codex", submenu: buildCodexAccountSubmenu() },
       { label: "AGY", submenu: buildSimpleProviderSubmenu(antigravityAccountSwitcher, "agy", "AGY") },
-      { label: "Claude", submenu: buildSimpleProviderSubmenu(claudeAccountSwitcher, "claude", "Claude") },
     ];
   }
 

@@ -30,11 +30,8 @@ if (btnModeSequential) {
 if (btnModeIndependent) {
   btnModeIndependent.addEventListener("click", () => setResponseMode(true));
 }
-const sessionListEl = document.getElementById("session-list");
-const newSessionButton = document.getElementById("btn-new-session");
 const projectListEl = document.getElementById("project-list");
 const newProjectButton = document.getElementById("btn-new-project");
-const chatsHeading = document.getElementById("chats-heading");
 const refreshProvidersButton = document.getElementById("btn-refresh-providers");
 const doctorButton = document.getElementById("btn-doctor");
 const sessionTitleEl = document.getElementById("session-title");
@@ -48,6 +45,7 @@ const workflowButton = document.getElementById("btn-workflow");
 const specialistButton = document.getElementById("btn-specialist");
 const roomControlsActions = document.querySelector(".room-controls-actions");
 const usageButton = document.getElementById("btn-usage");
+const usageFoldToggle = document.getElementById("btn-usage-fold");
 const usageStripItems = document.getElementById("usage-strip-items");
 const professionalActions = document.getElementById("professional-actions");
 const professionalPlanButton = document.getElementById("btn-professional-plan");
@@ -64,7 +62,6 @@ const storeWarning = document.getElementById("store-warning");
 const popover = document.getElementById("popover");
 const popoverBackdrop = document.getElementById("popover-backdrop");
 const appEl = document.querySelector(".app");
-const railAgoraButton = document.getElementById("rail-agora");
 const railAgentButtons = new Map([
   ["claude", document.getElementById("rail-claude")],
   ["codex", document.getElementById("rail-codex")],
@@ -95,6 +92,8 @@ let diagnostics = [];
 let projects = [];
 let activeProjectId = null;
 let sessions = [];
+// 트리 사이드바용: 프로젝트 id → 그 프로젝트의 세션 목록.
+let sessionsByProject = {};
 let activeSessionId = null;
 let sessionMeta = null;
 // 이름 편집 중인 대화 id. 값이 있으면 목록을 다시 그리지 않습니다.
@@ -575,17 +574,65 @@ function activeProjectEntry() {
   return projects.find((project) => project.id === activeProjectId) || null;
 }
 
+// 프로젝트별 접힘 상태입니다. 기본은 펼침이고, 사용자가 접은 프로젝트만 기억합니다.
+const PROJECT_TREE_CLOSED_KEY = "agora.chat.projectTreeClosed";
+
+function readClosedProjects() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PROJECT_TREE_CLOSED_KEY) || "[]");
+    return new Set(Array.isArray(saved) ? saved : []);
+  } catch {
+    return new Set();
+  }
+}
+
+const closedProjects = readClosedProjects();
+
+function persistClosedProjects() {
+  localStorage.setItem(PROJECT_TREE_CLOSED_KEY, JSON.stringify([...closedProjects]));
+}
+
+function setProjectOpen(projectId, open) {
+  if (open) closedProjects.delete(projectId);
+  else closedProjects.add(projectId);
+  persistClosedProjects();
+}
+
+// 사이드바는 프로젝트를 토글로 삼는 트리 하나입니다. 각 프로젝트 아래에 그 프로젝트의
+// 채팅이 들어가고, 행 우측의 +(새 채팅)·⋯(설정)으로 프로젝트 단위 동작을 수행합니다.
 function renderProjects() {
+  // 이름을 고치는 중에는 다시 그리지 않습니다. 다른 창에서 온 갱신 때문에
+  // 입력창이 통째로 사라져 편집이 날아가는 사고를 막습니다. (commit이 끝나면 직접 호출합니다)
+  if (renamingSessionId) {
+    renderSessionsPending = true;
+    return;
+  }
+  renderSessionsPending = false;
   projectListEl.textContent = "";
-  const activeProject = activeProjectEntry();
-  const headingText = activeProject ? `${activeProject.name}의 대화` : "대화";
-  chatsHeading.textContent = headingText;
-  chatsHeading.title = headingText;
 
   for (const project of projects) {
     const item = document.createElement("li");
     item.className = "project-item";
-    if (project.id === activeProjectId) item.classList.add("is-active");
+    const isActive = project.id === activeProjectId;
+    if (isActive) item.classList.add("is-active");
+    const open = !closedProjects.has(project.id);
+
+    const row = document.createElement("div");
+    row.className = "project-row";
+
+    const caret = document.createElement("button");
+    caret.type = "button";
+    caret.className = "project-caret";
+    caret.textContent = "›";
+    caret.title = open ? "채팅 목록 접기" : "채팅 목록 펼치기";
+    caret.setAttribute("aria-expanded", String(open));
+    caret.setAttribute("aria-label", `${project.name} 채팅 목록 ${open ? "접기" : "펼치기"}`);
+    if (open) caret.classList.add("is-open");
+    caret.addEventListener("click", (event) => {
+      event.stopPropagation();
+      setProjectOpen(project.id, !open);
+      renderProjects();
+    });
 
     const select = document.createElement("button");
     select.type = "button";
@@ -601,10 +648,27 @@ function renderProjects() {
       workspace.title = project.workspace;
       select.append(workspace);
     }
-    select.addEventListener("click", () => selectProject(project.id));
+    // 행 클릭 = 프로젝트 선택 + 펼침. 접기는 화살표로만 합니다.
+    select.addEventListener("click", () => {
+      setProjectOpen(project.id, true);
+      if (project.id === activeProjectId) renderProjects();
+      else void selectProject(project.id);
+    });
 
     const actions = document.createElement("span");
     actions.className = "project-actions";
+    const addChat = document.createElement("button");
+    addChat.type = "button";
+    addChat.className = "project-action";
+    addChat.title = `${project.name}에 새 채팅`;
+    addChat.setAttribute("aria-label", `${project.name}에 새 채팅`);
+    addChat.textContent = "+";
+    addChat.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      setProjectOpen(project.id, true);
+      const result = await call(window.chatApi.sessionsCreate(project.id));
+      if (result) applyFullState(result);
+    });
     const settings = document.createElement("button");
     settings.type = "button";
     settings.className = "project-action";
@@ -614,8 +678,25 @@ function renderProjects() {
       event.stopPropagation();
       openProjectSettings(settings, project);
     });
-    actions.append(settings);
-    item.append(select, actions);
+    actions.append(addChat, settings);
+
+    row.append(caret, select, actions);
+    item.append(row);
+
+    if (open) {
+      const list = document.createElement("ul");
+      list.className = "session-list project-sessions";
+      const entries = sessionsByProject[project.id] || [];
+      for (const entry of entries) list.append(buildSessionItem(entry));
+      if (entries.length === 0) {
+        const empty = document.createElement("li");
+        empty.className = "project-sessions-empty";
+        empty.textContent = "채팅 없음";
+        list.append(empty);
+      }
+      item.append(list);
+    }
+
     projectListEl.append(item);
   }
 }
@@ -1049,16 +1130,14 @@ function openSessionMovePopover(anchor, session) {
   });
 }
 
+// 채팅 목록은 프로젝트 트리 안에 그려지므로, 세션 렌더 = 트리 전체 렌더입니다.
+// (이름 편집 가드는 renderProjects가 담당합니다)
 function renderSessions() {
-  // 이름을 고치는 중에는 다시 그리지 않습니다. 다른 창에서 온 갱신 때문에
-  // 입력창이 통째로 사라져 편집이 날아가는 사고를 막습니다. (commit이 끝나면 직접 호출합니다)
-  if (renamingSessionId) {
-    renderSessionsPending = true;
-    return;
-  }
-  renderSessionsPending = false;
-  sessionListEl.textContent = "";
-  for (const entry of sessions) {
+  renderProjects();
+}
+
+function buildSessionItem(entry) {
+  {
     const item = document.createElement("li");
     item.className = "session-item";
     item.dataset.sessionId = entry.id;
@@ -1128,17 +1207,17 @@ function renderSessions() {
     });
 
     item.append(main, moreBtn);
-    sessionListEl.append(item);
+    return item;
   }
 }
 
 function sessionMoreAnchor(sessionId) {
-  return sessionListEl.querySelector(`[data-session-more="${CSS.escape(sessionId)}"]`);
+  return projectListEl.querySelector(`[data-session-more="${CSS.escape(sessionId)}"]`);
 }
 
 // 사이드바 목록에서 해당 대화의 제목을 인라인 편집으로 바꿉니다.
 function startSessionRename(sessionId) {
-  const titleEl = sessionListEl.querySelector(`[data-session-name="${CSS.escape(sessionId)}"]`);
+  const titleEl = projectListEl.querySelector(`[data-session-name="${CSS.escape(sessionId)}"]`);
   if (!titleEl) return;
   titleEl.scrollIntoView({ block: "nearest" });
   startInlineRename(titleEl, sessionId);
@@ -1222,6 +1301,7 @@ function startInlineRename(titleTextEl, sessionId) {
       const result = await call(window.chatApi.sessionsRename(sessionId, next));
       if (result) {
         sessions = result.sessions || sessions;
+        sessionsByProject = result.sessionsByProject || sessionsByProject;
         if (sessionMeta && sessionMeta.id === sessionId) {
           sessionMeta = { ...sessionMeta, title: next };
         }
@@ -1480,11 +1560,6 @@ function openRailAgentSettings(agentId, button) {
   openAgentPopover(button, agentId);
 }
 
-railAgoraButton?.addEventListener("click", () => {
-  setRailActive(railAgoraButton);
-  sessionTitleEl?.focus();
-});
-
 for (const [agentId, button] of railAgentButtons) {
   button?.addEventListener("click", () => openRailAgentSettings(agentId, button));
 }
@@ -1499,6 +1574,8 @@ function closePopover() {
   popover.classList.remove(...POPOVER_VARIANTS);
   popoverBackdrop.hidden = true;
   usagePopoverOpen = false;
+  // 레일 버튼은 팝오버를 여는 순간에만 강조합니다. 상시 "현재 페이지"가 아닙니다.
+  setRailActive(null);
 }
 
 // 버튼 대신 커서 좌표에도 띄울 수 있도록 위치 계산을 rect 기준으로 분리했습니다.
@@ -2968,8 +3045,8 @@ workspaceButton.addEventListener("click", async () => {
   if (result && !result.canceled && result.project) {
     if (result.projects) projects = result.projects;
     sessions = result.sessions || sessions;
+    sessionsByProject = result.sessionsByProject || sessionsByProject;
     renderSessions();
-    renderProjects();
     renderHeader();
   }
 });
@@ -2981,8 +3058,8 @@ workspaceButton.addEventListener("contextmenu", async (event) => {
   if (result?.project) {
     if (result.projects) projects = result.projects;
     sessions = result.sessions || sessions;
+    sessionsByProject = result.sessionsByProject || sessionsByProject;
     renderSessions();
-    renderProjects();
     renderHeader();
   }
 });
@@ -4067,11 +4144,6 @@ newProjectButton.addEventListener("click", async () => {
   openNewProjectPopover(newProjectButton);
 });
 
-newSessionButton.addEventListener("click", async () => {
-  const result = await call(window.chatApi.sessionsCreate());
-  if (result) applyFullState(result);
-});
-
 refreshProvidersButton.addEventListener("click", async () => {
   const result = await call(window.chatApi.providersRefresh());
   if (result?.providers) {
@@ -4121,6 +4193,7 @@ function applyFullState(full) {
   if (full.workflow) workflow = full.workflow;
   if (Object.hasOwn(full, "activeProjectId")) activeProjectId = full.activeProjectId;
   if (full.sessions) sessions = full.sessions;
+  if (full.sessionsByProject) sessionsByProject = full.sessionsByProject;
   if (Object.hasOwn(full, "activeSessionId")) activeSessionId = full.activeSessionId;
 
   if (full.session) {
@@ -4203,9 +4276,11 @@ window.chatApi.onSessionsChanged((payload) => {
   if (payload.workflow) workflow = payload.workflow;
   if (Object.hasOwn(payload, "activeProjectId")) activeProjectId = payload.activeProjectId;
   sessions = payload.sessions || sessions;
+  // 초기 chat:state(CLI 탐지 포함)가 느릴 때 이 이벤트가 먼저 도착합니다.
+  // 트리 데이터를 함께 받지 않으면 그 사이 사이드바가 "채팅 없음"으로 그려집니다.
+  if (payload.sessionsByProject) sessionsByProject = payload.sessionsByProject;
   if (Object.hasOwn(payload, "activeSessionId")) activeSessionId = payload.activeSessionId;
   renderProjects();
-  renderSessions();
   const entry = activeSessionEntry();
   if (entry && sessionMeta && entry.title !== sessionMeta.title) {
     sessionMeta = { ...sessionMeta, title: entry.title };
@@ -4507,14 +4582,34 @@ usageButton.addEventListener("click", () => {
   void refreshUsageIfStale();
 });
 
+// 사용량은 항상 떠 있는 대신 접기/펼치기입니다. 기본은 접힘이고, 펼친 상태를 기억합니다.
+// 접혀 있는 동안에는 사용량 조회 자체를 하지 않아 시작이 가볍습니다.
+const USAGE_FOLD_KEY = "agora.chat.usageOpen";
+let usageOpen = localStorage.getItem(USAGE_FOLD_KEY) === "true";
+
+function applyUsageFold() {
+  usageButton.hidden = !usageOpen;
+  usageFoldToggle.setAttribute("aria-expanded", String(usageOpen));
+  usageFoldToggle.classList.toggle("is-open", usageOpen);
+}
+
+usageFoldToggle.addEventListener("click", () => {
+  usageOpen = !usageOpen;
+  localStorage.setItem(USAGE_FOLD_KEY, String(usageOpen));
+  applyUsageFold();
+  if (usageOpen) void refreshUsageIfStale();
+});
+applyUsageFold();
+
 // 다른 창에서 사용량을 쓰고 돌아왔을 수 있으므로 포커스 복귀 때 한 번 확인합니다. (60초 스로틀)
+// 접혀 있고 팝오버도 닫혀 있으면 확인할 필요가 없습니다.
 window.addEventListener("focus", () => {
-  void refreshUsageIfStale();
+  if (usageOpen || usagePopoverOpen) void refreshUsageIfStale();
 });
 
 // --- 초기화 ---
 (async () => {
-  void loadUsage();
+  if (usageOpen) void loadUsage();
   const full = await call(window.chatApi.state());
   if (full) {
     applyFullState(full);

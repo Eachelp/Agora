@@ -58,8 +58,8 @@ test("창을 닫아도 트레이 앱은 다음 실행에서 채팅창을 다시 
 test("Agora 화면 재배치는 기존 채팅 제어 연결을 유지한다", () => {
   const html = read("src/chat.html");
   for (const id of [
-    "btn-new-session",
-    "session-list",
+    "project-list",
+    "btn-new-project",
     "btn-workspace",
     "permission-select",
     "btn-workflow",
@@ -76,12 +76,41 @@ test("Agora 화면 재배치는 기존 채팅 제어 연결을 유지한다", ()
   assert.match(html, /Ἀγορά/);
 });
 
+test("사이드바는 프로젝트 토글 트리 하나로 통합된다", () => {
+  const html = read("src/chat.html");
+  const renderer = read("src/chat.js");
+  const ipc = read("src/chat/chat-ipc.js");
+  // 별도 "채팅" 섹션은 사라지고 채팅은 각 프로젝트 아래에 중첩됩니다.
+  assert.doesNotMatch(html, /id="chats-heading"|id="btn-new-session"|id="session-list"/);
+  assert.match(html, /class="project-list project-tree"/);
+  // 트리: 접기/펼치기 화살표 + 행별 새 채팅(+)·설정(⋯), 접힘 상태는 기억합니다.
+  assert.match(renderer, /project-caret/);
+  assert.match(renderer, /agora\.chat\.projectTreeClosed/);
+  assert.match(renderer, /function buildSessionItem\(entry\)/);
+  assert.match(renderer, /sessionsCreate\(project\.id\)/);
+  // 백엔드는 프로젝트별 세션 목록을 내려주고, 새 채팅은 대상 프로젝트를 지정할 수 있습니다.
+  assert.match(ipc, /sessionsByProject: sessionsByProjectPayload\(\)/);
+  assert.match(ipc, /createSessionForProject\(projectId \? requireProject\(projectId\)\.id : undefined\)/);
+});
+
+test("사용량 스트립은 접기/펼치기이고 접힌 동안 조회하지 않는다", () => {
+  const html = read("src/chat.html");
+  const renderer = read("src/chat.js");
+  assert.match(html, /id="btn-usage-fold"/);
+  assert.match(html, /id="btn-usage"[^>]*hidden/);
+  assert.match(renderer, /agora\.chat\.usageOpen/);
+  assert.match(renderer, /if \(usageOpen\) void loadUsage\(\)/);
+  assert.match(renderer, /if \(usageOpen \|\| usagePopoverOpen\) void refreshUsageIfStale\(\)/);
+});
+
 test("Showcase 레일은 기존 에이전트 설정과 설정 창으로 연결된다", () => {
   const html = read("src/chat.html");
   const renderer = read("src/chat.js");
-  for (const id of ["app-rail", "rail-agora", "rail-claude", "rail-codex", "rail-agy", "rail-settings"]) {
+  for (const id of ["app-rail", "rail-claude", "rail-codex", "rail-agy", "rail-settings"]) {
     assert.match(html, new RegExp(`id="${id}"`));
   }
+  // 앱이 Agora 하나뿐이라 앱 전환기 모양의 "아고라" 버튼은 두지 않습니다.
+  assert.doesNotMatch(html, /id="rail-agora"/);
   assert.match(renderer, /openRailAgentSettings\(agentId, button\)/);
   assert.match(renderer, /openAgentPopover\(button, agentId\)/);
   assert.match(renderer, /railSettingsButton[\s\S]*?btn-settings[\s\S]*?click\(\)/);
@@ -166,7 +195,7 @@ test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있
   const renderer = read("src/chat.js");
   const ipc = read("src/chat/chat-ipc.js");
 
-  for (const id of ["project-list", "btn-new-project", "chats-heading", "session-list"]) {
+  for (const id of ["project-list", "btn-new-project"]) {
     assert.match(html, new RegExp(`id="${id}"`));
   }
   assert.match(html, /id="btn-specialist"/);

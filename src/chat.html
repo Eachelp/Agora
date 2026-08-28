@@ -29,11 +29,6 @@
 
     <div class="app">
       <nav class="app-rail" id="app-rail" aria-label="Agora 빠른 이동">
-        <button class="app-rail-button is-active" id="rail-agora" type="button" title="현재 Agora 대화" aria-label="현재 Agora 대화">
-          <span class="app-rail-glyph">A</span>
-          <span class="app-rail-label">아고라</span>
-        </button>
-        <div class="app-rail-divider" aria-hidden="true"></div>
         <button class="app-rail-button" id="rail-claude" type="button" title="Claude 담당 모델·추론 설정" aria-label="Claude 담당 모델·추론 설정">
           <img src="./chat-assets/agent-claude.svg" alt="" aria-hidden="true" />
           <span class="app-rail-label">Claude</span>
@@ -63,16 +58,13 @@
           </span>
           <button class="button button-small" id="btn-new-project" type="button">+ 프로젝트</button>
         </div>
-        <ul class="project-list" id="project-list" aria-label="프로젝트 목록"></ul>
-        <div class="sidebar-head chat-head">
-          <span class="sidebar-heading">
-            <span class="sidebar-title" id="chats-heading">채팅</span>
-          </span>
-          <button class="button button-small" id="btn-new-session" type="button">+ 새 채팅</button>
-        </div>
-        <ul class="session-list" id="session-list" aria-label="채팅 목록"></ul>
+        <ul class="project-list project-tree" id="project-list" aria-label="프로젝트와 채팅 목록"></ul>
         <div class="sidebar-foot">
-          <button class="usage-strip" id="btn-usage" type="button" title="남은 사용량 보기" aria-label="남은 사용량 보기">
+          <button class="usage-fold-toggle" id="btn-usage-fold" type="button" aria-expanded="false" title="남은 사용량 접기/펼치기">
+            <span class="usage-fold-label">사용량</span>
+            <span class="usage-fold-chevron" aria-hidden="true">›</span>
+          </button>
+          <button class="usage-strip" id="btn-usage" type="button" hidden title="남은 사용량 자세히 보기" aria-label="남은 사용량 자세히 보기">
             <span class="usage-strip-items" id="usage-strip-items">
               <span class="usage-strip-empty">사용량 확인 중…</span>
             </span>

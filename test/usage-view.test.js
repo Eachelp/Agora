@@ -34,7 +34,11 @@ test("resetLabel은 ISO 시각만 날짜로 바꾸고 나머지는 그대로 보
   assert.equal(usageView.resetLabel(null), "—");
   assert.equal(usageView.resetLabel("5시간 뒤"), "5시간 뒤");
   assert.equal(usageView.resetLabel("2026-13-45T99:99:99Z"), "2026-13-45T99:99:99Z");
-  assert.match(usageView.resetLabel("2026-08-14T10:00:00Z"), /초기화$/);
+  // 모든 공급자가 같은 형태를 씁니다: "M/D HH:mm (…초기화)" — Codex가 보내는
+  // 기성 문자열(main.js formatResetInfo)과 동일한 모양이어야 합니다.
+  assert.match(usageView.resetLabel("2026-08-14T10:00:00Z"), /^\d{1,2}\/\d{1,2} \d{2}:\d{2} \(.*초기화\)$/);
+  const future = new Date(Date.now() + 90 * 60000).toISOString();
+  assert.match(usageView.resetLabel(future), /\(1시간 30분 후 초기화\)$/);
 });
 
 test("tightestGauge는 가장 먼저 바닥나는 창을 고른다", () => {

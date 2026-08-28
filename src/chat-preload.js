@@ -106,7 +106,7 @@ contextBridge.exposeInMainWorld("chatApi", {
   tasksResolve: (projectId, ids, action) =>
     ipcRenderer.invoke(INVOKE.TASKS_RESOLVE, { projectId, ids, action }),
 
-  sessionsCreate: () => ipcRenderer.invoke(INVOKE.SESSIONS_CREATE),
+  sessionsCreate: (projectId) => ipcRenderer.invoke(INVOKE.SESSIONS_CREATE, { projectId }),
   sessionsSelect: (sessionId) => ipcRenderer.invoke(INVOKE.SESSIONS_SELECT, { sessionId }),
   // 프로젝트 이동 시 대상 프로젝트의 workspace를 항상 상속합니다(선택 옵션 없음).
   sessionsMove: (sessionId, projectId) =>
