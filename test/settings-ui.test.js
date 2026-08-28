@@ -10,21 +10,11 @@ function source(relativePath) {
 const settingsHtml = source("src/settings.html");
 const settingsJs = source("src/settings.js");
 const settingsCss = source("src/settings.css");
-const bubbleCss = source("src/bubble.css");
-const bubbleJs = source("src/bubble.js");
 const mainJs = source("src/main.js");
 const accountSwitchingJs = source("src/agora/account-switching.js");
-const rendererJs = source("src/renderer.js");
 const packageJson = JSON.parse(source("package.json"));
 
-test("클릭 가능한 말풍선 hover는 사용자 지정 배경색을 덮어쓰지 않는다", () => {
-  assert.match(bubbleCss, /\.bubble\s*\{[^}]*background:\s*var\(--bubble-bg\)/s);
-  assert.doesNotMatch(bubbleCss, /--bubble-hover/);
-  assert.doesNotMatch(bubbleCss, /\.bubble\.clickable:hover/);
-  assert.doesNotMatch(bubbleCss, /\.activity-section\.clickable:hover/);
-});
-
-test("설정 창은 전체 UI 색상, 펫 말풍선, 글꼴, 세 provider, 사용량을 제공한다", () => {
+test("설정 창은 전체 UI 색상, 글꼴, 세 provider, 사용량을 제공한다", () => {
   assert.doesNotMatch(settingsHtml, /name="theme"|data-theme/);
   assert.doesNotMatch(settingsJs, /themeSource|resolvedTheme|prefers-color-scheme/);
   assert.doesNotMatch(settingsCss, /data-theme|theme-option|theme-preview/);
@@ -47,11 +37,13 @@ test("설정 창은 전체 UI 색상, 펫 말풍선, 글꼴, 세 provider, 사�
   assert.doesNotMatch(settingsHtml, /<link[^>]+href=["']https?:/);
   assert.doesNotMatch(settingsHtml, /\.\.\/assets\//);
   assert.equal(fs.existsSync(path.join(__dirname, "..", "assets")), false);
-  assert.equal(
-    fs.existsSync(path.join(__dirname, "..", "src", "default-pet", "spritesheet.webp")),
-    true
-  );
-  assert.match(mainJs, /path\.join\(__dirname, "default-pet", "spritesheet\.webp"\)/);
+});
+
+test("펫/말풍선 설정 UI는 제거됐다", () => {
+  assert.doesNotMatch(settingsHtml, /pet-enabled|bubble-mode|id="pet"|id="follow"|말풍선/);
+  assert.doesNotMatch(settingsJs, /petKey|petEnabled|activityBubbleMode|followMouse|bubbleBgColor|bubbleTextColor/);
+  assert.doesNotMatch(mainJs, /petKey|petEnabled|activityBubbleMode|followMouse|bubbleBgColor|bubbleTextColor/);
+  assert.match(settingsHtml, /id="autostart"/);
 });
 
 test("설정 Footer는 짧은 창에서도 본문을 덮지 않고 글꼴 목록은 각 글꼴로 표시된다", () => {
@@ -60,55 +52,6 @@ test("설정 Footer는 짧은 창에서도 본문을 덮지 않고 글꼴 목록
   assert.match(settingsJs, /function createFontOption/);
   assert.match(settingsJs, /option\.style\.fontFamily\s*=\s*fontFamily/);
   assert.match(settingsJs, /filteredFonts\.map\(\(font\) => createFontOption\(font, font, font\)\)/);
-});
-
-test("말풍선 글자 색상은 작업 제목과 모델 상태까지 함께 바꾼다", () => {
-  assert.doesNotMatch(bubbleJs, /dataset\.theme|resolvedTheme/);
-  assert.doesNotMatch(bubbleCss, /data-theme/);
-  assert.match(bubbleCss, /\.title\s*\{[^}]*color:\s*var\(--bubble-ink\)/s);
-  assert.match(bubbleCss, /\.activity-row-label\s*\{[^}]*color:\s*var\(--bubble-ink\)/s);
-  assert.match(bubbleJs, /theme\?\.surface/);
-  assert.match(bubbleJs, /theme\?\.accent/);
-});
-
-test("마우스 따라가기와 수동 일시정지는 설정 파일에 저장하고 시작 시 복원한다", () => {
-  assert.match(mainJs, /restoreMovementPreferences\(\)/);
-  assert.match(mainJs, /writeSettings\(movementPreferencesPatch\(runtime\)\)/);
-  assert.match(mainJs, /persistMovementPreferences\(\)/);
-});
-
-test("클릭·작업 상태·정지 랜덤·마우스 둘러보기·2차원 배회를 동작 규칙대로 연결한다", () => {
-  const animationPolicy = mainJs.slice(
-    mainJs.indexOf("function syncMovementAnimation"),
-    mainJs.indexOf("function schedulePhase")
-  );
-  assert.match(mainJs, /isActivityOnlyReason\(reason\)/);
-  assert.match(rendererJs, /requestReaction\("jumping"\)/);
-  assert.match(rendererJs, /requestReaction\("waving"\)/);
-  assert.match(mainJs, /initialDragState = runtime\.direction > 0 \? "runningRight" : "runningLeft"/);
-  assert.match(mainJs, /function didTaskFail\(result\)/);
-  assert.match(mainJs, /playReaction\(failed \? "failed" : "jumping"\)/);
-  assert.match(mainJs, /pauseAutoMovement\("codex", "running"\)/);
-  assert.match(mainJs, /function chooseRandomIdleState\(\)/);
-  assert.match(mainJs, /states = \["waiting", "failed"\]/);
-  assert.match(mainJs, /states\.push\("lookRow10", "lookRow9"\)/);
-  assert.match(mainJs, /function ensureMouseLookState\(\)/);
-  assert.ok(
-    animationPolicy.indexOf("runtime.followMouse") <
-      animationPolicy.indexOf("getActivityPetState()")
-  );
-  assert.match(mainJs, /runtime\.movementPhase === "walking"/);
-  assert.match(mainJs, /directionIndexFromVector\(deltaX, deltaY\)/);
-  assert.match(mainJs, /createRoamingVector\(\)/);
-  assert.match(mainJs, /advanceRoamingPosition\(\{/);
-  assert.doesNotMatch(mainJs, /targetWorkArea/);
-  assert.match(mainJs, /label: "왼쪽 둘러보기"[^\n]+lookRow10/);
-  assert.match(mainJs, /label: "오른쪽 둘러보기"[^\n]+lookRow9/);
-  assert.match(mainJs, /playManualReaction\("lookRow9"\)/);
-  assert.match(mainJs, /playManualReaction\("lookRow10"\)/);
-  assert.match(rendererJs, /scanSpriteFrameOccupancy/);
-  assert.match(rendererJs, /playableFrameColumns\(rowOccupancy, expectedFrames\)/);
-  assert.match(rendererJs, /nearestPlayableDirection/);
 });
 
 test("프로젝트 연결과 Codex 현재 저장·재실행 UI는 제거됐다", () => {
@@ -144,18 +87,18 @@ test("계정 설정은 비활성 프로필 삭제를 확인하고 삭제 중 상
   assert.match(settingsCss, /\.danger-button/);
 });
 
-test("메뉴에서 사용량 보기와 활동 말풍선 항목을 제거하고 수동 모션을 세 번 재생한다", () => {
-  assert.doesNotMatch(mainJs, /label:\s*"Codex 사용량 보기"/);
-  assert.doesNotMatch(mainJs, /label:\s*"활동 말풍선"/);
+test("트레이 메뉴는 설정·채팅·계정·프록시·종료만 제공한다", () => {
   assert.match(mainJs, /label:\s*"설정…"/);
-  assert.match(mainJs, /let remaining = 2/);
-  assert.match(rendererJs, /window\.petApi\.showCodexStatus\(\)/);
-  assert.match(mainJs, /SHOW_CODEX_STATUS[\s\S]*void showUsageBubble\(\)/);
-  // isCodexProxyModeEnabled는 src/agora/account-switching.js로 옮겨졌습니다.
+  assert.match(mainJs, /label:\s*"에이전트 채팅방…"/);
+  assert.match(mainJs, /label:\s*"완전 종료"/);
+  assert.doesNotMatch(mainJs, /펫 보이기|펫 숨기기|펫 바꾸기|마우스 따라가기|이동 일시 정지/);
+  // isCodexProxyModeEnabled는 src/agora/account-switching.js에 있습니다.
   assert.match(accountSwitchingJs, /readSettings\(\)\.codexProxyMode === true/);
   assert.doesNotMatch(accountSwitchingJs, /readSettings\(\)\.codexProxyMode !== false/);
-  assert.match(
-    mainJs,
-    /function showWatcherActivityBubble[\s\S]*pendingBubbleData && !pendingBubbleData\.activityPrivacy/
-  );
+});
+
+test("계정 안내는 펫 말풍선 대신 채팅 창 시스템 공지로 전달된다", () => {
+  assert.match(accountSwitchingJs, /function showAccountNotice\(text\)/);
+  assert.match(accountSwitchingJs, /chatFeature\.showSystemNotice\(text\)/);
+  assert.doesNotMatch(accountSwitchingJs, /showBubble|playReaction|isPetEnabled|getPetWindow|getBubbleWindow/);
 });

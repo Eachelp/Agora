@@ -80,7 +80,7 @@
         </nav>
 
         <div class="sidebar-foot">
-          <span class="version">VERSION 1.0.1</span>
+          <span class="version">VERSION 1.1.0</span>
         </div>
       </aside>
 
@@ -168,27 +168,6 @@
             </div>
           </fieldset>
 
-          <fieldset class="setting-section color-section">
-            <legend>펫 말풍선 색상</legend>
-            <p class="section-help">펫을 켰을 때 표시되는 말풍선의 색상입니다.</p>
-            <div class="color-grid">
-              <div class="color-field">
-                <span class="color-label">배경 색상</span>
-                <div class="color-input-wrapper">
-                  <input type="color" id="bubble-bg-picker" />
-                  <input type="text" id="bubble-bg-color" placeholder="#ffffff" maxlength="9" />
-                </div>
-              </div>
-              <div class="color-field">
-                <span class="color-label">글자 색상</span>
-                <div class="color-input-wrapper">
-                  <input type="color" id="bubble-text-picker" />
-                  <input type="text" id="bubble-text-color" placeholder="#09090b" maxlength="7" />
-                </div>
-              </div>
-            </div>
-          </fieldset>
-
           <section class="setting-section font-section" aria-labelledby="font-title">
             <div class="section-title-row">
               <div>
@@ -231,33 +210,11 @@
             <p class="inline-note" id="font-note">삭제된 글꼴은 시스템 기본값으로 돌아갑니다.</p>
           </section>
 
-          <section class="setting-section" aria-labelledby="pet-behavior-title">
+          <section class="setting-section" aria-labelledby="startup-title">
             <div class="section-title-row">
-              <h2 id="pet-behavior-title">펫과 알림</h2>
+              <h2 id="startup-title">시작</h2>
             </div>
             <div class="control-grid">
-              <label class="switch-row" for="pet-enabled">
-                <span><strong>데스크톱 펫 표시</strong><small>기본값은 꺼짐</small></span>
-                <input id="pet-enabled" type="checkbox" />
-                <i aria-hidden="true"></i>
-              </label>
-              <label class="control-field" for="pet">
-                <span>사용할 펫</span>
-                <select id="pet"></select>
-              </label>
-              <label class="control-field" for="bubble-mode">
-                <span>활동 말풍선</span>
-                <select id="bubble-mode">
-                  <option value="full">전체 내용</option>
-                  <option value="status">상태만</option>
-                  <option value="off">끄기</option>
-                </select>
-              </label>
-              <label class="switch-row" for="follow">
-                <span><strong>마우스 따라가기</strong></span>
-                <input id="follow" type="checkbox" />
-                <i aria-hidden="true"></i>
-              </label>
               <label class="switch-row" for="autostart">
                 <span><strong>로그인 시 자동 실행</strong></span>
                 <input id="autostart" type="checkbox" />

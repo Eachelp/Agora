@@ -80,7 +80,7 @@ jobs:
         run: npm run dist
 
       # AppImage는 실행에 FUSE가 필요하므로, 같은 빌드의 linux-unpacked 바이너리로
-      # "창이 뜨고 죽지 않는다"만 확인합니다. 펫은 계속 떠 있는 앱이라
+      # "창이 뜨고 죽지 않는다"만 확인합니다. Agora는 트레이 상주형 앱이라
       # timeout의 124(제한시간 도달)를 정상으로 봅니다.
       - name: Smoke test Linux build
         if: matrix.os == 'ubuntu-latest'
@@ -89,7 +89,7 @@ jobs:
           timeout 30s xvfb-run -a artifacts/linux-unpacked/agora --no-sandbox
           status=$?
           set -e
-          # 펫은 계속 떠 있는 앱이므로 정상 실행이면 timeout이 30초 뒤 124로 끊습니다.
+          # 트레이 상주형 앱이므로 정상 실행이면 timeout이 30초 뒤 124로 끊습니다.
           # 즉시 종료(0 포함 124 외 모든 코드)는 실행이 바로 죽었다는 뜻이라 실패로 봅니다.
           if [ "$status" -ne 124 ]; then
             echo "linux-unpacked 실행이 exit $status 로 실패했습니다."

@@ -84,28 +84,16 @@ function applyAppearance(appearance, fontFamily = appearance?.fontFamily || "") 
     rootElement.style.removeProperty("--preview-font-size");
   }
 
-  const bubbleBg = appearance?.bubbleBgColor || appearance?.uiTheme?.surface;
-  if (bubbleBg) {
-    rootElement.style.setProperty("--bubble-bg", bubbleBg);
+  // 글꼴 미리보기 카드는 테마의 카드/글자 색을 따라갑니다.
+  if (appearance?.uiTheme?.surface) {
+    rootElement.style.setProperty("--preview-bg", appearance.uiTheme.surface);
   } else {
-    rootElement.style.removeProperty("--bubble-bg");
+    rootElement.style.removeProperty("--preview-bg");
   }
-  if (appearance?.bubbleTextColor) {
-    rootElement.style.setProperty("--bubble-ink", appearance.bubbleTextColor);
-    const textHex = String(appearance.bubbleTextColor).trim();
-    if (textHex.startsWith("#") && textHex.length === 7) {
-      rootElement.style.setProperty("--bubble-muted", textHex + "a6");
-    } else {
-      rootElement.style.setProperty("--bubble-muted", textHex);
-    }
-  } else if (appearance?.uiTheme?.ink) {
-    rootElement.style.setProperty("--bubble-ink", appearance.uiTheme.ink);
-    rootElement.style.setProperty("--bubble-muted", appearance.uiTheme.muted || appearance.uiTheme.ink);
-  } else if (appearance?.uiTheme?.muted) {
-    rootElement.style.setProperty("--bubble-muted", appearance.uiTheme.muted);
+  if (appearance?.uiTheme?.ink) {
+    rootElement.style.setProperty("--preview-ink", appearance.uiTheme.ink);
   } else {
-    rootElement.style.removeProperty("--bubble-ink");
-    rootElement.style.removeProperty("--bubble-muted");
+    rootElement.style.removeProperty("--preview-ink");
   }
 }
 
@@ -201,32 +189,8 @@ function renderGeneral({ resetAppearance = false } = {}) {
     selectedFont = resolveInstalledFontFamily(state.appearance.fontFamily);
     selectedFontSize = Number(state.appearance.fontSize) || 12;
   }
-  replaceOptions(
-    $("#pet"),
-    state.pets.map((pet) => new Option(pet.label, pet.key)),
-    state.petKey
-  );
   renderUiTheme(state.appearance.uiTheme);
-  $("#pet-enabled").checked = state.petEnabled === true;
-  $("#bubble-mode").value = state.activityBubbleMode;
-  $("#follow").checked = state.followMouse;
   $("#autostart").checked = state.autoStart;
-
-  const bgVal = state.appearance.bubbleBgColor || "";
-  $("#bubble-bg-color").value = bgVal;
-  if (/^#[0-9a-fA-F]{6}$/.test(bgVal) || /^#[0-9a-fA-F]{3}$/.test(bgVal) || /^#[0-9a-fA-F]{8}$/.test(bgVal)) {
-    $("#bubble-bg-picker").value = bgVal.slice(0, 7);
-  } else {
-    $("#bubble-bg-picker").value = "#ffffff";
-  }
-
-  const textVal = state.appearance.bubbleTextColor || "";
-  $("#bubble-text-color").value = textVal;
-  if (/^#[0-9a-fA-F]{6}$/.test(textVal) || /^#[0-9a-fA-F]{3}$/.test(textVal)) {
-    $("#bubble-text-picker").value = textVal.slice(0, 7);
-  } else {
-    $("#bubble-text-picker").value = "#09090b";
-  }
 
   renderFonts();
 }
@@ -472,14 +436,8 @@ function registerAppearanceControls() {
       const response = await api.save({
         fontFamily: selectedFont || null,
         fontSize: selectedFontSize,
-        petKey: $("#pet").value,
-        petEnabled: $("#pet-enabled").checked,
-        activityBubbleMode: $("#bubble-mode").value,
-        followMouse: $("#follow").checked,
         autoStart: $("#autostart").checked,
         uiTheme: readUiTheme(),
-        bubbleBgColor: $("#bubble-bg-color").value.trim() || null,
-        bubbleTextColor: $("#bubble-text-color").value.trim() || null,
       });
       if (!response?.ok) throw new Error(responseError(response, "설정을 적용하지 못했습니다."));
       state = response.data;
@@ -562,17 +520,6 @@ function registerTitlebarControls() {
 }
 
 function registerColorPickerControls() {
-  const bgPicker = $("#bubble-bg-picker");
-  const bgInput = $("#bubble-bg-color");
-  const textPicker = $("#bubble-text-picker");
-  const textInput = $("#bubble-text-color");
-
-  function isValidColor(str) {
-    const s = new Option().style;
-    s.color = str;
-    return s.color !== '';
-  }
-
   for (const field of UI_THEME_FIELDS) {
     const picker = $(`#ui-${field.key}-picker`);
     const input = $(`#ui-${field.key}-color`);
@@ -586,30 +533,6 @@ function registerColorPickerControls() {
       updateLiveUiTheme();
     });
   }
-
-  bgPicker.addEventListener("input", () => {
-    bgInput.value = bgPicker.value;
-    updateLiveColors();
-  });
-  textPicker.addEventListener("input", () => {
-    textInput.value = textPicker.value;
-    updateLiveColors();
-  });
-
-  bgInput.addEventListener("input", () => {
-    const val = bgInput.value.trim();
-    if (/^#[0-9a-fA-F]{6}$/.test(val) || /^#[0-9a-fA-F]{3}$/.test(val) || /^#[0-9a-fA-F]{8}$/.test(val)) {
-      bgPicker.value = val.slice(0, 7);
-    }
-    updateLiveColors();
-  });
-  textInput.addEventListener("input", () => {
-    const val = textInput.value.trim();
-    if (/^#[0-9a-fA-F]{6}$/.test(val) || /^#[0-9a-fA-F]{3}$/.test(val)) {
-      textPicker.value = val.slice(0, 7);
-    }
-    updateLiveColors();
-  });
 
   function updateLiveUiTheme() {
     for (const field of UI_THEME_FIELDS) {
@@ -661,27 +584,6 @@ function registerColorPickerControls() {
       }
       updateLiveUiTheme();
     });
-  }
-
-  function updateLiveColors() {
-    const bgVal = bgInput.value.trim();
-    const textVal = textInput.value.trim();
-
-    if (bgVal && isValidColor(bgVal)) {
-      rootElement.style.setProperty("--bubble-bg", bgVal);
-    } else if (state?.appearance?.uiTheme?.surface) {
-      rootElement.style.setProperty("--bubble-bg", state.appearance.uiTheme.surface);
-    } else {
-      rootElement.style.removeProperty("--bubble-bg");
-    }
-
-    if (textVal && isValidColor(textVal)) {
-      rootElement.style.setProperty("--bubble-ink", textVal);
-    } else if (state?.appearance?.uiTheme?.ink) {
-      rootElement.style.setProperty("--bubble-ink", state.appearance.uiTheme.ink);
-    } else {
-      rootElement.style.removeProperty("--bubble-ink");
-    }
   }
 }
 

@@ -4,7 +4,7 @@ const path = require("node:path");
 const { execFile, spawn } = require("node:child_process");
 const { selectCommandPath, commandNeedsShell } = require("../command-resolution");
 
-// 채팅과 펫 기능이 함께 쓰는 단일 프로바이더 탐지 모듈입니다.
+// 채팅과 계정 전환이 함께 쓰는 단일 프로바이더 탐지 모듈입니다.
 // - 후보 경로 → where/which 순서로 실행 파일을 찾고,
 // - --version 프로브로 실제 실행 가능 여부를 확인하며,
 // - renderer에는 경로/셸 정보가 없는 안전한 뷰만 내보냅니다.
