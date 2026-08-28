@@ -1301,11 +1301,6 @@ textarea:focus-visible {
   overflow: hidden;
 }
 
-.session-workspace {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 /* 제목 위에 겹쳐 두지 않고 항상 자리를 차지합니다.
    hover 전에도 보이므로 "나타날 때까지 기다렸다 조준"할 필요가 없습니다. */
 .session-action {

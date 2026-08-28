@@ -598,6 +598,23 @@ function setProjectOpen(projectId, open) {
   persistClosedProjects();
 }
 
+// 현재 보고 있는 채팅이 접힌 프로젝트 안에 있으면 어디에 있는지 알 수 없습니다.
+// 편집기들이 하는 것처럼, 선택된 항목은 항상 드러냅니다(이후 수동으로 접는 것은 그대로 유지).
+let revealedSessionId = null;
+
+function revealActiveSession() {
+  if (!activeSessionId || activeSessionId === revealedSessionId) return;
+  for (const [projectId, entries] of Object.entries(sessionsByProject)) {
+    if (entries.some((entry) => entry.id === activeSessionId)) {
+      // 소속 프로젝트를 실제로 찾았을 때만 처리 완료로 표시합니다. 세션 목록이
+      // 아직 도착하지 않은 첫 렌더에서 표시해 버리면 이후 렌더가 모두 건너뜁니다.
+      revealedSessionId = activeSessionId;
+      setProjectOpen(projectId, true);
+      return;
+    }
+  }
+}
+
 // 사이드바는 프로젝트를 토글로 삼는 트리 하나입니다. 각 프로젝트 아래에 그 프로젝트의
 // 채팅이 들어가고, 행 우측의 +(새 채팅)·⋯(설정)으로 프로젝트 단위 동작을 수행합니다.
 function renderProjects() {
@@ -608,6 +625,7 @@ function renderProjects() {
     return;
   }
   renderSessionsPending = false;
+  revealActiveSession();
   projectListEl.textContent = "";
 
   for (const project of projects) {
@@ -672,6 +690,7 @@ function renderProjects() {
     const settings = document.createElement("button");
     settings.type = "button";
     settings.className = "project-action";
+    settings.dataset.projectSettings = project.id;
     settings.title = "프로젝트 설정";
     settings.textContent = "⋯";
     settings.addEventListener("click", (event) => {
@@ -1166,18 +1185,13 @@ function buildSessionItem(entry) {
     titleText.textContent = entry.title;
     titleLine.append(titleText);
 
+    // 워크스페이스는 프로젝트 단위 설정이라 채팅마다 다시 알리지 않습니다.
+    // (한 프로젝트의 모든 채팅이 같은 폴더를 쓰므로 줄마다 반복하면 소음입니다)
     const metaLine = document.createElement("span");
     metaLine.className = "session-meta";
     const time = document.createElement("span");
     time.textContent = formatRelativeTime(entry.updatedAt);
     metaLine.append(time);
-    if (entry.workspace) {
-      const workspace = document.createElement("span");
-      workspace.className = "session-workspace";
-      workspace.textContent = `📁 ${baseName(entry.workspace)}`;
-      workspace.title = entry.workspace;
-      metaLine.append(workspace);
-    }
     main.append(titleLine, metaLine);
     main.addEventListener("click", () => selectSession(entry.id));
     main.addEventListener("dblclick", () => startSessionRename(entry.id));
@@ -1337,8 +1351,8 @@ function renderHeader() {
   const workspace = activeProjectEntry()?.workspace || null;
   workspaceLabel.textContent = workspace ? baseName(workspace) : "워크스페이스 없음";
   workspaceButton.title = workspace
-    ? `${workspace}\n클릭해 변경 · 우클릭으로 해제`
-    : "프로젝트에서 사용할 폴더를 선택합니다";
+    ? `${workspace}\n프로젝트 설정(⋯)에서 변경합니다`
+    : "프로젝트 설정(⋯)에서 사용할 폴더를 선택합니다";
 
   const mode = sessionMeta?.permissionMode || "chat";
   permissionSelect.value = mode;
@@ -3040,28 +3054,15 @@ discussionButton.addEventListener("click", () => {
 });
 
 // --- 워크스페이스 / 권한 ---
-workspaceButton.addEventListener("click", async () => {
-  const result = await call(window.chatApi.projectsWorkspaceChoose(activeProjectId));
-  if (result && !result.canceled && result.project) {
-    if (result.projects) projects = result.projects;
-    sessions = result.sessions || sessions;
-    sessionsByProject = result.sessionsByProject || sessionsByProject;
-    renderSessions();
-    renderHeader();
-  }
-});
-
-workspaceButton.addEventListener("contextmenu", async (event) => {
-  event.preventDefault();
-  if (!activeProjectEntry()?.workspace) return;
-  const result = await call(window.chatApi.projectsWorkspaceClear(activeProjectId));
-  if (result?.project) {
-    if (result.projects) projects = result.projects;
-    sessions = result.sessions || sessions;
-    sessionsByProject = result.sessionsByProject || sessionsByProject;
-    renderSessions();
-    renderHeader();
-  }
+// 워크스페이스는 프로젝트 단위 설정이므로 이 칩은 현재 폴더를 보여 주기만 합니다.
+// 변경은 프로젝트 설정(사이드바의 ⋯) 한 곳에서만 합니다 — 채팅 화면에서
+// 클릭·우클릭으로 프로젝트 전체 설정이 바뀌던 숨은 경로를 없앴습니다.
+workspaceButton.addEventListener("click", () => {
+  const project = activeProjectEntry();
+  if (!project) return;
+  const anchor = projectListEl.querySelector(`[data-project-settings="${CSS.escape(project.id)}"]`);
+  if (anchor) openProjectSettings(anchor, project);
+  else flashNotice("워크스페이스는 프로젝트 설정(⋯)에서 변경할 수 있습니다.");
 });
 
 permissionSelect.addEventListener("change", async () => {
@@ -4225,8 +4226,8 @@ function applyFullState(full) {
     delete storeWarning.dataset.persistent;
   }
 
+  // renderSessions는 트리 전체를 다시 그리므로 한 번만 호출합니다.
   renderProjects();
-  renderSessions();
   renderHeader();
   renderAgents();
   renderTyping();

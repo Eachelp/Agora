@@ -88,6 +88,8 @@ test("사이드바는 프로젝트 토글 트리 하나로 통합된다", () => 
   assert.match(renderer, /agora\.chat\.projectTreeClosed/);
   assert.match(renderer, /function buildSessionItem\(entry\)/);
   assert.match(renderer, /sessionsCreate\(project\.id\)/);
+  // 선택된 채팅이 접힌 프로젝트 안에 숨지 않도록 항상 드러냅니다.
+  assert.match(renderer, /function revealActiveSession/);
   // 백엔드는 프로젝트별 세션 목록을 내려주고, 새 채팅은 대상 프로젝트를 지정할 수 있습니다.
   assert.match(ipc, /sessionsByProject: sessionsByProjectPayload\(\)/);
   assert.match(ipc, /createSessionForProject\(projectId \? requireProject\(projectId\)\.id : undefined\)/);
@@ -187,6 +189,29 @@ test("Agora 채팅 브랜드는 고정 이미지를 반복하지 않고 그리�
   }
   const ico = fs.readFileSync(path.join(ROOT, "build/icon.ico"));
   assert.equal(ico.readUInt16LE(4), 7, "Windows 아이콘은 작은 크기별 이미지를 포함해야 합니다");
+});
+
+// v1.1.0 macOS 패키징은 256px 아이콘 때문에 IconConversionError(ERR_ICON_TOO_SMALL)로
+// 실패했습니다. electron-builder는 macOS 아이콘에 512x512 이상을 요구합니다.
+test("앱 아이콘은 Ἀ 기반이고 macOS 최소 크기(512)를 충족한다", () => {
+  const readPng = (file) => {
+    const png = fs.readFileSync(path.join(ROOT, file));
+    assert.deepEqual(
+      [...png.subarray(0, 8)],
+      [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+      file + "는 PNG여야 합니다"
+    );
+    return { width: png.readUInt32BE(16), height: png.readUInt32BE(20) };
+  };
+  for (const file of ["build/icon-mac.png", "build/icon.png"]) {
+    const { width, height } = readPng(file);
+    assert.ok(width >= 512 && height >= 512, file + "는 512x512 이상이어야 합니다 (현재 " + width + "x" + height + ")");
+  }
+  // 아이콘은 생성 스크립트로 재현 가능해야 합니다(수작업 바이너리 금지).
+  assert.ok(fs.existsSync(path.join(ROOT, "scripts/make-icons.ps1")));
+  assert.ok(fs.existsSync(path.join(ROOT, "scripts/make-icons.js")));
+  // CodePet 캐릭터 프리뷰 에셋은 남아 있지 않습니다.
+  assert.ok(!fs.existsSync(path.join(ROOT, "build/icon-preview.png")));
 });
 
 test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있다", () => {
