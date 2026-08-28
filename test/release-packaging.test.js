@@ -32,15 +32,43 @@ test("build script selects Linux on Linux and accepts an explicit Linux target",
   assert.match(buildScript, /publish:\s*"never"/);
 });
 
-test("release workflow builds three native runners and uploads all three packages", () => {
+// 릴리스 tier 정책: Windows/Linux는 required(publish gate), macOS는 optional.
+// Agora의 릴리스는 "태그가 붙은 repository state"이며 네이티브 패키지는 편의용이다.
+test("release workflow gates publish on Windows/Linux and keeps macOS optional", () => {
   assert.match(releaseWorkflow, /windows-latest[\s\S]*artifacts\/\*\.exe/);
   assert.match(releaseWorkflow, /ubuntu-latest[\s\S]*artifacts\/\*\.AppImage/);
-  assert.match(releaseWorkflow, /macos-latest[\s\S]*artifacts\/\*\.dmg/);
   assert.match(releaseWorkflow, /gh release upload/);
   assert.match(releaseWorkflow, /gh release create[^\n]+--draft/);
   assert.match(releaseWorkflow, /gh release edit[^\n]+--draft=false/);
   assert.doesNotMatch(releaseWorkflow, /actions\/(?:upload|download)-artifact/);
   assert.match(releaseWorkflow, /xvfb-run -a artifacts\/linux-unpacked\/agora/);
+
+  // required matrix에는 macOS가 없어야 한다(별도 optional job).
+  const requiredMatrix = releaseWorkflow.slice(
+    releaseWorkflow.indexOf("matrix:"),
+    releaseWorkflow.indexOf("build-macos:")
+  );
+  assert.doesNotMatch(requiredMatrix, /macos-latest/);
+
+  // macOS job은 continue-on-error로 실패해도 워크플로를 실패시키지 않는다.
+  const macJob = releaseWorkflow.slice(
+    releaseWorkflow.indexOf("build-macos:"),
+    releaseWorkflow.indexOf("publish:")
+  );
+  assert.match(macJob, /macos-latest/);
+  assert.match(macJob, /continue-on-error: true/);
+  assert.match(macJob, /artifacts\/\*\.dmg/);
+
+  // publish gate는 required build만 기다린다(macOS 실패가 publish를 막지 않는다).
+  const publishJob = releaseWorkflow.slice(releaseWorkflow.indexOf("publish:"));
+  assert.match(publishJob, /needs: build\s*\n/);
+  assert.doesNotMatch(publishJob, /needs:[^\n]*build-macos/);
+});
+
+// 패키징 실패가 CI 스텝에서 초록으로 둔갑하지 않도록 즉시 종료를 강제한다.
+// (v1.1.0 macOS 릴리스에서 exitCode 지정만으로는 실패가 전달되지 않은 사례)
+test("build script exits non-zero immediately when packaging fails", () => {
+  assert.match(buildScript, /process\.exit\(1\)/);
 });
 
 test("release workflow triggers on both v* and Agora-* tags", () => {

@@ -19,9 +19,22 @@
 - **Handoff** — 한 에이전트의 메시지를 다른 에이전트에게 검토 요청 또는 이어서 작업할 내용으로 전달합니다.
 - **첨부와 Markdown** — 이미지·파일 첨부, 코드 블록, 표, LaTeX 수식을 지원합니다.
 
+## 배포 방식
+
+Agora는 **Windows를 우선 지원하는 repository-distributed local application**입니다. 저장소 자체가 배포본이며, 릴리스는 "태그가 붙은 repository state"입니다. GitHub Release의 역할은 안정 버전 표시·변경사항 기록·source 아카이브이고, 네이티브 패키지(exe/AppImage/dmg)는 편의용입니다.
+
+- **공식 지원**: Windows (저장소 + 부트스트랩 스크립트)
+- **Best-effort**: Linux (AppImage)
+- **Experimental**: macOS (실패해도 릴리스를 막지 않음)
+
 ## Windows에서 사용하기
 
-비공개 저장소의 **Releases**에서 `Agora-<버전>.exe`를 내려받아 실행합니다. 현재 실행 파일은 설치 프로그램이 아닌 portable 실행 파일입니다.
+저장소를 원하는 위치에 내려받은 뒤(ZIP 다운로드 또는 `git clone`), 폴더 안의 스크립트를 더블클릭합니다.
+
+1. **`Agora-설치하기.bat`** — 최초 1회. 실행 환경(Git/Node.js/필수 CLI)을 점검하고 의존성 설치와 바탕화면 바로가기 생성까지 진행합니다.
+2. **`Agora-업데이트.bat`** — 이후 업데이트. 최신 main을 안전하게 받아 반영합니다.
+
+Releases의 `Agora-<버전>.exe`(portable 실행 파일)는 편의용 대안입니다.
 
 처음 실행한 PC에서는 다음 CLI를 각각 설치하고 로그인해야 합니다.
 
@@ -58,7 +71,7 @@ npm run dist -- --win
 artifacts/Agora-<버전>.exe
 ```
 
-Linux AppImage와 macOS DMG 빌드 스크립트도 있지만, v1의 실제 배포 검증 기준은 Windows portable 실행 파일입니다.
+릴리스 패키징 tier는 Windows/Linux가 required(publish gate), macOS는 optional(experimental)입니다. macOS 패키지는 실패해도 릴리스 공개를 막지 않습니다.
 
 ## 워크스페이스와 권한
 
