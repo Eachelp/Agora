@@ -1,1 +1,6 @@
 * text=auto eol=lf
+# Windows 부트스트랩 스크립트는 바이트를 그대로 보존한다.
+# cmd는 CRLF를 요구하고 내용은 CP949라서, eol/인코딩 변환이 끼면
+# ZIP 다운로드본과 fresh clone에서 스크립트가 깨진다.
+*.bat -text
+*.vbs -text
