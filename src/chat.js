@@ -13,6 +13,7 @@ const attachmentRow = document.getElementById("attachment-row");
 const btnModeSequential = document.getElementById("btn-mode-sequential");
 const btnModeIndependent = document.getElementById("btn-mode-independent");
 const responseModeBar = document.getElementById("response-mode-bar");
+const specialistChoiceBar = document.getElementById("specialist-choice-bar");
 
 let isIndependentResponseMode = false;
 
@@ -401,6 +402,49 @@ function specialistLocksComposer() {
 
 function syncComposerLock() {
   lockComposer(Boolean(activeApproval || specialistLocksComposer()));
+  renderSpecialistChoice();
+}
+
+// 사용자가 골라야만 진행되는 지점의 선택지를 실제 버튼으로 만든다.
+// 백엔드(resumeSpecialist/cancelSpecialist)는 예전부터 이 선택들을 처리했지만
+// 화면에 버튼이 없어서, composer가 "선택 대기"로 잠긴 채 고를 방법이 없었다.
+const SPECIALIST_CHOICES = {
+  CHECKPOINT_FAILED: [
+    { label: "재시도", title: "백업을 다시 만든 뒤 Builder를 시작합니다", run: () => window.chatApi.specialistResume(activeSessionId, "retry") },
+    { label: "무보호 진행", title: "백업 없이 실행합니다. 사전 스냅샷이 없어 회귀 검증 신뢰도가 제한됩니다", confirm: "작업 전 상태 백업 없이 실행할까요? 문제가 생겨도 실행 전으로 되돌릴 수 없습니다.", run: () => window.chatApi.specialistResume(activeSessionId, "proceed_unprotected") },
+    { label: "취소", title: "전문 실행을 중단합니다", run: () => window.chatApi.specialistCancel(activeSessionId) },
+  ],
+};
+
+function renderSpecialistChoice() {
+  const choices = specialistNeedsInput ? SPECIALIST_CHOICES[specialistStopReason] : null;
+  specialistChoiceBar.replaceChildren();
+  specialistChoiceBar.hidden = !choices;
+  if (!choices) return;
+  const label = document.createElement("span");
+  label.className = "response-mode-label";
+  label.textContent = "다음 처리:";
+  specialistChoiceBar.append(label);
+  for (const choice of choices) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "mode-chip";
+    button.textContent = choice.label;
+    button.title = choice.title;
+    button.addEventListener("click", async () => {
+      if (choice.confirm && !window.confirm(choice.confirm)) return;
+      specialistChoiceBar.hidden = true;
+      const result = await call(choice.run());
+      if (!result) {
+        renderSpecialistChoice();
+        return;
+      }
+      if (result.specialist) setSpecialistState(result.specialist);
+      syncComposerLock();
+      renderHeader();
+    });
+    specialistChoiceBar.append(button);
+  }
 }
 
 function doctorStatus(diagnostic) {

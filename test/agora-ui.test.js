@@ -505,3 +505,22 @@ test("승인 상태(READY)에서도 기획을 처음부터 다시 시작할 수 
   // 실행 중에는 여전히 막혀야 한다(리셋 통로가 진행 중 실행을 덮어쓰면 안 된다).
   assert.ok(renderer.includes("professionalPlanButton.disabled = !planConfigured || blockedOrBusy || !planStartable"));
 });
+
+// checkpoint 실패는 사용자가 골라야 진행된다. 백엔드(resumeSpecialist)는 예전부터
+// retry / proceed_unprotected를 처리했지만 화면에 버튼이 없고 preload가 action을
+// 전달하지도 않아서, composer가 "선택 대기"로 잠긴 채 고를 방법이 없었다.
+test("사용자가 골라야 진행되는 지점에는 실제 선택 버튼이 있다", () => {
+  const html = read("src/chat.html");
+  const renderer = read("src/chat.js");
+  const preload = read("src/chat-preload.js");
+  assert.match(html, /id="specialist-choice-bar"/);
+  assert.ok(renderer.includes("CHECKPOINT_FAILED: ["), "checkpoint 실패 선택지가 정의되어야 합니다");
+  for (const action of ["retry", "proceed_unprotected"]) {
+    assert.ok(renderer.includes(`"${action}"`), `${action} 선택지가 있어야 합니다`);
+  }
+  assert.ok(renderer.includes("specialistCancel(activeSessionId)"), "취소 선택지가 있어야 합니다");
+  // composer를 잠그는 곳에서 반드시 선택지도 함께 그린다(잠금과 선택지는 한 쌍이다).
+  assert.ok(renderer.includes("renderSpecialistChoice();"), "잠금과 함께 선택지를 그려야 합니다");
+  // preload가 action을 넘기지 않으면 어떤 버튼도 의미가 없다.
+  assert.match(preload, /SPECIALIST_RESUME, \{ sessionId, action \}/);
+});

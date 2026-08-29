@@ -191,6 +191,9 @@
             <button class="mode-chip is-active" id="btn-mode-sequential" type="button" title="이어 발언: 앞선 AI의 답변을 순차적으로 전달하여 참고합니다">이어 발언</button>
             <button class="mode-chip" id="btn-mode-independent" type="button" title="독립 발언: 같은 턴의 다른 AI 답변을 서로 전달하지 않고 독립 응답을 받습니다">독립 발언</button>
           </div>
+          <!-- checkpoint 실패 등 사용자가 골라야 진행되는 지점. 여기 버튼이 없으면
+               composer가 "선택 대기"로 잠긴 채 고를 방법이 없어진다. -->
+          <div class="response-mode-bar" id="specialist-choice-bar" hidden></div>
           <div class="composer-box" id="composer-box">
             <button class="icon-button" id="btn-attach" type="button" title="파일 첨부 (이미지·문서, 최대 20MiB)">＋</button>
             <textarea
