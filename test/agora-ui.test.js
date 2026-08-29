@@ -550,11 +550,18 @@ test("살아 있는 전문 실행은 조작 버튼을 스스로 드러낸다", (
   const renderer = read("src/chat.js");
   const setter = renderer.slice(renderer.indexOf("function setSpecialistState"));
   const body = setter.slice(0, setter.indexOf("\nfunction "));
-  assert.ok(body.includes("professionalModeEnabled = true"), "실행이 살아 있으면 켜져야 합니다");
+  assert.ok(body.includes("professionalModeEnabled = true"), "실행이 살아나면 켜져야 합니다");
   assert.ok(
     body.includes('specialistNode === "COMPLETED" && specialistStatus === "COMPLETED"'),
     "끝난 실행까지 켜지 않아야 합니다"
   );
+  // **살아나는 순간에만** 켠다. 매 이벤트마다 켜면 사용자가 내린 토글을 계속
+  // 덮어써, 실행 중에 일반 대화로 빠져나가 기획자에게 말할 수가 없어진다.
+  assert.ok(
+    body.includes("if (runLive && !professionalRunWasLive) professionalModeEnabled = true;"),
+    "전이 시점에만 켜야 사용자의 토글이 유지됩니다"
+  );
+  assert.ok(body.includes("professionalRunWasLive = runLive;"), "직전 상태를 기억해야 합니다");
   // 끄지는 않는다 — 숨기는 것은 사용자의 선택으로 남긴다.
   assert.ok(!body.includes("professionalModeEnabled = false"), "자동으로 끄면 사용자의 선택을 덮습니다");
 });

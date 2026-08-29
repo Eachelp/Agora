@@ -130,6 +130,9 @@ let specialistPlanReady = false;
 let specialistNode = null;
 let specialistStatus = null;
 let professionalModeEnabled = false;
+// 직전 상태에서 전문 실행이 살아 있었는지. "살아나는 순간"에만 전문 모드를 켜기
+// 위한 것이며, 매 이벤트마다 켜서 사용자의 토글을 덮어쓰지 않기 위해 둔다.
+let professionalRunWasLive = false;
 // 승인된 기획안(TASK.md) 경로/제목. "기획안 보기" 버튼으로 열람합니다.
 let specialistPlanTaskPath = null;
 let specialistPlanTaskId = null;
@@ -392,16 +395,21 @@ function setSpecialistState(state = {}) {
   specialistMissingSections = Array.isArray(state.missingSections) && state.missingSections.length > 0
     ? [...state.missingSections]
     : null;
-  // 전문 실행이 살아 있으면 그 조작 버튼은 보여야 한다.
+  // 전문 실행이 **새로 살아날 때** 그 조작 버튼을 한 번 드러낸다.
   //
   // professionalModeEnabled는 화면 로컬 값이라 사용자가 토글을 눌러야만 바뀌었다.
-  // 그래서 BLOCKED 모달에서 재기획을 시작하거나, 앱을 다시 열어 실행이 복원되면
-  // 실행은 돌아가는데 화면은 일반 모드에 머물러 PLAN·실행 버튼이 안 보였다.
-  // (그 상태에서 입력한 메시지는 작업 요청 초안이 아니라 일반 대화로 나간다.)
-  // 켜기만 하고 끄지는 않는다 — 숨기는 것은 사용자의 선택으로 남긴다.
-  if (specialistNode && !(specialistNode === "COMPLETED" && specialistStatus === "COMPLETED")) {
-    professionalModeEnabled = true;
-  }
+  // 그래서 앱을 다시 열어 실행이 복원되면 실행은 돌아가는데 화면은 일반 모드에
+  // 머물러 PLAN·실행 버튼이 보이지 않았다.
+  //
+  // 다만 매 상태 이벤트마다 켜면 사용자가 내린 토글을 계속 덮어써, 실행 중에
+  // 일반 대화로 빠져나가 말할 수가 없다. 기획자는 대화를 읽는 유일한 역할이므로
+  // 그 길이 막히면 진행 방향을 다시 일러 줄 수단이 사라진다.
+  // 그래서 "죽어 있다 → 살아났다"로 바뀌는 순간에만 켜고, 그 뒤 사용자가 끈 것은
+  // 존중한다. 끄는 일은 어느 경우에도 코드가 하지 않는다.
+  const runLive = Boolean(specialistNode)
+    && !(specialistNode === "COMPLETED" && specialistStatus === "COMPLETED");
+  if (runLive && !professionalRunWasLive) professionalModeEnabled = true;
+  professionalRunWasLive = runLive;
 }
 
 function specialistLocksComposer() {
