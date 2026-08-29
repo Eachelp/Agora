@@ -95,6 +95,18 @@ test("사이드바는 프로젝트 토글 트리 하나로 통합된다", () => 
   assert.match(ipc, /createSessionForProject\(projectId \? requireProject\(projectId\)\.id : undefined\)/);
 });
 
+// Windows 한국어 IME: 창 blur 동안 composer가 activeElement로 남으면 복귀 후
+// 클릭해도 focus 전환이 없어 IME 입력 컨텍스트가 갱신되지 않는다(계측으로 확인).
+// blur 시 실제로 focus를 놓고 복귀 시 다음 프레임에 되돌려 준다.
+test("창 blur 시 composer focus를 실제로 놓고 복귀 시 되돌린다", () => {
+  const renderer = read("src/chat.js");
+  assert.ok(renderer.includes("imeRefocusTarget"), "IME 복구 대상을 기억해야 합니다");
+  assert.ok(renderer.includes("active.blur()"), "창 blur 시 DOM focus를 실제로 놓아야 합니다");
+  assert.ok(renderer.includes("requestAnimationFrame"), "복귀 후 다음 프레임에 focus를 돌려줘야 합니다");
+  // 사용자가 복귀 후 다른 곳을 눌렀다면 focus를 빼앗지 않는다.
+  assert.ok(renderer.includes("active !== document.body"), "다른 요소의 focus를 빼앗지 않아야 합니다");
+});
+
 test("사용량 스트립은 접기/펼치기이고 접힌 동안 조회하지 않는다", () => {
   const html = read("src/chat.html");
   const renderer = read("src/chat.js");

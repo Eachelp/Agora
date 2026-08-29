@@ -4138,6 +4138,44 @@ composerInput.addEventListener("blur", () => {
   setTimeout(closeMentionPopup, 120);
 });
 
+// Windows 한국어 IME 포커스 복구.
+//
+// 창이 blur될 때 Chromium은 focus된 요소에 DOM blur 이벤트만 보내고
+// document.activeElement는 그 요소로 남겨 둡니다. 그래서 다른 창에 갔다가
+// 돌아와 composer를 다시 클릭해도 이미 activeElement라서 focus 전환이
+// 일어나지 않고(계측으로 확인: 복귀 후 클릭에 focus 이벤트가 없음),
+// IME 입력 컨텍스트와 caret 위치가 갱신되지 않습니다. 그 결과 한글 조합
+// 문자열이 textarea가 아니라 화면 좌상단의 조합 창에 뜹니다.
+//
+// 그래서 창이 blur되면 실제로 DOM focus를 놓고, 복귀 시 창 활성화가 끝난
+// 다음 프레임에 다시 focus를 줍니다. 이렇게 해야 진짜 focus 전환이 생겨
+// IME 입력 컨텍스트가 새로 만들어집니다. focus()를 반복 호출하는 것으로는
+// 해결되지 않습니다 — 전환 없이 같은 상태를 다시 덮어쓸 뿐입니다.
+let imeRefocusTarget = null;
+
+window.addEventListener("blur", () => {
+  const active = document.activeElement;
+  if (active === composerInput) {
+    imeRefocusTarget = active;
+    active.blur();
+  } else {
+    imeRefocusTarget = null;
+  }
+});
+
+window.addEventListener("focus", () => {
+  const target = imeRefocusTarget;
+  imeRefocusTarget = null;
+  if (!target || target.disabled) return;
+  requestAnimationFrame(() => {
+    // 사용자가 복귀 직후 다른 곳을 눌렀다면 그 focus를 빼앗지 않습니다.
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    if (target.disabled) return;
+    target.focus();
+  });
+});
+
 sendButton.addEventListener("click", sendCurrentMessage);
 stopButton.addEventListener("click", () => call(window.chatApi.stop(activeSessionId)));
 
@@ -4607,6 +4645,7 @@ applyUsageFold();
 window.addEventListener("focus", () => {
   if (usageOpen || usagePopoverOpen) void refreshUsageIfStale();
 });
+
 
 // --- 초기화 ---
 (async () => {
