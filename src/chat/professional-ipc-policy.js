@@ -49,7 +49,18 @@ const POLICY_TABLE = {
 // 전문 실행을 시작하거나 진전시키는 동작(startImpl/startFull/resume/planAnswer/
 // planEdit/continue*/retry*)은 절대 포함하지 않는다. 여기 있는 것들은 실행을
 // 앞으로 밀지 않고 권한도 넓히지 않는, 나가는 방향의 동작뿐이다.
-const EXIT_ACTIONS = Object.freeze(["send", "discussion", "handoff", "simplify", "blockDetails", "cancel"]);
+// recordOnly-send는 전문 모드에서 사용자가 다음 작업 요청을 초안으로 남기는 것이라
+// 일반 send보다 권한이 좁다. 이게 빠져 있으면 실행을 중지한 뒤 전문 모드에서
+// 방향을 다시 일러 줄 수가 없다 — 나가는 길은 열어 놓고 정작 말은 못 하는 상태다.
+const EXIT_ACTIONS = Object.freeze([
+  "send",
+  "recordOnly-send",
+  "discussion",
+  "handoff",
+  "simplify",
+  "blockDetails",
+  "cancel",
+]);
 
 // 전문 실행이 활성(COMPLETED 아님)인 상태에서 허용되는 IPC만 반환한다.
 function allowedIpcFor(runState = {}) {

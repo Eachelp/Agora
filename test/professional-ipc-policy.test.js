@@ -147,7 +147,8 @@ test("role 없는 professionalRunId는 SessionKey를 만들 수 없다", () => {
 test("중단된 전문 실행은 일반 대화로 돌아가는 길을 막지 않는다", () => {
   for (const node of ["PLANNING", "PLAN_REVIEW", "READY", "IMPLEMENTING", "REVIEWING", "RECORDING"]) {
     const state = { node, status: "INTERRUPTED" };
-    for (const action of ["send", "discussion", "handoff", "simplify", "cancel"]) {
+    // recordOnly-send가 빠지면 실행을 멈춘 뒤 전문 모드에서 방향을 다시 일러 줄 수 없다.
+    for (const action of ["send", "recordOnly-send", "discussion", "handoff", "simplify", "cancel"]) {
       assert.ok(isStateAllowed(state, action), `${node}:INTERRUPTED에서 ${action}이 막혔습니다`);
     }
   }
