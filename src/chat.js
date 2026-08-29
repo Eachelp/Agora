@@ -1516,28 +1516,31 @@ function renderHeader() {
       (roomTurnState.queue || []).length > 0 ||
       (roomTurnState.deferred || []).length > 0
   );
-  const blockedOrBusy = Boolean(
-    specialistRunning ||
-      specialistActive ||
-      specialistBlockedAvailable ||
-      specialistResumeAvailable ||
-      ordinaryTurnBusy
-  );
+  // "실행 중이라 바쁘다"와 "사용자를 기다린다"는 서로 다른 상태다. 예전에는 둘을
+  // 한 값으로 묶어서, BLOCKED나 검수 답변 대기처럼 **사용자가 다시 시작하고 싶은
+  // 바로 그 상태**에서 PLAN 버튼까지 꺼졌다. 그러면 걸려 있는 질문에 답하는 것
+  // 말고 길이 없어, 계약이 잘못 잡혔을 때 그 계약 안에서만 맴돌게 된다.
+  const specialistBusy = Boolean(specialistRunning || specialistActive || ordinaryTurnBusy);
+  const awaitingUser = Boolean(specialistBlockedAvailable || specialistResumeAvailable);
+  const blockedOrBusy = specialistBusy || awaitingUser;
   // READY는 기획이 승인만 된 상태다. Builder가 돌지 않았으니 되돌릴 변경도
   // checkpoint도 없고, FSM은 이미 READY -> PLANNING 복귀를 지원한다(USER_ANSWER_PLAN).
   // 여기서 PLAN을 막으면 승인 이후 단계에서 거부됐을 때(승인 입력 재대조 실패,
   // 검증 계획 거부 등) 같은 실행 버튼을 반복해서 누르는 것 말고 길이 없어진다.
+  // 사용자를 기다리는 상태(BLOCKED·답변 대기·중단)는 전부 "처음부터 다시"가
+  // 열려 있어야 한다. 백엔드도 plan/full은 busy 기준만 본다.
   const planStartable = !specialistNode
     || specialistNode === "COMPLETED"
     || specialistNode === "READY"
     || specialistStatus === "INTERRUPTED"
+    || awaitingUser
     || specialistNeedsInput;
-  professionalPlanButton.disabled = !planConfigured || blockedOrBusy || !planStartable;
+  professionalPlanButton.disabled = !planConfigured || specialistBusy || !planStartable;
   professionalImplementationButton.disabled = !implementationConfigured || blockedOrBusy || !specialistPlanReady;
   const canRegenerateRecord = specialistNode === "COMPLETED" || (specialistNode === "RECORDING" && specialistStatus === "WAITING");
   professionalRecordButton.hidden = !canRegenerateRecord;
   professionalRecordButton.disabled = !recorder.agentId || blockedOrBusy;
-  professionalFullButton.disabled = !fullConfigured || blockedOrBusy || !planStartable;
+  professionalFullButton.disabled = !fullConfigured || specialistBusy || !planStartable;
   // 버튼이 비활성인 이유를 툴팁으로 알려, 눌리지 않는 것처럼 보이지 않게 합니다.
   const roleSetupHint = "프로젝트 설정(⋯)에서 담당자를 지정하면 사용할 수 있습니다";
   professionalPlanButton.title = ordinaryTurnBusy
@@ -2919,6 +2922,16 @@ specialistBackdrop.addEventListener("click", (event) => {
 
 async function runProfessionalAction(action) {
   if (!activeSessionId || specialistRunning || specialistActive) return;
+  // 대기 중인 실행이 있는데 기획을 새로 시작하면 그 실행과 작업 전 백업이 사라진다.
+  // 되돌릴 수 없으므로 한 번 확인받는다.
+  if ((action === "plan" || action === "full") && (specialistBlockedAvailable || specialistResumeAvailable)) {
+    const keptChanges = "구현자가 만든 파일 변경은 그대로 남습니다.";
+    if (!window.confirm(
+      `진행 중이던 전문 실행을 버리고 기획부터 다시 시작할까요?\n\n작업 전 백업(checkpoint)과 대기 중인 답변 요청이 사라집니다. ${keptChanges}`
+    )) {
+      return;
+    }
+  }
   specialistRunning = true;
   specialistActive = true;
   renderHeader();

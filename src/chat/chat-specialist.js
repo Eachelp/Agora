@@ -1509,7 +1509,12 @@ class SpecialistMixin {
   // - record: 기록관만 수동 실행
   // - full: 기획·검수와 구현·검수를 연속 실행하되 질문/보완/막힘에서 중단
   async startProfessionalAction(options = {}) {
-    if (this.discussionRequested || this.discussionActive || this.isSpecialistLocked()) {
+    // 기획(plan/full)은 "처음부터 다시"이므로 사용자 대기 상태에서도 시작할 수 있어야
+    // 한다. 실제로 turn이 떠 있을 때만 막는다. 나머지 action(구현/기록)은 이어가기
+    // 이므로 기존 잠금 의미를 그대로 쓴다.
+    const restartsPlan = options.action === "plan" || options.action === "full";
+    const startBlocked = restartsPlan ? this.isSpecialistBusy() : this.isSpecialistLocked();
+    if (this.discussionRequested || this.discussionActive || startBlocked) {
       return { ok: false, error: "이미 다른 전문 작업이나 토론이 진행 중입니다." };
     }
     // 일반 응답이 실행·대기 중이면 전문 실행을 큐 뒤에 넣지 않고 즉시 거부합니다.
@@ -1693,6 +1698,18 @@ class SpecialistMixin {
     }
 
     if (action === "plan" || action === "full") {
+      // 사용자 대기 상태에서 새로 시작하는 경우, 옛 실행을 원자적으로 종료하고
+      // 들고 있던 checkpoint를 정리한 뒤에 새 run을 만든다. 정리에 실패하면
+      // 새 run을 만들지 않고 그 자리에서 멈춘다(되돌릴 수단을 잃은 채 진행 금지).
+      if (this.specialistResume || this.specialistBlocked) {
+        const discarded = await this.discardRunForFreshPlan();
+        if (!discarded.ok) return discarded;
+        this.appendSystem(
+          discarded.discardedCheckpoint
+            ? "이전 전문 실행과 작업 전 백업을 정리하고 기획을 처음부터 다시 시작합니다."
+            : "이전 전문 실행을 정리하고 기획을 처음부터 다시 시작합니다."
+        );
+      }
       const run = createProfessionalRun({
         stages,
         policy: {
@@ -3926,6 +3943,72 @@ class SpecialistMixin {
       canRestore: Boolean(pending.canRestore),
       block,
     };
+  }
+
+  // 계약 자체를 버리고 PLAN부터 완전히 새로 시작하기 전에, 기존 실행을 원자적으로
+  // 종료한다. 이 정리 없이 새 ProfessionalRun을 덮어쓰면 옛 대기 상태가 메모리에
+  // 남고 기존 harness run이 고아가 된다(REPLAN_RESET이 lineage 폐기 = RETIRE다).
+  //
+  // 순서는 replanBlocked와 같다. checkpoint를 먼저 지우고 전이가 실패하면
+  // "기존 run은 살아 있는데 되돌릴 수단만 사라진" 더 나쁜 부분 실패가 된다.
+  async discardRunForFreshPlan() {
+    const pending = this.specialistBlocked;
+    const heldCheckpoint = pending?.checkpoint || this.specialistResume?.checkpoint || null;
+    const runId = pending?.runId || this.specialistResume?.runInfo?.runId || null;
+    const taskPath = pending?.taskPath || this.specialistResume?.taskInfo?.relativePath || null;
+
+    // 1. 기존 run 결과와 workflow 상태를 먼저 남긴다.
+    const runInfo = runId && this.taskManager?.runInfoForId
+      ? this.taskManager.runInfoForId(runId, this.meta.workspace)
+      : null;
+    if (runInfo && this.taskManager?.writeRunResult) {
+      if (!this.taskManager.writeRunResult(runInfo, {
+        status: "BLOCKED",
+        stopReason: pending?.blockReason || "REPLAN_DISCARDED",
+      })) {
+        return { ok: false, error: "기존 Run 결과를 저장하지 못해 새 기획을 시작하지 않았습니다." };
+      }
+    }
+    if (taskPath && !this.updateProfessionalTaskState({
+      taskPath,
+      status: "blocked",
+      activeRunId: null,
+      lastRunId: runId,
+    })) {
+      return { ok: false, error: "기존 작업의 Workflow 상태를 저장하지 못해 새 기획을 시작하지 않았습니다." };
+    }
+
+    // 2. lineage 폐기(RETIRE). harness lifecycle 종료는 이 전이로만 통지된다.
+    if (this.professionalRun) {
+      const transition = this.transitionProfessional({ type: "REPLAN_RESET", carriedFromRunId: runId });
+      if (!transition.ok) {
+        return { ok: false, error: transition.reason || "기존 실행을 종료하지 못했습니다." };
+      }
+    }
+
+    // 3. checkpoint 정리. 실패하면 되돌릴 수단을 잃은 채로 진행하지 않는다.
+    if (heldCheckpoint && this.checkpointEngine) {
+      const cleanup = this.checkpointEngine.cleanupCheckpoint(heldCheckpoint);
+      if (cleanup?.ok === false) {
+        this.transitionProfessional({
+          type: "HOLD_BLOCKED",
+          stopReason: "CHECKPOINT_CLEANUP_FAILED",
+          blockReason: "CHECKPOINT_CLEANUP_FAILED",
+        });
+        return {
+          ok: false,
+          error: "이전 실행의 백업을 정리하지 못해 새 기획을 시작하지 않았습니다. 복구 상태를 그대로 유지합니다.",
+        };
+      }
+    }
+
+    // 4. 옛 대기 상태를 남김없이 지운다.
+    this.specialistResume = null;
+    this.specialistBlocked = null;
+    this.professionalPlan = null;
+    this.clearRecoveryState();
+    this.emitSpecialistState();
+    return { ok: true, discardedCheckpoint: Boolean(heldCheckpoint) };
   }
 
   async replanBlocked(workspaceAction = "keep") {

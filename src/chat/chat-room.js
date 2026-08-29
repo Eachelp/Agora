@@ -370,6 +370,13 @@ class ChatRoom extends EventEmitter {
     this.emit("specialist-resume-state", this.specialistState());
   }
 
+  // "실행 중이라 바쁘다"와 "사용자를 기다린다"는 다른 상태다. 둘을 한 판정으로
+  // 묶으면 사용자가 다시 시작하고 싶은 바로 그 상태(BLOCKED·답변 대기)에서
+  // 새 기획까지 막혀, 걸려 있는 질문에 답하는 것 말고 길이 없어진다.
+  isSpecialistBusy() {
+    return Boolean(this.specialistActive);
+  }
+
   isSpecialistLocked() {
     return Boolean(this.specialistActive || this.specialistResume || this.specialistBlocked);
   }

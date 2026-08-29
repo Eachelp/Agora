@@ -502,8 +502,18 @@ test("승인 상태(READY)에서도 기획을 처음부터 다시 시작할 수 
   const line = renderer.slice(renderer.indexOf("const planStartable"));
   const decl = line.slice(0, line.indexOf(";"));
   assert.ok(decl.includes('specialistNode === "READY"'), "READY에서 PLAN을 다시 시작할 수 있어야 합니다");
+  // 사용자를 기다리는 상태(BLOCKED·답변 대기)에서도 다시 시작할 수 있어야 한다.
+  assert.ok(decl.includes("awaitingUser"), "대기 상태에서도 새 기획을 시작할 수 있어야 합니다");
   // 실행 중에는 여전히 막혀야 한다(리셋 통로가 진행 중 실행을 덮어쓰면 안 된다).
-  assert.ok(renderer.includes("professionalPlanButton.disabled = !planConfigured || blockedOrBusy || !planStartable"));
+  assert.ok(
+    renderer.includes("professionalPlanButton.disabled = !planConfigured || specialistBusy || !planStartable"),
+    "진행 중 실행은 여전히 막아야 합니다"
+  );
+  // "바쁨"과 "대기"가 다시 한 값으로 합쳐지면 같은 결함이 되살아난다.
+  assert.ok(renderer.includes("const specialistBusy = Boolean(specialistRunning || specialistActive || ordinaryTurnBusy)"));
+  assert.ok(renderer.includes("const awaitingUser = Boolean(specialistBlockedAvailable || specialistResumeAvailable)"));
+  // 되돌릴 수 없는 폐기이므로 확인을 받는다.
+  assert.ok(renderer.includes("기획부터 다시 시작할까요"), "폐기 전에 확인해야 합니다");
 });
 
 // checkpoint 실패는 사용자가 골라야 진행된다. 백엔드(resumeSpecialist)는 예전부터

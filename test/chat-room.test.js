@@ -3434,3 +3434,67 @@ test("승인 후 Task 변경 대기는 옛 검수 발화를 되살리지 않는�
     fs.rmSync(workspace, { recursive: true, force: true });
   }
 });
+
+// 화면에서 버튼만 열고 백엔드가 거부하면 "눌리는데 실패하는 버튼"이 된다.
+// isSpecialistLocked는 대기 상태도 잠금으로 봤으므로 plan/full은 busy 기준을 쓴다.
+test("답변 대기 상태에서도 기획을 처음부터 다시 시작할 수 있다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-fresh-plan-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    initialProfessionalRun: {
+      node: "PLAN_REVIEW",
+      status: "WAITING",
+      stopReason: "FIX_REQUIRED",
+      policy: { autoContinueReady: false, planAutoRevisions: 3, implementationAutoRevisions: 0 },
+      stages: {},
+    },
+    initialMessages: [
+      { id: "m1", authorType: "agent", author: "codex", text: "VERDICT: FIX_REQUIRED\n옛 지적", agentMeta: { specialistStage: "plan_review" } },
+    ],
+    runAgent: fakeRunner({
+      claude: [{ ok: true, text: makePlanContract("새 기획") }],
+      codex: [{ ok: true, text: "기획 검수 통과\nVERDICT: PASS" }],
+    }),
+  });
+  assert.equal(room.specialistState().available, true, "대기 상태여야 합니다");
+
+  const result = await room.startSpecialist({
+    action: "plan",
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+    },
+  });
+
+  assert.equal(result.ok, true, result.error);
+  // 옛 대기 상태가 남아 있으면 안 된다.
+  assert.equal(room.specialistBlocked, null);
+  assert.equal(room.specialistState().planTaskId, "TASK-001");
+  assert.match(
+    room.messages.map((m) => m.text).join("\n"),
+    /기획을 처음부터 다시 시작합니다/
+  );
+});
+
+// 실행 중(turn이 떠 있는 상태)에는 여전히 막아야 한다. 리셋 통로가 진행 중인
+// 실행을 덮어쓰면 그 실행의 작업이 조용히 사라진다.
+test("실행 중에는 기획 재시작을 거부한다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-fresh-plan-busy-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    runAgent: fakeRunner({}),
+  });
+  room.specialistActive = true;
+  const result = await room.startSpecialist({
+    action: "plan",
+    stages: { planner: { agent: room.findAgent("claude") }, review: { agent: room.findAgent("codex") } },
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /이미 다른 전문 작업이나 토론이 진행 중/);
+});
