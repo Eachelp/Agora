@@ -2448,6 +2448,14 @@ test("기획 자동 보완 중에도 Open Question은 사용자에게 반환한�
   assert.equal(result.stopReason, "NEEDS_DECISION");
   assert.equal(room.specialistState().needsInput, true);
   assert.deepEqual(calls.map((call) => call.agentId), ["claude", "codex"]);
+
+  // 화면에는 "기획 자동 보완 3회"가 켜져 있는데 이 경로는 그 예산을 한 번도 쓰지
+  // 않는다. 그 사실을 밝히지 않으면 설정이 동작하지 않는 것처럼 보인다.
+  const systemText = room.messages
+    .filter((message) => message.authorType === "system")
+    .map((message) => message.text)
+    .join("\n");
+  assert.match(systemText, /자동 보완\(0\/3회\)은 쓰지 않았습니다/);
 });
 
 test("구현 자동 보완 스위치 값은 버튼형 구현·검수의 제한 루프에 적용된다", async (t) => {

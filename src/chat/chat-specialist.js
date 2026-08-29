@@ -1304,7 +1304,14 @@ class SpecialistMixin {
         };
         this.appendSystem(
           contract.stopReason === "NEEDS_DECISION"
+            // 사용자 질문은 자동 보완보다 우선한다(질문의 답이 요구사항을 바꾸므로
+            // 답 없이 기획을 고치면 추측이 된다). 다만 화면에는 "자동 보완 N회"가
+            // 켜져 있으니, 그 예산을 쓰지 않았다는 사실을 밝히지 않으면 설정이
+            // 동작하지 않는 것처럼 보인다.
             ? "기획 검수자가 사용자 결정이 필요한 질문을 남겨 자동 진행을 멈췄습니다. 아래 전용 입력칸에서 답해 주세요."
+              + (planRevisionLimit > 0
+                ? ` 사용자 답변이 필요한 질문은 자동 보완으로 해결할 수 없어 기획 자동 보완(${planRevisionCount}/${planRevisionLimit}회)은 쓰지 않았습니다. 답변 뒤 남은 지적은 자동 보완으로 이어집니다.`
+                : "")
             : contract.stopReason === "AMBIGUOUS_VERDICT"
             ? "기획 검수 응답에서 서로 다른 VERDICT 표기가 여러 번 발견되어 어느 것이 최종 판정인지 판단할 수 없습니다. 아래 전용 입력칸에서 보완 내용을 알려 주세요."
             : contract.verdict === "UNKNOWN"
