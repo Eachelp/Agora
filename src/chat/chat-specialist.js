@@ -1736,10 +1736,14 @@ class SpecialistMixin {
       if (this.specialistResume || this.specialistBlocked) {
         const discarded = await this.discardRunForFreshPlan();
         if (!discarded.ok) return discarded;
+        const cleaned = discarded.discardedCheckpoint
+          ? "이전 전문 실행과 작업 전 백업을 정리하고 기획을 처음부터 다시 시작합니다."
+          : "이전 전문 실행을 정리하고 기획을 처음부터 다시 시작합니다.";
+        // 정리에 실패한 항목은 감추지 않는다. 다만 그것 때문에 시작을 막지도 않는다.
         this.appendSystem(
-          discarded.discardedCheckpoint
-            ? "이전 전문 실행과 작업 전 백업을 정리하고 기획을 처음부터 다시 시작합니다."
-            : "이전 전문 실행을 정리하고 기획을 처음부터 다시 시작합니다."
+          discarded.warnings?.length
+            ? `${cleaned} (${discarded.warnings.join(", ")} — 새 기획에는 영향이 없습니다)`
+            : cleaned
         );
       }
       const run = createProfessionalRun({
@@ -4047,7 +4051,13 @@ class SpecialistMixin {
     const runId = pending?.runId || this.specialistResume?.runInfo?.runId || null;
     const taskPath = pending?.taskPath || this.specialistResume?.taskInfo?.relativePath || null;
 
-    // 1. 기존 run 결과와 workflow 상태를 먼저 남긴다.
+    // 1. 기존 run 결과와 workflow 상태를 남긴다 — **최선 노력이다.**
+    //
+    // 이건 장부 기록이지 상태 정합성이 아니다. 실패해도 새 기획을 막지 않는다.
+    // 막으면 "정리를 못 해서 새로 시작할 수 없는" 역설이 된다. 실제로 workspace의
+    // .project-memory가 지워진 상태에서 이 기록이 실패해 사용자가 갇혔다 —
+    // 지시서가 사라진 그 상황이야말로 처음부터 다시 시작해야 하는 때다.
+    const warnings = [];
     const runInfo = runId && this.taskManager?.runInfoForId
       ? this.taskManager.runInfoForId(runId, this.meta.workspace)
       : null;
@@ -4056,7 +4066,7 @@ class SpecialistMixin {
         status: "BLOCKED",
         stopReason: pending?.blockReason || "REPLAN_DISCARDED",
       })) {
-        return { ok: false, error: "기존 Run 결과를 저장하지 못해 새 기획을 시작하지 않았습니다." };
+        warnings.push("이전 Run 결과를 기록하지 못했습니다");
       }
     }
     if (taskPath && !this.updateProfessionalTaskState({
@@ -4065,30 +4075,26 @@ class SpecialistMixin {
       activeRunId: null,
       lastRunId: runId,
     })) {
-      return { ok: false, error: "기존 작업의 Workflow 상태를 저장하지 못해 새 기획을 시작하지 않았습니다." };
+      warnings.push("이전 작업의 Workflow 상태를 갱신하지 못했습니다");
     }
 
-    // 2. lineage 폐기(RETIRE). harness lifecycle 종료는 이 전이로만 통지된다.
+    // 2. lineage 폐기(RETIRE). **여기만 차단 사유다.**
+    // 이 전이가 실패하면 옛 run이 살아 있는 채로 새 run을 만들게 되고,
+    // harness에는 종료가 통지되지 않아 실행이 고아가 된다.
     if (this.professionalRun) {
       const transition = this.transitionProfessional({ type: "REPLAN_RESET", carriedFromRunId: runId });
       if (!transition.ok) {
-        return { ok: false, error: transition.reason || "기존 실행을 종료하지 못했습니다." };
+        return { ok: false, error: transition.reason || "기존 실행을 종료하지 못해 새 기획을 시작하지 않았습니다." };
       }
     }
 
-    // 3. checkpoint 정리. 실패하면 되돌릴 수단을 잃은 채로 진행하지 않는다.
+    // 3. checkpoint 정리도 최선 노력이다. 사용자가 이미 "버린다"고 선택했고
+    // 옛 run은 위에서 종료됐다. 지우지 못한 폴더는 디스크 문제일 뿐이며,
+    // 그것 때문에 새 시작을 막으면 다시 같은 역설이 된다.
     if (heldCheckpoint && this.checkpointEngine) {
       const cleanup = this.checkpointEngine.cleanupCheckpoint(heldCheckpoint);
       if (cleanup?.ok === false) {
-        this.transitionProfessional({
-          type: "HOLD_BLOCKED",
-          stopReason: "CHECKPOINT_CLEANUP_FAILED",
-          blockReason: "CHECKPOINT_CLEANUP_FAILED",
-        });
-        return {
-          ok: false,
-          error: "이전 실행의 백업을 정리하지 못해 새 기획을 시작하지 않았습니다. 복구 상태를 그대로 유지합니다.",
-        };
+        warnings.push("이전 작업 전 백업을 지우지 못해 디스크에 남았습니다");
       }
     }
 
@@ -4098,7 +4104,7 @@ class SpecialistMixin {
     this.professionalPlan = null;
     this.clearRecoveryState();
     this.emitSpecialistState();
-    return { ok: true, discardedCheckpoint: Boolean(heldCheckpoint) };
+    return { ok: true, discardedCheckpoint: Boolean(heldCheckpoint), warnings };
   }
 
   async replanBlocked(workspaceAction = "keep") {

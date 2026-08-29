@@ -3620,3 +3620,47 @@ test("구현 선언 누락은 재구현이 아니라 선언 확정만 다시 청
   // 이번 호출의 권한은 읽기 전용이어야 한다.
   assert.equal(repair.permissionMode, "workspace-read");
 });
+
+// 지시서나 workflow 기록이 사라진 상태야말로 처음부터 다시 시작해야 할 때다.
+// 장부 기록 실패로 새 기획을 막으면 "정리를 못 해서 시작할 수 없는" 역설이 된다.
+// (실제로 workspace의 .project-memory가 지워진 뒤 사용자가 여기에 갇혔다)
+test("장부 기록이 실패해도 새 기획은 시작된다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-discard-bookkeeping-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    // workflow 갱신이 항상 실패하는 상황(지시서가 사라져 활성 task를 못 찾는 경우).
+    onProfessionalTaskState: () => false,
+    initialProfessionalRun: {
+      node: "PLAN_REVIEW",
+      status: "WAITING",
+      stopReason: "NEEDS_DECISION",
+      taskPath: ".project-memory/tasks/TASK-001.md",
+      policy: { autoContinueReady: false, planAutoRevisions: 3, implementationAutoRevisions: 0 },
+      stages: {},
+    },
+    initialMessages: [
+      { id: "m1", authorType: "agent", author: "codex", text: "VERDICT: FIX_REQUIRED\n옛 지적", agentMeta: { specialistStage: "plan_review" } },
+    ],
+    runAgent: fakeRunner({
+      claude: [{ ok: true, text: makePlanContract("새 기획") }],
+      codex: [{ ok: true, text: "기획 검수 통과\nVERDICT: PASS" }],
+    }),
+  });
+
+  const result = await room.startSpecialist({
+    action: "plan",
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+    },
+  });
+
+  assert.equal(result.ok, true, result.error);
+  // 실패한 정리는 감추지 않고 알린다.
+  const systemText = room.messages.filter((m) => m.authorType === "system").map((m) => m.text).join("\n");
+  assert.match(systemText, /Workflow 상태를 갱신하지 못했습니다/);
+  assert.match(systemText, /새 기획에는 영향이 없습니다/);
+});
