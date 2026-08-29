@@ -45,11 +45,25 @@ const POLICY_TABLE = {
   "COMPLETED:COMPLETED": ["send", "startImpl", "startFull", "recordRegen", "discussion", "handoff", "simplify"],
 };
 
+// 표에 없는 (node, status) 조합에서도 남겨 두는 탈출 동작.
+// 전문 실행을 시작하거나 진전시키는 동작(startImpl/startFull/resume/planAnswer/
+// planEdit/continue*/retry*)은 절대 포함하지 않는다. 여기 있는 것들은 실행을
+// 앞으로 밀지 않고 권한도 넓히지 않는, 나가는 방향의 동작뿐이다.
+const EXIT_ACTIONS = Object.freeze(["send", "discussion", "handoff", "simplify", "blockDetails", "cancel"]);
+
 // 전문 실행이 활성(COMPLETED 아님)인 상태에서 허용되는 IPC만 반환한다.
 function allowedIpcFor(runState = {}) {
   const key = nodeStatusKey(runState);
   if (POLICY_TABLE[key] !== undefined) return POLICY_TABLE[key];
-  return [];
+  // 표에 없는 조합은 여전히 fail-closed지만, 사용자를 상태에 가두지는 않는다.
+  // INTERRUPT 전이는 어떤 node에서든 status를 INTERRUPTED로 바꿀 수 있고 앱을
+  // 실행 도중 닫아도 복원 시 INTERRUPTED가 되는데, 그 조합이 표에 하나도 없어서
+  // 허용 목록이 비었다. 그래서 PLAN을 취소하기만 해도 그 세션에서는 다시 대화도
+  // 토론도 취소도 할 수 없었다. fail-closed는 실행을 진전시키는 동작에 적용하는
+  // 것이지 일반 대화로 돌아가는 것을 막는 데 쓰는 것이 아니다.
+  // 실제로 turn이 떠 있는 상태(RUNNING)에서는 취소만 남긴다.
+  if (runState.status === "RUNNING") return ["cancel"];
+  return EXIT_ACTIONS;
 }
 
 // runState가 활성 전문 실행을 나타내는지(COMPLETED/COMPLETED가 아님) 여부.

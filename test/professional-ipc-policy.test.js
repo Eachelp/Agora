@@ -40,9 +40,16 @@ test("COMPLETED에서는 send·discussion·handoff·simplify 등이 허용된다
   assert.ok(allowed.includes("simplify"));
 });
 
-test("알 수 없는 상태 조합은 빈 배열을 반환한다 (fail-closed)", () => {
+// 예전에는 알 수 없는 조합이 빈 배열이었는데, INTERRUPTED 계열이 전부 표에 없어서
+// 중단된 실행이 세션을 영구히 잠갔다. 이제 실행을 진전시키는 동작만 fail-closed로
+// 막고, 나가는 방향의 동작은 남긴다.
+test("알 수 없는 상태 조합은 나가는 동작만 허용한다 (실행 진전은 fail-closed)", () => {
   const allowed = allowedIpcFor({ node: "UNKNOWN", status: "UNKNOWN" });
-  assert.deepEqual(allowed, []);
+  assert.ok(allowed.includes("cancel"));
+  assert.ok(allowed.includes("send"));
+  for (const action of ["startImpl", "startFull", "resume", "planAnswer", "planEdit"]) {
+    assert.ok(!allowed.includes(action), `${action}이 열리면 안 됩니다`);
+  }
 });
 
 test("isActiveProfessionalRun은 COMPLETED/COMPLETED만 비활성으로 보고 나머지는 활성(fail-closed)으로 식별한다", () => {
@@ -132,4 +139,38 @@ test("role 없는 professionalRunId는 SessionKey를 만들 수 없다", () => {
   };
   assert.equal(deriveSessionKey({ ...base, professionalRunId: "PR-1", role: null }), null);
   assert.ok(deriveSessionKey({ ...base, professionalRunId: "PR-1", role: "recorder" }));
+});
+
+// INTERRUPT 전이는 어떤 node에서든 status를 INTERRUPTED로 바꾸고, 앱을 실행 도중
+// 닫아도 복원 시 INTERRUPTED가 된다. 그 조합이 표에 하나도 없어서 허용 목록이
+// 비었고, PLAN을 취소하기만 해도 그 세션에서 다시는 대화·토론·취소를 할 수 없었다.
+test("중단된 전문 실행은 일반 대화로 돌아가는 길을 막지 않는다", () => {
+  for (const node of ["PLANNING", "PLAN_REVIEW", "READY", "IMPLEMENTING", "REVIEWING", "RECORDING"]) {
+    const state = { node, status: "INTERRUPTED" };
+    for (const action of ["send", "discussion", "handoff", "simplify", "cancel"]) {
+      assert.ok(isStateAllowed(state, action), `${node}:INTERRUPTED에서 ${action}이 막혔습니다`);
+    }
+  }
+});
+
+// 탈출구를 열어도 실행을 진전시키는 동작은 여전히 allowlist에만 있어야 한다.
+test("표에 없는 상태에서도 실행을 진전시키는 동작은 열리지 않는다", () => {
+  const state = { node: "PLANNING", status: "INTERRUPTED" };
+  for (const action of ["startImpl", "startFull", "resume", "planAnswer", "planEdit", "continueReview", "retryRecorder"]) {
+    assert.equal(isStateAllowed(state, action), false, `${action}이 열리면 안 됩니다`);
+  }
+});
+
+// turn이 실제로 떠 있는 동안에는 끼어들지 못하게 취소만 남긴다.
+test("표에 없는 RUNNING 상태는 취소만 허용한다", () => {
+  const state = { node: "NEW_NODE", status: "RUNNING" };
+  assert.deepEqual(allowedIpcFor(state), ["cancel"]);
+  assert.equal(isStateAllowed(state, "send"), false);
+});
+
+// 기존 표의 차단은 그대로여야 한다(fallback이 표를 덮어쓰면 안 된다).
+test("표에 있는 상태의 차단은 fallback이 덮어쓰지 않는다", () => {
+  assert.equal(isStateAllowed({ node: "PLANNING", status: "RUNNING" }, "send"), false);
+  assert.equal(isStateAllowed({ node: "PLANNING", status: "WAITING" }, "discussion"), false);
+  assert.equal(isStateAllowed({ node: "IMPLEMENTING", status: "RUNNING" }, "handoff"), false);
 });
