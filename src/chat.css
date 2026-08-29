@@ -1301,11 +1301,6 @@ textarea:focus-visible {
   overflow: hidden;
 }
 
-.session-workspace {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 /* 제목 위에 겹쳐 두지 않고 항상 자리를 차지합니다.
    hover 전에도 보이므로 "나타날 때까지 기다렸다 조준"할 필요가 없습니다. */
 .session-action {
@@ -3752,4 +3747,155 @@ textarea:focus-visible {
   font-weight: 700;
   color: var(--muted);
   letter-spacing: 0.02em;
+}
+
+/* --- 프로젝트 토글 트리 --- */
+/* 사이드바는 프로젝트를 토글로 삼는 트리 하나입니다. 스크롤 컨테이너도 트리 자신입니다. */
+.project-list.project-tree {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
+  padding: 6px 10px 10px;
+  gap: 2px;
+}
+
+.project-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.project-caret {
+  flex: none;
+  width: 18px;
+  height: var(--control-h-sm);
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  transition: transform 120ms ease-out;
+}
+
+.project-caret.is-open {
+  transform: rotate(90deg);
+}
+
+.project-caret:hover {
+  color: var(--ink);
+}
+
+/* 행 우측에 +(새 채팅)·⋯(설정) 두 개가 놓이므로 제목이 겹치지 않게 여백을 넓힙니다. */
+.project-row .project-select {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 56px 7px 4px;
+}
+
+.project-row .project-actions {
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+}
+
+/* 프로젝트 아래 중첩된 채팅 목록: 자체 스크롤 없이 트리 흐름에 붙습니다.
+   좌측 가이드 선이 "이 채팅들은 위 프로젝트 소속"임을 보여줍니다. */
+.session-list.project-sessions {
+  flex: none;
+  overflow: visible;
+  margin-left: 13px;
+  border-left: 1px solid var(--line);
+  padding: 2px 2px 6px 8px;
+  gap: 1px;
+}
+
+/* 채팅 행은 프로젝트 행보다 한 단계 옅게 — 제목 굵기·색·크기를 낮춰 위계를 만듭니다. */
+.project-sessions .session-name {
+  font-weight: 400;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.project-sessions .session-item:hover .session-name,
+.project-sessions .session-item.is-active .session-name {
+  color: var(--ink);
+}
+
+.project-sessions .session-item.is-active .session-name {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.project-sessions .session-meta {
+  font-size: 10px;
+}
+
+.project-sessions-empty {
+  color: var(--muted);
+  opacity: 0.7;
+  font-size: 11px;
+  padding: 4px 8px 2px;
+  list-style: none;
+}
+
+/* 프로젝트끼리는 옅은 구분선으로 나눠 하나의 덩어리로 보이지 않게 합니다. */
+.project-item {
+  border-radius: 8px;
+}
+
+.project-tree > .project-item + .project-item {
+  margin-top: 6px;
+  position: relative;
+}
+
+.project-tree > .project-item + .project-item::before {
+  content: "";
+  position: absolute;
+  top: -4px;
+  left: 6px;
+  right: 6px;
+  border-top: 1px solid var(--line);
+}
+
+/* --- 사용량 접기/펼치기 --- */
+.usage-fold-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+}
+
+.usage-fold-toggle:hover {
+  color: var(--ink);
+  background: var(--accent-soft);
+}
+
+.usage-fold-chevron {
+  display: inline-block;
+  font-size: 13px;
+  line-height: 1;
+  transition: transform 120ms ease-out;
+}
+
+.usage-fold-toggle.is-open .usage-fold-chevron {
+  transform: rotate(90deg);
+}
+
+/* --- 컴포저 세로 정렬 --- */
+/* 한 줄 입력일 때 글자가 버튼(32px)보다 낮게 보이던 것을 보정합니다.
+   줄 높이 20px + 상하 6px = 32px로 버튼과 같은 높이가 되어 가운데로 읽힙니다. */
+#composer-input {
+  padding: 6px 0;
+  line-height: 20px;
+  min-height: 32px;
 }

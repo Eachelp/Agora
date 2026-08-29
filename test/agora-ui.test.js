@@ -58,8 +58,8 @@ test("창을 닫아도 트레이 앱은 다음 실행에서 채팅창을 다시 
 test("Agora 화면 재배치는 기존 채팅 제어 연결을 유지한다", () => {
   const html = read("src/chat.html");
   for (const id of [
-    "btn-new-session",
-    "session-list",
+    "project-list",
+    "btn-new-project",
     "btn-workspace",
     "permission-select",
     "btn-workflow",
@@ -76,12 +76,55 @@ test("Agora 화면 재배치는 기존 채팅 제어 연결을 유지한다", ()
   assert.match(html, /Ἀγορά/);
 });
 
+test("사이드바는 프로젝트 토글 트리 하나로 통합된다", () => {
+  const html = read("src/chat.html");
+  const renderer = read("src/chat.js");
+  const ipc = read("src/chat/chat-ipc.js");
+  // 별도 "채팅" 섹션은 사라지고 채팅은 각 프로젝트 아래에 중첩됩니다.
+  assert.doesNotMatch(html, /id="chats-heading"|id="btn-new-session"|id="session-list"/);
+  assert.match(html, /class="project-list project-tree"/);
+  // 트리: 접기/펼치기 화살표 + 행별 새 채팅(+)·설정(⋯), 접힘 상태는 기억합니다.
+  assert.match(renderer, /project-caret/);
+  assert.match(renderer, /agora\.chat\.projectTreeClosed/);
+  assert.match(renderer, /function buildSessionItem\(entry\)/);
+  assert.match(renderer, /sessionsCreate\(project\.id\)/);
+  // 선택된 채팅이 접힌 프로젝트 안에 숨지 않도록 항상 드러냅니다.
+  assert.match(renderer, /function revealActiveSession/);
+  // 백엔드는 프로젝트별 세션 목록을 내려주고, 새 채팅은 대상 프로젝트를 지정할 수 있습니다.
+  assert.match(ipc, /sessionsByProject: sessionsByProjectPayload\(\)/);
+  assert.match(ipc, /createSessionForProject\(projectId \? requireProject\(projectId\)\.id : undefined\)/);
+});
+
+// Windows 한국어 IME: 창 blur 동안 composer가 activeElement로 남으면 복귀 후
+// 클릭해도 focus 전환이 없어 IME 입력 컨텍스트가 갱신되지 않는다(계측으로 확인).
+// blur 시 실제로 focus를 놓고 복귀 시 다음 프레임에 되돌려 준다.
+test("창 blur 시 composer focus를 실제로 놓고 복귀 시 되돌린다", () => {
+  const renderer = read("src/chat.js");
+  assert.ok(renderer.includes("imeRefocusTarget"), "IME 복구 대상을 기억해야 합니다");
+  assert.ok(renderer.includes("active.blur()"), "창 blur 시 DOM focus를 실제로 놓아야 합니다");
+  assert.ok(renderer.includes("requestAnimationFrame"), "복귀 후 다음 프레임에 focus를 돌려줘야 합니다");
+  // 사용자가 복귀 후 다른 곳을 눌렀다면 focus를 빼앗지 않는다.
+  assert.ok(renderer.includes("active !== document.body"), "다른 요소의 focus를 빼앗지 않아야 합니다");
+});
+
+test("사용량 스트립은 접기/펼치기이고 접힌 동안 조회하지 않는다", () => {
+  const html = read("src/chat.html");
+  const renderer = read("src/chat.js");
+  assert.match(html, /id="btn-usage-fold"/);
+  assert.match(html, /id="btn-usage"[^>]*hidden/);
+  assert.match(renderer, /agora\.chat\.usageOpen/);
+  assert.match(renderer, /if \(usageOpen\) void loadUsage\(\)/);
+  assert.match(renderer, /if \(usageOpen \|\| usagePopoverOpen\) void refreshUsageIfStale\(\)/);
+});
+
 test("Showcase 레일은 기존 에이전트 설정과 설정 창으로 연결된다", () => {
   const html = read("src/chat.html");
   const renderer = read("src/chat.js");
-  for (const id of ["app-rail", "rail-agora", "rail-claude", "rail-codex", "rail-agy", "rail-settings"]) {
+  for (const id of ["app-rail", "rail-claude", "rail-codex", "rail-agy", "rail-settings"]) {
     assert.match(html, new RegExp(`id="${id}"`));
   }
+  // 앱이 Agora 하나뿐이라 앱 전환기 모양의 "아고라" 버튼은 두지 않습니다.
+  assert.doesNotMatch(html, /id="rail-agora"/);
   assert.match(renderer, /openRailAgentSettings\(agentId, button\)/);
   assert.match(renderer, /openAgentPopover\(button, agentId\)/);
   assert.match(renderer, /railSettingsButton[\s\S]*?btn-settings[\s\S]*?click\(\)/);
@@ -160,13 +203,36 @@ test("Agora 채팅 브랜드는 고정 이미지를 반복하지 않고 그리�
   assert.equal(ico.readUInt16LE(4), 7, "Windows 아이콘은 작은 크기별 이미지를 포함해야 합니다");
 });
 
+// v1.1.0 macOS 패키징은 256px 아이콘 때문에 IconConversionError(ERR_ICON_TOO_SMALL)로
+// 실패했습니다. electron-builder는 macOS 아이콘에 512x512 이상을 요구합니다.
+test("앱 아이콘은 Ἀ 기반이고 macOS 최소 크기(512)를 충족한다", () => {
+  const readPng = (file) => {
+    const png = fs.readFileSync(path.join(ROOT, file));
+    assert.deepEqual(
+      [...png.subarray(0, 8)],
+      [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+      file + "는 PNG여야 합니다"
+    );
+    return { width: png.readUInt32BE(16), height: png.readUInt32BE(20) };
+  };
+  for (const file of ["build/icon-mac.png", "build/icon.png"]) {
+    const { width, height } = readPng(file);
+    assert.ok(width >= 512 && height >= 512, file + "는 512x512 이상이어야 합니다 (현재 " + width + "x" + height + ")");
+  }
+  // 아이콘은 생성 스크립트로 재현 가능해야 합니다(수작업 바이너리 금지).
+  assert.ok(fs.existsSync(path.join(ROOT, "scripts/make-icons.ps1")));
+  assert.ok(fs.existsSync(path.join(ROOT, "scripts/make-icons.js")));
+  // CodePet 캐릭터 프리뷰 에셋은 남아 있지 않습니다.
+  assert.ok(!fs.existsSync(path.join(ROOT, "build/icon-preview.png")));
+});
+
 test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있다", () => {
   const html = read("src/chat.html");
   const preload = read("src/chat-preload.js");
   const renderer = read("src/chat.js");
   const ipc = read("src/chat/chat-ipc.js");
 
-  for (const id of ["project-list", "btn-new-project", "chats-heading", "session-list"]) {
+  for (const id of ["project-list", "btn-new-project"]) {
     assert.match(html, new RegExp(`id="${id}"`));
   }
   assert.match(html, /id="btn-specialist"/);

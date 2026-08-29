@@ -83,6 +83,28 @@ function makeFeature(root, dialogResult = { canceled: true, filePaths: [] }, ext
   };
 }
 
+test("트리 사이드바용 sessionsByProject는 모든 프로젝트의 채팅을 내려준다", async () => {
+  const root = makeRoot();
+  const feature = makeFeature(root);
+
+  const initial = await feature.invoke("chat:state");
+  assert.equal(initial.ok, true);
+  const grouped = initial.sessionsByProject;
+  assert.ok(grouped && typeof grouped === "object", "sessionsByProject가 내려와야 합니다");
+  const allIds = Object.values(grouped).flat().map((entry) => entry.id);
+  assert.ok(allIds.includes(initial.activeSessionId), "활성 세션이 자기 프로젝트 그룹에 있어야 합니다");
+
+  // 프로젝트를 지정한 새 채팅은 그 프로젝트 그룹으로 들어가고 활성이 된다.
+  const created = await feature.invoke("chat:projects:create", { name: "트리 프로젝트" });
+  const projectId = created.activeProjectId;
+  const withNew = await feature.invoke("chat:sessions:create", { projectId });
+  assert.equal(withNew.ok, true);
+  assert.ok(
+    (withNew.sessionsByProject[projectId] || []).some((entry) => entry.id === withNew.activeSessionId),
+    "지정한 프로젝트 그룹에 새 채팅이 있어야 합니다"
+  );
+});
+
 test("IPC는 프로젝트를 만들고 기존 채팅을 다른 프로젝트로 옮긴다", async () => {
   const root = makeRoot();
   const feature = makeFeature(root);

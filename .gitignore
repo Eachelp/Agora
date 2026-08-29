@@ -6,3 +6,4 @@
 /.agora
 *.tgz
 /.codex-review-*
+/build/icon-src

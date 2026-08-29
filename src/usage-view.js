@@ -20,18 +20,33 @@
     return "";
   }
 
+  // 모든 공급자의 초기화 시각을 같은 형태로 보여줍니다: "8/29 01:18 (3시간 37분 후 초기화)".
+  // Codex는 main process가 이미 이 형태의 문자열을 만들어 보내므로 그대로 통과하고,
+  // ISO 날짜로 오는 공급자(Claude/AGY)는 여기서 같은 형태로 맞춥니다.
   function resetLabel(value) {
     if (!value) return "—";
     const date = new Date(value);
     if (Number.isNaN(date.getTime()) || !/^\d{4}-\d{2}-\d{2}T/.test(String(value))) {
       return String(value);
     }
-    return `${new Intl.DateTimeFormat("ko-KR", {
-      month: "short",
-      day: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-    }).format(date)} 초기화`;
+
+    const diffMinutes = Math.round((date.getTime() - Date.now()) / 60000);
+    let relative;
+    if (diffMinutes <= 0) {
+      relative = "곧 초기화";
+    } else {
+      const days = Math.floor(diffMinutes / 1440);
+      const hours = Math.floor((diffMinutes % 1440) / 60);
+      const minutes = diffMinutes % 60;
+      const parts = [];
+      if (days > 0) parts.push(`${days}일`);
+      if (hours > 0) parts.push(`${hours}시간`);
+      if (minutes > 0 && days === 0) parts.push(`${minutes}분`);
+      relative = `${parts.join(" ") || "1분 미만"} 후 초기화`;
+    }
+
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${date.getMonth() + 1}/${date.getDate()} ${pad(date.getHours())}:${pad(date.getMinutes())} (${relative})`;
   }
 
   // 한 공급자에 여러 창(5시간·주간 등)이 있을 때 가장 먼저 바닥나는 창을 고릅니다.

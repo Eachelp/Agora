@@ -592,9 +592,10 @@ async function loadProviderSnapshots(forceUsage) {
 
 // 한도 게이지만 필요한 호출자(채팅 사이드바)를 위한 가벼운 형태입니다.
 // provider-usage.js의 60초 캐시가 그대로 작동하므로 force가 아니면 재조회하지 않습니다.
+// 순서는 provider-capabilities/레일과 같은 Claude → Codex → AGY로 고정합니다.
 async function getUsageData({ forceUsage = false } = {}) {
   const { codexUsage, agy, claude } = await loadProviderSnapshots(forceUsage);
-  return [codexUsage, agy.usage, claude.usage];
+  return [claude.usage, codexUsage, agy.usage];
 }
 
 async function getSettingsData({ forceUsage = false } = {}) {
@@ -609,12 +610,13 @@ async function getSettingsData({ forceUsage = false } = {}) {
       uiTheme: normalizeUiTheme(settings.uiTheme),
     },
     autoStart: isAutoLaunchEnabled(),
+    // 순서는 provider-capabilities/레일과 같은 Claude → Codex → AGY로 고정합니다.
     providers: [
+      { id: "claude", label: "Claude", accounts: claude.accounts },
       { id: "codex", label: "Codex", accounts: codexAccounts },
       { id: "agy", label: "AGY", accounts: agy.accounts },
-      { id: "claude", label: "Claude", accounts: claude.accounts },
     ],
-    usage: [codexUsage, agy.usage, claude.usage],
+    usage: [claude.usage, codexUsage, agy.usage],
   };
 }
 

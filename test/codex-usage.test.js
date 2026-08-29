@@ -14,7 +14,7 @@ test("Codex 사용량은 서버의 초 단위 주간 창을 5시간으로 추정
   const switcher = new CodexAccountSwitcher({ homeDir: process.cwd() });
   const windows = switcher.normalizeUsageWindows({ rate_limit: { primary_window: primary(604800) } });
   assert.equal(windows[0].window_minutes, 10080);
-  assert.equal(rateWindowLabel(windows[0]), "주간 한도");
+  assert.equal(rateWindowLabel(windows[0]), "주간");
 });
 
 test("Codex 사용량은 명시된 300분과 월간 창을 동적으로 라벨링한다", () => {
@@ -25,8 +25,8 @@ test("Codex 사용량은 명시된 300분과 월간 창을 동적으로 라벨�
       secondary_window: primary(30 * 24 * 60 * 60),
     },
   });
-  assert.equal(rateWindowLabel(windows[0]), "5시간 한도");
-  assert.equal(rateWindowLabel(windows[1]), "월간 한도");
+  assert.equal(rateWindowLabel(windows[0]), "5시간");
+  assert.equal(rateWindowLabel(windows[1]), "월간");
 });
 
 test("추가 및 코드 리뷰 한도는 scope를 보존하고 알 수 없는 기간을 하드코딩하지 않는다", () => {
@@ -38,8 +38,8 @@ test("추가 및 코드 리뷰 한도는 scope를 보존하고 알 수 없는 �
     }],
     code_review_rate_limit: { primary_window: { used_percent: 0 } },
   });
-  assert.equal(rateWindowLabel(windows[0]), "GPT-5.3-Codex-Spark · 주간 한도");
-  assert.equal(rateWindowLabel(windows[1]), "코드 리뷰 · 사용 한도");
+  assert.equal(rateWindowLabel(windows[0]), "GPT-5.3-Codex-Spark · 주간");
+  assert.equal(rateWindowLabel(windows[1]), "코드 리뷰 · 한도");
   assert.equal(windows[1].window_minutes, null);
 });
 
@@ -51,7 +51,7 @@ test("새 이름의 기간 창도 기간 값으로 분류한다", () => {
 
   assert.equal(windows.length, 1);
   assert.equal(windows[0].window_key, "monthly");
-  assert.equal(rateWindowLabel(windows[0]), "월간 한도");
+  assert.equal(rateWindowLabel(windows[0]), "월간");
 });
 
 test("Codex는 활성 저장 프로필은 거부하고 비활성 auth 사본만 삭제한다", (t) => {
