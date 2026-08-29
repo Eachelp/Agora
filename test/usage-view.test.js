@@ -34,8 +34,8 @@ test("resetLabel은 ISO 시각만 날짜로 바꾸고 나머지는 그대로 보
   assert.equal(usageView.resetLabel(null), "—");
   assert.equal(usageView.resetLabel("5시간 뒤"), "5시간 뒤");
   assert.equal(usageView.resetLabel("2026-13-45T99:99:99Z"), "2026-13-45T99:99:99Z");
-  // 모든 공급자가 같은 형태를 씁니다: "M/D HH:mm (…초기화)" — Codex가 보내는
-  // 기성 문자열(main.js formatResetInfo)과 동일한 모양이어야 합니다.
+  // 모든 공급자가 같은 형태를 씁니다: "M/D HH:mm (…초기화)".
+  // Codex도 같은 경로를 타므로(원본 ISO를 넘김) 별도 포맷 함수는 없습니다.
   assert.match(usageView.resetLabel("2026-08-14T10:00:00Z"), /^\d{1,2}\/\d{1,2} \d{2}:\d{2} \(.*초기화\)$/);
   const future = new Date(Date.now() + 90 * 60000).toISOString();
   assert.match(usageView.resetLabel(future), /\(1시간 30분 후 초기화\)$/);
