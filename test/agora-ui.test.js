@@ -492,3 +492,16 @@ test("토론 종료 알림은 결론 종합 버튼을 제공하고 토론 종합
   assert.match(css, /\.role-badge\.role-discussion-summary/);
   assert.match(css, /\.discussion-summary-button/);
 });
+
+// 승인 이후 단계(입력 재대조, 검증 계획 검사 등)에서 거부되면 run은 READY:WAITING에
+// 머무는데, 예전에는 그 상태에서 PLAN 버튼이 꺼져 있어 같은 실행 버튼을 반복해서
+// 누르는 것 말고 길이 없었다. READY는 Builder가 돌기 전이라 되돌릴 것이 없고
+// FSM도 READY -> PLANNING 복귀를 지원하므로 다시 기획할 수 있어야 한다.
+test("승인 상태(READY)에서도 기획을 처음부터 다시 시작할 수 있다", () => {
+  const renderer = read("src/chat.js");
+  const line = renderer.slice(renderer.indexOf("const planStartable"));
+  const decl = line.slice(0, line.indexOf(";"));
+  assert.ok(decl.includes('specialistNode === "READY"'), "READY에서 PLAN을 다시 시작할 수 있어야 합니다");
+  // 실행 중에는 여전히 막혀야 한다(리셋 통로가 진행 중 실행을 덮어쓰면 안 된다).
+  assert.ok(renderer.includes("professionalPlanButton.disabled = !planConfigured || blockedOrBusy || !planStartable"));
+});

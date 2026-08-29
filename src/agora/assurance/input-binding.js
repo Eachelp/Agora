@@ -21,6 +21,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { MAX_DIGEST_BYTES, sha256FileSync } = require("./file-digest");
 
 const INPUT_BINDING_SCHEMA_VERSION = 1;
 
@@ -42,7 +43,8 @@ const RECHECK_RESULTS = Object.freeze({
   UNVERIFIABLE: "UNVERIFIABLE",
 });
 
-const MAX_FINGERPRINT_BYTES = 64 * 1024 * 1024;
+// 지문 상한은 file-digest가 정한다(청크 해시라 메모리가 아니라 대기 시간 기준).
+const MAX_FINGERPRINT_BYTES = MAX_DIGEST_BYTES;
 
 function realOrResolved(target) {
   const resolved = path.resolve(target);
@@ -80,12 +82,11 @@ function fingerprintFile(absPath) {
   if (stat.size > MAX_FINGERPRINT_BYTES) {
     return { state: BINDING_STATES.UNSUPPORTED, sha256: null, size: stat.size, reason: "too-large" };
   }
-  try {
-    const sha256 = crypto.createHash("sha256").update(fs.readFileSync(absPath)).digest("hex");
-    return { state: BINDING_STATES.BOUND, sha256, size: stat.size };
-  } catch {
+  const sha256 = sha256FileSync(absPath);
+  if (!sha256) {
     return { state: BINDING_STATES.UNSUPPORTED, sha256: null, size: stat.size, reason: "unreadable" };
   }
+  return { state: BINDING_STATES.BOUND, sha256, size: stat.size };
 }
 
 // 승인·동결 시점의 입력 결합. frozen 입력만 지문을 뜬다.

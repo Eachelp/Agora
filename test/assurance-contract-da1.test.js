@@ -402,3 +402,41 @@ test("여러 줄 스크립트를 실행 인자로 넘길 수 있다", () => {
   assert.equal(plan.ok, true, plan.error);
   assert.equal(plan.criteria[0].step.argv[1], script);
 });
+
+// 64MB를 넘는 입력을 frozen으로 선언하면 지문을 못 떠 "확인할 수 없음"이 되고
+// 계약 자체가 성립하지 않았다. 실제로는 확인할 수 있는 파일인데 readFileSync가
+// 통째로 읽는 방식이라 상한을 낮게 둔 것이었다. 청크로 읽어 해시한다.
+test("64MB를 넘는 frozen 입력도 지문을 뜬다", () => {
+  const { sha256FileSync, MAX_DIGEST_BYTES, CHUNK_BYTES } = require("../src/agora/assurance/file-digest");
+  const root = tempRoot("agora-bigfile-");
+  try {
+    // 청크 경계를 넘겨 마지막 부분 청크까지 해시에 들어가는지 확인한다.
+    const size = CHUNK_BYTES * 2 + 12345;
+    const file = path.join(root, "big.json");
+    const fd = fs.openSync(file, "w");
+    const chunk = Buffer.alloc(CHUNK_BYTES, 7);
+    fs.writeSync(fd, chunk);
+    fs.writeSync(fd, chunk);
+    fs.writeSync(fd, Buffer.alloc(12345, 9));
+    fs.closeSync(fd);
+
+    const expected = crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+    assert.equal(sha256FileSync(file), expected);
+    assert.ok(MAX_DIGEST_BYTES > 64 * 1024 * 1024, "상한이 64MB에 묶여 있으면 안 됩니다");
+
+    const bound = inputBinding.bindInputs(
+      [{ inputId: "I1", locator: "big.json", kind: "file", mode: "frozen" }],
+      { root }
+    );
+    assert.equal(bound.bindings[0].state, "BOUND");
+    assert.equal(bound.bindings[0].sha256, expected);
+    assert.deepEqual(bound.unboundFrozen, []);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("읽을 수 없는 파일은 지문 대신 null을 돌려준다", () => {
+  const { sha256FileSync } = require("../src/agora/assurance/file-digest");
+  assert.equal(sha256FileSync(path.join(tempRoot("agora-nofile-"), "없는파일.json")), null);
+});

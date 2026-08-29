@@ -21,6 +21,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { MAX_DIGEST_BYTES, sha256FileSync } = require("./file-digest");
 
 const SUBJECT_SCHEMA_VERSION = 1;
 
@@ -33,7 +34,8 @@ const DEFAULT_EXCLUDED_PREFIXES = Object.freeze([
   ".agora",
 ]);
 
-const MAX_SUBJECT_FILE_BYTES = 64 * 1024 * 1024;
+// 지문 상한은 file-digest가 정한다(청크 해시라 메모리가 아니라 대기 시간 기준).
+const MAX_SUBJECT_FILE_BYTES = MAX_DIGEST_BYTES;
 const MAX_SUBJECT_ENTRIES = 5000;
 
 function realOrResolved(target) {
@@ -82,15 +84,11 @@ function fingerprintOne(root, rel) {
   if (stat.size > MAX_SUBJECT_FILE_BYTES) {
     return { state: "UNSUPPORTED", sha256: null, size: stat.size, reason: "too-large" };
   }
-  try {
-    return {
-      state: "PRESENT",
-      sha256: crypto.createHash("sha256").update(fs.readFileSync(abs)).digest("hex"),
-      size: stat.size,
-    };
-  } catch {
+  const sha256 = sha256FileSync(abs);
+  if (!sha256) {
     return { state: "UNSUPPORTED", sha256: null, size: stat.size, reason: "unreadable" };
   }
+  return { state: "PRESENT", sha256, size: stat.size };
 }
 
 // Builder 종료 시점의 결과물 스냅샷.

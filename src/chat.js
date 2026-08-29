@@ -1454,7 +1454,15 @@ function renderHeader() {
       specialistResumeAvailable ||
       ordinaryTurnBusy
   );
-  const planStartable = !specialistNode || specialistNode === "COMPLETED" || specialistStatus === "INTERRUPTED" || specialistNeedsInput;
+  // READY는 기획이 승인만 된 상태다. Builder가 돌지 않았으니 되돌릴 변경도
+  // checkpoint도 없고, FSM은 이미 READY -> PLANNING 복귀를 지원한다(USER_ANSWER_PLAN).
+  // 여기서 PLAN을 막으면 승인 이후 단계에서 거부됐을 때(승인 입력 재대조 실패,
+  // 검증 계획 거부 등) 같은 실행 버튼을 반복해서 누르는 것 말고 길이 없어진다.
+  const planStartable = !specialistNode
+    || specialistNode === "COMPLETED"
+    || specialistNode === "READY"
+    || specialistStatus === "INTERRUPTED"
+    || specialistNeedsInput;
   professionalPlanButton.disabled = !planConfigured || blockedOrBusy || !planStartable;
   professionalImplementationButton.disabled = !implementationConfigured || blockedOrBusy || !specialistPlanReady;
   const canRegenerateRecord = specialistNode === "COMPLETED" || (specialistNode === "RECORDING" && specialistStatus === "WAITING");
