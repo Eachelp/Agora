@@ -3950,3 +3950,66 @@ textarea:focus-visible {
   min-width: 0;
   align-items: baseline;
 }
+
+/* --- 마크다운 표와 제목 --- */
+/* 표는 말풍선 너비를 넘길 수 있으므로 표만 가로 스크롤합니다.
+   본문 전체가 가로로 밀리면 읽기가 더 나빠집니다. */
+/* .message가 flex라 말풍선의 기본 min-width:auto가 축소를 막습니다. 그대로 두면
+   줄바꿈되지 않는 넓은 콘텐츠(표)가 말풍선째로 대화 영역을 가로로 밀어냅니다.
+   표뿐 아니라 긴 코드 줄에도 같은 문제라 공유 지점에서 한 번 고칩니다. */
+.message .bubble {
+  min-width: 0;   /* 표 오버플로 */
+}
+
+.table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 8px 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.md-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.md-table th,
+.md-table td {
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.md-table th {
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.md-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* 말풍선 안이라 문서용 제목만큼 키우지 않습니다. 단계만 구분되면 충분합니다. */
+.md-heading {
+  margin: 12px 0 6px;
+  line-height: 1.35;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.md-heading:first-child {
+  margin-top: 0;
+}
+
+h1.md-heading { font-size: 17px; }
+h2.md-heading { font-size: 15.5px; }
+h3.md-heading { font-size: 14px; }
+h4.md-heading,
+h5.md-heading,
+h6.md-heading { font-size: 13px; }

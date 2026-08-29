@@ -3192,6 +3192,39 @@ function renderRichText(container, text) {
       pre.append(code);
       wrap.append(bar, pre);
       container.append(wrap);
+    } else if (block.type === "heading") {
+      // 에이전트가 흔히 쓰는 ## 제목. h1~h6을 그대로 만들되 크기는 CSS가 정합니다.
+      const heading = document.createElement("h" + block.level);
+      heading.className = "md-heading";
+      renderInlineTokens(heading, block.tokens);
+      container.append(heading);
+    } else if (block.type === "table") {
+      // 좁은 사이드바/말풍선에서 표가 넘칠 수 있으므로 표만 가로 스크롤합니다.
+      const wrap = document.createElement("div");
+      wrap.className = "table-wrap";
+      const table = document.createElement("table");
+      table.className = "md-table";
+      const thead = document.createElement("thead");
+      const headRow = document.createElement("tr");
+      for (const cellTokens of block.header) {
+        const th = document.createElement("th");
+        renderInlineTokens(th, cellTokens);
+        headRow.append(th);
+      }
+      thead.append(headRow);
+      const tbody = document.createElement("tbody");
+      for (const rowTokens of block.rows) {
+        const tr = document.createElement("tr");
+        for (const cellTokens of rowTokens) {
+          const td = document.createElement("td");
+          renderInlineTokens(td, cellTokens);
+          tr.append(td);
+        }
+        tbody.append(tr);
+      }
+      table.append(thead, tbody);
+      wrap.append(table);
+      container.append(wrap);
     } else if (block.type === "list") {
       const list = document.createElement(block.ordered ? "ol" : "ul");
       list.className = "md-list";

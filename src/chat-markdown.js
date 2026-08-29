@@ -1,10 +1,24 @@
 // 안전한 마크다운-라이트 토크나이저.
 // HTML을 만들지 않고 토큰만 반환합니다. 렌더링은 chat.js가 DOM API(textContent)로만 수행하므로
 // 에이전트 출력에 어떤 마크업이 있어도 스크립트/HTML로 해석되지 않습니다.
-// 지원: 문단, 순서/비순서 목록, ``` 코드 펜스(언어 라벨), `인라인 코드`, **굵게**, http(s) 링크, @멘션.
+// 지원: 문단, # 제목, 파이프 표, 순서/비순서 목록, ``` 코드 펜스(언어 라벨), `인라인 코드`, **굵게**, http(s) 링크, @멘션.
 (function attachChatMarkdown(global) {
   const FENCE_OPEN = /^```([A-Za-z0-9_+-]*)\s*$/;
   const LIST_ITEM = /^(\s*)([-*]|\d+[.)])\s+(.*)$/;
+  const HEADING = /^(#{1,6})\s+(.*)$/;
+
+  // 파이프 표: 앞뒤 | 는 있어도 없어도 되고, 셀은 | 로 나눕니다.
+  function splitRow(line) {
+    return line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
+  }
+
+  // 구분선(---, :--, --:, :--:)만으로 이뤄진 줄이어야 표로 인정합니다.
+  // 정렬 표기는 인식만 하고 쓰지 않습니다(표시 정렬은 CSS가 담당).
+  function isTableSeparator(line) {
+    if (!line || !line.includes("-")) return false;
+    const cells = splitRow(line);
+    return cells.length > 0 && cells.every((cell) => /^:?-+:?$/.test(cell));
+  }
   // URL 본문: 공백과 따옴표류는 제외하되, 파일 이름에 흔한 괄호쌍은 짝이 맞을 때만 허용합니다.
   // (예: .../기업용 인성검사(BFI)_20260812.xlsx)
   const INLINE_PATTERN =
@@ -95,6 +109,28 @@
         }
         index += 1; // 닫는 펜스(또는 EOF) 건너뛰기
         blocks.push({ type: "fence", lang, code: codeLines.join("\n") });
+        continue;
+      }
+
+      const headingMatch = line.match(HEADING);
+      if (headingMatch) {
+        flushParagraph();
+        blocks.push({ type: "heading", level: headingMatch[1].length, tokens: tokenizeInline(headingMatch[2]) });
+        index += 1;
+        continue;
+      }
+
+      // 헤더 줄 바로 다음이 구분선이어야 표입니다. 본문에 쓰인 | 를 표로 오인하지 않습니다.
+      if (line.includes("|") && !isTableSeparator(line) && isTableSeparator(lines[index + 1])) {
+        flushParagraph();
+        const header = splitRow(line).map(tokenizeInline);
+        index += 2;
+        const rows = [];
+        while (index < lines.length && lines[index].includes("|") && lines[index].trim()) {
+          rows.push(splitRow(lines[index]).map(tokenizeInline));
+          index += 1;
+        }
+        blocks.push({ type: "table", header, rows });
         continue;
       }
 
