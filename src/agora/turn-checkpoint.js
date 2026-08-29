@@ -7,6 +7,7 @@ const { promisify } = require("node:util");
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { sha256FileSync } = require("./assurance/file-digest");
 
 const execFileAsync = promisify(execFile);
 const CHECKPOINT_SCHEMA_VERSION = 2;
@@ -16,10 +17,14 @@ function sha256Buffer(buf) {
   return crypto.createHash("sha256").update(buf).digest("hex");
 }
 
+// checkpoint artifact는 크기가 예측되지 않는다(tracked.patch가 수백 MB, untracked
+// 사본이 100MB를 넘기도 한다). 통째로 읽어 해시하면 방금 스트리밍으로 피한 메모리
+// 급증을 바로 다음 줄에서 다시 만든다. 청크 해시를 쓴다.
 function sha256File(filePath) {
   try {
-    const buf = fs.readFileSync(filePath);
-    return { bytes: buf.length, sha256: sha256Buffer(buf) };
+    const bytes = fs.statSync(filePath).size;
+    const sha256 = sha256FileSync(filePath);
+    return sha256 ? { bytes, sha256 } : null;
   } catch {
     return null;
   }
