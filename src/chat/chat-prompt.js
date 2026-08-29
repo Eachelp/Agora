@@ -338,6 +338,10 @@ function buildAgentPrompt({
       // 되어 파일을 못 찾는다(실제로 백업본이 ABSENT로 판정된 적이 있다).
       lines.push("- `## Deliverables`의 각 항목은 **경로만** 적거나 `경로 — 설명` 형태로 적으세요(대시 앞뒤에 공백). `경로 (설명)`처럼 괄호로 붙이면 괄호까지 경로로 읽혀 산출물을 찾지 못합니다.");
       lines.push("- 입력 항목은 `` `경로` `` 또는 URL로 적습니다. 작업 중 내용이 바뀌면 안 되는 자료는 `(frozen)`, 실행 시점에 달라질 수 있는 자료는 `(live)`를 붙이세요. 표시가 없으면 파일은 frozen, URL은 live로 처리됩니다.");
+      // Inputs의 각 줄은 그대로 파일 경로로 해석되어 존재 여부를 검사받는다.
+      // 산문이나 상수 설명이 섞이면 "승인된 입력 파일을 찾을 수 없습니다"로 죽는다.
+      lines.push("- `## Inputs / Source Data`의 **한 줄에는 실제 경로나 URL 하나만** 적으세요. 각 줄은 그대로 파일로 취급되어 존재 여부를 검사합니다. 설명이 필요하면 `경로 — 설명` 형태로 대시 뒤에 적고, 크기·주석을 괄호로 덧붙이지 마세요.");
+      lines.push("- 파일이 아닌 참고 사항(상수·규칙·전제 등)은 Inputs에 넣지 말고 `## Current State / Evidence`나 `## Invariants / Must Preserve`에 적으세요.");
       lines.push("- `## Verification Plan`에는 사람이 읽을 설명과 함께 아래 형식의 ```json 블록을 하나 넣으세요. 이 목록은 승인 시점에 동결되며 이후 아무도 바꿀 수 없습니다.");
       lines.push('  형식: [{"id":"V1","method":"process|predicate|review|human","statement":"무엇을 확인하는가", ...}]');
       lines.push('  - `process`: 프로그램 실행으로 확인. `"executable"`과 `"argv"` 배열을 구조화해 적습니다(셸 문자열 금지). 예: {"id":"V1","method":"process","statement":"전체 테스트 통과","executable":"npm","argv":["test"]}');

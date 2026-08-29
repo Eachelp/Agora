@@ -196,13 +196,20 @@ function looksLikeUrl(value) {
 function parseInputItem(text, index) {
   const raw = String(text || "").trim();
   if (!raw) return null;
+  // 모드 표시는 `(frozen)`이 정석이지만, 실제로는 `(frozen, 39MB)`처럼 메모를 덧붙여
+  // 쓴다. 예전에는 정확히 `(frozen)`만 인식해서 그런 항목은 모드도 못 읽고 괄호가
+  // 경로에 남아 "승인된 입력 파일을 찾을 수 없습니다"로 죽었다. 괄호 안에 모드
+  // 토큰이 있으면 그 괄호 전체를 모드 표시로 보고 걷어낸다.
+  //
+  // 모드 토큰이 없는 괄호는 건드리지 않는다 — `검사(BFI).xlsx`처럼 괄호가 파일
+  // 이름의 일부인 경우를 망치기 때문이다.
+  const MODE_PAREN = /\(([^)]*\b(?:frozen|live|동결|실시간)\b[^)]*)\)/i;
   let mode = null;
-  const modeMatch = /\((frozen|live|동결|실시간)\)/i.exec(raw);
+  const modeMatch = MODE_PAREN.exec(raw);
   if (modeMatch) {
-    const token = modeMatch[1].toLowerCase();
-    mode = token === "live" || token === "실시간" ? INPUT_MODES.LIVE : INPUT_MODES.FROZEN;
+    mode = /\b(?:live|실시간)\b/i.test(modeMatch[1]) ? INPUT_MODES.LIVE : INPUT_MODES.FROZEN;
   }
-  const withoutMode = raw.replace(/\((frozen|live|동결|실시간)\)/gi, " ").trim();
+  const withoutMode = raw.replace(new RegExp(MODE_PAREN.source, "gi"), " ").replace(/\s{2,}/g, " ").trim();
   const [locatorPart, ...descParts] = withoutMode.split(/\s+[—–-]{1,2}\s+/);
   const locator = stripDecorations(locatorPart);
   if (!locator) return null;

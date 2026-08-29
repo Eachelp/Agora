@@ -24,6 +24,14 @@ const crypto = require("node:crypto");
 
 const taskSchema = require("./task-schema-v2");
 const verificationPlan = require("./verification-plan");
+
+// Inputs 항목에 경로가 아니라 산문 한 줄이 들어오면(Planner가 참고 사항을 목록에
+// 섞어 적으면) 오류 문구가 그 문장을 통째로 뱉어 무엇이 문제인지 읽을 수 없다.
+// 따옴표로 경계를 보이고 길면 줄여서, 어느 항목이 경로가 아닌지 눈에 띄게 한다.
+function quoteLocator(value) {
+  const text = String(value == null ? "" : value).replace(/\s+/g, " ").trim();
+  return text.length > 80 ? `"${text.slice(0, 77)}…"` : `"${text}"`;
+}
 const inputBinding = require("./input-binding");
 
 const CONTRACT_FILENAME = "assurance-contract.json";
@@ -76,7 +84,7 @@ function buildFrozenContract(taskContent, context = {}) {
       ok: false,
       code: "FROZEN_INPUT_MISSING",
       missingInputs: binding.missingFrozen,
-      error: `승인된 입력 파일을 찾을 수 없습니다: ${binding.missingFrozen.join(", ")}`,
+      error: `승인된 입력 파일을 찾을 수 없습니다: ${binding.missingFrozen.map(quoteLocator).join(", ")}`,
     };
   }
 
@@ -93,7 +101,7 @@ function buildFrozenContract(taskContent, context = {}) {
       unverifiableInputs: binding.unboundFrozen,
       error:
         `승인된 입력이 같은 내용인지 확인할 수 없습니다: ${binding.unboundFrozen
-          .map((b) => `${b.locator}(${b.reason || "unsupported"})`)
+          .map((b) => `${quoteLocator(b.locator)}(${b.reason || "unsupported"})`)
           .join(", ")}`,
     };
   }

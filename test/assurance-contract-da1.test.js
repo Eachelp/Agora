@@ -449,3 +449,50 @@ test("크기 초과 사유는 실제 크기와 상한을 함께 밝힌다", () =
   assert.match(reason, /105\.4MB/);
   assert.match(reason, /상한 4\.0GB/);
 });
+
+// 모드 표시는 `(frozen)`이 정석이지만 실제로는 `(frozen, 39MB)`처럼 메모를 덧붙인다.
+// 예전에는 정확히 `(frozen)`만 인식해서 모드도 못 읽고 괄호가 경로에 남아
+// "승인된 입력 파일을 찾을 수 없습니다"로 죽었다.
+test("모드 표시에 메모가 붙어도 경로와 모드를 바르게 읽는다", () => {
+  const parsed = taskSchema.parseTaskV2(
+    ["## Goal", "g",
+      "## Inputs / Source Data",
+      "- `resources/split_manifest.json` (frozen, 39MB)",
+      "- `docs/note.md` (live · 자주 바뀜)",
+      "- `resources/검사(BFI).xlsx`",
+      "## Requirements", "r", "## Work Approach", "w", "## Deliverables", "- 없음",
+      "## Acceptance Criteria", "a", "## Verification Plan", "v", "## Out of Scope", "o"].join("\n")
+  );
+  const items = parsed.inputs.items;
+  assert.equal(items[0].locator, "resources/split_manifest.json");
+  assert.equal(items[0].mode, "frozen");
+  assert.equal(items[0].modeDeclared, true);
+  assert.equal(items[1].locator, "docs/note.md");
+  assert.equal(items[1].mode, "live");
+  // 모드 토큰이 없는 괄호는 파일 이름의 일부다. 건드리면 안 된다.
+  assert.equal(items[2].locator, "resources/검사(BFI).xlsx");
+});
+
+// Inputs에 산문이 섞이면 그 문장이 통째로 경로가 되어 오류 문구를 읽을 수 없었다.
+// 경계를 따옴표로 보이고 길면 줄여, 어느 항목이 경로가 아닌지 드러낸다.
+test("경로가 아닌 입력 항목은 오류에서 눈에 띄게 인용된다", () => {
+  const root = tempRoot("agora-bad-input-");
+  try {
+    const prose = "계약 상수(소스 실측): 시드 language_aig_phase4_split_seed_v1, 컷오프 8000/9000/10000, 해시 규칙 sha256";
+    const built = frozenContract.buildFrozenContract(
+      ["## Goal", "g",
+        "## Inputs / Source Data",
+        `- ${prose}`,
+        "## Requirements", "r", "## Work Approach", "w", "## Deliverables", "- 없음",
+        "## Acceptance Criteria", "a", "## Verification Plan", "v", "## Out of Scope", "o"].join("\n"),
+      { root }
+    );
+    assert.equal(built.ok, false);
+    assert.equal(built.code, "FROZEN_INPUT_MISSING");
+    assert.match(built.error, /^승인된 입력 파일을 찾을 수 없습니다: "/);
+    // 길면 줄여서 오류 한 줄이 읽히게 한다.
+    assert.match(built.error, /…"$/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
