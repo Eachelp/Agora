@@ -368,3 +368,25 @@ test("Frozen Verification Plan이 실행 중 바뀌면 무결성 검사가 잡�
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// 계획을 쓰는 것은 사람이 아니라 Planner다. `["--limit", 100]`처럼 숫자 인자를 쓰는
+// 계획이 흔한데, 이걸 거부하면 사용자가 손댈 수 없는 이유로 실행 전체가 막힌다.
+// 셸을 거치지 않으므로 숫자·불리언은 문자열 형태가 하나뿐이라 그대로 확정해도 된다.
+test("process criterion의 숫자·불리언 인자는 문자열로 확정한다", () => {
+  const plan = verificationPlan.parseVerificationPlan(`\`\`\`json
+[{"id":"V1","method":"process","statement":"표본 검사","executable":"python","argv":["run.py","--limit",100,"--strict",true]}]
+\`\`\``);
+  assert.equal(plan.ok, true, plan.error);
+  assert.deepEqual(plan.criteria[0].step.argv, ["run.py", "--limit", "100", "--strict", "true"]);
+});
+
+// 모양이 정해지지 않는 값은 계속 거부하되, 어느 항목의 몇 번째 인자인지 밝힌다.
+// 그렇지 않으면 사용자는 고칠 곳을 찾을 수 없다.
+test("모양이 없는 실행 인자는 거부하고 위치를 알려준다", () => {
+  const plan = verificationPlan.parseVerificationPlan(`\`\`\`json
+[{"id":"V7","method":"process","statement":"검사","executable":"python","argv":["run.py",{"a":1}]}]
+\`\`\``);
+  assert.equal(plan.ok, false);
+  assert.match(plan.error, /V7/);
+  assert.match(plan.error, /2번째/);
+});
