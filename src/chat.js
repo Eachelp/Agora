@@ -416,8 +416,23 @@ const SPECIALIST_CHOICES = {
   ],
 };
 
+// composer를 잠그면서 "선택해 주세요"라고 안내하는 상태는 모두 여기에 선택지가
+// 있어야 한다. BLOCKED는 선택지가 헤더의 모드 토글 버튼 뒤 모달에만 있어서,
+// "아래에서 선택해 주세요"라는 안내와 실제 위치가 정반대였다. 선택지 자체는
+// 모달이 이미 잘 설명하고 있으므로 여는 길만 안내한 자리에 만든다.
+function specialistChoicesNow() {
+  if (specialistBlockedAvailable) {
+    return [{
+      label: "다음 처리 선택",
+      title: "구현이 막혔습니다. 변경 유지·복원·재기획·지시서 수정 중에서 고릅니다",
+      run: () => { openSpecialistDialog(); return Promise.resolve(null); },
+    }];
+  }
+  return specialistNeedsInput ? SPECIALIST_CHOICES[specialistStopReason] : null;
+}
+
 function renderSpecialistChoice() {
-  const choices = specialistNeedsInput ? SPECIALIST_CHOICES[specialistStopReason] : null;
+  const choices = specialistChoicesNow();
   specialistChoiceBar.replaceChildren();
   specialistChoiceBar.hidden = !choices;
   if (!choices) return;

@@ -521,6 +521,14 @@ test("사용자가 골라야 진행되는 지점에는 실제 선택 버튼이 �
   assert.ok(renderer.includes("specialistCancel(activeSessionId)"), "취소 선택지가 있어야 합니다");
   // composer를 잠그는 곳에서 반드시 선택지도 함께 그린다(잠금과 선택지는 한 쌍이다).
   assert.ok(renderer.includes("renderSpecialistChoice();"), "잠금과 함께 선택지를 그려야 합니다");
+  // BLOCKED도 composer를 잠그고 "아래에서 선택해 주세요"라고 안내한다. 선택지가
+  // 헤더 모드 토글 뒤 모달에만 있으면 안내와 위치가 정반대가 된다.
+  assert.ok(renderer.includes("if (specialistBlockedAvailable) {"), "BLOCKED에도 선택 경로가 있어야 합니다");
+  const blockedBranch = renderer.slice(renderer.indexOf("function specialistChoicesNow"));
+  assert.ok(
+    blockedBranch.slice(0, 600).includes("openSpecialistDialog()"),
+    "BLOCKED 선택지는 기존 모달로 이어져야 합니다"
+  );
   // preload가 action을 넘기지 않으면 어떤 버튼도 의미가 없다.
   assert.match(preload, /SPECIALIST_RESUME, \{ sessionId, action \}/);
 });
