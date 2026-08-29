@@ -546,6 +546,84 @@ class SpecialistMixin {
     };
   }
 
+  // PLANNING / PLAN_REVIEW 가 WAITING인 상태의 specialistResume를 재구성한다.
+  //
+  // 예전에는 READY 노드만 복원해서, 답변 대기 상태로 앱을 껐다 켜면 입력칸은
+  // 열리는데(needsInput은 professionalRun만 본다) _answerPlanQuestion이
+  // specialistResume.phase를 요구해 답변이 거부됐다. 화면과 백엔드가 어긋나
+  // 사용자는 그동안 쌓인 검수 맥락을 잃었다.
+  //
+  // 생성자(앱 재시작)와 TASK_CHANGED_AFTER_REVIEW 전이 양쪽에서 쓴다.
+  // 한쪽만 채우면 "재시작해야만 입력이 작동하는" 상태가 새로 생긴다.
+  resumeForWaitingPlan() {
+    const run = this.professionalRun;
+    if (!run || run.status !== "WAITING") return null;
+    if (run.node !== "PLANNING" && run.node !== "PLAN_REVIEW") return null;
+
+    const policy = run.policy || {};
+    // action이 빠지면 원래 "전체 실행"이던 작업이 답변 후 PLAN에서 멈춘다
+    // (_answerPlanQuestion이 resume.action === "full"을 본다). ProfessionalRun에
+    // 새 필드를 넣을 필요는 없다 — policy.autoContinueReady가 이미 그 값이다.
+    const action = policy.autoContinueReady ? "full" : "plan";
+    const implementationAutoRevisions = policy.implementationAutoRevisions || 0;
+    const mode = action === "full" || implementationAutoRevisions > 0 ? "auto" : "step";
+
+    let taskContent = "";
+    if (run.taskPath) {
+      try {
+        taskContent = this.taskManager?.resolveTaskContract?.(
+          { contentSource: "file", taskPath: run.taskPath },
+          this.meta.workspace
+        )?.content || "";
+      } catch {}
+    }
+
+    const isPlanning = run.node === "PLANNING";
+    const changedAfterReview = run.stopReason === "TASK_CHANGED_AFTER_REVIEW";
+    const feedback = this.waitingPlanFeedback({ run, isPlanning, changedAfterReview, taskContent });
+    return {
+      stages: run.stages || this.specialistStages || {},
+      mode,
+      action,
+      planAutoRevisions: policy.planAutoRevisions || 0,
+      implementationAutoRevisions,
+      taskInfo: taskFileInfo(run.taskPath),
+      feedback,
+      // TASK_CHANGED_AFTER_REVIEW에는 해소할 구조화 이슈가 없다. 이전 라운드
+      // 이슈를 끌어오면 이미 통과한 지적을 다시 먹인다.
+      ...(isPlanning || changedAfterReview
+        ? {}
+        : { previousIssues: structuredIssuesFromReview(feedback) }),
+      phase: isPlanning ? "needs_decision" : "plan_review_fix_required",
+    };
+  }
+
+  // WAITING을 만든 발화를 되찾는다. Task 내용은 primary가 아니라 최종 fallback이다 —
+  // 다음 Planner에게 전달되어야 하는 핵심은 "Reviewer가 무엇을 지적했는가"다.
+  waitingPlanFeedback({ run, isPlanning, changedAfterReview, taskContent }) {
+    // 1. 승인 후 Task가 바뀐 경우에는 WAITING을 만든 에이전트 발화가 없다.
+    //    아래 fallback을 적용하면 직전에 PASS를 낸 Reviewer 발화를 끌어와
+    //    이미 해소된 지적을 다시 먹인다.
+    if (changedAfterReview) {
+      return `승인 후 작업 지시서가 변경되어 재검수가 필요합니다.\n\n${taskContent}`.trim();
+    }
+    // 2. 새 실행은 WAITING 전이 시 발화 id를 남긴다.
+    if (run.feedbackMessageId) {
+      const found = this.messages.find((message) => message.id === run.feedbackMessageId);
+      if (found?.text) return found.text;
+    }
+    // 3. 구형 상태 호환: 이 필드가 없던 시절의 WAITING도 살려야 한다.
+    //    전문 응답 메시지에는 agentMeta.specialistStage가 이미 저장돼 있다.
+    const wantedStage = isPlanning ? "planner" : "plan_review";
+    for (let index = this.messages.length - 1; index >= 0; index -= 1) {
+      const message = this.messages[index];
+      if (message?.error || !message?.text) continue;
+      if (message.agentMeta?.specialistStage === wantedStage) return message.text;
+    }
+    // 4. 최종 fallback.
+    return taskContent;
+  }
+
   holdForRecovery({
     runInfo,
     taskInfo,
@@ -1127,6 +1205,7 @@ class SpecialistMixin {
           const transition = this.transitionProfessional({
             type: "PLANNER_NEEDS_DECISION",
             stopReason: "NEEDS_DECISION",
+            feedbackMessageId: plannerResult?.messageId || null,
           });
           if (!transition.ok) return this.professionalTransitionFailure("planner", transition);
           this.specialistResume = {
@@ -1158,6 +1237,7 @@ class SpecialistMixin {
           const transition = this.transitionProfessional({
             type: "PLANNER_NEEDS_DECISION",
             stopReason: "NEEDS_DECISION",
+            feedbackMessageId: plannerResult?.messageId || null,
           });
           if (!transition.ok) return this.professionalTransitionFailure("planner", transition);
           this.specialistResume = {
@@ -1303,6 +1383,7 @@ class SpecialistMixin {
           type: contract.verdict === "UNKNOWN" ? "PLAN_REVIEW_UNKNOWN" : "PLAN_REVIEW_FIX",
           canAutoRevise: false,
           stopReason: contract.stopReason || contract.verdict,
+          feedbackMessageId: planReview?.messageId || null,
         });
         if (!transition.ok) return this.professionalTransitionFailure("plan_review", transition);
         this.specialistResume = {
@@ -1690,6 +1771,11 @@ class SpecialistMixin {
       if (!liveTask?.content || hashText(liveTask.content) !== this.professionalRun.approvedTaskHash) {
         const transition = this.transitionProfessional({ type: "TASK_CHANGED_AFTER_REVIEW" });
         if (!transition.ok) return this.professionalTransitionFailure("plan_review", transition);
+        // 이 전이는 예전에 specialistResume를 만들지 않아, 안내는 뜨는데 입력이
+        // 먹지 않았다(재시작해야만 동작). 복원 helper를 여기서도 써서 같은
+        // WAITING 상태를 즉시 구성한다.
+        this.specialistResume = this.resumeForWaitingPlan();
+        this.emitSpecialistState();
         this.appendSystem("기획 검수 후 TASK.md가 바뀌어 구현을 시작하지 않았습니다. 기획 검수를 다시 통과시켜 주세요.");
         return {
           ok: false,

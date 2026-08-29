@@ -3303,3 +3303,134 @@ test("Open Questions가 '없음'으로 시작하면 이유가 붙어도 질문 �
   // 섹션 자체가 없으면 당연히 질문도 없다.
   assert.equal(hasOpenQuestions("VERDICT: PASS\n지적 없음"), false);
 });
+
+// 답변 대기 상태로 앱을 껐다 켜면, 예전에는 입력칸만 열리고 답변은 거부됐다
+// (needsInput은 professionalRun을 보는데 _answerPlanQuestion은 specialistResume를
+// 요구했다). 그리고 복원하더라도 Task 내용만 넣으면 Reviewer 지적이 통째로 날아간다.
+test("검수 답변 대기는 재시작 후에도 답변이 되고 Reviewer 지적을 유지한다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-resume-restart-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const reviewText = "사용자 결정이 필요합니다.\nVERDICT: FIX_REQUIRED\nISSUES:\n1.\nscope: IN\nseverity: BLOCKING\nrepeat: NO\nproblem: 대상 미정\nevidence: 대화에 없음\nimpact: 범위 불명확\n## Open Questions\n1. 어느 화면까지 포함할까요?";
+  let persisted = null;
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    persistProfessionalRun: (run) => { persisted = run; return true; },
+    runAgent: fakeRunner({
+      claude: [{ ok: true, text: makePlanContract("초안") }],
+      codex: [{ ok: true, text: reviewText }],
+    }),
+  });
+
+  const first = await room.startSpecialist({
+    action: "full",
+    planAutoRevisions: 3,
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+      implementation: { agent: room.findAgent("claude") },
+      recorder: { agent: room.findAgent("codex") },
+    },
+  });
+  assert.equal(first.ok, false);
+  assert.equal(first.stopReason, "NEEDS_DECISION");
+  assert.equal(persisted?.node, "PLAN_REVIEW");
+  assert.equal(persisted?.status, "WAITING");
+  // WAITING을 만든 발화 id가 실제로 기록됐는가 (runResponseTurn -> 전이까지 배선).
+  assert.ok(persisted.feedbackMessageId, "정지를 만든 발화 id가 남아야 합니다");
+
+  // --- 앱 재시작을 흉내낸다: 같은 메시지·같은 run으로 방을 다시 만든다 ---
+  const calls = [];
+  const restarted = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    initialMessages: room.messages,
+    initialProfessionalRun: persisted,
+    runAgent: fakeRunner({
+      claude: [{ ok: true, text: makePlanContract("보완 기획") }],
+      codex: [{ ok: true, text: "기획 검수 통과\nVERDICT: PASS" }],
+    }, calls),
+  });
+
+  const state = restarted.specialistState();
+  assert.equal(state.needsInput, true);
+  assert.equal(state.available, true, "specialistResume가 복원되어야 합니다");
+  // 원래 "전체 실행"이었다는 사실이 살아 있어야 답변 후 구현까지 이어진다.
+  assert.equal(restarted.specialistResume.action, "full");
+
+  const answered = await restarted.answerPlanQuestion("첫 화면까지만 포함하세요.");
+  // 답변 자체가 거부되면 안 된다(예전에는 여기서 막혔다).
+  assert.ok(
+    !/답변을 기다리는 기획 질문이 없거나/.test(answered?.error || ""),
+    answered?.error || ""
+  );
+  // 재시작 전 Reviewer 지적이 Planner 프롬프트에 그대로 실려야 한다.
+  assert.match(calls[0].prompt, /어느 화면까지 포함할까요/);
+  assert.match(calls[0].prompt, /범위 불명확/);
+  // action: "full"이 살아 있어야 기획·검수 뒤 구현까지 이어간다.
+  // (기획 → 검수 → 구현 세 번째 호출이 나오는 것이 그 증거다)
+  assert.deepEqual(calls.slice(0, 3).map((call) => call.agentId), ["claude", "codex", "claude"]);
+});
+
+// feedbackMessageId가 없던 시절의 WAITING도 살려야 한다. 전문 응답 메시지에는
+// agentMeta.specialistStage가 이미 저장되므로 그것으로 되찾는다.
+test("구형 답변 대기(발화 id 없음)도 최근 검수 발화로 복원한다", () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-resume-legacy-"));
+  try {
+    const room = new ChatRoom({
+      agents: makeAgents(),
+      meta: { workspace },
+      taskManager: new TaskManager(),
+      initialMessages: [
+        { id: "m1", authorType: "agent", author: "claude", text: "기획 초안", agentMeta: { specialistStage: "planner" } },
+        { id: "m2", authorType: "agent", author: "codex", text: "VERDICT: FIX_REQUIRED\n오래된 검수 지적", agentMeta: { specialistStage: "plan_review" } },
+      ],
+      initialProfessionalRun: {
+        node: "PLAN_REVIEW",
+        status: "WAITING",
+        stopReason: "FIX_REQUIRED",
+        // feedbackMessageId 없음 — 구형 상태
+        policy: { autoContinueReady: false, planAutoRevisions: 3, implementationAutoRevisions: 0 },
+        stages: {},
+      },
+      runAgent: fakeRunner({}),
+    });
+    assert.equal(room.specialistState().needsInput, true);
+    assert.match(room.specialistResume.feedback, /오래된 검수 지적/);
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+// TASK_CHANGED_AFTER_REVIEW도 PLAN_REVIEW:WAITING이지만 이를 만든 에이전트 발화가
+// 없다. fallback을 그대로 적용하면 직전에 PASS를 낸 Reviewer 발화를 끌어와
+// 이미 해소된 지적을 다시 먹인다.
+test("승인 후 Task 변경 대기는 옛 검수 발화를 되살리지 않는다", () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-resume-changed-"));
+  try {
+    const room = new ChatRoom({
+      agents: makeAgents(),
+      meta: { workspace },
+      taskManager: new TaskManager(),
+      initialMessages: [
+        { id: "m1", authorType: "agent", author: "codex", text: "VERDICT: PASS\n이미 해소된 지적", agentMeta: { specialistStage: "plan_review" } },
+      ],
+      initialProfessionalRun: {
+        node: "PLAN_REVIEW",
+        status: "WAITING",
+        stopReason: "TASK_CHANGED_AFTER_REVIEW",
+        policy: { autoContinueReady: false, planAutoRevisions: 3, implementationAutoRevisions: 0 },
+        stages: {},
+      },
+      runAgent: fakeRunner({}),
+    });
+    assert.equal(room.specialistState().needsInput, true);
+    assert.match(room.specialistResume.feedback, /변경되어 재검수가 필요/);
+    assert.ok(!room.specialistResume.feedback.includes("이미 해소된 지적"));
+    assert.ok(!room.specialistResume.previousIssues, "해소된 구조화 이슈를 되살리면 안 됩니다");
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});

@@ -111,6 +111,9 @@ function transitionProfessionalRun(current, event = {}) {
       next.status = "WAITING";
       next.stopReason = "NEEDS_DECISION";
       if (event.stopReason) next.stopReason = event.stopReason;
+      // 이 정지를 만든 발화를 기억해 둔다. 재시작 뒤 Planner에게 무엇을
+      // 되돌려줘야 하는지는 Task 내용이 아니라 이 발화다.
+      next.feedbackMessageId = event.feedbackMessageId || null;
       break;
     }
     case "PLAN_REVIEW_PASS": {
@@ -120,13 +123,18 @@ function transitionProfessionalRun(current, event = {}) {
       next.lastVerdict = "PASS";
       next.stopReason = "PLAN_READY";
       next.missingSections = null;
+      // WAITING을 벗어났다. stale id가 남으면 다음 정지에서 엉뚱한 발화를 되살린다.
+      next.feedbackMessageId = null;
       if (event.approvedTaskHash) next.approvedTaskHash = event.approvedTaskHash;
       if (event.taskPath) next.taskPath = event.taskPath;
       break;
     }
     case "PLAN_REVIEW_FIX": {
       if (current.node !== "PLAN_REVIEW") return { ok: false, reason: `잘못된 전이: ${current.node} -> PLAN_REVIEW_FIX` };
+      // 자동 보완으로 다시 도는 경우는 정지가 아니므로 발화 id를 남기지 않는다.
+      next.feedbackMessageId = event.feedbackMessageId || null;
       const canAuto = Boolean(event.canAutoRevise) && next.planRevisionCount < next.policy.planAutoRevisions;
+      if (canAuto) next.feedbackMessageId = null;
       if (canAuto) {
         next.planRevisionCount += 1;
         next.planRound += 1;
@@ -147,6 +155,7 @@ function transitionProfessionalRun(current, event = {}) {
       next.status = "WAITING";
       next.lastVerdict = "UNKNOWN";
       next.stopReason = event.stopReason || "INSUFFICIENT_EVIDENCE";
+      next.feedbackMessageId = event.feedbackMessageId || null;
       break;
     }
     case "USER_ANSWER_PLAN": {
@@ -157,6 +166,8 @@ function transitionProfessionalRun(current, event = {}) {
       next.status = "RUNNING";
       next.stopReason = null;
       next.missingSections = null;
+      // 사용자가 답했으므로 그 정지는 소비됐다.
+      next.feedbackMessageId = null;
       // READY에서 기획 수정으로 복귀하면 승인된 기획 해시를 리셋한다.
       if (current.node === "READY") {
         next.approvedTaskHash = null;
@@ -203,6 +214,9 @@ function transitionProfessionalRun(current, event = {}) {
       next.node = "PLAN_REVIEW";
       next.status = "WAITING";
       next.stopReason = "TASK_CHANGED_AFTER_REVIEW";
+      // 이 정지에는 이를 만든 에이전트 발화가 없다. 남겨 두면 직전에 PASS를 낸
+      // Reviewer 발화를 되살려 이미 해소된 지적을 다시 먹인다.
+      next.feedbackMessageId = null;
       break;
     }
     case "BUILDER_DONE": {
@@ -379,6 +393,7 @@ function transitionProfessionalRun(current, event = {}) {
       next.status = "RUNNING";
       next.stopReason = null;
       next.blockReason = null;
+      next.feedbackMessageId = null;
       next.checkpointId = null;
       next.frozenRunId = null;
       next.approvedTaskHash = null;

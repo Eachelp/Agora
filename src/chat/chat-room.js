@@ -156,6 +156,9 @@ class ChatRoom extends EventEmitter {
       } catch {}
     }
     this.specialistStages = this.professionalRun?.stages || null;
+    // 답변 대기(PLANNING/PLAN_REVIEW + WAITING)도 복원한다. 예전에는 READY만
+    // 복원해서, 그 상태로 앱을 껐다 켜면 입력칸은 열리는데 답변은 거부됐다.
+    this.specialistResume = this.resumeForWaitingPlan();
     if (this.professionalRun?.node === "READY" && this.professionalRun.taskPath) {
       let contract = null;
       try {
@@ -1054,7 +1057,9 @@ class ChatRoom extends EventEmitter {
       if (discussionSignal === "PASS" && !text) return { ok: true, discussionSignal };
     }
 
-    this.appendMessage({
+    // WAITING 전이가 "이 발화가 정지를 만들었다"를 기록할 수 있도록 id를 돌려준다.
+    // 이게 없으면 재시작 뒤 Reviewer 지적을 되찾을 방법이 없다.
+    const appended = this.appendMessage({
       authorType: "agent",
       author: agent.id,
       text,
@@ -1083,6 +1088,7 @@ class ChatRoom extends EventEmitter {
       specialistSignal,
       plannerStatus,
       builderStatus,
+      messageId: appended?.id || null,
       text,
       runId,
       evidence: result.evidence || null,
