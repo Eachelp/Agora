@@ -208,3 +208,20 @@ test("생성 시 artifact 저장이 실패하면 failed:true와 CHECKPOINT_* tax
   assert.equal(checkpoint.failed, true);
   assert.equal(checkpoint.reason, "CHECKPOINT_STORAGE_FAILED");
 });
+
+// diff는 크기가 예측되지 않는다. 바이너리 삭제가 섞이면 변경 파일 수천 건만으로도
+// 수백 MB가 되는데(실측: 29,000여 건 저장소에서 552MB), 예전에는 execFile 버퍼에
+// 통째로 받다가 maxBuffer 상한에 걸려 "Git 명령 실행에 실패했습니다"로 죽었다.
+// 저장소 상태 문제가 아니라 받는 방식 문제였으므로, 버퍼를 거치지 않고 파일로 흘린다.
+test("큰 diff도 버퍼를 거치지 않고 tracked.patch로 흘려보낸다", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "src", "agora", "turn-checkpoint.js"), "utf8");
+  assert.ok(source.includes("function gitToFile"), "파일로 직접 흘리는 경로가 있어야 합니다");
+  assert.ok(
+    source.includes('gitToFile(repo, ["diff", "--binary", "HEAD"], path.join(dir, "tracked.patch"))'),
+    "diff는 gitToFile로 수집해야 합니다"
+  );
+  // 예전 경로(버퍼 수집 후 writeFileSync)가 남아 있으면 안 된다.
+  assert.ok(!source.includes('git(repo, ["diff", "--binary", "HEAD"])'), "diff를 버퍼에 받으면 안 됩니다");
+  // 프로세스 종료와 파일 닫힘을 둘 다 기다려야 patch가 온전하다.
+  assert.ok(source.includes("if (exitCode === null || !closed) return;"), "종료와 닫힘을 모두 기다려야 합니다");
+});
