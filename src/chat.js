@@ -133,6 +133,10 @@ let professionalModeEnabled = false;
 // 직전 상태에서 전문 실행이 살아 있었는지. "살아나는 순간"에만 전문 모드를 켜기
 // 위한 것이며, 매 이벤트마다 켜서 사용자의 토글을 덮어쓰지 않기 위해 둔다.
 let professionalRunWasLive = false;
+// 기획안 미리보기 폭. 사용자가 조절한 값을 기억한다(popover는 열 때마다 재생성된다).
+const PLAN_PREVIEW_WIDTH_KEY = "agora.chat.planPreviewWidth";
+let planPreviewResizeObserver = null;
+
 // 승인된 기획안(TASK.md) 경로/제목. "기획안 보기" 버튼으로 열람합니다.
 let specialistPlanTaskPath = null;
 let specialistPlanTaskId = null;
@@ -2887,6 +2891,21 @@ async function openPlanPreview(anchor) {
   if (!result) return;
   openPopover(anchor, (root) => {
     root.classList.add("plan-preview-popover");
+    // 조절한 폭을 기억한다. popover는 열 때마다 다시 만들어지므로 저장하지 않으면
+    // 볼 때마다 다시 늘려야 해서 조절 기능이 반쪽이 된다.
+    const savedWidth = Number(localStorage.getItem(PLAN_PREVIEW_WIDTH_KEY));
+    if (Number.isFinite(savedWidth) && savedWidth >= 280) {
+      root.style.width = `${Math.min(savedWidth, Math.round(window.innerWidth * 0.94))}px`;
+    }
+    if (typeof ResizeObserver === "function") {
+      const observer = new ResizeObserver(() => {
+        if (root.hidden) return;
+        try { localStorage.setItem(PLAN_PREVIEW_WIDTH_KEY, String(Math.round(root.offsetWidth))); } catch {}
+      });
+      observer.observe(root);
+      planPreviewResizeObserver?.disconnect();
+      planPreviewResizeObserver = observer;
+    }
     const head = document.createElement("div");
     head.className = "popover-head";
     const title = document.createElement("strong");

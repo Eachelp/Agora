@@ -2304,8 +2304,18 @@ textarea:focus-visible {
 }
 
 /* 기획안 미리보기 팝오버: 길어지면 내부 스크롤로 처리합니다. */
+/* 기획안은 문서라서 260px 기본 폭으로는 읽히지 않는다. 넓게 열고 사용자가
+   폭을 직접 조절할 수 있게 한다. CSS resize는 overflow가 visible이 아니면
+   동작하므로(.popover가 이미 overflow-y: auto) 별도 드래그 코드가 필요 없다. */
+.plan-preview-popover {
+  width: 460px;
+  min-width: 280px;
+  max-width: min(94vw, 1000px);
+  resize: horizontal;
+}
+
 .plan-preview-popover .plan-preview-body {
-  max-height: 46vh;
+  max-height: 60vh;
   overflow-y: auto;
   margin-top: 8px;
   padding-top: 8px;
