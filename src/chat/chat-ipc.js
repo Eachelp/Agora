@@ -728,7 +728,13 @@ function createChatFeature(options) {
       const context = {
         projectId: projectIdForMeta(meta),
         workspaceId,
-        professionalRunId: room?.professionalRun?.professionalRunId || null,
+        // professionalRunId와 role은 반드시 함께 있거나 함께 없어야 한다.
+        // professionalRun은 세션에 한 번 생기면 계속 남으므로, 이 값을 무조건 실으면
+        // 전문 실행을 한 번이라도 돌린 세션의 "모든" 일반 턴(채팅·토론 종합·기록)이
+        // professional intent로 오인된다. 그러면 role이 없어 SessionKey를 만들 수 없고
+        // harness가 fail-closed하면서 "Professional harness session identity를 안전하게
+        // 계산할 수 없습니다"로 죽는다. 아래 provenance 필드들과 같은 게이트를 쓴다.
+        professionalRunId: specialistStage ? (room?.professionalRun?.professionalRunId || null) : null,
         role: specialistStage || null,
         providerId: agent.id,
         modelKey: normalizeChoice(agent.model) || null,

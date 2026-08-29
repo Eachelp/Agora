@@ -99,3 +99,37 @@ test("chat:message:handoff는 SIMPLIFY/SIMPLIFY_SELF를 simplify 액션으로 �
   assert.equal(ternary[1], "simplify", "SIMPLIFY/SIMPLIFY_SELF는 simplify 액션이어야 한다");
   assert.equal(ternary[2], "handoff", "일반 intent는 handoff 액션이어야 한다");
 });
+
+// 전문 실행을 한 번이라도 돌린 세션은 professionalRun이 계속 남는다. 그래서 이 값을
+// 게이트 없이 실으면 이후 모든 일반 턴(채팅·토론 종합·토론 기록)이 professional intent로
+// 오인되고, role이 없어 SessionKey를 만들 수 없어 harness가 fail-closed한다.
+// professionalRunId와 role은 반드시 같은 조건으로 실려야 한다.
+test("일반 턴은 professionalRunId를 달고 나가지 않는다", () => {
+  const source = require("node:fs").readFileSync(
+    require("node:path").join(__dirname, "..", "src", "chat", "chat-ipc.js"),
+    "utf8"
+  );
+  const runId = source.match(/^\s*professionalRunId: (.+),$/m);
+  const role = source.match(/^\s*role: (.+),$/m);
+  assert.ok(runId && role, "ExecutionContext에 professionalRunId와 role이 있어야 합니다");
+  assert.ok(
+    runId[1].startsWith("specialistStage ?"),
+    `professionalRunId는 specialistStage로 게이트해야 합니다: ${runId[1]}`
+  );
+  assert.ok(role[1].startsWith("specialistStage"), `role 게이트가 바뀌었습니다: ${role[1]}`);
+});
+
+// role 없이 professionalRunId만 있는 context는 harness에서 반드시 실패한다.
+// 위 게이트가 지키려는 대상을 명시적으로 고정해 둔다.
+test("role 없는 professionalRunId는 SessionKey를 만들 수 없다", () => {
+  const { deriveSessionKey } = require("../src/harness/harness-session-key");
+  const base = {
+    projectId: "p1",
+    workspaceId: "w1",
+    providerId: "agy",
+    modelKey: "gemini-3.7-flash",
+    permissionMode: "chat",
+  };
+  assert.equal(deriveSessionKey({ ...base, professionalRunId: "PR-1", role: null }), null);
+  assert.ok(deriveSessionKey({ ...base, professionalRunId: "PR-1", role: "recorder" }));
+});
