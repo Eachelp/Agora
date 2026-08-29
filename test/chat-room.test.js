@@ -44,8 +44,8 @@ function makeAgents() {
 
 // 즉시 응답하는 페이크 러너: replies[에이전트 id] 배열을 순서대로 소비합니다.
 function fakeRunner(replies, calls = []) {
-  return ({ agent, prompt, attachments }) => {
-    calls.push({ agentId: agent.id, prompt, attachments });
+  return ({ agent, prompt, attachments, permissionMode }) => {
+    calls.push({ agentId: agent.id, prompt, attachments, permissionMode });
     const queue = replies[agent.id] || [];
     const next = queue.length > 0 ? queue.shift() : { ok: true, text: "…" };
     return { promise: Promise.resolve(next), cancel: () => {} };
@@ -645,7 +645,8 @@ test("Builder STATUS가 누락되면 DONE이 아니라 사용자 결정으로 �
   assert.equal(result.ok, false);
   assert.equal(result.stopReason, "BUILDER_STATUS_MISSING");
   assert.equal(result.blocked, true);
-  assert.deepEqual(calls.map((call) => call.agentId), ["codex"]);
+  // 선언 확정을 한 번 청한 뒤에도 확정되지 않아야 사용자에게 온다(검수자는 부르지 않는다).
+  assert.deepEqual(calls.map((call) => call.agentId), ["codex", "codex"]);
   assert.equal(room.specialistBlocked.blockReason, "BUILDER_STATUS_MISSING");
 });
 
@@ -671,7 +672,8 @@ test("Builder STATUS가 서로 다르면 AMBIGUOUS로 멈춘다", async () => {
   assert.equal(result.ok, false);
   assert.equal(result.stopReason, "BUILDER_STATUS_AMBIGUOUS");
   assert.equal(result.blocked, true);
-  assert.deepEqual(calls.map((call) => call.agentId), ["codex"]);
+  // 선언 확정을 한 번 청한 뒤에도 하나로 확정되지 않아야 사용자에게 온다.
+  assert.deepEqual(calls.map((call) => call.agentId), ["codex", "codex"]);
 });
 
 test("멘션이 없으면 세션에 참여 중인 모든 에이전트가 응답한다", async () => {
@@ -3497,4 +3499,124 @@ test("실행 중에는 기획 재시작을 거부한다", async (t) => {
   });
   assert.equal(result.ok, false);
   assert.match(result.error, /이미 다른 전문 작업이나 토론이 진행 중/);
+});
+
+// 검수자가 VERDICT를 여러 개 쓰거나 scope를 빠뜨린 것은 사용자가 대신 답해 줄 수
+// 있는 문제가 아니라 출력 계약 실패다. 같은 검수자에게 한 번 더 청한다.
+test("검수 표기가 계약에 안 맞으면 사용자 대신 검수자에게 다시 청한다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-review-repair-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    runAgent: fakeRunner({
+      claude: [{ ok: true, text: makePlanContract("초안") }],
+      codex: [
+        // scope 표기가 없어 최종 판정을 확정할 수 없다.
+        { ok: true, text: "VERDICT: FIX_REQUIRED\nISSUES:\n1.\nproblem: 검증 부족\nevidence: 없음\nimpact: 판단 불가" },
+        // 형식을 고쳐 다시 낸 응답.
+        { ok: true, text: "기획 검수 통과\nVERDICT: PASS" },
+      ],
+    }, calls),
+  });
+
+  const result = await room.startSpecialist({
+    action: "plan",
+    planAutoRevisions: 3,
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+    },
+  });
+
+  assert.equal(result.ok, true, result.error);
+  // 기획 1회 + 검수 2회(원본 + 형식 재요청). 기획자를 다시 부르지 않는다.
+  assert.deepEqual(calls.map((call) => call.agentId), ["claude", "codex", "codex"]);
+  assert.match(calls[2].prompt, /표기가 계약에 맞지 않아/);
+  assert.match(calls[2].prompt, /판단을 바꾸지 말고/);
+  const systemText = room.messages.filter((m) => m.authorType === "system").map((m) => m.text).join("\n");
+  assert.match(systemText, /자동 보완 횟수와 무관/);
+});
+
+// UNKNOWN은 형식 실패가 아니라 "판정할 근거가 부족하다"는 유효한 답일 수 있다.
+// 다시 청하되 둘 중 하나를 강제하지 않고, 그대로 UNKNOWN이면 사용자에게 올린다.
+test("판정 불가(UNKNOWN)는 한 번 더 청하되 유지되면 사용자에게 올린다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-review-unknown-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    runAgent: fakeRunner({
+      claude: [{ ok: true, text: makePlanContract("초안") }],
+      codex: [
+        { ok: true, text: "근거가 부족합니다.\nVERDICT: UNKNOWN" },
+        { ok: true, text: "여전히 근거가 부족합니다.\nVERDICT: UNKNOWN" },
+      ],
+    }, calls),
+  });
+
+  const result = await room.startSpecialist({
+    action: "plan",
+    planAutoRevisions: 3,
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.stopReason, "INSUFFICIENT_EVIDENCE");
+  assert.deepEqual(calls.map((call) => call.agentId), ["claude", "codex", "codex"]);
+  // 둘 중 하나를 강제하지 않는다 — fail-closed 성격을 지켜야 한다.
+  assert.match(calls[2].prompt, /UNKNOWN`을 그대로 유지하세요/);
+});
+
+// 구현자가 파일은 고쳤는데 STATUS만 빠뜨린 경우, 구현 프롬프트로 다시 부르면
+// 2차 구현 라운드가 되어 파일을 또 건드린다. 선언만 확정하는 전용 호출이어야 한다.
+test("구현 선언 누락은 재구현이 아니라 선언 확정만 다시 청한다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-builder-repair-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    runAgent: fakeRunner({
+      claude: [
+        { ok: true, text: makePlanContract("초안") },
+        // 구현은 했는데 STATUS 선언이 없다.
+        { ok: true, text: "요청하신 파일을 수정했습니다." },
+        // 선언만 확정한 응답.
+        { ok: true, text: "작업은 끝났습니다.\nSTATUS: DONE" },
+      ],
+      codex: [
+        { ok: true, text: "기획 검수 통과\nVERDICT: PASS" },
+        { ok: true, text: "검토 통과\nVERDICT: PASS" },
+        { ok: true, text: '{"summary": "기록", "decisions": [], "nextActions": []}' },
+      ],
+    }, calls),
+  });
+
+  await room.startSpecialist({
+    action: "full",
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+      implementation: { agent: room.findAgent("claude") },
+      recorder: { agent: room.findAgent("codex") },
+    },
+  });
+
+  // 선언 확정 호출이 실제로 나갔고, 구현 지침이 아니라 교정 지침을 받았다.
+  const repair = calls.find((call) => /선언을 확정하는 것만/.test(call.prompt));
+  assert.ok(repair, "선언 확정 전용 호출이 있어야 합니다");
+  assert.match(repair.prompt, /파일을 수정하거나 명령을 실행하지 마세요/);
+  // 구현 지침("실제 구현을 진행하세요")이 함께 실리면 상충 계약이 된다.
+  assert.ok(!/실제 구현을 진행하세요/.test(repair.prompt), "구현 지침이 함께 실리면 안 됩니다");
+  // 이번 호출의 권한은 읽기 전용이어야 한다.
+  assert.equal(repair.permissionMode, "workspace-read");
 });

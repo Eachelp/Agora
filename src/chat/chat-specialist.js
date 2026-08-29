@@ -1173,6 +1173,9 @@ class SpecialistMixin {
       ? Math.min(3, Math.max(0, planAutoRevisions))
       : 0;
     let planRevisionCount = 0;
+    // 검수자의 출력 계약 실패는 사용자 결정이 아니라 형식 실패다. 한 번만 다시
+    // 청하고, 그래도 안 되면 사용자에게 올린다. 자동 보완 예산과는 별개로 센다.
+    let planReviewRepairUsed = false;
     let contractRepairCount = 0;
     const MAX_CONTRACT_REPAIRS = 2;
     let nextFeedback = feedback;
@@ -1318,7 +1321,7 @@ class SpecialistMixin {
         }
 
         const planText = nextTaskInfo?.content || plannerResult.text || "";
-        const planReview = await this.scheduleResponse(planReviewAgent.agent, {
+        let planReview = await this.scheduleResponse(planReviewAgent.agent, {
           specialist: {
             stage: "plan_review",
             round: planRound,
@@ -1336,7 +1339,36 @@ class SpecialistMixin {
           });
           return this.specialistFail(planReviewAgent, "plan_review", planRevisionCount, planReview);
         }
-        const contract = this.parseReviewContract(planReview.text || "", planReview.specialistSignal);
+        let contract = this.parseReviewContract(planReview.text || "", planReview.specialistSignal);
+
+        // 출력 계약 실패(표기 누락·모순)와 UNKNOWN은 성격이 다르지만, 둘 다
+        // 사용자가 대신 답해 줄 수 있는 문제가 아니다. 같은 검수자에게 한 번 더 청한다.
+        const repairKind = this.reviewRepairKind(contract);
+        if (repairKind && !planReviewRepairUsed) {
+          planReviewRepairUsed = true;
+          this.appendSystem(
+            repairKind === "unknown"
+              ? "기획 검수가 판정을 내리지 못해 같은 근거로 한 번 더 검수를 요청합니다. (자동 보완 횟수와 무관)"
+              : "기획 검수 응답의 표기가 계약에 맞지 않아 형식만 고쳐 다시 요청합니다. (자동 보완 횟수와 무관)"
+          );
+          const repaired = await this.scheduleResponse(planReviewAgent.agent, {
+            specialist: {
+              stage: "plan_review",
+              round: planRound,
+              maxRounds: planRevisionLimit + 1,
+              feedback: planText,
+              previousIssues: previousPlanIssues,
+              repairKind,
+            },
+            agentConfig: planReviewAgent.agentConfig,
+          });
+          if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
+          // 재요청이 실패하면 원래 응답으로 계속 간다(사용자에게 올라간다).
+          if (repaired?.ok) {
+            planReview = repaired;
+            contract = this.parseReviewContract(repaired.text || "", repaired.specialistSignal);
+          }
+        }
         previousPlanIssues = structuredIssuesFromReview(planReview.text || "");
         if (contract.verdict === "PASS") {
           const transition = this.transitionProfessional({
@@ -2390,7 +2422,7 @@ class SpecialistMixin {
           });
         }
         // Builder 실행.
-        const builderResult = await this.scheduleResponse(implementation.agent, {
+        let builderResult = await this.scheduleResponse(implementation.agent, {
           specialist: { stage: "implementation", round: 1, maxRounds: 1, feedback: runInfo ? "" : feedback, frozenTask: frozenTaskMeta() },
           agentConfig: implementation.agentConfig,
         });
@@ -2419,6 +2451,8 @@ class SpecialistMixin {
           });
         }
         if (!builderResult?.ok) return this.specialistFail(implementation, "implementation", 1, builderResult);
+        // 선언 누락·모순은 사용자 결정이 아니라 출력 계약 실패다. 읽기 전용으로 한 번 다시 청한다.
+        builderResult = await this.repairBuilderStatus(implementation, builderResult, requestedGeneration);
         if (builderResult.builderStatus !== "DONE") return holdForBlocked(1, builderResult, builderResult.builderStatus);
         // 구현 완료 → 사용자 확인 대기.
         const changeSnapshot = await describeWorkspaceChanges(workspace, {
@@ -2635,7 +2669,7 @@ class SpecialistMixin {
           });
         }
         // Builder 보완 후 다시 검토.
-        const builderResult = await this.scheduleResponse(implementation.agent, {
+        let builderResult = await this.scheduleResponse(implementation.agent, {
           specialist: { stage: "implementation", round: 2, maxRounds: 1, feedback: resume.reviewText || feedback, frozenTask: frozenTaskMeta() },
           agentConfig: implementation.agentConfig,
         });
@@ -2666,6 +2700,8 @@ class SpecialistMixin {
           }
           return this.specialistFail(implementation, "implementation", 2, builderResult);
         }
+        // 선언 누락·모순은 사용자 결정이 아니라 출력 계약 실패다. 읽기 전용으로 한 번 다시 청한다.
+        builderResult = await this.repairBuilderStatus(implementation, builderResult, requestedGeneration);
         if (builderResult.builderStatus !== "DONE") return holdForBlocked(2, builderResult, builderResult.builderStatus);
         const changeSnapshot = await describeWorkspaceChanges(workspace, {
           checkpoint,
@@ -3264,6 +3300,7 @@ class SpecialistMixin {
       await restoreCheckpoint();
       return this.specialistFail(implementation, "implementation", round, builderResult);
     }
+    builderResult = await this.repairBuilderStatus(implementation, builderResult, requestedGeneration);
     if (builderResult.builderStatus !== "DONE") {
       return holdForBlocked(round, builderResult, builderResult.builderStatus);
     }
@@ -3643,6 +3680,7 @@ class SpecialistMixin {
         await restoreCheckpoint();
         return this.specialistFail(implementation, "implementation", round, builderResult);
       }
+      builderResult = await this.repairBuilderStatus(implementation, builderResult, requestedGeneration);
       if (builderResult.builderStatus !== "DONE") {
         return holdForBlocked(round, builderResult, builderResult.builderStatus);
       }
@@ -3951,6 +3989,58 @@ class SpecialistMixin {
   //
   // 순서는 replanBlocked와 같다. checkpoint를 먼저 지우고 전이가 실패하면
   // "기존 run은 살아 있는데 되돌릴 수단만 사라진" 더 나쁜 부분 실패가 된다.
+  // 구현자가 파일은 고쳤는데 완료 선언만 빠뜨렸거나 둘 다 쓴 경우, 이것은 사용자
+  // 결정 사항이 아니라 출력 계약 실패다. 같은 구현자에게 선언만 다시 청한다.
+  //
+  // **구현 프롬프트로 다시 부르면 안 된다.** "실제 구현을 수행하세요"가 살아 있으면
+  // 형식 교정이 2차 구현 라운드가 되어 이미 고친 파일을 또 건드린다. 전용 지침으로
+  // 대체하고(chat-prompt의 repairKind), 이번 호출의 authority만 workspace-read로
+  // 낮춘다 — 역할은 그대로 Builder지만 stage cap과 min을 취해 읽기 전용이 된다.
+  //
+  // 한 builder 응답당 한 번만 시도한다(호출자가 결과 하나에 대해 한 번 부른다).
+  // 라운드·자동 보완 예산·checkpoint 어느 것도 소비하지 않는다.
+  async repairBuilderStatus(builderStage, builderResult, requestedGeneration) {
+    const declaration = builderResult?.builderStatus;
+    if (declaration !== "MISSING" && declaration !== "AMBIGUOUS") return builderResult;
+    if (!builderStage?.agent) return builderResult;
+
+    this.appendSystem(
+      declaration === "MISSING"
+        ? "구현 결과에 완료 선언(STATUS)이 없어 선언만 다시 요청합니다. 구현을 다시 하지 않으며 자동 보완 횟수와 무관합니다."
+        : "구현 결과에 서로 다른 완료 선언이 있어 하나로 확정해 달라고 다시 요청합니다. 자동 보완 횟수와 무관합니다."
+    );
+    const repaired = await this.withProfessionalAuthorization("workspace-read", () =>
+      this.scheduleResponse(builderStage.agent, {
+        specialist: { stage: "implementation", repairKind: "builder_status" },
+        agentConfig: builderStage.agentConfig,
+      })
+    );
+    if (requestedGeneration !== this.generation) return builderResult;
+    if (!repaired?.ok) return builderResult;
+    if (repaired.builderStatus !== "DONE" && repaired.builderStatus !== "BLOCKED") return builderResult;
+
+    // 실행 결과·변경·evidence는 첫 호출의 것을 그대로 두고 선언만 확정한다.
+    return { ...builderResult, builderStatus: repaired.builderStatus, statusRepaired: true };
+  }
+
+  // 검수 응답을 다시 청해야 하는지, 청한다면 무엇을 요구할지 판정한다.
+  //
+  //   format   출력 계약 실패. 표기가 누락·모순돼 최종 판정을 확정할 수 없다.
+  //            판단 자체는 유효하므로 형식만 고쳐 달라고 한다.
+  //   unknown  검수자가 "판정할 근거가 부족하다"고 답한 경우. 이것은 형식 실패가
+  //            아니라 유효한 판단일 수 있으므로 둘 중 하나를 강제하지 않는다.
+  //
+  // 둘 다 사용자가 대신 답해 줄 수 있는 문제가 아니다. 사용자 개입은 요구사항·범위가
+  // 바뀌어야 풀리는 문제에만 쓴다.
+  reviewRepairKind(contract) {
+    if (!contract) return null;
+    if (contract.stopReason === "AMBIGUOUS_VERDICT" || contract.stopReason === "SCOPE_UNSPECIFIED") {
+      return "format";
+    }
+    if (contract.verdict === "UNKNOWN") return "unknown";
+    return null;
+  }
+
   async discardRunForFreshPlan() {
     const pending = this.specialistBlocked;
     const heldCheckpoint = pending?.checkpoint || this.specialistResume?.checkpoint || null;

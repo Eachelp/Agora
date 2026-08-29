@@ -83,7 +83,12 @@ function buildAgentPrompt({
   simplifyMeta = null,
   extraLines = [],
 }) {
-  const isBuilder = specialist?.stage === "implementation";
+  // 출력 계약을 어긴 응답을 다시 청하는 호출. 원래 단계 지침을 **대체**한다.
+  // 덧붙이면 "실제 구현을 수행하세요"와 "고치지 마세요"가 한 프롬프트 안에서
+  // 충돌해, 형식만 고치려던 호출이 2차 구현 라운드가 된다.
+  const repairKind = specialist?.repairKind || null;
+  const isStatusRepair = repairKind === "builder_status";
+  const isBuilder = specialist?.stage === "implementation" && !isStatusRepair;
   const isCleanReviewer = specialist?.stage === "review";
   const isPlanReviewer = specialist?.stage === "plan_review";
   const isProfessionalRecorder = specialist?.stage === "recorder" && specialist?.professional === true;
@@ -145,7 +150,10 @@ function buildAgentPrompt({
   const compressedHistory = conversationWindow?.compacted ? conversationWindow.summary : [];
 
   const lines = [];
-  if (isBuilder) {
+  if (isStatusRepair) {
+    lines.push("당신은 Agora 전문 실행의 Builder이고, 직전 응답에 완료 선언이 빠졌거나 서로 모순되었습니다.");
+    lines.push("이번 호출은 **선언을 확정하는 것만**이 목적입니다. 구현을 다시 하거나 파일을 고치지 마세요.");
+  } else if (isBuilder) {
     lines.push("당신은 Agora 전문 실행의 Builder입니다. 이 호출에서 실제 구현을 수행하세요.");
     lines.push("아래 실행 계약과 현재 단계 지침만 따르세요. 다른 에이전트에게 구현을 위임하거나 호출하지 마세요.");
   } else if (isCleanReviewer) {
@@ -356,6 +364,28 @@ function buildAgentPrompt({
       lines.push("- 기존 대화와 사용자 결정만으로 기획자가 고칠 수 있는 문제만 `scope: IN`으로 표시하세요.");
       lines.push("- 사용자 결정이 필요한 문제는 `## Open Questions`에 질문으로 적으세요. 이 질문은 자동 보완하지 않고 사용자에게 반환됩니다.");
       lines.push("- Open Question이 남아 있으면 PASS로 처리하지 말고 FIX_REQUIRED로 반환하세요.");
+      if (repairKind === "format") {
+        // 판정 자체는 유효하다. 표기만 계약에 맞추면 사용자를 부를 필요가 없다.
+        lines.push("");
+        lines.push("직전 응답의 **표기가 계약에 맞지 않아** 다시 청합니다. 판단을 바꾸지 말고 형식만 고쳐 같은 검수 결과를 다시 내세요.");
+        lines.push("- `VERDICT:`는 응답 전체에 정확히 하나만 두세요. 서로 다른 판정을 여러 번 쓰면 최종 판정을 확정할 수 없습니다.");
+        lines.push("- FIX_REQUIRED라면 모든 이슈에 `scope: IN` 또는 `scope: OUT`을 빠짐없이 표시하세요. 이 표시가 없으면 기획자가 고칠 수 있는 문제인지 판단할 수 없습니다.");
+      } else if (repairKind === "unknown") {
+        // UNKNOWN은 형식 실패가 아니라 "판정 못 하겠다"는 유효한 답일 수 있다.
+        // 둘 중 하나를 강제하면 fail-closed 성격을 오히려 망친다.
+        lines.push("");
+        lines.push("직전 응답이 `VERDICT: UNKNOWN`이었습니다. 같은 근거를 한 번 더 검토해 주세요.");
+        lines.push("- 판정할 근거가 있으면 `VERDICT: PASS` 또는 `VERDICT: FIX_REQUIRED`로 확정하세요.");
+        lines.push("- **여전히 근거가 부족하면 `VERDICT: UNKNOWN`을 그대로 유지하세요.** 확신 없이 통과시키거나 반려하지 마세요.");
+        lines.push("- UNKNOWN을 유지한다면 무엇이 있어야 판정할 수 있는지 한 줄로 적으세요.");
+      }
+    } else if (isStatusRepair) {
+      // 여기서 원래 구현 지침을 대체한다. 함께 두면 "구현을 진행하세요"와
+      // "고치지 마세요"가 충돌해 형식 교정이 2차 구현 라운드로 변한다.
+      lines.push("- 파일을 수정하거나 명령을 실행하지 마세요. 이미 한 작업의 상태만 확정하면 됩니다.");
+      lines.push("- 직전 응답에서 실제로 무엇을 했는지 돌아보고, 작업이 끝났으면 `STATUS: DONE`, 막혀서 진행하지 못했으면 `STATUS: BLOCKED`를 응답에 정확히 하나만 넣으세요.");
+      lines.push("- 두 선언을 함께 쓰지 마세요. 어느 쪽인지 판단이 서지 않으면 `STATUS: BLOCKED`와 그 이유를 적으세요.");
+      lines.push("- 구현 내용을 다시 설명할 필요는 없습니다. 선언과 한두 문장의 근거면 충분합니다.");
     } else if (specialist.stage === "implementation") {
       lines.push("- 현재 결정과 작업 범위 안에서 실제 구현을 진행하세요.");
       lines.push("- 작업을 끝낸 뒤 변경 내용과 검증 결과를 짧게 정리하세요.");
