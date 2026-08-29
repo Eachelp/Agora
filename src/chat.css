@@ -3902,7 +3902,7 @@ textarea:focus-visible {
 
 /* --- 사이드바 한 줄 행 (VS Code / Slack 스타일) --- */
 /* 프로젝트와 채팅 모두 한 행 = 한 줄입니다. 부차 정보(연결 폴더, 시각)는
-   줄바꿈 대신 이름 옆에 흐리게 붙고, 공간이 모자라면 이름이 먼저 줄어듭니다. */
+   줄바꿈 대신 이름 옆에 흐리게 붙습니다. */
 .project-row .project-select,
 .project-sessions .session-select {
   display: flex;
@@ -3911,7 +3911,7 @@ textarea:focus-visible {
   min-width: 0;
 }
 
-/* 이름이 길면 이름 쪽이 말줄임되고, 부차 정보는 끝까지 보입니다. */
+/* 이름은 주 식별자라 최대한 보존합니다(shrink 1). 아래 meta가 먼저 줄어듭니다. */
 .project-row .project-name,
 .project-sessions .session-name {
   flex: 0 1 auto;
