@@ -392,6 +392,16 @@ function setSpecialistState(state = {}) {
   specialistMissingSections = Array.isArray(state.missingSections) && state.missingSections.length > 0
     ? [...state.missingSections]
     : null;
+  // 전문 실행이 살아 있으면 그 조작 버튼은 보여야 한다.
+  //
+  // professionalModeEnabled는 화면 로컬 값이라 사용자가 토글을 눌러야만 바뀌었다.
+  // 그래서 BLOCKED 모달에서 재기획을 시작하거나, 앱을 다시 열어 실행이 복원되면
+  // 실행은 돌아가는데 화면은 일반 모드에 머물러 PLAN·실행 버튼이 안 보였다.
+  // (그 상태에서 입력한 메시지는 작업 요청 초안이 아니라 일반 대화로 나간다.)
+  // 켜기만 하고 끄지는 않는다 — 숨기는 것은 사용자의 선택으로 남긴다.
+  if (specialistNode && !(specialistNode === "COMPLETED" && specialistStatus === "COMPLETED")) {
+    professionalModeEnabled = true;
+  }
 }
 
 function specialistLocksComposer() {

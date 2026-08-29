@@ -3270,3 +3270,36 @@ test("승인 seam: legacy whole-turn requestApproval도 stopAllSilently에서 ap
   assert.deepEqual(resolved, [reqId]);
   assert.equal(room.pendingApprovals.size, 0);
 });
+
+// Open Questions는 "자동 보완이냐 사용자냐"의 갈림길이다. 검수자가 "없음"이라고
+// 답하면서 왜 없는지 덧붙이는 것이 자연스러운데, 예전에는 문장 전체가 정확히
+// "없음"일 때만 비었다고 봐서 그 설명을 사용자 질문으로 오해했다. 지적이 전부
+// scope: IN이어도 자동 보완이 꺼지고 사용자 답변을 기다렸다(실제로 재현됨).
+test("Open Questions가 '없음'으로 시작하면 이유가 붙어도 질문 없음으로 본다", () => {
+  const { hasOpenQuestions } = require("../src/chat/chat-specialist");
+  const none = [
+    "없음. 위 항목은 현재 확정된 결정 안에서 기획자가 보완할 수 있습니다.",
+    "없음",
+    "- 없음",
+    "없습니다.",
+    "해당 없음",
+    "None.",
+    "N/A",
+  ];
+  for (const body of none) {
+    assert.equal(hasOpenQuestions(`## Open Questions\n${body}`), false, body);
+  }
+
+  const asked = [
+    "1. 어느 화면까지 포함할까요?",
+    "기존 파일을 백업해야 하나요, 로그만 남기면 되나요?",
+    // "없음"으로 시작해도 그것이 단어의 일부면 질문이다(경계 판정).
+    "없음처리 기준을 사용자가 정해 주세요",
+  ];
+  for (const body of asked) {
+    assert.equal(hasOpenQuestions(`## Open Questions\n${body}`), true, body);
+  }
+
+  // 섹션 자체가 없으면 당연히 질문도 없다.
+  assert.equal(hasOpenQuestions("VERDICT: PASS\n지적 없음"), false);
+});

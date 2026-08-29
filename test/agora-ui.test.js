@@ -532,3 +532,19 @@ test("사용자가 골라야 진행되는 지점에는 실제 선택 버튼이 �
   // preload가 action을 넘기지 않으면 어떤 버튼도 의미가 없다.
   assert.match(preload, /SPECIALIST_RESUME, \{ sessionId, action \}/);
 });
+
+// professionalModeEnabled는 화면 로컬 값이라 토글을 눌러야만 바뀌었다. 그래서
+// BLOCKED 모달에서 재기획을 시작하거나 앱을 다시 열어 실행이 복원되면, 실행은
+// 돌아가는데 화면은 일반 모드에 머물러 PLAN·실행 버튼이 보이지 않았다.
+test("살아 있는 전문 실행은 조작 버튼을 스스로 드러낸다", () => {
+  const renderer = read("src/chat.js");
+  const setter = renderer.slice(renderer.indexOf("function setSpecialistState"));
+  const body = setter.slice(0, setter.indexOf("\nfunction "));
+  assert.ok(body.includes("professionalModeEnabled = true"), "실행이 살아 있으면 켜져야 합니다");
+  assert.ok(
+    body.includes('specialistNode === "COMPLETED" && specialistStatus === "COMPLETED"'),
+    "끝난 실행까지 켜지 않아야 합니다"
+  );
+  // 끄지는 않는다 — 숨기는 것은 사용자의 선택으로 남긴다.
+  assert.ok(!body.includes("professionalModeEnabled = false"), "자동으로 끄면 사용자의 선택을 덮습니다");
+});
