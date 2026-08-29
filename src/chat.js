@@ -659,12 +659,17 @@ function renderProjects() {
     name.className = "project-name";
     name.textContent = project.name;
     select.append(name);
+    // 연결된 폴더는 이름 옆의 흐린 접미사로만 붙입니다(VS Code/Slack식 한 줄 행).
+    // 폴더명이 프로젝트 이름과 같으면 같은 단어를 두 번 보여줄 뿐이라 생략합니다.
     if (project.workspace) {
-      const workspace = document.createElement("span");
-      workspace.className = "project-meta";
-      workspace.textContent = `폴더 · ${baseName(project.workspace)}`;
-      workspace.title = project.workspace;
-      select.append(workspace);
+      const folder = baseName(project.workspace);
+      select.title = project.workspace;
+      if (folder !== project.name) {
+        const workspace = document.createElement("span");
+        workspace.className = "project-meta";
+        workspace.textContent = folder;
+        select.append(workspace);
+      }
     }
     // 행 클릭 = 프로젝트 선택 + 펼침. 접기는 화살표로만 합니다.
     select.addEventListener("click", () => {
@@ -1185,14 +1190,14 @@ function buildSessionItem(entry) {
     titleText.textContent = entry.title;
     titleLine.append(titleText);
 
+    // 시각도 제목과 같은 줄에 흐리게 붙입니다. 부모(프로젝트)가 한 줄인데
+    // 자식이 두 줄이면 위계가 뒤집혀 보입니다.
     // 워크스페이스는 프로젝트 단위 설정이라 채팅마다 다시 알리지 않습니다.
-    // (한 프로젝트의 모든 채팅이 같은 폴더를 쓰므로 줄마다 반복하면 소음입니다)
-    const metaLine = document.createElement("span");
-    metaLine.className = "session-meta";
     const time = document.createElement("span");
+    time.className = "session-meta";
     time.textContent = formatRelativeTime(entry.updatedAt);
-    metaLine.append(time);
-    main.append(titleLine, metaLine);
+    titleLine.append(time);
+    main.append(titleLine);
     main.addEventListener("click", () => selectSession(entry.id));
     main.addEventListener("dblclick", () => startSessionRename(entry.id));
 

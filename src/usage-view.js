@@ -21,8 +21,8 @@
   }
 
   // 모든 공급자의 초기화 시각을 같은 형태로 보여줍니다: "8/29 01:18 (3시간 37분 후 초기화)".
-  // Codex는 main process가 이미 이 형태의 문자열을 만들어 보내므로 그대로 통과하고,
-  // ISO 날짜로 오는 공급자(Claude/AGY)는 여기서 같은 형태로 맞춥니다.
+  // 공급자는 모두 ISO 날짜만 보내고, 표시 문자열은 여기서만 만듭니다.
+  // ISO가 아닌 값(예: main이 정한 "이미 초기화됨")은 그대로 통과시킵니다.
   function resetLabel(value) {
     if (!value) return "—";
     const date = new Date(value);

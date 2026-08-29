@@ -438,33 +438,6 @@ function codexAccountRows() {
   }));
 }
 
-// window_minutes를 "5시간 한도", "주간 한도" 같은 라벨로 바꿉니다.
-// reset_at/resets_at(unix 초)을 "7/3 14:22 (3시간 12분 후 초기화)" 형태로 만듭니다.
-function formatResetInfo(resetsAtSec) {
-  if (!Number.isFinite(resetsAtSec)) return "초기화 정보 없음";
-
-  const resetDate = new Date(resetsAtSec * 1000);
-  const diffMinutes = Math.round((resetDate.getTime() - Date.now()) / 60000);
-
-  let relative;
-  if (diffMinutes <= 0) {
-    relative = "곧 초기화";
-  } else {
-    const days = Math.floor(diffMinutes / 1440);
-    const hours = Math.floor((diffMinutes % 1440) / 60);
-    const minutes = diffMinutes % 60;
-    const parts = [];
-    if (days > 0) parts.push(`${days}일`);
-    if (hours > 0) parts.push(`${hours}시간`);
-    if (minutes > 0 && days === 0) parts.push(`${minutes}분`);
-    relative = `${parts.join(" ") || "1분 미만"} 후 초기화`;
-  }
-
-  const pad = (n) => String(n).padStart(2, "0");
-  const clock = `${resetDate.getMonth() + 1}/${resetDate.getDate()} ${pad(resetDate.getHours())}:${pad(resetDate.getMinutes())}`;
-  return `${clock} (${relative})`;
-}
-
 // Codex 버전에 따라 reset_at 또는 resets_at으로 들어오므로 화면 로직에서는 이 helper만 사용합니다.
 function getResetAtSec(rateWindow) {
   const resetAt = Number(rateWindow?.resets_at ?? rateWindow?.reset_at);
@@ -488,7 +461,11 @@ function codexUsageGauges(usage) {
     gauges.push({
       label: rateWindowLabel(window),
       usedPercent: resetPassed ? 0 : Number(window.used_percent) || 0,
-      resetText: resetPassed ? "이미 초기화됨" : formatResetInfo(resetAtSec),
+      // 다른 공급자처럼 원본 시각(ISO)만 넘깁니다. 표시 포맷은 usage-view.resetLabel
+      // 한 곳에서만 만듭니다(채팅 사이드바와 설정 창이 그 함수를 공유).
+      resetText: resetPassed
+        ? "이미 초기화됨"
+        : Number.isFinite(resetAtSec) ? new Date(resetAtSec * 1000).toISOString() : "",
     });
   }
 
