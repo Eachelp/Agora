@@ -107,6 +107,20 @@ test("창 blur 시 composer focus를 실제로 놓고 복귀 시 되돌린다", 
   assert.ok(renderer.includes("active !== document.body"), "다른 요소의 focus를 빼앗지 않아야 합니다");
 });
 
+// 사이드바 행은 VS Code / Slack처럼 한 줄이다. 연결 폴더와 시각은 줄바꿈 없이
+// 이름 옆에 흐리게 붙고, 폴더명이 프로젝트 이름과 같으면 중복이라 숨긴다.
+test("사이드바 행은 한 줄이고 부차 정보가 먼저 줄어든다", () => {
+  const renderer = read("src/chat.js");
+  const css = read("src/chat.css");
+  // 폴더명이 이름과 같으면 표시하지 않는다.
+  assert.ok(renderer.includes("folder !== project.name"), "폴더명 중복은 숨겨야 합니다");
+  // 시각은 별도 줄(metaLine)이 아니라 제목줄에 붙는다.
+  assert.ok(renderer.includes("titleLine.append(time)"), "시각은 제목과 같은 줄이어야 합니다");
+  assert.ok(!renderer.includes("main.append(titleLine, metaLine)"), "두 줄 구성이 남아 있으면 안 됩니다");
+  // 이름보다 부차 정보가 먼저 말줄임된다(shrink 계수).
+  assert.ok(css.includes("flex: 0 100 auto"), "부차 정보가 먼저 줄어들어야 합니다");
+});
+
 test("사용량 스트립은 접기/펼치기이고 접힌 동안 조회하지 않는다", () => {
   const html = read("src/chat.html");
   const renderer = read("src/chat.js");

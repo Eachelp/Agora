@@ -3899,3 +3899,54 @@ textarea:focus-visible {
   line-height: 20px;
   min-height: 32px;
 }
+
+/* --- 사이드바 한 줄 행 (VS Code / Slack 스타일) --- */
+/* 프로젝트와 채팅 모두 한 행 = 한 줄입니다. 부차 정보(연결 폴더, 시각)는
+   줄바꿈 대신 이름 옆에 흐리게 붙고, 공간이 모자라면 이름이 먼저 줄어듭니다. */
+.project-row .project-select,
+.project-sessions .session-select {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* 이름이 길면 이름 쪽이 말줄임되고, 부차 정보는 끝까지 보입니다. */
+.project-row .project-name,
+.project-sessions .session-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 공간이 모자라면 부차 정보(폴더/시각)가 먼저 줄어듭니다. 이름이 주 식별자라
+   이름을 자르고 폴더명을 온전히 남기면 위계가 뒤집힙니다. shrink 계수를 크게 줘
+   이름보다 훨씬 빨리 줄어들게 합니다. */
+.project-row .project-meta,
+.project-sessions .session-meta {
+  flex: 0 100 auto;
+  min-width: 0;
+  font-size: 10.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 한 줄이 되면서 행이 낮아지므로 세로 여백을 조금 조입니다. */
+.project-row .project-select {
+  padding: 6px 56px 6px 4px;
+}
+
+.project-sessions .session-select {
+  padding: 5px 8px;
+}
+
+/* 제목줄이 곧 행 전체라 남는 공간을 모두 차지하게 둡니다. */
+.project-sessions .session-title-line {
+  flex: 1;
+  min-width: 0;
+  align-items: baseline;
+}
