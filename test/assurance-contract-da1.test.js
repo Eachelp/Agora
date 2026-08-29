@@ -390,3 +390,15 @@ test("모양이 없는 실행 인자는 거부하고 위치를 알려준다", ()
   assert.match(plan.error, /V7/);
   assert.match(plan.error, /2번째/);
 });
+
+// `python -c`에 여러 줄 스크립트를 넘기는 것은 정상적인 검사 형태다. runner가
+// shell:false로 spawn하므로 인자는 셸 해석을 거치지 않고, 줄바꿈을 막으면 계획이
+// 읽기 어려운 한 줄짜리로 몰릴 뿐 같은 일을 그대로 할 수 있다. NUL만 거부한다.
+test("여러 줄 스크립트를 실행 인자로 넘길 수 있다", () => {
+  const script = "import json\np='out/manifest.json'\nm=json.load(open(p,encoding='utf-8'))\nassert m['ok']\n";
+  const plan = verificationPlan.parseVerificationPlan(`\`\`\`json
+[{"id":"V6","method":"process","statement":"매니페스트 확인","executable":"python","argv":["-c",${JSON.stringify(script)}]}]
+\`\`\``);
+  assert.equal(plan.ok, true, plan.error);
+  assert.equal(plan.criteria[0].step.argv[1], script);
+});

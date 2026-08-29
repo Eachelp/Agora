@@ -175,11 +175,14 @@ test("셸의 절대경로로 우회할 수 없다", () => {
   }
 });
 
-test("줄바꿈이 섞인 인자는 거부한다", () => {
+// 줄바꿈은 더 이상 거부하지 않는다 — spawn이 shell:false라 인자가 셸 해석을
+// 거치지 않으므로 막아도 얻는 안전이 없고, `python -c` 여러 줄 스크립트만 못 쓰게 된다.
+// 아래 "여러 줄 스크립트 인자는 허용하고 NUL만 거부한다"가 새 계약을 지킨다.
+test("문자열이 아닌 인자는 거부한다", () => {
   const root = tempRoot();
   try {
     const got = admitVerificationStep(
-      { executable: process.execPath, argv: ["ok", "bad\nvalue"] },
+      { executable: process.execPath, argv: ["ok", 12] },
       context(root)
     );
     assert.equal(got.ok, false);
@@ -487,6 +490,31 @@ test("지문은 생성·삭제·수정을 모두 잡고 폴더 밖은 보지 않
     fs.writeFileSync(path.join(root, "created.txt"), "new");
     const after = fingerprintPaths(root, ["kept.txt", "removed.txt", "created.txt"]);
     assert.deepEqual(diffFingerprints(before, after), ["created.txt", "removed.txt"]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// `python -c`에 여러 줄 스크립트를 넘기는 것은 정상적인 검사 형태다. spawn이
+// shell:false라 인자는 셸 해석을 거치지 않으므로(Windows CreateProcess 포함)
+// 줄바꿈을 막아도 얻는 안전이 없다. shell 문자열 금지는 executable 검사가 지킨다.
+test("여러 줄 스크립트 인자는 허용하고 NUL만 거부한다", () => {
+  const root = tempRoot();
+  try {
+    const script = "import json\nd=json.load(open('a.json'))\nassert d['ok']\n";
+    const ok = admitVerificationStep(
+      { executable: process.execPath, argv: ["-e", script] },
+      context(root)
+    );
+    assert.equal(ok.ok, true, ok.error);
+    assert.deepEqual(ok.admitted.argv, ["-e", script]);
+
+    const nul = admitVerificationStep(
+      { executable: process.execPath, argv: ["-e", `a${String.fromCharCode(0)}b`] },
+      context(root)
+    );
+    assert.equal(nul.ok, false);
+    assert.equal(nul.code, RUNNER_ERRORS.INVALID_SPEC);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

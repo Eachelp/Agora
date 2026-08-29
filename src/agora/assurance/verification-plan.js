@@ -107,7 +107,12 @@ function normalizeProcessStep(entry) {
       typeof arg === "number" && Number.isFinite(arg) ? String(arg)
       : typeof arg === "boolean" ? String(arg)
       : arg;
-    if (typeof value !== "string" || /[\r\n\0]/.test(value)) {
+    // 줄바꿈은 막지 않는다. runner가 shell:false로 spawn하므로 인자는 셸을 거치지
+    // 않고 그대로 전달되고(Windows CreateProcess 포함, 실측 확인), `python -c`처럼
+    // 여러 줄 스크립트를 인자로 넘기는 검사가 정상적인 형태다. 오히려 이걸 막으면
+    // 계획이 읽기 어려운 한 줄짜리로 몰릴 뿐 같은 일을 그대로 할 수 있다.
+    // NUL은 C 문자열 종료 문자라 인자에 담길 수 없으므로 계속 거부한다.
+    if (typeof value !== "string" || value.includes("\0")) {
       const shown = JSON.stringify(arg);
       return {
         ok: false,
