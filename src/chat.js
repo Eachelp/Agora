@@ -3491,11 +3491,14 @@ function renderMessage(message) {
     }
 
     // 5. 토론 결론 종합 배지
-    if (message.discussionSummary || agentMeta.discussionSummary) {
+    const summaryMeta = message.discussionSummary || agentMeta.discussionSummary;
+    if (summaryMeta) {
       const summaryBadge = document.createElement("span");
       summaryBadge.className = "role-badge role-discussion-summary";
-      summaryBadge.textContent = "📊 토론 종합";
-      summaryBadge.title = "이전 토론을 종합한 요약 카드입니다";
+      summaryBadge.textContent = summaryMeta.record ? "🗂 토론 기록" : "📊 토론 종합";
+      summaryBadge.title = summaryMeta.record
+        ? "토론 내용을 프로젝트 기억 초안으로 남긴 기록입니다"
+        : "이전 토론을 종합한 요약 카드입니다";
       meta.append(summaryBadge);
     }
 

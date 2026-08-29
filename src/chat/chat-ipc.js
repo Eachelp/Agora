@@ -917,10 +917,14 @@ function roomMeta(meta) {
     if (!room || !project) return { ok: false, error: "토론 프로젝트를 찾을 수 없습니다." };
     const recorder = specialistStageFor(project, room, "recorder");
     if (!recorder.ok) return recorder;
-    // 기록관 turn은 specialistStage를 달고 나가므로 run-scoped 권한이 필요합니다.
-    // 이 래핑이 없으면 세션 권한과 무관하게 "전문 실행 권한이 없어..."로 거부됩니다
-    // (토론이 합의로 끝날 때마다 재현). recorder 단계 상한이 chat이므로 최소 권한만 줍니다.
-    const result = await room.withProfessionalAuthorization("chat", () => room.runRecorder(recorder));
+    // 토론 기록은 전문 실행이 아닙니다. 전문 실행 Recorder 단계로 보내면 run 권한과
+    // Professional session identity(professionalRunId)를 요구하는데 토론에는 Run이
+    // 없어 매번 실패했고, recorder 역할의 context 경계 때문에 정작 요약할 대화조차
+    // 보지 못했습니다. 대화를 읽는 일반 턴으로 실행하고 출력 형식만 기록 계약을 씁니다.
+    const result = await room.scheduleResponse(recorder.agent, {
+      discussionSummary: { record: true },
+      agentConfig: recorder.agentConfig,
+    });
     if (result?.ok && result.text) {
       const entry = saveRecorderOutput(project.id, result.text, "토론 요약 초안", {
         chatId: sessionId,

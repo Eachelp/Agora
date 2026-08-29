@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { buildAgentPrompt } = require("../src/chat/chat-prompt");
+const { buildAgentPrompt, MAX_SPECIALIST_PROMPT_CHARS } = require("../src/chat/chat-prompt");
 
 const AGENTS = [
   { id: "claude", name: "Claude", aliases: ["claude"] },
@@ -164,7 +164,7 @@ test("기획 검수의 현재 TASK는 자르지 않고 예산 초과 시 호출�
       agent: AGENTS[1],
       agents: AGENTS,
       messages: [message("user", "검수해", "user")],
-      specialist: { stage: "plan_review", feedback: "x".repeat(25 * 1024) },
+      specialist: { stage: "plan_review", feedback: "x".repeat(MAX_SPECIALIST_PROMPT_CHARS + 1024) },
     }),
     (error) => error?.code === "PROMPT_BUDGET_EXCEEDED"
   );
@@ -456,4 +456,37 @@ test("쉬운 설명(simplifyMeta) 프롬프트는 통역 규칙과 원문 메시
   assert.match(prompt, /작성자: claude/);
   assert.match(prompt, /어려운 기술 용어 원문/);
   assert.doesNotMatch(prompt, /이전 대화/);
+});
+
+// 토론 기록은 전문 실행 Recorder가 아니다. Recorder 역할은 context 정책상 대화를
+// 전혀 못 보므로, 그 경로로 보내면 "요약할 대화가 없는 요약자"가 된다.
+// 기록은 대화를 읽는 일반 턴이고 출력 형식만 기록 계약(JSON)을 따른다.
+test("토론 기록 프롬프트는 대화를 보면서 기록 JSON 계약을 요구한다", () => {
+  const prompt = buildAgentPrompt({
+    agent: AGENTS[0],
+    agents: AGENTS,
+    messages: [
+      message("user", "캐시 전략을 정하자", "user"),
+      message("codex", "LRU로 갑시다"),
+    ],
+    discussionSummary: { record: true },
+  });
+  assert.match(prompt, /캐시 전략을 정하자/);
+  assert.match(prompt, /LRU로 갑시다/);
+  assert.match(prompt, /"nextActions"/);
+  assert.match(prompt, /토론 기록자/);
+  // 종합 카드의 고정 섹션 구조는 기록에 쓰지 않는다(출력 형식이 서로 다르다).
+  assert.doesNotMatch(prompt, /## 공통 합의점/);
+});
+
+test("record 플래그가 없으면 기존 토론 종합 카드 형식을 그대로 쓴다", () => {
+  const prompt = buildAgentPrompt({
+    agent: AGENTS[0],
+    agents: AGENTS,
+    messages: [message("user", "정리해줘", "user")],
+    discussionSummary: { discussionId: "D-1" },
+  });
+  assert.match(prompt, /## 공통 합의점/);
+  assert.match(prompt, /토론 결론 종합자/);
+  assert.doesNotMatch(prompt, /"nextActions"/);
 });

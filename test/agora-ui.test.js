@@ -121,15 +121,15 @@ test("사이드바 행은 한 줄이고 부차 정보가 먼저 줄어든다", (
   assert.ok(css.includes("flex: 0 100 auto"), "부차 정보가 먼저 줄어들어야 합니다");
 });
 
-// 기록관 turn은 specialistStage를 달고 나가므로 run-scoped 권한이 필요하다.
-// 이 래핑이 빠지면 세션 권한과 무관하게 "전문 실행 권한이 없어..."로 거부되고,
-// 토론이 합의로 끝날 때마다 재현된다(실제로 그 상태였다).
-test("토론 자동 기록은 run-scoped 권한 안에서 실행된다", () => {
+// 토론에는 Run이 없다. 전문 실행 Recorder 단계로 보내면 run 권한과 Professional
+// session identity를 요구해 합의로 끝날 때마다 실패했다. 일반 턴으로 실행해야 한다.
+test("토론 자동 기록은 전문 실행 경로를 타지 않는다", () => {
   const ipc = read("src/chat/chat-ipc.js");
-  assert.ok(
-    ipc.includes(String.raw`room.withProfessionalAuthorization("chat", () => room.runRecorder(recorder))`),
-    "recordDiscussion은 권한 래핑 안에서 기록관을 실행해야 합니다"
-  );
+  const body = ipc.slice(ipc.indexOf("async function recordDiscussion"));
+  const fn = body.slice(0, body.indexOf("\n  function "));
+  assert.ok(fn.includes("discussionSummary: { record: true }"), "토론 기록은 대화를 읽는 일반 턴이어야 합니다");
+  assert.ok(!fn.includes("runRecorder"), "전문 실행 Recorder 단계를 쓰면 안 됩니다");
+  assert.ok(!fn.includes("withProfessionalAuthorization"), "run-scoped 권한을 요구하면 안 됩니다");
 });
 
 // 버튼 활성 조건과 백엔드 요구 역할이 어긋나면 "눌리는데 실패하는 버튼"이 된다.

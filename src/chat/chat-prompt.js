@@ -2,10 +2,25 @@ const { buildConversationWindow } = require("./chat-summary-window");
 const { roleContextNotice, includesPromptContext, roleSees } = require("./professional-role-context");
 
 const DEFAULT_MAX_MESSAGES = 40;
-const MAX_SPECIALIST_PROMPT_CHARS = 24 * 1024;
+// 전문 실행 프롬프트 상한. 압축(위 conversation window)을 거친 뒤에도 남는
+// 계약 입력(diff/Evidence)이 클 때를 위한 최후 방어선이며, 평소 프롬프트 크기를
+// 정하는 값이 아니다. 낮게 두면 긴 실행에서 정상 작업이 거부된다.
+const MAX_SPECIALIST_PROMPT_CHARS = 72 * 1024;
 const MAX_MESSAGE_CHARS = 4 * 1024;
 const MAX_REVIEW_DIFF_CHARS = 12 * 1024;
 const MAX_REVIEW_EVIDENCE_CHARS = 4 * 1024;
+
+// 기록 산출물의 출력 계약. 전문 실행 Recorder와 토론 기록이 같은 JSON을 내야
+// parseRecorderOutput이 둘 다 읽을 수 있으므로 한 곳에서만 정의한다.
+const RECORDER_OUTPUT_LINES = [
+  "- 아래 JSON 형식으로만 답하세요. 코드 블록을 써도 되고 안 써도 됩니다.",
+  "- summary에는 이번 작업에서 확인된 사실, 결정, 완료 내용, 남은 작업을 Markdown으로 적으세요.",
+  "- decisions에는 대화에서 실제로 합의된 내용만 넣으세요.",
+  "- nextActions에는 대화에서 명시적으로 언급된 다음 할 일만 넣으세요.",
+  "- 대화에 없는 계획을 지어내지 마세요. 추측이나 확인되지 않은 내용을 사실처럼 기록하지 마세요.",
+  "- 프로젝트 규칙 변경이 필요하면 nextActions에 제안만 적고, 직접 규칙을 바꾸지 마세요.",
+  '{"summary": "...", "decisions": [{"title": "...", "content": "..."}], "nextActions": [{"title": "...", "description": "..."}]}',
+];
 
 function boundedText(value, limit, label) {
   const text = String(value || "");
@@ -97,7 +112,15 @@ function buildAgentPrompt({
         ? messages.filter((message) => message?.authorType === "user")
         : []
     : messages;
-  const useGeneralSummaryWindow = !isSpecialist && !isDiscussionSummary && !isSimplify && !discussion;
+  // 대화 기록 압축은 전문 실행에도 적용한다. 예전에는 전문 실행만 압축을 끄고
+  // 하드 예산으로 막았는데, 그러면 토론이 길수록 그 토론을 재료로 삼는 PLAN이
+  // 오히려 실행되지 못했다. 압축을 꺼도 slice(-maxMessages) 밖은 요약조차 없이
+  // 버려지므로, "조용히 버림"보다 "요약해서 남김"이 낫다.
+  //
+  // 계약 입력(Frozen Task 본문·diff·Evidence)은 이 창을 타지 않고 별도 블록으로
+  // 원문 그대로 들어간다. 역할별 차단(ROLE_CONTEXT_POLICY)도 위 sourceMessages에서
+  // 이미 적용돼 있어, 압축은 "볼 수 있는 범위 안에서" 줄이기만 한다.
+  const useGeneralSummaryWindow = !isDiscussionSummary && !isSimplify && !discussion;
   // 최근 대화(recent)를 그릴지 여부: transcript 또는 context를 보는
   // 역할만 그린다. 둘 다 차단된 역할은 대화 블록 전체를 생략한다.
   const useTranscriptWindow = specialistRole
@@ -135,19 +158,29 @@ function buildAgentPrompt({
     lines.push("당신은 Agora 전문 실행의 Recorder입니다.");
     lines.push("대화 transcript나 다른 에이전트의 자유 설명은 보지 않습니다. Frozen Task, 최종 변경 요약, 검수 판정과 실행 근거만 기록하세요.");
   } else if (isDiscussionSummary) {
-    lines.push(`당신은 Agora의 토론 결론 종합자 "@${agent.id}"(${agent.name})입니다.`);
+    lines.push(
+      discussionSummary?.record
+        ? `당신은 Agora의 토론 기록자 "@${agent.id}"(${agent.name})입니다.`
+        : `당신은 Agora의 토론 결론 종합자 "@${agent.id}"(${agent.name})입니다.`
+    );
     lines.push("앞서 진행된 논의(사용자 질문, 사전 발언, 토론 전체)를 객관적으로 분석해 핵심 결론을 명확하고 구조화된 요약 카드로 정리하세요.");
     lines.push("");
     lines.push("작성 규칙:");
     lines.push("- 새로운 파일 수정이나 도구 명령을 제안하지 말고, 오직 제시된 대화 내용에만 근거해 정리하세요.");
     lines.push("- 다른 참가자를 @멘션으로 호출하지 마세요.");
     lines.push("- 대화에서 쓰인 언어로 답하세요.");
-    lines.push("- 아래의 고정 섹션 구조를 정확히 지켜 Markdown으로 작성하세요:");
-    lines.push("  ## 논의 주제");
-    lines.push("  ## 공통 합의점");
-    lines.push("  ## 주요 쟁점과 입장");
-    lines.push("  ## 권장 결론");
-    lines.push("  ## 사용자 결정 사항 / 다음 행동");
+    if (discussionSummary?.record) {
+      // 토론 기록은 전문 실행이 아니라 대화를 근거로 하는 일반 턴이다.
+      // 출력만 프로젝트 기억에 저장할 수 있는 JSON 계약을 따른다.
+      lines.push(...RECORDER_OUTPUT_LINES);
+    } else {
+      lines.push("- 아래의 고정 섹션 구조를 정확히 지켜 Markdown으로 작성하세요:");
+      lines.push("  ## 논의 주제");
+      lines.push("  ## 공통 합의점");
+      lines.push("  ## 주요 쟁점과 입장");
+      lines.push("  ## 권장 결론");
+      lines.push("  ## 사용자 결정 사항 / 다음 행동");
+    }
     if (discussionSummary?.incomplete || (discussionSummary?.failures && discussionSummary.failures > 0)) {
       lines.push("");
       lines.push("⚠ 주의: 이번 토론은 정해진 실행 예산 도달, 사용자 중단 또는 일부 참가자 오류로 인해 '미완성' 상태로 종료되었습니다. 요약 상단에 토론이 미완성으로 끝났음을 알리고, 합의가 불완전하거나 오류로 누락된 지점을 분명히 밝히세요.");
@@ -422,13 +455,7 @@ function buildAgentPrompt({
         lines.push(boundedText(JSON.stringify(specialist.evidence), MAX_REVIEW_EVIDENCE_CHARS, "Evidence").text);
         lines.push("=== 실행 근거 요약 끝 ===");
       }
-      lines.push("- 아래 JSON 형식으로만 답하세요. 코드 블록을 써도 되고 안 써도 됩니다.");
-      lines.push("- summary에는 이번 작업에서 확인된 사실, 결정, 완료 내용, 남은 작업을 Markdown으로 적으세요.");
-      lines.push("- decisions에는 대화에서 실제로 합의된 내용만 넣으세요.");
-      lines.push("- nextActions에는 대화에서 명시적으로 언급된 다음 할 일만 넣으세요.");
-      lines.push("- 대화에 없는 계획을 지어내지 마세요. 추측이나 확인되지 않은 내용을 사실처럼 기록하지 마세요.");
-      lines.push("- 프로젝트 규칙 변경이 필요하면 nextActions에 제안만 적고, 직접 규칙을 바꾸지 마세요.");
-      lines.push('{"summary": "...", "decisions": [{"title": "...", "content": "..."}], "nextActions": [{"title": "...", "description": "..."}]}');
+      lines.push(...RECORDER_OUTPUT_LINES);
     }
     lines.push("=== 전문 모드 끝 ===");
   }
