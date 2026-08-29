@@ -4138,19 +4138,22 @@ composerInput.addEventListener("blur", () => {
   setTimeout(closeMentionPopup, 120);
 });
 
-// Windows 한국어 IME 포커스 복구.
+// Windows IME focus hardening.
 //
-// 창이 blur될 때 Chromium은 focus된 요소에 DOM blur 이벤트만 보내고
-// document.activeElement는 그 요소로 남겨 둡니다. 그래서 다른 창에 갔다가
-// 돌아와 composer를 다시 클릭해도 이미 activeElement라서 focus 전환이
-// 일어나지 않고(계측으로 확인: 복귀 후 클릭에 focus 이벤트가 없음),
-// IME 입력 컨텍스트와 caret 위치가 갱신되지 않습니다. 그 결과 한글 조합
-// 문자열이 textarea가 아니라 화면 좌상단의 조합 창에 뜹니다.
+// 계측으로 확인한 사실: 창이 blur될 때 Chromium은 focus된 요소에 DOM blur
+// 이벤트만 보내고 document.activeElement는 그 요소로 남겨 둔다. 그래서 다른
+// 창에 갔다가 돌아와 composer를 다시 클릭해도 이미 activeElement라서 focus
+// 전환이 전혀 일어나지 않는다(복귀 후 클릭에 mousedown/click만 있고 focus
+// 이벤트 없음). IME 입력 컨텍스트가 갱신될 계기가 없는 상태가 이렇게 만들어진다.
 //
-// 그래서 창이 blur되면 실제로 DOM focus를 놓고, 복귀 시 창 활성화가 끝난
-// 다음 프레임에 다시 focus를 줍니다. 이렇게 해야 진짜 focus 전환이 생겨
-// IME 입력 컨텍스트가 새로 만들어집니다. focus()를 반복 호출하는 것으로는
-// 해결되지 않습니다 — 전환 없이 같은 상태를 다시 덮어쓸 뿐입니다.
+// 그래서 창이 blur되면 DOM focus를 실제로 놓고, 복귀 시 창 활성화가 끝난 다음
+// 프레임에 되돌려 준다. 이렇게 해야 진짜 focus 전환이 생겨 IME 입력 컨텍스트가
+// 새로 만들어진다. focus()를 반복 호출하는 방식은 전환 없이 같은 상태를 덮어쓸
+// 뿐이라 쓰지 않는다.
+//
+// 주의: 보고된 증상(조합 문자열이 화면 좌상단 흰 상자에 표시)은 자동화
+// 하네스에서 재현되지 않았다. 이 코드는 위에서 측정한 stale focus 상태를
+// 제거하는 hardening이며, 그 증상의 확정된 원인 수정으로 단정하지 않는다.
 let imeRefocusTarget = null;
 
 window.addEventListener("blur", () => {
@@ -4176,6 +4179,12 @@ window.addEventListener("focus", () => {
   });
 });
 
+// 알려진 상위 계층(Electron/Chromium + Windows 한국어 IME) 동작:
+// 조합 중에 창이 blur되면 조합 중이던 마지막 음절이 commit되지 않고
+// compositionend 직후 deleteContentBackward로 삭제된다. 이미 확정된 문자열은
+// 그대로 남는다. Agora 코드가 없는 최소 Electron textarea에서도 동일하게
+// 재현되므로 앱 계층 결함이 아니며, 여기서 문자열을 되살리는 보정은 하지 않는다
+// (강제 복원은 조합 상태와 어긋날 수 있어 더 나쁜 실패를 만든다).
 sendButton.addEventListener("click", sendCurrentMessage);
 stopButton.addEventListener("click", () => call(window.chatApi.stop(activeSessionId)));
 
@@ -4645,6 +4654,7 @@ applyUsageFold();
 window.addEventListener("focus", () => {
   if (usageOpen || usagePopoverOpen) void refreshUsageIfStale();
 });
+
 
 
 // --- 초기화 ---
