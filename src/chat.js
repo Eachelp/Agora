@@ -1414,6 +1414,7 @@ function renderHeader() {
   const planReview = roleConfigFromProject(project, "plan_review");
   const implementation = roleConfigFromProject(project, "implementation");
   const review = roleConfigFromProject(project, "review");
+  const recorder = roleConfigFromProject(project, "recorder");
   const effectivePlanReview = planReview.agentId ? planReview : review;
   // 단계별 IPC 요구 조건과 버튼 활성 조건을 맞춥니다.
   // PLAN은 기획자와 기획 검수(비어 있으면 검토 담당자 재사용)만 필요하고,
@@ -1422,6 +1423,7 @@ function renderHeader() {
   const implementationConfigured = Boolean(implementation.agentId && review.agentId);
   const fullConfigured = Boolean(
     planner.agentId && effectivePlanReview.agentId && implementation.agentId && review.agentId
+      && recorder.agentId
   );
   specialistButton.disabled = !activeSessionId || specialistRunning || specialistActive;
   specialistButton.setAttribute("aria-checked", String(professionalModeEnabled));
@@ -1457,8 +1459,7 @@ function renderHeader() {
   professionalImplementationButton.disabled = !implementationConfigured || blockedOrBusy || !specialistPlanReady;
   const canRegenerateRecord = specialistNode === "COMPLETED" || (specialistNode === "RECORDING" && specialistStatus === "WAITING");
   professionalRecordButton.hidden = !canRegenerateRecord;
-  professionalRecordButton.disabled = !review.agentId || blockedOrBusy;
-  professionalRecordButton.title = "완료된 실행의 기록을 다시 만듭니다";
+  professionalRecordButton.disabled = !recorder.agentId || blockedOrBusy;
   professionalFullButton.disabled = !fullConfigured || blockedOrBusy || !planStartable;
   // 버튼이 비활성인 이유를 툴팁으로 알려, 눌리지 않는 것처럼 보이지 않게 합니다.
   const roleSetupHint = "프로젝트 설정(⋯)에서 담당자를 지정하면 사용할 수 있습니다";
@@ -1471,7 +1472,12 @@ function renderHeader() {
     ? "일반 응답이 끝난 뒤 전체 전문 실행을 시작할 수 있습니다"
     : fullConfigured
       ? "기획 검수 PASS 후 별도 승인 없이 구현·검수·기록까지 이어서 실행합니다"
-      : `기획·구현·검토 담당자가 모두 필요합니다. ${roleSetupHint}`;
+      : `기획·구현·검토·기록 담당자가 모두 필요합니다. ${roleSetupHint}`;
+  // 기록 버튼도 다른 버튼처럼 비활성 이유를 알려 줍니다. 이유 없이 눌리지 않으면
+  // 고장으로 보입니다.
+  professionalRecordButton.title = recorder.agentId
+    ? "완료된 실행의 기록을 다시 만듭니다"
+    : `기록 담당자가 필요합니다. ${roleSetupHint}`;
   // 저장된 기획안이 있으면(승인 대기 중이거나 통과한 경우) 열람 버튼을 노출합니다.
   const hasPlanTask = Boolean(specialistPlanTaskPath);
   professionalPlanViewButton.hidden = !hasPlanTask;

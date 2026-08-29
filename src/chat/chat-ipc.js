@@ -917,7 +917,10 @@ function roomMeta(meta) {
     if (!room || !project) return { ok: false, error: "토론 프로젝트를 찾을 수 없습니다." };
     const recorder = specialistStageFor(project, room, "recorder");
     if (!recorder.ok) return recorder;
-    const result = await room.runRecorder(recorder);
+    // 기록관 turn은 specialistStage를 달고 나가므로 run-scoped 권한이 필요합니다.
+    // 이 래핑이 없으면 세션 권한과 무관하게 "전문 실행 권한이 없어..."로 거부됩니다
+    // (토론이 합의로 끝날 때마다 재현). recorder 단계 상한이 chat이므로 최소 권한만 줍니다.
+    const result = await room.withProfessionalAuthorization("chat", () => room.runRecorder(recorder));
     if (result?.ok && result.text) {
       const entry = saveRecorderOutput(project.id, result.text, "토론 요약 초안", {
         chatId: sessionId,

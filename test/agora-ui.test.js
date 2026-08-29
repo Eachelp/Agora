@@ -121,6 +121,28 @@ test("사이드바 행은 한 줄이고 부차 정보가 먼저 줄어든다", (
   assert.ok(css.includes("flex: 0 100 auto"), "부차 정보가 먼저 줄어들어야 합니다");
 });
 
+// 기록관 turn은 specialistStage를 달고 나가므로 run-scoped 권한이 필요하다.
+// 이 래핑이 빠지면 세션 권한과 무관하게 "전문 실행 권한이 없어..."로 거부되고,
+// 토론이 합의로 끝날 때마다 재현된다(실제로 그 상태였다).
+test("토론 자동 기록은 run-scoped 권한 안에서 실행된다", () => {
+  const ipc = read("src/chat/chat-ipc.js");
+  assert.ok(
+    ipc.includes(String.raw`room.withProfessionalAuthorization("chat", () => room.runRecorder(recorder))`),
+    "recordDiscussion은 권한 래핑 안에서 기록관을 실행해야 합니다"
+  );
+});
+
+// 버튼 활성 조건과 백엔드 요구 역할이 어긋나면 "눌리는데 실패하는 버튼"이 된다.
+test("전문 실행 버튼은 백엔드가 요구하는 역할을 기준으로 활성화된다", () => {
+  const renderer = read("src/chat.js");
+  // 기록 버튼은 검토자가 아니라 기록 담당자를 본다.
+  assert.ok(renderer.includes("professionalRecordButton.disabled = !recorder.agentId"));
+  // 전체 실행은 백엔드가 기록 담당자까지 요구한다.
+  assert.ok(renderer.includes("&& recorder.agentId"));
+  // 비활성 이유를 툴팁으로 알린다.
+  assert.ok(renderer.includes("기록 담당자가 필요합니다"));
+});
+
 test("사용량 스트립은 접기/펼치기이고 접힌 동안 조회하지 않는다", () => {
   const html = read("src/chat.html");
   const renderer = read("src/chat.js");
