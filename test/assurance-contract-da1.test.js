@@ -440,3 +440,12 @@ test("읽을 수 없는 파일은 지문 대신 null을 돌려준다", () => {
   const { sha256FileSync } = require("../src/agora/assurance/file-digest");
   assert.equal(sha256FileSync(path.join(tempRoot("agora-nofile-"), "없는파일.json")), null);
 });
+
+// "too-large"만 보고는 파일을 줄여야 하는지, live로 선언해야 하는지 알 수 없다.
+// 실제 크기와 상한이 함께 나와야 사용자가 판단할 수 있다.
+test("크기 초과 사유는 실제 크기와 상한을 함께 밝힌다", () => {
+  const { tooLargeReason } = require("../src/agora/assurance/file-digest");
+  const reason = tooLargeReason(110512941);
+  assert.match(reason, /105\.4MB/);
+  assert.match(reason, /상한 4\.0GB/);
+});

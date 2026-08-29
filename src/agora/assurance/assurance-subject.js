@@ -21,7 +21,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
-const { MAX_DIGEST_BYTES, sha256FileSync } = require("./file-digest");
+const { MAX_DIGEST_BYTES, sha256FileSync, tooLargeReason } = require("./file-digest");
 
 const SUBJECT_SCHEMA_VERSION = 1;
 
@@ -82,7 +82,7 @@ function fingerprintOne(root, rel) {
   if (stat.isDirectory()) return { state: "DIRECTORY", sha256: null, size: null };
   if (!stat.isFile()) return { state: "UNSUPPORTED", sha256: null, size: null };
   if (stat.size > MAX_SUBJECT_FILE_BYTES) {
-    return { state: "UNSUPPORTED", sha256: null, size: stat.size, reason: "too-large" };
+    return { state: "UNSUPPORTED", sha256: null, size: stat.size, reason: tooLargeReason(stat.size) };
   }
   const sha256 = sha256FileSync(abs);
   if (!sha256) {

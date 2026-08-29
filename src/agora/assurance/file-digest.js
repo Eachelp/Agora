@@ -39,4 +39,15 @@ function sha256FileSync(absPath) {
   return hash.digest("hex");
 }
 
-module.exports = { CHUNK_BYTES, MAX_DIGEST_BYTES, sha256FileSync };
+// "too-large"만으로는 사용자가 무엇을 해야 할지 알 수 없다. 실제 크기와 상한을
+// 함께 밝혀야 파일을 줄일지, live로 선언할지 판단할 수 있다.
+function formatBytes(bytes) {
+  const mb = bytes / (1024 * 1024);
+  return mb >= 1024 ? `${(mb / 1024).toFixed(1)}GB` : `${mb.toFixed(1)}MB`;
+}
+
+function tooLargeReason(size) {
+  return `too-large: ${formatBytes(size)} > 상한 ${formatBytes(MAX_DIGEST_BYTES)}`;
+}
+
+module.exports = { CHUNK_BYTES, MAX_DIGEST_BYTES, sha256FileSync, tooLargeReason };

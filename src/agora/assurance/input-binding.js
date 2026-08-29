@@ -21,7 +21,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
-const { MAX_DIGEST_BYTES, sha256FileSync } = require("./file-digest");
+const { MAX_DIGEST_BYTES, sha256FileSync, tooLargeReason } = require("./file-digest");
 
 const INPUT_BINDING_SCHEMA_VERSION = 1;
 
@@ -80,7 +80,7 @@ function fingerprintFile(absPath) {
     return { state: BINDING_STATES.UNSUPPORTED, sha256: null, size: null, reason: "not-a-regular-file" };
   }
   if (stat.size > MAX_FINGERPRINT_BYTES) {
-    return { state: BINDING_STATES.UNSUPPORTED, sha256: null, size: stat.size, reason: "too-large" };
+    return { state: BINDING_STATES.UNSUPPORTED, sha256: null, size: stat.size, reason: tooLargeReason(stat.size) };
   }
   const sha256 = sha256FileSync(absPath);
   if (!sha256) {
