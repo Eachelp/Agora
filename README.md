@@ -29,6 +29,8 @@ Agora는 **Windows를 우선 지원하는 repository-distributed local applicati
 
 ## Windows에서 사용하기
 
+**컴퓨터가 익숙하지 않다면 [설치 가이드](설치-가이드.md)를 여세요.** 명령어 입력 없이 더블클릭과 클릭만으로 설치부터 AI 로그인까지 순서대로 안내합니다.
+
 **권장 설치 — `git clone`으로 받은 폴더**
 
 1. **`Agora-설치하기.bat`** — 최초 1회. 실행 환경(Git/Node.js/CLI)을 점검하고 의존성 설치와 바탕화면 바로가기 생성까지 진행합니다.

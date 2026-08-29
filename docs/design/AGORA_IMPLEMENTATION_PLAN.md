@@ -1,6 +1,7 @@
 # Ἀγορά 구현 계획
 
 > 역사 문서: 이 계획은 초기 Agora 구현 순서를 기록한다. 현재 전문 실행의 단일 기준과 Release 1·2 보장은 [AGORA_V1_DESIGN.md](AGORA_V1_DESIGN.md)를 따른다.
+> 본문에 등장하는 CodePet 관련 격리·가져오기 항목은 분리 당시의 기록이며, CodePet 런타임 레거시(펫·말풍선·워처 계층)는 v1.1.0에서 완전히 제거되었다. 배포 모델은 repository-distributed로 확정되었다(README 참조).
 
 이 문서는 [BASELINE_AUDIT.md](../archive/BASELINE_AUDIT.md)의 조사 결과를 실제 구현 순서로 정리한다. Phase 0에서는 이 문서만 작성하고 제품 코드는 수정하지 않는다.
 
