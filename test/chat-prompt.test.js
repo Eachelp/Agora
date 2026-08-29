@@ -490,3 +490,51 @@ test("record 플래그가 없으면 기존 토론 종합 카드 형식을 그대
   assert.match(prompt, /토론 결론 종합자/);
   assert.doesNotMatch(prompt, /"nextActions"/);
 });
+
+// 스키마가 받는 필드를 프롬프트가 알려주지 않으면 Planner는 산문·괄호로 우회하고,
+// 그 우회는 조용히 실패한다. 실제로 cwd를 산문에만 적어 저장소 루트에서 실행돼
+// 임포트가 깨졌고, Deliverable 경로에 괄호 설명을 붙여 ABSENT로 판정됐다.
+// 그래서 안내 문구만이 아니라 **프롬프트의 예시가 실제로 파싱되는지**까지 본다.
+test("기획 프롬프트의 process 예시는 실행기가 받는 형태다 (cwd 포함)", () => {
+  const { parseVerificationPlan } = require("../src/agora/assurance/verification-plan");
+  const prompt = buildAgentPrompt({
+    agent: AGENTS[0],
+    agents: AGENTS,
+    messages: [],
+    specialist: { stage: "planner" },
+  });
+  assert.match(prompt, /"cwd"/, "cwd 필드를 알려줘야 합니다");
+  assert.match(prompt, /설명 문장에만 적으면/, "산문으로 적으면 안 된다고 알려줘야 합니다");
+
+  // 프롬프트에 실린 cwd 예시를 그대로 떼어 실행기 스키마에 넣어 본다.
+  const example = prompt.match(/\{"id":"V1"[^\n]*"cwd":"[^"]*"\}/);
+  assert.ok(example, "cwd가 든 예시가 있어야 합니다");
+  const plan = parseVerificationPlan("```json\n[" + example[0] + "]\n```");
+  assert.equal(plan.ok, true, plan.error);
+  assert.equal(plan.criteria[0].step.cwd, "20_projects/01_어휘");
+});
+
+test("기획 프롬프트는 Deliverable 설명을 대시로 붙이라고 알려준다", () => {
+  const taskSchema = require("../src/agora/assurance/task-schema-v2");
+  const prompt = buildAgentPrompt({
+    agent: AGENTS[0],
+    agents: AGENTS,
+    messages: [],
+    specialist: { stage: "planner" },
+  });
+  assert.match(prompt, /경로 — 설명/);
+  assert.match(prompt, /괄호까지 경로로 읽혀/);
+
+  // 파서 계약을 함께 고정한다. 대시는 분리되고 괄호는 경로에 남는다.
+  const parsed = taskSchema.parseTaskV2(
+    ["## Goal", "g", "## Inputs / Source Data", "- 없음", "## Requirements", "r",
+      "## Work Approach", "w", "## Deliverables",
+      "- out/a.json — 신규 사본", "- out/b (신규 사본).json",
+      "## Acceptance Criteria", "a", "## Verification Plan", "v", "## Out of Scope", "o"].join("\n")
+  );
+  const items = parsed.deliverables.items;
+  assert.equal(items[0].locator, "out/a.json");
+  assert.equal(items[0].description, "신규 사본");
+  // 괄호는 분리되지 않는다 — 그래서 프롬프트가 쓰지 말라고 해야 한다.
+  assert.equal(items[1].locator, "out/b (신규 사본).json");
+});

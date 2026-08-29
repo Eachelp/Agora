@@ -326,10 +326,16 @@ function buildAgentPrompt({
       lines.push("- 하나의 작업이 하나의 명확한 목표와 완료 조건을 갖도록 큰 작업을 분해하세요.");
       lines.push("- TASK에는 다음 8개 필수 섹션을 반드시 정확한 헤딩(`## Goal`, `## Inputs / Source Data`, `## Requirements`, `## Work Approach`, `## Deliverables`, `## Acceptance Criteria`, `## Verification Plan`, `## Out of Scope`)과 함께 본문(실제 설명)을 포함해 작성하세요.");
       lines.push("- `## Inputs / Source Data`와 `## Deliverables`는 목록으로 적고, 없으면 생략하지 말고 `- 없음`이라고 명시하세요. 생략과 '없음'은 다른 의미입니다.");
+      // 파서는 앞뒤 공백을 둔 대시로만 설명을 분리한다. 괄호 설명은 경로의 일부가
+      // 되어 파일을 못 찾는다(실제로 백업본이 ABSENT로 판정된 적이 있다).
+      lines.push("- `## Deliverables`의 각 항목은 **경로만** 적거나 `경로 — 설명` 형태로 적으세요(대시 앞뒤에 공백). `경로 (설명)`처럼 괄호로 붙이면 괄호까지 경로로 읽혀 산출물을 찾지 못합니다.");
       lines.push("- 입력 항목은 `` `경로` `` 또는 URL로 적습니다. 작업 중 내용이 바뀌면 안 되는 자료는 `(frozen)`, 실행 시점에 달라질 수 있는 자료는 `(live)`를 붙이세요. 표시가 없으면 파일은 frozen, URL은 live로 처리됩니다.");
       lines.push("- `## Verification Plan`에는 사람이 읽을 설명과 함께 아래 형식의 ```json 블록을 하나 넣으세요. 이 목록은 승인 시점에 동결되며 이후 아무도 바꿀 수 없습니다.");
       lines.push('  형식: [{"id":"V1","method":"process|predicate|review|human","statement":"무엇을 확인하는가", ...}]');
       lines.push('  - `process`: 프로그램 실행으로 확인. `"executable"`과 `"argv"` 배열을 구조화해 적습니다(셸 문자열 금지). 예: {"id":"V1","method":"process","statement":"전체 테스트 통과","executable":"npm","argv":["test"]}');
+      // 실행기는 산문을 읽지 않는다. 작업 디렉터리를 설명 문장에만 적으면 저장소
+      // 루트에서 실행되어 임포트가 깨진다(실제로 구현 라운드가 이것 때문에 날아갔다).
+      lines.push('  - `process`의 선택 필드: `"cwd"`(실행 위치, 저장소 루트 기준 상대경로), `"timeoutMs"`, `"envNames"`(전달할 환경변수 이름 목록), `"expect":{"exitCode":0}`. **작업 디렉터리는 반드시 `cwd` 필드로 적으세요.** 설명 문장에만 적으면 실행기가 읽지 못해 다른 위치에서 실행됩니다. 예: {"id":"V1","method":"process","statement":"하위 프로젝트 테스트 통과","executable":"py","argv":["-3.12","-m","pytest","-q"],"cwd":"20_projects/01_어휘"}');
       lines.push('  - `predicate`: 산출물을 직접 열어 확인. `"check"`에 `kind`와 `path`를 적습니다. 사용 가능한 kind: exists, absent, hash, text.contains, text.matches, text.section, text.lines, json.path, csv.rows, csv.column. 예: {"id":"V2","method":"predicate","statement":"보고서에 결론 절이 있다","check":{"kind":"text.section","path":"report.md","expected":"결론"}}');
       lines.push('  - `review`: 기계가 판정할 수 없어 검수자의 판단이 필요한 항목. 예: {"id":"V3","method":"review","statement":"번역 논조가 원문과 맞는가"}');
       lines.push('  - `human`: 되돌릴 수 없는 외부 행동 등 사용자 승인이 필요한 항목. 꼭 필요할 때만 쓰세요. 승인 남발은 안전장치를 무력화합니다.');
