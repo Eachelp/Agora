@@ -57,3 +57,32 @@ test("코드 블록과 인라인 코드 안의 이름은 실제 멘션으로 보
 test("이메일 주소 안의 @는 실제 멘션으로 보지 않는다", () => {
   assert.deepEqual(parseMentions("contact@claude.ai로 보내고 @codex는 불러줘", AGENTS), ["codex"]);
 });
+
+// 이름표는 도구(Codex/Antigravity)가 아니라 대화 상대(GPT/Gemini)로 적는다.
+// 새 별칭을 앞에 두어 @ 자동완성 목록에 그것이 뜨게 하되, 옛 별칭을 남겨
+// @codex 습관과 저장된 대화 속 호출이 계속 동작해야 한다(id는 바꾸지 않는다).
+test("모델 이름과 도구 이름 별칭이 모두 같은 참가자로 풀린다", () => {
+  const caps = require("../src/providers/provider-capabilities");
+  const list = Object.values(caps).find((v) => Array.isArray(v) && v[0]?.aliases);
+  const agents = list.map((p) => ({ id: p.id, aliases: p.aliases }));
+
+  const codex = list.find((p) => p.id === "codex");
+  const agy = list.find((p) => p.id === "agy");
+  assert.equal(codex.name, "GPT");
+  assert.equal(agy.name, "Gemini");
+  // 자동완성 목록은 aliases[0]을 보여준다(chat.js mentionTargets).
+  assert.equal(codex.aliases[0], "gpt");
+  assert.equal(agy.aliases[0], "gemini");
+  // id는 그대로여야 저장된 전사·세션키·인증 경로가 깨지지 않는다.
+  assert.equal(codex.id, "codex");
+  assert.equal(agy.id, "agy");
+
+  for (const [token, expected] of [
+    ["@gpt", "codex"], ["@codex", "codex"],
+    ["@gemini", "agy"], ["@agy", "agy"], ["@antigravity", "agy"],
+  ]) {
+    assert.deepEqual(parseMentions(token, agents, []), [expected], token);
+  }
+  // 모델 버전 문자열은 호출로 오인되지 않아야 한다.
+  assert.deepEqual(parseMentions("@gpt-5.6-sol @gemini-3.7-flash", agents, []), []);
+});
