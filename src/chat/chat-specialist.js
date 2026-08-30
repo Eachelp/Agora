@@ -2147,6 +2147,19 @@ class SpecialistMixin {
 
   // 승인 대기 중인 전문 실행을 명시적으로 끝냅니다.
   // 이미 만들어진 Builder 변경은 복원하지 않고 보존합니다. 복원이 필요하면 BLOCKED 메뉴를 씁니다.
+  // BLOCKED 보류를 끝내고 그 백업을 정리한다. 정리 실패는 알리되 막지 않는다 —
+  // 이건 탈출 경로이고, 지우지 못한 폴더 때문에 취소가 거부되면 사용자가 갇힌다.
+  discardBlockedHold(heldBlocked, checkpoint) {
+    if (!heldBlocked) return false;
+    this.specialistBlocked = null;
+    if (!checkpoint || !this.checkpointEngine) return false;
+    try {
+      return this.checkpointEngine.cleanupCheckpoint(checkpoint)?.ok !== false;
+    } catch {
+      return false;
+    }
+  }
+
   cancelSpecialist() {
     // 정책 표는 살아 있는 run에서 취소를 허용한다. 그런데 여기서 active/resume만
     // 보면, 실행이 끝난 뒤 상태만 남은 경우(예: INTERRUPTED로 정리된 run)에
@@ -2168,9 +2181,14 @@ class SpecialistMixin {
       ? this.taskManager.runInfoForId(this.professionalRun.frozenRunId, this.meta.workspace)
       : null;
     const taskInfo = professionalAct ? taskFileInfo(this.professionalRun?.taskPath) : null;
+    // BLOCKED/INVALID는 status가 RUNNING이 아니라 professionalAct에 걸리지 않는다.
+    // 그런데 그 상태의 checkpoint는 specialistBlocked가 들고 있으므로 여기서 함께
+    // 집어야 한다. 안 그러면 "취소했습니다"라고 해놓고 BLOCKED 선택지가 계속 떠 있고
+    // 백업은 아무도 도달할 수 없는 고아로 디스크에 남는다.
+    const heldBlocked = this.specialistBlocked;
     const checkpoint = professionalAct
       ? this.checkpointForProfessionalRun()
-      : this.specialistResume?.checkpoint || null;
+      : this.specialistResume?.checkpoint || heldBlocked?.checkpoint || null;
     this.specialistResume = null;
     this.specialistActive = false;
     this.stopAllSilently();
@@ -2195,9 +2213,19 @@ class SpecialistMixin {
     if (this.professionalRun) {
       const transition = this.transitionProfessional({ type: "INTERRUPT", stopReason: "USER_INTERRUPTED" });
       if (!transition.ok) return this.professionalTransitionFailure("planner", transition);
+      // BLOCKED에서 취소했다면 그 보류 상태와 백업까지 함께 끝낸다. 남겨 두면
+      // 취소했다고 알려 놓고 선택지가 계속 뜨고, 백업은 도달 불가한 채 남는다.
+      // 정리 실패가 취소를 막지는 않는다(탈출 경로다). 사용자 변경은 그대로 둔다.
+      const discardedBackup = this.discardBlockedHold(heldBlocked, checkpoint);
       this.clearRecoveryState();
       this.emitSpecialistState();
-      this.appendSystem("전문 실행을 취소했습니다.");
+      this.appendSystem(
+        heldBlocked
+          ? `전문 실행을 취소했습니다. 구현자가 만든 변경은 그대로 남습니다.${
+              discardedBackup ? " 작업 전 백업은 정리했습니다." : ""
+            }`
+          : "전문 실행을 취소했습니다."
+      );
       return { ok: true, cancelled: true };
     }
     if (checkpoint && this.checkpointEngine) {

@@ -3747,3 +3747,76 @@ test("실행 상태만 남은 run도 취소할 수 있다", () => {
     fs.rmSync(workspace, { recursive: true, force: true });
   }
 });
+
+// BLOCKED/INVALID는 status가 RUNNING이 아니라 ACT 보존 분기에 걸리지 않는다.
+// 그 상태의 checkpoint는 specialistBlocked가 들고 있으므로 취소가 함께 정리하지
+// 않으면 "취소했습니다"라고 해놓고 선택지가 계속 뜨고 백업은 고아로 남는다.
+test("BLOCKED에서 취소하면 보류 상태와 백업이 함께 정리된다", () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-cancel-blocked-"));
+  try {
+    const cleaned = [];
+    const room = new ChatRoom({
+      agents: makeAgents(),
+      meta: { workspace },
+      taskManager: new TaskManager(),
+      checkpoint: {
+        createCheckpoint: async () => ({ supported: false }),
+        restoreCheckpoint: async () => ({ ok: true }),
+        cleanupCheckpoint: (cp) => { cleaned.push(cp.checkpointId); return { ok: true }; },
+      },
+      initialProfessionalRun: {
+        node: "IMPLEMENTING", status: "BLOCKED", stopReason: "BLOCKED", blockReason: "BLOCKED",
+        policy: { autoContinueReady: false, planAutoRevisions: 0, implementationAutoRevisions: 0 },
+        stages: {},
+      },
+      runAgent: fakeRunner({}),
+    });
+    room.specialistBlocked = {
+      checkpoint: { supported: true, checkpointId: "cp-abc", storageRoot: workspace },
+      canRestore: true, taskPath: null, runId: null, stage: "implementation", blockReason: "BLOCKED",
+    };
+
+    const result = room.cancelSpecialist();
+    assert.equal(result.ok, true, result.error);
+    assert.equal(room.specialistBlocked, null, "보류 상태가 남으면 선택지가 계속 뜹니다");
+    assert.deepEqual(cleaned, ["cp-abc"], "백업이 고아로 남으면 안 됩니다");
+    assert.equal(room.specialistState().blocked, false);
+    const systemText = room.messages.filter((m) => m.authorType === "system").map((m) => m.text).join("\n");
+    assert.match(systemText, /구현자가 만든 변경은 그대로 남습니다/);
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+// 백업 정리에 실패해도 취소는 성립해야 한다. 탈출 경로를 디스크 사정으로 막으면
+// "정리를 못 해서 나갈 수 없는" 역설이 된다.
+test("백업 정리에 실패해도 취소는 성립한다", () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-cancel-cleanfail-"));
+  try {
+    const room = new ChatRoom({
+      agents: makeAgents(),
+      meta: { workspace },
+      taskManager: new TaskManager(),
+      checkpoint: {
+        createCheckpoint: async () => ({ supported: false }),
+        restoreCheckpoint: async () => ({ ok: true }),
+        cleanupCheckpoint: () => { throw new Error("디스크 오류"); },
+      },
+      initialProfessionalRun: {
+        node: "IMPLEMENTING", status: "BLOCKED", stopReason: "BLOCKED",
+        policy: { autoContinueReady: false, planAutoRevisions: 0, implementationAutoRevisions: 0 },
+        stages: {},
+      },
+      runAgent: fakeRunner({}),
+    });
+    room.specialistBlocked = {
+      checkpoint: { supported: true, checkpointId: "cp-x", storageRoot: workspace },
+      canRestore: true, taskPath: null, runId: null, stage: "implementation", blockReason: "BLOCKED",
+    };
+    const result = room.cancelSpecialist();
+    assert.equal(result.ok, true, "정리 실패가 취소를 막으면 안 됩니다");
+    assert.equal(room.specialistBlocked, null);
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
