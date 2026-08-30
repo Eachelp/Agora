@@ -162,6 +162,11 @@ class ChatRoom extends EventEmitter {
     this.persistProfessionalRun = typeof options.persistProfessionalRun === "function"
       ? options.persistProfessionalRun
       : null;
+    // V1.5 System Journal appender. 없으면 기록을 생략한다(테스트·레거시 호환).
+    this.appendProfessionalEvent = typeof options.appendProfessionalEvent === "function"
+      ? options.appendProfessionalEvent
+      : null;
+    this.journalWriteFailureNotified = false;
     const initialProfessionalRun = options.initialProfessionalRun || options.meta?.professionalRun || null;
     this.professionalRun = initialProfessionalRun ? createProfessionalRun(initialProfessionalRun) : null;
     if (this.professionalRun?.status === "RUNNING") {

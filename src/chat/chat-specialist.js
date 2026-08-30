@@ -16,6 +16,8 @@ const {
 // Stage D — Assurance & Governance. v1 계약은 legacy 모드로 그대로 흐른다.
 const { AssuranceRun, MODES } = require("../agora/assurance/assurance-run");
 const { readLineage: readRunLineage } = require("../agora/assurance/run-lineage");
+// V1.5 System Journal — FSM 전이를 감사 이벤트로 매핑한다.
+const { journalEventsForTransition } = require("../agora/professional-journal");
 
 // checkpoint 실패 taxonomy를 사용자가 이해할 수 있는 한국어 설명으로 바꿉니다.
 // 원인 코드 자체(CHECKPOINT_*)는 evidence/Reviewer 판단에 그대로 쓰이므로
@@ -180,14 +182,44 @@ class SpecialistMixin {
 
   transitionProfessional(event) {
     if (!this.professionalRun) return { ok: true, state: null };
-    const prevStatus = this.professionalRun.status || null;
+    const prevRun = this.professionalRun;
+    const prevStatus = prevRun.status || null;
     const transition = transitionProfessionalRun(this.professionalRun, event);
     if (!transition.ok) return transition;
     if (!this.setProfessionalRun(transition.state)) {
       return { ok: false, reason: "전문 실행 상태를 저장하지 못했습니다." };
     }
+    this.journalProfessionalTransition(prevRun, event, transition.state);
     this.notifyProfessionalRunBoundary(event, prevStatus, transition.state);
     return transition;
+  }
+
+  // V1.5 System Journal — FSM 전이 단일 seam에서만 발행한다(§10). FSM 저장과
+  // 달리 Journal 실패는 실행을 멈추지 않는다: snapshot(meta.json)이 현재
+  // 상태의 기준이고 Journal은 감사 기록이다. 다만 실패를 성공으로 숨기지
+  // 않도록 세션당 한 번 시스템 메시지로 알린다(§10.4).
+  journalProfessionalTransition(prevRun, event, nextRun) {
+    if (typeof this.appendProfessionalEvent !== "function") return;
+    let entries = [];
+    try {
+      entries = journalEventsForTransition(prevRun, event, nextRun);
+    } catch {
+      entries = [];
+    }
+    for (const entry of entries) {
+      let saved = false;
+      try {
+        saved = this.appendProfessionalEvent(entry) !== false;
+      } catch {
+        saved = false;
+      }
+      if (!saved && !this.journalWriteFailureNotified) {
+        this.journalWriteFailureNotified = true;
+        this.appendSystem(
+          "전문 실행 기록(System Journal)을 저장하지 못했습니다. 실행은 계속되지만 이 세션의 감사 기록이 불완전할 수 있습니다."
+        );
+      }
+    }
   }
 
   // Stage C — canonical terminal transition에서만 harness lifecycle에 run 종료를

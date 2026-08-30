@@ -982,6 +982,10 @@ function roomMeta(meta) {
         const updated = store.updateMeta(sessionId, { professionalRun: professionalRun || null });
         return Boolean(updated);
       },
+      // V1.5 System Journal — 전문 실행 사실 기록(append-only). transcript와
+      // 별도 파일이며, 실패는 false로 드러나 room이 사용자에게 알린다.
+      appendProfessionalEvent: (event) =>
+        store.appendProfessionalEvent(sessionId, { ...event, sessionId }),
       // 전문 실행 재개(기획 답변·WAITING 복원·재기획) 시 기획·기획검수 담당자를
       // 프로젝트 설정에서 다시 읽는다. 실행 시작 때 저장한 stages 스냅샷에는 사용자가
       // 대기 중에 바꾼 담당자가 아니라 과거 담당자가 남아, 화면 표시와 실제 호출이
