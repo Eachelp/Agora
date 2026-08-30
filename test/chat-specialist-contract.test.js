@@ -1299,3 +1299,14 @@ test("Open Questions의 '없음'은 괄호·강조가 붙어도 질문으로 읽
     assert.equal(hasOpenQuestions(`## Open Questions\n${asking}`), true, asking);
   }
 });
+
+// 기록 담당자를 못 찾으면 두 경로 모두 조용히 건너뛰고 "통과했습니다"로 끝났다.
+// 기록은 이 실행의 산출물 중 하나이므로 빠졌으면 반드시 알려야 한다.
+test("기록을 건너뛰면 조용히 넘어가지 않고 알린다", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "src", "chat", "chat-specialist.js"), "utf8"
+  );
+  const skips = source.match(/기록 담당자가 지정되지 않아 이번 실행의 기록을 남기지 못했습니다/g) || [];
+  assert.equal(skips.length, 2, `기록 생략 안내가 두 경로 모두에 있어야 합니다(현재 ${skips.length})`);
+  assert.ok(source.includes("} else if (recordAfter) {"), "본 실행 경로의 생략 분기가 필요합니다");
+});

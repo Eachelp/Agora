@@ -2930,6 +2930,10 @@ class SpecialistMixin {
             this.appendSystem(`전문 모드 구현·검토는 통과했지만 기록관이 결과를 정리하지 못했습니다. (${recordError})`);
             return { ok: true, completedIterations: 1, recorded: false, recording: recorderResult?.text || "", recordError };
           }
+        } else {
+          // 기록은 이 실행의 산출물 중 하나다. 담당자가 없다고 조용히 건너뛰면
+          // 사용자는 "통과했습니다"만 보고 기록이 빠진 것을 모른다.
+          this.appendSystem("기록 담당자가 지정되지 않아 이번 실행의 기록을 남기지 못했습니다. 프로젝트 설정에서 지정한 뒤 \"기록 다시 생성\"으로 남길 수 있습니다.");
         }
         // Stage D-C — step에서도 Recorder 결과가 provenance 사슬을 닫는다(§26).
         this.recordAssuranceRecorder({ runInfo, ok: Boolean(recorderResult?.ok) });
@@ -3867,6 +3871,10 @@ class SpecialistMixin {
         this.appendSystem(`전문 모드 구현·검토는 통과했지만 기록관이 결과를 정리하지 못했습니다. (${recordError})`);
         return { ok: true, completedIterations: round, recorded: false, recording: recorderResult?.text || "", recordError };
       }
+    } else if (recordAfter) {
+      // 기록은 이 실행의 산출물 중 하나다. 담당자를 못 찾았다고 조용히 건너뛰면
+      // 사용자는 "통과했습니다"만 보고 기록이 빠진 것을 모른다.
+      this.appendSystem("기록 담당자가 지정되지 않아 이번 실행의 기록을 남기지 못했습니다. 프로젝트 설정에서 지정한 뒤 \"기록 다시 생성\"으로 남길 수 있습니다.");
     }
 
     if (runInfo?.runDir && this.taskManager?.writeRunResult && !this.taskManager.writeRunResult(runInfo, {
