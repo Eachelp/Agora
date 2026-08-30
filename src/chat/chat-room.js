@@ -44,6 +44,16 @@ const {
 //   총 실행 예산 두 가지 상한 아래에서만 진행됩니다.
 const DEFAULT_DISCUSSION_RUN_BUDGET = 9;
 
+// V1.5: 토론 길이를 사용자가 고를 수 있다(짧게 9 / 보통 15 / 길게 30 / 직접
+// 설정). 렌더러가 어떤 값을 보내든 실행 상한은 이 범위를 넘지 못한다.
+const DISCUSSION_TURN_BUDGET_MIN = 3;
+const DISCUSSION_TURN_BUDGET_MAX = 50;
+
+function clampDiscussionTurnBudget(value, fallback) {
+  if (!Number.isInteger(value)) return fallback;
+  return Math.max(DISCUSSION_TURN_BUDGET_MIN, Math.min(DISCUSSION_TURN_BUDGET_MAX, value));
+}
+
 // 작업용 채팅에서는 캐릭터 이모티콘 이미지를 더 이상 렌더링하지 않습니다.
 // 다만 예전 습관이나 실수로 에이전트가 [[CODEPET_EMOTE:...]] 표기를 남기면
 // 화면에 제어 태그가 그대로 노출되지 않도록 텍스트에서만 조용히 제거합니다.
@@ -1329,7 +1339,9 @@ class ChatRoom extends EventEmitter {
     }
     const discussionId = `disc-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
-    const budget = this.discussionRunBudget;
+    // 호출별 turnBudget이 방 기본값보다 우선한다. 방 인스턴스는 세션 수명
+    // 동안 캐시되므로 생성자 옵션만으로는 실행 중 길이 변경이 불가능하다.
+    const budget = clampDiscussionTurnBudget(options.turnBudget, this.discussionRunBudget);
     this.appendSystem(
       `자율 토론 시작 · ${pool.map((agent) => `@${agent.id}`).join(", ")} · 최대 ${budget}턴`
     );
@@ -1459,7 +1471,13 @@ class ChatRoom extends EventEmitter {
   }
 }
 
-module.exports = { ChatRoom, DEFAULT_DISCUSSION_RUN_BUDGET };
+module.exports = {
+  ChatRoom,
+  DEFAULT_DISCUSSION_RUN_BUDGET,
+  DISCUSSION_TURN_BUDGET_MIN,
+  DISCUSSION_TURN_BUDGET_MAX,
+  clampDiscussionTurnBudget,
+};
 
 
 installSpecialistMethods(ChatRoom);

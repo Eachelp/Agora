@@ -151,6 +151,16 @@ const PLAN_AUTO_REVISE_KEY = "agora.chat.planAutoRevise";
 const PLAN_AUTO_LIMIT_KEY = "agora.chat.planAutoLimit";
 const IMPLEMENTATION_AUTO_REVISE_KEY = "agora.chat.implementationAutoRevise";
 const IMPLEMENTATION_AUTO_LIMIT_KEY = "agora.chat.implementationAutoLimit";
+const DISCUSSION_LENGTH_KEY = "agora.chat.discussionLength";
+const DISCUSSION_CUSTOM_TURNS_KEY = "agora.chat.discussionCustomTurns";
+// V1.5 토론 길이 선택지. "manual"(직접 중단할 때까지)도 무한이 아니라
+// 실행 상한 50턴을 가진다 — Runtime에 무한루프를 만들지 않는다.
+const DISCUSSION_LENGTH_PRESETS = Object.freeze({
+  short: 9,
+  normal: 15,
+  long: 30,
+  manual: 50,
+});
 const SIDEBAR_MIN_WIDTH = 180;
 const SIDEBAR_MAX_WIDTH = 420;
 const SPECIALIST_STAGE_LABELS = Object.freeze({
@@ -168,6 +178,11 @@ const SPECIALIST_STAGE_LABELS = Object.freeze({
 function boundedRevisionLimit(value, fallback = 1) {
   const parsed = Number.parseInt(value, 10);
   return Number.isInteger(parsed) ? Math.min(3, Math.max(1, parsed)) : fallback;
+}
+
+function boundedDiscussionTurns(value, fallback = 15) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) ? Math.min(50, Math.max(3, parsed)) : fallback;
 }
 
 planAutoReviseToggle.checked = localStorage.getItem(PLAN_AUTO_REVISE_KEY) === "true";
@@ -3183,6 +3198,44 @@ discussionButton.addEventListener("click", () => {
       root.append(makeField(`@${agent.id} (${agent.name})`, checkbox));
     }
 
+    // V1.5: 토론 길이를 고를 수 있다. 저장된 선택이 없으면 기존 기본(9턴)
+    // 그대로다. "직접 중단할 때까지"도 상한 50턴 안에서만 돈다.
+    const lengthSelect = document.createElement("select");
+    for (const [value, label] of [
+      ["short", "짧게 (9턴)"],
+      ["normal", "보통 (15턴)"],
+      ["long", "길게 (30턴)"],
+      ["custom", "직접 설정"],
+      ["manual", "직접 중단할 때까지 (최대 50턴)"],
+    ]) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      lengthSelect.append(option);
+    }
+    const savedLength = localStorage.getItem(DISCUSSION_LENGTH_KEY);
+    lengthSelect.value =
+      savedLength && (savedLength === "custom" || DISCUSSION_LENGTH_PRESETS[savedLength])
+        ? savedLength
+        : "short";
+
+    const customInput = document.createElement("input");
+    customInput.type = "number";
+    customInput.min = "3";
+    customInput.max = "50";
+    customInput.value = String(
+      boundedDiscussionTurns(localStorage.getItem(DISCUSSION_CUSTOM_TURNS_KEY))
+    );
+    const customField = makeField("발언 수 (3~50)", customInput);
+
+    const syncCustomField = () => {
+      customField.hidden = lengthSelect.value !== "custom";
+    };
+    lengthSelect.addEventListener("change", syncCustomField);
+    syncCustomField();
+
+    root.append(makeField("토론 길이", lengthSelect), customField);
+
     const startBtn = document.createElement("button");
     startBtn.type = "button";
     startBtn.className = "button button-primary popover-submit";
@@ -3195,8 +3248,17 @@ discussionButton.addEventListener("click", () => {
         flashNotice("토론에는 두 명 이상을 선택해야 합니다.");
         return;
       }
+      const lengthChoice = lengthSelect.value;
+      const turnBudget =
+        lengthChoice === "custom"
+          ? boundedDiscussionTurns(customInput.value)
+          : DISCUSSION_LENGTH_PRESETS[lengthChoice] || DISCUSSION_LENGTH_PRESETS.short;
+      localStorage.setItem(DISCUSSION_LENGTH_KEY, lengthChoice);
+      if (lengthChoice === "custom") {
+        localStorage.setItem(DISCUSSION_CUSTOM_TURNS_KEY, String(turnBudget));
+      }
       closePopover();
-      await call(window.chatApi.discussionStart(activeSessionId, agentIds));
+      await call(window.chatApi.discussionStart(activeSessionId, agentIds, { turnBudget }));
     });
     root.append(startBtn);
   });

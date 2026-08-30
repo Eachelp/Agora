@@ -27,7 +27,11 @@ const {
 } = require("../providers/provider-capabilities");
 const { toDiagnostics } = require("../providers/provider-diagnostics");
 const { roomAgentsFromCapabilities } = require("./chat-agents");
-const { ChatRoom, DEFAULT_DISCUSSION_RUN_BUDGET } = require("./chat-room");
+const {
+  ChatRoom,
+  DEFAULT_DISCUSSION_RUN_BUDGET,
+  clampDiscussionTurnBudget,
+} = require("./chat-room");
 const { MAX_SPECIALIST_PROMPT_CHARS } = require("./chat-prompt");
 const { isStateAllowed, allowedIpcFor, isActiveProfessionalRun } = require("./professional-ipc-policy");
 const {
@@ -1899,15 +1903,20 @@ function roomMeta(meta) {
 
     ipcMain.handle(
       "chat:discussion:start",
-      wrap(async ({ sessionId, agentIds }) => {
+      wrap(async ({ sessionId, agentIds, turnBudget }) => {
         requireSession(sessionId);
         const room = getRoom(sessionId);
         enforceProfessionalPolicy(room, "discussion");
         const cleanIds = Array.isArray(agentIds)
           ? agentIds.filter((id) => typeof id === "string")
           : undefined;
+        // V1.5: 토론 길이는 호출별 옵션이다. 정수가 아니면 넘기지 않아 방
+        // 기본값(9) 경로를 그대로 탄다. 범위는 방 계층에서 한 번 더 clamp된다.
+        const cleanTurnBudget = Number.isInteger(turnBudget)
+          ? clampDiscussionTurnBudget(turnBudget, undefined)
+          : undefined;
         // 토론은 오래 걸리므로 시작 확인만 동기로 반환하고, 진행은 이벤트로 전달됩니다.
-        const started = room.startDiscussion({ agentIds: cleanIds });
+        const started = room.startDiscussion({ agentIds: cleanIds, turnBudget: cleanTurnBudget });
         const result = await Promise.race([
           started,
           new Promise((resolve) => setImmediate(() => resolve({ ok: true, pending: true }))),
