@@ -4279,7 +4279,28 @@ composerBox.addEventListener("drop", async (event) => {
 });
 
 // --- 멘션 자동완성 ---
+// V1.5 역할 멘션 항목. 별칭은 main의 chat-mention ROLE_ALIASES와 같은 완전
+// 단어형이어야 한다 — 어긋나면 자동완성으로 넣은 멘션이 라우팅되지 않는다.
+const ROLE_MENTION_TARGETS = Object.freeze([
+  { alias: "기획자", label: "기획자에게 질문 (읽기 전용)", roleId: "planning" },
+  { alias: "구현자", label: "구현자에게 질문 (읽기 전용)", roleId: "implementation" },
+  { alias: "검토자", label: "검토자에게 질문 (읽기 전용)", roleId: "review" },
+  { alias: "기록자", label: "기록자에게 질문 (읽기 전용)", roleId: "recorder" },
+]);
+
+function roleMentionAvailable(project, roleId) {
+  let config = roleConfigFromProject(project, roleId);
+  // 기록 역할은 비워 두면 검토 담당자를 재사용한다(main의 fallback과 동일).
+  if (!config.agentId && roleId === "recorder") {
+    config = roleConfigFromProject(project, "review");
+  }
+  if (!config.agentId) return false;
+  const agent = agents.find((entry) => entry.id === config.agentId);
+  return Boolean(agent && agent.available && agent.enabled);
+}
+
 function mentionTargets() {
+  const project = activeProjectEntry();
   return [
     ...agents.map((agent) => ({
       alias: agent.aliases[0],
@@ -4293,6 +4314,12 @@ function mentionTargets() {
       color: "#52525b",
       available: agents.some((agent) => agent.available && agent.enabled),
     },
+    ...ROLE_MENTION_TARGETS.map((role) => ({
+      alias: role.alias,
+      label: role.label,
+      color: "#7c6f64",
+      available: roleMentionAvailable(project, role.roleId),
+    })),
   ];
 }
 

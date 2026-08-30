@@ -26,7 +26,8 @@ const {
   toPublicProviders,
 } = require("../providers/provider-capabilities");
 const { toDiagnostics } = require("../providers/provider-diagnostics");
-const { roomAgentsFromCapabilities } = require("./chat-agents");
+const { roomAgentsFromCapabilities, GROUP_ALIASES } = require("./chat-agents");
+const { parseMentions, parseRoleMentions } = require("./chat-mention");
 const {
   ChatRoom,
   DEFAULT_DISCUSSION_RUN_BUDGET,
@@ -865,6 +866,15 @@ function roomMeta(meta) {
     }
     return lines.join("\n");
   }
+
+  // V1.5 역할 멘션(CONSULT) → 프로젝트 역할·stage 매핑. 멘션 어휘는
+  // chat-mention의 ROLE_ALIASES가, 담당자 해석은 specialistStageFor가 소유한다.
+  const CONSULT_ROLE_DEFS = Object.freeze({
+    planner: Object.freeze({ projectRole: "planning", stage: "planner", label: "기획자" }),
+    builder: Object.freeze({ projectRole: "implementation", stage: "implementation", label: "구현자" }),
+    reviewer: Object.freeze({ projectRole: "review", stage: "review", label: "검토자" }),
+    recorder: Object.freeze({ projectRole: "recorder", stage: "recorder", label: "기록자" }),
+  });
 
   function specialistStageFor(project, room, roleId) {
     const roleLabel = {
@@ -1882,6 +1892,44 @@ function roomMeta(meta) {
           if (record) {
             attachments.push(record);
             pending.delete(id);
+          }
+        }
+        // V1.5 역할 멘션 → 읽기 전용 상담(CONSULT). @claude/@gpt/@모두 같은
+        // agent/group 멘션이 하나라도 있으면 기존 동작이 우선한다(호환 경계).
+        // 역할 멘션은 그 외의 메시지에서만 해석하며, metadata 없는 멘션은
+        // 항상 CONSULT다 — 실행은 PLAN/실행/전체 실행 버튼 경로뿐이다(INV-2).
+        if (!professionalDraft) {
+          const roleMentions = parseRoleMentions(String(text || ""));
+          const agentMentions = parseMentions(String(text || ""), room.agents, GROUP_ALIASES);
+          if (roleMentions.length > 0 && agentMentions.length === 0) {
+            const entry = room.sendUserMessage({ text, attachments, recordOnly: true });
+            if (!entry) throw new Error("보낼 내용이 없습니다.");
+            const roleDef = CONSULT_ROLE_DEFS[roleMentions[0]];
+            const project = projectForSession(store.readMeta(sessionId));
+            const resolved = project
+              ? specialistStageFor(project, room, roleDef.projectRole)
+              : { ok: false, error: "프로젝트가 없어 역할 담당자를 확인할 수 없습니다." };
+            if (!resolved.ok) {
+              // 조용한 무시 금지: 왜 응답이 없는지 채팅에 남긴다.
+              room.appendSystem(`${roleDef.label} 상담을 시작하지 못했습니다: ${resolved.error}`);
+              return {};
+            }
+            const consult = room.consultRole({
+              roleId: roleMentions[0],
+              stage: roleDef.stage,
+              roleLabel: roleDef.label,
+              agent: resolved.agent,
+              agentConfig: resolved.agentConfig,
+            });
+            // 상담 응답은 오래 걸릴 수 있으므로 시작 확인만 동기로 반환한다.
+            // 시작 자체가 거부되면(토론 중 등) 그 오류는 여기서 바로 던진다.
+            const result = await Promise.race([
+              consult,
+              new Promise((resolve) => setImmediate(() => resolve({ ok: true, pending: true }))),
+            ]);
+            consult.catch(() => {});
+            if (result && result.ok === false) throw new Error(result.error);
+            return {};
           }
         }
         const entry = room.sendUserMessage({

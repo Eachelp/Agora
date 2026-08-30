@@ -76,6 +76,7 @@ function buildAgentPrompt({
   workflowContext = "",
   discussion = null,
   specialist = null,
+  consult = null,
   handoff = null,
   broadcast = null,
   mentionsEnabled = !discussion,
@@ -307,6 +308,28 @@ function buildAgentPrompt({
       lines.push("- 응답 마지막 줄에 반드시 다음 중 하나만 붙이세요: [[CODEPET_DISCUSSION:CONTINUE]], [[CODEPET_DISCUSSION:AGREE]], [[CODEPET_DISCUSSION:PASS]], [[CODEPET_DISCUSSION:CONCLUDE]].");
       lines.push("- 새 기여는 CONTINUE, 새 내용 없이 동의하면 AGREE, 할 말이 없으면 PASS, 충분한 최종 결론을 제시하면 CONCLUDE를 선택하세요.");
     }
+  }
+  if (consult) {
+    // V1.5 역할 상담(CONSULT) — 제안서 §7. 전문 실행이 아니라 일반 턴이며,
+    // 역할 관점과 읽기 전용 계약만 덧씌운다. STATUS/VERDICT 마커를 요구하지
+    // 않는다 — 단일 응답으로 끝나는 상담이지 파이프라인 단계가 아니다.
+    const consultRoleLines = {
+      planner: "기획자 관점: 목표·범위·요구사항·작업 분해를 중심으로 답하되, Task나 실행 계획을 확정하지 마세요.",
+      builder: "구현자 관점: 코드 구조·실현 가능성·원인·비용을 중심으로 설명하세요. 파일은 읽기만 할 수 있습니다.",
+      reviewer: "검토자 관점: 타당한 점·누락·리스크를 근거와 함께 짚으세요. 정식 검수(PASS/FIX_REQUIRED 판정)가 아닙니다.",
+      recorder: "기록자 관점: 지금까지의 논의를 정리해 답하되, 새로운 결정이나 판정을 만들지 마세요.",
+    };
+    lines.push("");
+    lines.push(`=== 역할 상담: ${consult.label || consult.role} ===`);
+    lines.push(
+      `- 이번 턴에 한해 전문 역할 "${consult.label || consult.role}"의 관점에서 답합니다. 이 호출은 질문 전달이지 실행 승인이 아닙니다.`
+    );
+    lines.push("- 읽기 전용 단일 응답입니다. 파일을 수정하지 말고, Task·Run·검수 판정을 만들지 마세요.");
+    const roleLine = consultRoleLines[consult.role];
+    if (roleLine) lines.push(`- ${roleLine}`);
+    lines.push(
+      "- 구현·수정이 필요한 요청이라면 직접 실행하지 말고, 전문 모드의 PLAN → 실행 경로로 시작하도록 안내하세요."
+    );
   }
   if (specialist) {
     const stageLabels = {

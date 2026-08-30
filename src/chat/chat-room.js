@@ -3,7 +3,11 @@ const path = require("node:path");
 const { GROUP_ALIASES } = require("./chat-agents");
 const { parseMentions } = require("./chat-mention");
 const { buildAgentPrompt } = require("./chat-prompt");
-const { specialistPermissionMode } = require("./chat-argv");
+const {
+  specialistPermissionMode,
+  minPermissionMode,
+  SPECIALIST_STAGE_CAPS,
+} = require("./chat-argv");
 const {
   createProfessionalRun,
   transitionProfessionalRun,
@@ -936,6 +940,16 @@ class ChatRoom extends EventEmitter {
     let permissionMode;
     if (context.discussionSummary || context.simplifyMeta) {
       permissionMode = "chat";
+    } else if (context.consult) {
+      // V1.5 역할 상담(CONSULT)은 읽기 전용 단일 응답이다(INV-3). 역할 cap과
+      // 세션 권한, workspace-read 상한의 최솟값으로 강등된다 — Builder에게
+      // 물어봐도 파일을 수정할 수 없고, 세션 권한보다 높은 권한을 얻는
+      // 경로도 아니다(chat 권한 세션이면 chat 그대로).
+      permissionMode = minPermissionMode(
+        this.meta.permissionMode,
+        "workspace-read",
+        SPECIALIST_STAGE_CAPS[context.consult.stage] || "workspace-read"
+      );
     } else if (specialistStage) {
       const auth = this.activeRunAuthorization || "workspace-write";
       permissionMode = specialistPermissionMode(specialistStage, auth);
@@ -968,11 +982,12 @@ class ChatRoom extends EventEmitter {
         discussionSummary: context.discussionSummary || null,
         simplifyMeta: context.simplifyMeta || null,
         specialist: context.specialist || null,
+        consult: context.consult || null,
         broadcast: context.broadcast || null,
         handoff: context.handoff || null,
         // 전문 모드 실행 중에는 @멘션 호출을 끕니다. 구현·검토·기록이
         // 담당자 밖으로 새어 나가는 것을 막기 위해서입니다.
-        mentionsEnabled: !context.discussion && !context.specialist && !context.discussionSummary && !context.simplifyMeta && mentionDepth < this.mentionChainLimit,
+        mentionsEnabled: !context.discussion && !context.specialist && !context.discussionSummary && !context.simplifyMeta && !context.consult && mentionDepth < this.mentionChainLimit,
       });
     } catch (error) {
       const stopReason = error?.code || "PROMPT_BUILD_FAILED";
@@ -1151,7 +1166,8 @@ class ChatRoom extends EventEmitter {
       ...(result.deliveries ? { deliveries: result.deliveries } : {}),
     });
     // 토론 모드는 자체 턴 오케스트레이션이 있으므로 멘션 호출을 만들지 않습니다.
-    if (!context.discussion && !context.specialist && !context.discussionSummary && !context.simplifyMeta) {
+    // 역할 상담(consult)도 단일 응답 계약이라 연쇄를 만들지 않습니다.
+    if (!context.discussion && !context.specialist && !context.discussionSummary && !context.simplifyMeta && !context.consult) {
       this.scheduleMentionReplies(
         agent,
         text,
@@ -1187,6 +1203,38 @@ class ChatRoom extends EventEmitter {
       if (!target || !target.available || target.enabled === false) continue;
       this.scheduleResponse(target, { mentionDepth: depth + 1, attachments, turnRootId });
     }
+  }
+
+  // V1.5 직접 역할 호출(CONSULT) — 제안서 §7. 멘션은 Target이지 실행 승인이
+  // 아니므로(INV-2) 읽기 전용 단일 응답만 만든다. Professional Run·Task·
+  // Freeze를 만들지 않고 전문 FSM도 시작하지 않는다 — recordDiscussion처럼
+  // 일반 턴으로 실행하고 역할 관점과 읽기 전용 계약만 프롬프트로 덧씌운다.
+  // (specialist stage 턴은 harness가 professionalRunId를 요구하므로 run 없는
+  // 상담을 stage 턴으로 보내면 fail-closed로 죽는다.)
+  async consultRole({ roleId, stage, agent, agentConfig, roleLabel }) {
+    if (this.discussionRequested || this.discussionActive) {
+      return { ok: false, error: "토론이 진행 중에는 역할을 호출할 수 없습니다." };
+    }
+    if (this.isSpecialistLocked()) {
+      return {
+        ok: false,
+        error: "전문 실행이 진행 중이거나 결정을 기다리고 있어 역할 상담을 시작할 수 없습니다.",
+      };
+    }
+    const target = agent && agent.id ? this.findAgent(agent.id) : null;
+    if (!target || !target.available || target.enabled === false) {
+      return { ok: false, error: "이 역할의 담당 에이전트를 사용할 수 없습니다." };
+    }
+    const label = roleLabel || roleId;
+    this.appendSystem(`@${target.id}가 ${label} 역할의 관점에서 답합니다. (읽기 전용 상담)`);
+    const outcome = await this.scheduleResponse(target, {
+      consult: { role: roleId, stage: stage || null, label },
+      agentConfig,
+    });
+    if (!outcome) return { ok: false, cancelled: true };
+    return outcome.ok
+      ? { ok: true, messageId: outcome.messageId || null }
+      : { ok: false, error: outcome.error || "역할 상담 응답에 실패했습니다." };
   }
 
   // 다른 AI가 보낸 특정 메시지를 선택한 에이전트에게 전달해 이어서 답하게 합니다.
