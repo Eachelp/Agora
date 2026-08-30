@@ -496,3 +496,37 @@ test("경로가 아닌 입력 항목은 오류에서 눈에 띄게 인용된다"
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// Planner는 `(frozen)` 말고도 `(mutable)`, `(신규, 사본)`, `(39MB)`처럼 무엇이든 적는다.
+// 아는 낱말만 걷어내면 모르는 주석이 경로에 남아 "파일을 찾을 수 없습니다"가 된다.
+// 끝에 공백을 두고 붙은 괄호만 걷고, 이름 가운데 괄호는 실제 파일이므로 유지한다.
+test("항목 끝의 괄호 주석은 종류와 무관하게 걷어내고 이름 속 괄호는 지킨다", () => {
+  const parsed = taskSchema.parseTaskV2(
+    ["## Goal", "g",
+      "## Inputs / Source Data",
+      "- `src/language_aig/models.py` (mutable)",
+      "- `resources/split_manifest.json` (frozen, 39MB)",
+      "- `resources/검사(BFI).xlsx`",
+      "## Requirements", "r", "## Work Approach", "w",
+      "## Deliverables",
+      "- `out/a.json` (신규, 무변경 사본)",
+      "- out/b.json — 설명",
+      "- `out/검사(BFI).xlsx`",
+      "## Acceptance Criteria", "a", "## Verification Plan", "v", "## Out of Scope", "o"].join("\n")
+  );
+  const inputs = parsed.inputs.items.map((i) => i.locator);
+  assert.deepEqual(inputs, [
+    "src/language_aig/models.py",
+    "resources/split_manifest.json",
+    "resources/검사(BFI).xlsx",
+  ]);
+  // 모드 표시가 든 괄호는 여전히 모드로 읽힌다.
+  assert.equal(parsed.inputs.items[1].mode, "frozen");
+  assert.equal(parsed.inputs.items[1].modeDeclared, true);
+
+  const dels = parsed.deliverables.items;
+  assert.equal(dels[0].locator, "out/a.json", "닫는 백틱까지 함께 벗겨져야 합니다");
+  assert.equal(dels[1].locator, "out/b.json");
+  assert.equal(dels[1].description, "설명");
+  assert.equal(dels[2].locator, "out/검사(BFI).xlsx");
+});

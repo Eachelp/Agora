@@ -193,6 +193,22 @@ function looksLikeUrl(value) {
 // "`data/sales.csv` (frozen) — 매출 원본" 형태의 한 줄을 input으로 읽는다.
 // mode를 명시하지 않으면 URL은 live, 그 외(작업 폴더 파일)는 frozen이 기본이다.
 // 파일은 "같은 내용이어야 한다"가 기본 기대이기 때문이다.
+// 항목 끝에 공백을 두고 붙은 괄호는 경로가 아니라 주석이다.
+// `(frozen)` 말고도 Planner는 `(mutable)`, `(신규)`, `(39MB)`처럼 무엇이든 적는다.
+// 아는 낱말만 걷어내면 모르는 주석이 경로에 남아 "파일을 찾을 수 없습니다"가 된다.
+//
+// 끝에 붙은 것만, 그리고 앞에 공백이 있을 때만 걷어낸다. `검사(BFI).xlsx`처럼
+// 괄호가 이름 가운데 있는 실제 파일은 건드리지 않는다.
+function stripTrailingAnnotation(value) {
+  let text = String(value || "").trim();
+  let previous = null;
+  while (text !== previous) {
+    previous = text;
+    text = text.replace(/\s+\([^()]*\)$/, "").trim();
+  }
+  return text;
+}
+
 function parseInputItem(text, index) {
   const raw = String(text || "").trim();
   if (!raw) return null;
@@ -209,7 +225,9 @@ function parseInputItem(text, index) {
   if (modeMatch) {
     mode = /\b(?:live|실시간)\b/i.test(modeMatch[1]) ? INPUT_MODES.LIVE : INPUT_MODES.FROZEN;
   }
-  const withoutMode = raw.replace(new RegExp(MODE_PAREN.source, "gi"), " ").replace(/\s{2,}/g, " ").trim();
+  const withoutMode = stripTrailingAnnotation(
+    raw.replace(new RegExp(MODE_PAREN.source, "gi"), " ").replace(/\s{2,}/g, " ").trim()
+  );
   const [locatorPart, ...descParts] = withoutMode.split(/\s+[—–-]{1,2}\s+/);
   const locator = stripDecorations(locatorPart);
   if (!locator) return null;
@@ -228,7 +246,9 @@ function parseDeliverableItem(text, index) {
   const raw = String(text || "").trim();
   if (!raw) return null;
   const [locatorPart, ...descParts] = raw.split(/\s+[—–-]{1,2}\s+/);
-  const locator = stripDecorations(locatorPart);
+  // Inputs와 같은 이유로 끝에 붙은 괄호 주석을 걷어낸다(경로 가운데 괄호는 유지).
+  // 주석을 먼저 걷어야 `경로` 뒤의 닫는 백틱이 문자열 끝에 와서 함께 벗겨진다.
+  const locator = stripDecorations(stripTrailingAnnotation(locatorPart));
   if (!locator) return null;
   return {
     deliverableId: `DL-${String(index + 1).padStart(2, "0")}`,
