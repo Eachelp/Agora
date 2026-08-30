@@ -1274,3 +1274,28 @@ test("READY + missing TASK.md rehydration: 파일 부재 시 생성 즉시 planR
   assert.equal(calls.length, 0, "AI 호출이 없어야 한다");
   assert.equal(checkpointCalls.length, 0, "Checkpoint 호출이 없어야 한다");
 });
+
+// 검수자가 "(없음 — 사용자 결정이 필요한 사항은 없습니다)"라고 명시했는데도 여는 괄호
+// 하나 때문에 질문으로 읽어, 결정할 것이 없다고 적힌 라운드에서 사용자를 세웠다.
+// 부정 표현 앞의 괄호·강조는 자연스러운 글쓰기이므로 판정 전에 걷어낸다.
+test("Open Questions의 '없음'은 괄호·강조가 붙어도 질문으로 읽지 않는다", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "src", "chat", "chat-specialist.js"), "utf8"
+  );
+  const body = source.slice(source.indexOf("function hasOpenQuestions"));
+  const hasOpenQuestions = new Function("return " + body.slice(0, body.indexOf("\n}\n") + 2))();
+
+  for (const empty of [
+    "(없음 — 사용자 결정이 필요한 사항은 없습니다. V8은 검수자 판단 항목입니다.)",
+    "없음",
+    "**없음** 위 항목은 기획자가 보완할 수 있습니다",
+    "없음. 그러나 다음 라운드에서 다시 봅니다",
+    "(None — nothing needs a decision.)",
+  ]) {
+    assert.equal(hasOpenQuestions(`## Open Questions\n${empty}`), false, empty);
+  }
+  // 진짜 질문은 괄호 안에 있어도 사용자에게 가야 한다.
+  for (const asking of ["백업을 파일로 뜰까요?", "(백업을 파일로 뜰까요?)"]) {
+    assert.equal(hasOpenQuestions(`## Open Questions\n${asking}`), true, asking);
+  }
+});
