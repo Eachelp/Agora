@@ -6,8 +6,16 @@
 // (INV-1), 발언자 선택은 여기의 speakerForTurn만이 결정한다.
 
 const DISCUSSION_CYCLE_BUDGET_MIN = 1;
-const DISCUSSION_CYCLE_BUDGET_MAX = 5;
 const DEFAULT_DISCUSSION_CYCLE_BUDGET = 3;
+// 토론 전체의 hard ceiling. 자유토론의 turnBudget 상한과 같은 값을 공유한다 —
+// 구조화 토론이라고 별도의 magic number(예: 5 cycle)를 둘 이유가 없다.
+// 4-step preset이면 최대 12 cycle(48턴)이다.
+const DISCUSSION_HARD_TURN_CEILING = 50;
+
+function maxCycleBudget(stepCount) {
+  const steps = Number.isInteger(stepCount) && stepCount > 0 ? stepCount : 4;
+  return Math.max(DISCUSSION_CYCLE_BUDGET_MIN, Math.floor(DISCUSSION_HARD_TURN_CEILING / steps));
+}
 
 // slot은 참가자 배열 인덱스다. 발안과 수정처럼 같은 참가자가 한 cycle에서
 // 두 단계를 맡을 수 있으므로 step 수와 참가자 수는 다르다.
@@ -47,9 +55,9 @@ const DISCUSSION_PRESETS = Object.freeze({
   }),
 });
 
-function clampCycleBudget(value) {
+function clampCycleBudget(value, stepCount) {
   if (!Number.isInteger(value)) return DEFAULT_DISCUSSION_CYCLE_BUDGET;
-  return Math.max(DISCUSSION_CYCLE_BUDGET_MIN, Math.min(DISCUSSION_CYCLE_BUDGET_MAX, value));
+  return Math.max(DISCUSSION_CYCLE_BUDGET_MIN, Math.min(maxCycleBudget(stepCount), value));
 }
 
 // Preset·참가자 매핑·cycle 수를 실행 가능한 protocol로 확정한다.
@@ -71,7 +79,7 @@ function resolveProtocol({ presetId, participantIds, cycleBudget } = {}) {
   if (new Set(ids).size < 2) {
     return { ok: false, error: "토론에는 서로 다른 참가자가 두 명 이상 필요합니다." };
   }
-  const cycles = clampCycleBudget(cycleBudget);
+  const cycles = clampCycleBudget(cycleBudget, preset.steps.length);
   const steps = preset.steps.map((step) => ({
     agentId: ids[step.slot],
     slot: step.slot,
@@ -113,8 +121,9 @@ function isFinalStep(protocol, turn) {
 module.exports = {
   DISCUSSION_PRESETS,
   DISCUSSION_CYCLE_BUDGET_MIN,
-  DISCUSSION_CYCLE_BUDGET_MAX,
   DEFAULT_DISCUSSION_CYCLE_BUDGET,
+  DISCUSSION_HARD_TURN_CEILING,
+  maxCycleBudget,
   clampCycleBudget,
   resolveProtocol,
   speakerForTurn,

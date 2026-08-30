@@ -33,7 +33,7 @@ const {
   DEFAULT_DISCUSSION_RUN_BUDGET,
   clampDiscussionTurnBudget,
 } = require("./chat-room");
-const { DISCUSSION_PRESETS } = require("../agora/discussion-protocol");
+const { DISCUSSION_PRESETS, maxCycleBudget } = require("../agora/discussion-protocol");
 const { MAX_SPECIALIST_PROMPT_CHARS } = require("./chat-prompt");
 const { isStateAllowed, allowedIpcFor, isActiveProfessionalRun } = require("./professional-ipc-policy");
 const {
@@ -1281,6 +1281,8 @@ function roomMeta(meta) {
         slotCount: preset.slotCount,
         slotLabels,
         stepNames: preset.steps.map((step) => step.roleName),
+        // cycle 상한은 토론 전체 hard ceiling(50턴)에서 유도된다.
+        maxCycles: maxCycleBudget(preset.steps.length),
       };
     });
   }

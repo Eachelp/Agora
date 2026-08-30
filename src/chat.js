@@ -3240,17 +3240,31 @@ discussionButton.addEventListener("click", () => {
     }
     const presetField = makeField("Preset", presetSelect);
 
+    // cycle 상한은 preset의 step 수에 따라 다르다(전체 hard ceiling 50턴 공유,
+    // 4-step preset이면 12 cycle). preset을 바꾸면 선택지를 다시 만든다.
     const cycleSelect = document.createElement("select");
-    for (let cycles = 1; cycles <= 5; cycles += 1) {
-      const option = document.createElement("option");
-      option.value = String(cycles);
-      option.textContent = `${cycles} 사이클`;
-      cycleSelect.append(option);
-    }
-    const savedCycles = Number.parseInt(localStorage.getItem(DISCUSSION_CYCLES_KEY), 10);
-    cycleSelect.value = String(
-      Number.isInteger(savedCycles) && savedCycles >= 1 && savedCycles <= 5 ? savedCycles : 3
-    );
+    const rebuildCycleOptions = () => {
+      const preset = discussionPresets.find((entry) => entry.id === presetSelect.value);
+      const maxCycles = Number.isInteger(preset?.maxCycles) && preset.maxCycles >= 1
+        ? preset.maxCycles
+        : 12;
+      const previous = Number.parseInt(cycleSelect.value, 10);
+      const saved = Number.parseInt(localStorage.getItem(DISCUSSION_CYCLES_KEY), 10);
+      cycleSelect.replaceChildren();
+      for (let cycles = 1; cycles <= maxCycles; cycles += 1) {
+        const option = document.createElement("option");
+        option.value = String(cycles);
+        option.textContent = `${cycles} 사이클`;
+        cycleSelect.append(option);
+      }
+      const wanted = Number.isInteger(previous) ? previous : saved;
+      cycleSelect.value = String(
+        Number.isInteger(wanted) && wanted >= 1 && wanted <= maxCycles
+          ? wanted
+          : Math.min(3, maxCycles)
+      );
+    };
+    rebuildCycleOptions();
     const cycleField = makeField("반복", cycleSelect);
 
     const slotWrap = document.createElement("div");
@@ -3275,7 +3289,10 @@ discussionButton.addEventListener("click", () => {
         slotWrap.append(makeField(preset.slotLabels[slot] || `역할 ${slot + 1}`, select));
       }
     };
-    presetSelect.addEventListener("change", rebuildSlots);
+    presetSelect.addEventListener("change", () => {
+      rebuildSlots();
+      rebuildCycleOptions();
+    });
     rebuildSlots();
 
     root.append(presetField, cycleField, slotWrap);

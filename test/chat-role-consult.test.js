@@ -125,6 +125,32 @@ test("consultRole은 질문의 첨부를 상담 턴에 전달한다", async () =
   assert.deepEqual(calls[0].attachments, [attachment]);
 });
 
+test("consultRole은 Role Invocation을 Journal에 남긴다", async () => {
+  const appended = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({}),
+    appendProfessionalEvent: (event) => {
+      appended.push(event);
+      return true;
+    },
+  });
+  await room.consultRole({
+    roleId: "builder",
+    stage: "implementation",
+    roleLabel: "구현자",
+    agent: { id: "codex" },
+  });
+  await settle(room);
+  assert.deepEqual(
+    appended.map((event) => [event.type, event.role, event.purpose, event.status]),
+    [
+      ["ROLE_STARTED", "builder", "consult", null],
+      ["ROLE_FINISHED", "builder", "consult", "DONE"],
+    ],
+  );
+});
+
 test("consultRole은 배타적 workspace mutation lease를 잡지 않는다", async () => {
   const leaseCalls = [];
   const mutationLease = {

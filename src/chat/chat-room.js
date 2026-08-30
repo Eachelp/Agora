@@ -36,7 +36,12 @@ const {
 const {
   installDeterministicProfessionalRecorder,
 } = require("./chat-professional-recorder");
-const { resolveProtocol, speakerForTurn, isFinalStep } = require("../agora/discussion-protocol");
+const {
+  resolveProtocol,
+  speakerForTurn,
+  isFinalStep,
+  DISCUSSION_HARD_TURN_CEILING,
+} = require("../agora/discussion-protocol");
 
 // 채팅방 오케스트레이션.
 // - 멘션이 없으면 세션 참가자 전체, 있으면 멘션된 참가자만 응답합니다.
@@ -51,8 +56,9 @@ const DEFAULT_DISCUSSION_RUN_BUDGET = 9;
 
 // V1.5: 토론 길이를 사용자가 고를 수 있다(짧게 9 / 보통 15 / 길게 30 / 직접
 // 설정). 렌더러가 어떤 값을 보내든 실행 상한은 이 범위를 넘지 못한다.
+// 상한은 구조화 토론의 cycle 상한과 같은 hard ceiling을 공유한다.
 const DISCUSSION_TURN_BUDGET_MIN = 3;
-const DISCUSSION_TURN_BUDGET_MAX = 50;
+const DISCUSSION_TURN_BUDGET_MAX = DISCUSSION_HARD_TURN_CEILING;
 
 function clampDiscussionTurnBudget(value, fallback) {
   if (!Number.isInteger(value)) return fallback;
@@ -1177,6 +1183,18 @@ class ChatRoom extends EventEmitter {
       ...(context.discussionSummary ? { discussionSummary: context.discussionSummary } : {}),
       ...(context.simplifyMeta ? { simplifyMeta: context.simplifyMeta } : {}),
       ...(context.turnRootId ? { turnRootId: context.turnRootId } : {}),
+      // 구조화 토론의 임시 역할은 참가자 identity가 아니라 그 발화의 역사적
+      // metadata다. 나중에 "GPT · 비평가" 배지나 과거 토론 재현에 쓰인다.
+      ...(context.discussion?.role
+        ? {
+            discussionTurnMeta: {
+              presetId: context.discussion.presetId || null,
+              cycle: context.discussion.cycle,
+              step: context.discussion.step,
+              roleName: context.discussion.role.name,
+            },
+          }
+        : {}),
       ...(result.deliveries ? { deliveries: result.deliveries } : {}),
     });
     // 토론 모드는 자체 턴 오케스트레이션이 있으므로 멘션 호출을 만들지 않습니다.
@@ -1241,12 +1259,21 @@ class ChatRoom extends EventEmitter {
     }
     const label = roleLabel || roleId;
     this.appendSystem(`@${target.id}가 ${label} 역할의 관점에서 답합니다. (읽기 전용 상담)`);
+    // Role Invocation도 Journal 대상이다 — FSM 전이만 감시하는 seam으로는
+    // 직접 역할 호출 중심의 전문모드를 감사할 수 없다.
+    this.recordJournalEvent?.({ type: "ROLE_STARTED", role: roleId, purpose: "consult" });
     const outcome = await this.scheduleResponse(target, {
       consult: { role: roleId, stage: stage || null, label },
       agentConfig,
       // 질문에 딸린 첨부는 상담 턴에도 전달한다 — 기록만 되고 정작 답하는
       // 에이전트가 파일을 못 받는 공백을 막는다.
       attachments: Array.isArray(attachments) ? attachments : [],
+    });
+    this.recordJournalEvent?.({
+      type: "ROLE_FINISHED",
+      role: roleId,
+      purpose: "consult",
+      status: !outcome ? "INTERRUPTED" : outcome.ok ? "DONE" : "FAILED",
     });
     if (!outcome) return { ok: false, cancelled: true };
     return outcome.ok
@@ -1490,6 +1517,7 @@ class ChatRoom extends EventEmitter {
     let concluded = false;
     let failures = 0;
     let wasStopped = false;
+    let protocolFailedStep = null;
     try {
       for (let turn = 1; turn <= budget; turn += 1) {
         if (generation !== this.generation) { wasStopped = true; break; }
@@ -1503,6 +1531,7 @@ class ChatRoom extends EventEmitter {
             ? {
                 turn,
                 maxTurns: budget,
+                presetId: protocol.presetId,
                 role: speaker.role,
                 cycle: speaker.cycle,
                 cycleBudget: protocol.cycleBudget,
@@ -1516,6 +1545,14 @@ class ChatRoom extends EventEmitter {
         if (!outcome?.ok) failures += 1;
         const signal = outcome?.discussionSignal || "CONTINUE";
         if (protocol) {
+          // 구조화 토론의 각 단계는 다음 단계의 입력 계약이다. 한 단계가
+          // 실패한 채 계속 가면 "비평 없는 비평 반영"처럼 계약이 조용히
+          // 무너지고, cyclesCompleted는 정상 실행으로 세어진다. 자유토론은
+          // 한 명이 빠져도 나머지가 말할 수 있지만 여기서는 즉시 중단한다.
+          if (!outcome?.ok && !wasStopped && generation === this.generation) {
+            protocolFailedStep = speaker;
+            break;
+          }
           // 구조화 토론의 조기 종료는 cycle 마지막 단계(종합/판정)의 CONCLUDE
           // 뿐이다. 중간 단계의 신호는 순서를 바꾸지 못한다(INV-1). 연속
           // AGREE/PASS 규칙도 쓰지 않는다 — 같은 참가자가 여러 slot을 맡으면
@@ -1542,12 +1579,17 @@ class ChatRoom extends EventEmitter {
           : (!concluded && completed >= budget)
             ? "budget"
             : "concluded";
+      // 표시 문구는 reason 판정과 같은 우선순위(interrupted > failed >
+      // budget > concluded)를 쓴다. 예전에는 budget을 먼저 검사해, 실패가
+      // 있었는데도 "예산 도달"로 표시되는 불일치가 있었다.
       const conclusionText = wasStopped
         ? (this.discussionInterrupted ? "사용자 개입으로 토론을 여기서 마쳤습니다." : "사용자가 중지해 토론을 여기서 마쳤습니다.")
-        : (!concluded && completed >= budget)
-          ? `토론 실행 예산(${budget}회)에 도달해 여기서 마쳤습니다.`
-          : failures > 0 && !concluded
-            ? "일부 에이전트 응답 실패로 토론을 마쳤습니다."
+        : failures > 0 && !concluded
+          ? (protocolFailedStep
+              ? `${protocolFailedStep.role.name} 단계 응답 실패로 구조화 토론을 중단했습니다.`
+              : "일부 에이전트 응답 실패로 토론을 마쳤습니다.")
+          : (!concluded && completed >= budget)
+            ? `토론 실행 예산(${budget}회)에 도달해 여기서 마쳤습니다.`
             : "참가자들이 합의하거나 결론에 도달해 토론을 마쳤습니다.";
 
       this.appendMessage({
@@ -1574,6 +1616,18 @@ class ChatRoom extends EventEmitter {
                   cycleBudget: protocol.cycleBudget,
                   stepCount: protocol.stepCount,
                   cyclesCompleted: Math.floor(completed / protocol.stepCount),
+                  // slot 순서 그대로의 역할 배정. 과거 토론을 다시 열 때
+                  // "이 답변은 당시 무슨 역할이었나"를 재현할 근거다.
+                  roleAssignments: [...protocol.participantIds],
+                  ...(protocolFailedStep
+                    ? {
+                        failedStep: {
+                          cycle: protocolFailedStep.cycle,
+                          step: protocolFailedStep.step,
+                          roleName: protocolFailedStep.role.name,
+                        },
+                      }
+                    : {}),
                 },
               }
             : {}),

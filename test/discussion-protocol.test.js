@@ -3,6 +3,8 @@ const assert = require("node:assert/strict");
 const {
   DISCUSSION_PRESETS,
   DEFAULT_DISCUSSION_CYCLE_BUDGET,
+  DISCUSSION_HARD_TURN_CEILING,
+  maxCycleBudget,
   clampCycleBudget,
   resolveProtocol,
   speakerForTurn,
@@ -45,12 +47,21 @@ test("Preset 3종(기획/Grill/Red Team)이 4단계 cycle로 정의되어 있다
   }
 });
 
-test("clampCycleBudget: 1~5로 자르고 비정수는 기본값", () => {
-  assert.equal(clampCycleBudget(0), 1);
-  assert.equal(clampCycleBudget(9), 5);
-  assert.equal(clampCycleBudget(2), 2);
-  assert.equal(clampCycleBudget("2"), DEFAULT_DISCUSSION_CYCLE_BUDGET);
-  assert.equal(clampCycleBudget(undefined), DEFAULT_DISCUSSION_CYCLE_BUDGET);
+test("cycle 상한은 전체 hard ceiling(50턴)을 step 수로 나눠 유도한다", () => {
+  assert.equal(DISCUSSION_HARD_TURN_CEILING, 50);
+  // 4-step preset이면 12 cycle(48턴)까지 — 자유토론 50턴과 같은 천장을 쓴다.
+  assert.equal(maxCycleBudget(4), 12);
+  assert.equal(maxCycleBudget(5), 10);
+  assert.equal(maxCycleBudget(undefined), 12);
+});
+
+test("clampCycleBudget: 1~max(stepCount 유도)로 자르고 비정수는 기본값", () => {
+  assert.equal(clampCycleBudget(0, 4), 1);
+  assert.equal(clampCycleBudget(9, 4), 9, "예전 magic number 5에 잘리지 않아야 합니다");
+  assert.equal(clampCycleBudget(13, 4), 12);
+  assert.equal(clampCycleBudget(2, 4), 2);
+  assert.equal(clampCycleBudget("2", 4), DEFAULT_DISCUSSION_CYCLE_BUDGET);
+  assert.equal(clampCycleBudget(undefined, 4), DEFAULT_DISCUSSION_CYCLE_BUDGET);
 });
 
 test("resolveProtocol: 미지 Preset과 잘못된 배정을 거부한다", () => {
@@ -236,6 +247,90 @@ test("중간 단계의 CONCLUDE와 AGREE는 순서를 바꾸지 못한다", asyn
   // 중간 CONCLUDE 무시 + 연속 AGREE 규칙 미적용 → 4턴 전부 실행.
   assert.equal(result.completed, 4);
   assert.equal(result.concluded, false);
+});
+
+test("구조화 토론은 step 실패 시 즉시 중단하고 이유를 표시한다", async () => {
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner(
+      {
+        // 첫 답변은 토론 전 브로드캐스트가 소비. 비평(2번째 순서)이 실패한다.
+        codex: [
+          { ok: true, text: "확인" },
+          { ok: false, error: "API 오류" },
+        ],
+      },
+      calls
+    ),
+  });
+  room.sendUserMessage("주제입니다");
+  await settle(room);
+  calls.length = 0;
+
+  const result = await room.startDiscussion({
+    protocol: {
+      presetId: "shaping",
+      participantIds: ["claude", "codex", "agy"],
+      cycleBudget: 3,
+    },
+  });
+  await settle(room);
+
+  // 비평이 없는데 "비평 반영 수정"과 "종합"을 계속 실행하면 안 된다.
+  assert.deepEqual(calls.map((call) => call.agentId), ["claude", "codex"]);
+  const conclusion = room.messages.findLast((message) => message.discussionMeta);
+  assert.equal(conclusion.discussionMeta.reason, "failed");
+  assert.equal(conclusion.discussionMeta.incomplete, true);
+  // 실패한 cycle은 완료로 세지 않는다.
+  assert.equal(conclusion.discussionMeta.protocol.cyclesCompleted, 0);
+  assert.deepEqual(conclusion.discussionMeta.protocol.failedStep, {
+    cycle: 1,
+    step: 2,
+    roleName: "비평가",
+  });
+  // 표시 문구가 reason과 일치해야 한다 — "예산 도달"로 위장하지 않는다.
+  assert.match(conclusion.text, /비평가 단계 응답 실패로 구조화 토론을 중단했습니다/);
+  assert.equal(result.ok, true);
+});
+
+test("구조화 토론 메시지에는 당시 역할 metadata가 남는다", async () => {
+  const calls = [];
+  const room = new ChatRoom({ agents: makeAgents(), runAgent: fakeRunner({}, calls) });
+  room.sendUserMessage("주제입니다");
+  await settle(room);
+
+  await room.startDiscussion({
+    protocol: {
+      presetId: "shaping",
+      participantIds: ["claude", "codex", "agy"],
+      cycleBudget: 1,
+    },
+  });
+  await settle(room);
+
+  const turnMessages = room.messages.filter((message) => message.discussionTurnMeta);
+  assert.equal(turnMessages.length, 4);
+  assert.deepEqual(turnMessages[1].discussionTurnMeta, {
+    presetId: "shaping",
+    cycle: 1,
+    step: 2,
+    roleName: "비평가",
+  });
+  assert.equal(turnMessages[1].author, "codex");
+  // 역할 배정도 discussionMeta에 남아 과거 토론을 재현할 수 있다.
+  const conclusion = room.messages.findLast((message) => message.discussionMeta);
+  assert.deepEqual(conclusion.discussionMeta.protocol.roleAssignments, [
+    "claude",
+    "codex",
+    "agy",
+  ]);
+  // 자유토론 메시지에는 붙지 않는다.
+  const before = room.messages.length;
+  await room.startDiscussion({ turnBudget: 3 });
+  await settle(room);
+  const freeTurns = room.messages.slice(before).filter((message) => message.discussionTurnMeta);
+  assert.equal(freeTurns.length, 0);
 });
 
 test("구조화 토론의 빈 PASS는 조용히 사라지지 않고 기록으로 남는다", async () => {

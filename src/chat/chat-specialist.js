@@ -17,7 +17,10 @@ const {
 const { AssuranceRun, MODES } = require("../agora/assurance/assurance-run");
 const { readLineage: readRunLineage } = require("../agora/assurance/run-lineage");
 // V1.5 System Journal — FSM 전이를 감사 이벤트로 매핑한다.
-const { journalEventsForTransition } = require("../agora/professional-journal");
+const {
+  journalEventsForTransition,
+  createJournalEvent,
+} = require("../agora/professional-journal");
 
 // checkpoint 실패 taxonomy를 사용자가 이해할 수 있는 한국어 설명으로 바꿉니다.
 // 원인 코드 자체(CHECKPOINT_*)는 evidence/Reviewer 판단에 그대로 쓰이므로
@@ -194,19 +197,15 @@ class SpecialistMixin {
     return transition;
   }
 
-  // V1.5 System Journal — FSM 전이 단일 seam에서만 발행한다(§10). FSM 저장과
-  // 달리 Journal 실패는 실행을 멈추지 않는다: snapshot(meta.json)이 현재
-  // 상태의 기준이고 Journal은 감사 기록이다. 다만 실패를 성공으로 숨기지
+  // V1.5 System Journal — 이벤트 저장의 공용 seam. FSM 전이뿐 아니라 Role
+  // Invocation·Handoff 같은 FSM 밖의 사건도 이 한 곳을 지나 기록된다(§10).
+  // FSM 저장과 달리 Journal 실패는 실행을 멈추지 않는다: snapshot(meta.json)이
+  // 현재 상태의 기준이고 Journal은 감사 기록이다. 다만 실패를 성공으로 숨기지
   // 않도록 세션당 한 번 시스템 메시지로 알린다(§10.4).
-  journalProfessionalTransition(prevRun, event, nextRun) {
+  recordJournalEntries(entries) {
     if (typeof this.appendProfessionalEvent !== "function") return;
-    let entries = [];
-    try {
-      entries = journalEventsForTransition(prevRun, event, nextRun);
-    } catch {
-      entries = [];
-    }
-    for (const entry of entries) {
+    for (const entry of entries || []) {
+      if (!entry) continue;
       let saved = false;
       try {
         saved = this.appendProfessionalEvent(entry) !== false;
@@ -220,6 +219,33 @@ class SpecialistMixin {
         );
       }
     }
+  }
+
+  // FSM 밖의 단건 사건(예: CONSULT의 ROLE_STARTED/ROLE_FINISHED, 향후
+  // HANDOFF_REQUESTED)을 기록한다. §10.3 어휘 밖의 type은 조용히 버려진다.
+  recordJournalEvent(fields) {
+    if (typeof this.appendProfessionalEvent !== "function") return;
+    let entry = null;
+    try {
+      entry = createJournalEvent({ sessionId: this.sessionId || null, ...fields });
+    } catch {
+      entry = null;
+    }
+    if (entry) this.recordJournalEntries([entry]);
+  }
+
+  // FSM 전이 이벤트 발행. transitionProfessional 단일 seam에서만 호출된다.
+  journalProfessionalTransition(prevRun, event, nextRun) {
+    if (typeof this.appendProfessionalEvent !== "function") return;
+    let entries = [];
+    try {
+      entries = journalEventsForTransition(prevRun, event, nextRun, {
+        sessionId: this.sessionId || null,
+      });
+    } catch {
+      entries = [];
+    }
+    this.recordJournalEntries(entries);
   }
 
   // Stage C — canonical terminal transition에서만 harness lifecycle에 run 종료를

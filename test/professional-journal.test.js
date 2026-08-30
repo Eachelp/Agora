@@ -155,6 +155,31 @@ test("RECORDER_DONE이 COMPLETED로 끝나면 RUN_COMPLETED가 함께 남는다"
   );
 });
 
+test("frozenRunId를 지우는 전이(REPLAN_RESET)는 prev의 provenance를 남긴다", () => {
+  const frozen = createProfessionalRun({
+    node: "IMPLEMENTING",
+    status: "BLOCKED",
+    frozenRunId: "RUN-007",
+  });
+  const reset = { ...frozen, frozenRunId: null };
+  const events = journalEventsForTransition(frozen, { type: "REPLAN_RESET" }, reset);
+  assert.equal(events[0].type, "RUN_INTERRUPTED");
+  assert.equal(events[0].purpose, "replan");
+  assert.equal(
+    events[0].frozenRunId,
+    "RUN-007",
+    "폐기되는 Run의 provenance가 interruption 이벤트에서 사라지면 안 됩니다"
+  );
+});
+
+test("전이 매핑은 sessionId 옵션을 이벤트에 싣는다", () => {
+  const run = createProfessionalRun({ node: "PLANNING", status: "RUNNING" });
+  const events = journalEventsForTransition(run, { type: "PLANNER_PLAN_READY" }, run, {
+    sessionId: "sess-1",
+  });
+  assert.equal(events[0].sessionId, "sess-1");
+});
+
 test("매핑에 없는 전이는 이벤트를 만들지 않는다", () => {
   const run = createProfessionalRun({});
   assert.deepEqual(journalEventsForTransition(run, { type: "SOMETHING_ELSE" }, run), []);
@@ -179,6 +204,7 @@ function makeMixinRoom(overrides = {}) {
 test("transitionProfessional이 Journal 이벤트를 발행한다", () => {
   const appended = [];
   const room = makeMixinRoom({
+    sessionId: "sess-1",
     appendProfessionalEvent: (event) => {
       appended.push(event);
       return true;
@@ -189,7 +215,28 @@ test("transitionProfessional이 Journal 이벤트를 발행한다", () => {
   assert.equal(appended.length, 1);
   assert.equal(appended[0].type, "ROLE_FINISHED");
   assert.equal(appended[0].professionalRunId, room.professionalRun.professionalRunId);
+  // mixin 계층에서 이미 sessionId가 채워진다 — appender 배선에 기대지 않는다.
+  assert.equal(appended[0].sessionId, "sess-1");
   assert.equal(room.systemNotices.length, 0);
+});
+
+test("recordJournalEvent는 FSM 밖의 단건 사건을 기록한다", () => {
+  const appended = [];
+  const room = makeMixinRoom({
+    sessionId: "sess-1",
+    appendProfessionalEvent: (event) => {
+      appended.push(event);
+      return true;
+    },
+  });
+  room.recordJournalEvent({ type: "ROLE_STARTED", role: "builder", purpose: "consult" });
+  assert.equal(appended.length, 1);
+  assert.equal(appended[0].type, "ROLE_STARTED");
+  assert.equal(appended[0].sessionId, "sess-1");
+  assert.equal(appended[0].professionalRunId, null);
+  // §10.3 어휘 밖의 type은 조용히 버려진다.
+  room.recordJournalEvent({ type: "MADE_UP" });
+  assert.equal(appended.length, 1);
 });
 
 test("Journal 저장 실패는 실행을 멈추지 않되 한 번은 알린다", () => {

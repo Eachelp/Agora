@@ -1,10 +1,27 @@
 "use strict";
 
-// V1.5 Interaction/Handoff 계약 (AGORA_V1_5_PROPOSAL.md §6, §8).
+// V1.5 Interaction/Handoff 계약 (AGORA_V1_5_PROPOSAL.md §6, §8 — 재설계판).
 // 이 모듈은 순수 로직이다 — 저장, IPC, ChatRoom 상태를 만지지 않는다.
-// Target/Intent/Scope/executionPolicy의 의미와 역할 Handoff 허용 전이표를
-// 데이터로 고정해, 이후 단계(직접 역할 호출, @모두, AI Handoff)가 전부
-// 여기서 검증을 받게 한다.
+//
+// 재설계 배경: 초판은 제안서 §8.2의 전이표를 그대로 데이터로 옮기면서
+// ready/complete 같은 workflow 상태와 plan_review/review 같은 실행 계약을
+// "역할" 그래프에 섞었다. 그 결과 표면 어휘(@reviewer)와 내부 어휘
+// (plan_review/review)가 어긋나 정상 요청이 거부될 수 있었고, 사실상 기존
+// Professional FSM을 다른 이름으로 복제하는 방향이었다.
+//
+// 새 계약은 세 가지를 분리한다.
+//   Role(사람)            = planner / builder / reviewer / recorder
+//   Execution contract    = 그 역할에 적용되는 계약 (reviewer → plan_review
+//                           또는 review는 Runtime이 artifact로 선택)
+//   Workflow state/행동   = READY/COMPLETE 같은 상태와 ASK_USER 같은 행동 —
+//                           역할 그래프에 넣지 않는다
+//
+// Runtime은 업무 의미 순서("planner 다음엔 반드시 plan_review")를 검증하지
+// 않는다. 검증하는 것은: 어휘(실존 역할인가), loop(자기/연속 호출), stale
+// (취소·세대 교체 뒤 늦은 요청), budget, 동시성(active invocation 1개)뿐이다.
+// 실행 전제조건(Builder는 READY Task가 있어야 한다 등)은 Stage 5 런타임
+// 연결부가 기존 FSM·Freeze 검증으로 판정한다 — 여기 그래프로 만들지 않는다.
+// 이렇게 해야 직접 역할 호출·@팀·향후 Orchestrator가 같은 API를 쓸 수 있다.
 
 const crypto = require("node:crypto");
 
@@ -35,46 +52,26 @@ function normalizeInteraction(input = {}) {
   return { target, intent, scope, executionPolicy };
 }
 
-// Handoff 전이표의 역할 어휘. "reviewer"는 사용자 표면 이름이며, 실제 계약은
-// resolveReviewerContract가 출처와 artifact로 고른다(제안서 §7.2).
-const HANDOFF_ROLES = Object.freeze([
-  "planner",
-  "plan_review",
-  "ready",
-  "builder",
-  "review",
-  "complete",
-  "archivist",
-  "user",
-]);
+// Handoff 대상은 사람 역할뿐이다. ready/complete는 상태, user 반환은
+// ASK_USER 행동, archivist는 recorder의 실행 계약이지 별도 역할이 아니다.
+const HANDOFF_TARGETS = Object.freeze(["planner", "builder", "reviewer", "recorder"]);
 
-// 제안서 §8.2 허용 전이표. 여기 없는 전이는 전부 거부된다(fail-closed).
-const HANDOFF_TRANSITIONS = Object.freeze({
-  planner: Object.freeze(["plan_review", "user"]),
-  plan_review: Object.freeze(["planner", "ready"]),
-  ready: Object.freeze(["builder"]),
-  builder: Object.freeze(["review", "planner", "user"]),
-  review: Object.freeze(["builder", "complete", "user"]),
-  complete: Object.freeze(["archivist"]),
-  archivist: Object.freeze(["user"]),
-});
+// 역할 출력의 제어 행동. HANDOFF는 다른 역할 지목, COMPLETE는 종결 선언
+// (Runtime이 검수 통과 여부로 수용을 판정), ASK_USER는 사용자 반환이다.
+const CONTROL_ACTIONS = Object.freeze(["HANDOFF", "COMPLETE", "ASK_USER"]);
 
 // 역할 출력에서 HANDOFF 대상을 지목할 때 쓰는 표면 별칭.
-// 전부 완전 단어형만 둔다 — tokenMatchesAlias류의 prefix 매칭에 한글 별칭이
-// 더 긴 단어에 삼켜지는 위험(기획 ↔ 기획자)을 피한다.
+// 전부 완전 단어형만 둔다 — prefix 매칭류에 한글 별칭이 더 긴 단어에
+// 삼켜지는 위험(기획 ↔ 기획자)을 피한다.
 const HANDOFF_TARGET_ALIASES = Object.freeze({
   planner: Object.freeze(["planner", "기획자"]),
   builder: Object.freeze(["builder", "implementation", "구현자"]),
   reviewer: Object.freeze(["reviewer", "검토자", "검수자"]),
   recorder: Object.freeze(["recorder", "기록자"]),
-  archivist: Object.freeze(["archivist"]),
-  user: Object.freeze(["user", "사용자"]),
 });
 
-function isHandoffAllowed(fromRole, toRole) {
-  const allowed = HANDOFF_TRANSITIONS[String(fromRole || "")];
-  if (!allowed) return false;
-  return allowed.includes(String(toRole || ""));
+function isHandoffTarget(role) {
+  return HANDOFF_TARGETS.includes(String(role || ""));
 }
 
 // Reviewer 계약 선택은 요청 문구가 아니라 출처 역할과 artifact 종류로 한다
@@ -83,6 +80,27 @@ function resolveReviewerContract({ sourceRole, hasFrozenArtifacts } = {}) {
   if (hasFrozenArtifacts) return "review";
   if (sourceRole === "builder") return "review";
   return "plan_review";
+}
+
+// 표면 역할(@reviewer 등) → 실행 계약(specialist stage id) 정규화.
+// 표면 어휘와 내부 어휘의 불일치("reviewer"는 파싱되는데 검증 어휘에 없는
+// 문제)를 여기 한 곳에서 흡수한다. Stage 5 런타임 연결부는 파싱 결과를
+// 이 함수로 정규화한 뒤에만 실행 계약을 고른다.
+function executionContractFor(targetRole, { sourceRole, hasFrozenArtifacts } = {}) {
+  switch (String(targetRole || "")) {
+    case "planner":
+      return "planner";
+    case "builder":
+      return "implementation";
+    case "reviewer":
+      return resolveReviewerContract({ sourceRole, hasFrozenArtifacts });
+    case "recorder":
+      // 사람이 읽기 좋은 정리(archivist 책임)를 수행하는 recorder 계약.
+      // deterministic System Journal은 Runtime 기능이라 여기 없다.
+      return "recorder";
+    default:
+      return null;
+  }
 }
 
 const DEFAULT_HANDOFF_BUDGET = 8;
@@ -113,21 +131,20 @@ function newInvocationId() {
   return `inv-${ts}-${rand}`;
 }
 
-// Handoff 요청 검증. 통과해도 실행하지 않는다 — 모델은 요청하고 Runtime이
-// 결정한다(INV-6). 실제 소비는 consumeHandoff로만 기록한다.
+// Handoff 요청의 구조적 검증. 통과해도 실행하지 않는다 — 모델은 요청하고
+// Runtime이 결정한다(INV-6). 업무 의미 순서는 여기서 판정하지 않는다:
+// "Builder를 실행해도 되는가"는 READY Task·Frozen hash·checkpoint 같은
+// 실행 전제조건 검증(런타임)의 몫이다.
 function validateHandoff(request = {}, state = {}) {
   const fromRole = String(request.sourceRole || "");
   const toRole = String(request.targetRole || "");
   const ledger = state.ledger || null;
 
-  if (!HANDOFF_ROLES.includes(fromRole) || !HANDOFF_ROLES.includes(toRole)) {
+  if (!isHandoffTarget(fromRole) || !isHandoffTarget(toRole)) {
     return { ok: false, reason: "HANDOFF_NOT_ALLOWED" };
   }
   if (fromRole === toRole) {
     return { ok: false, reason: "HANDOFF_SELF" };
-  }
-  if (!isHandoffAllowed(fromRole, toRole)) {
-    return { ok: false, reason: "HANDOFF_NOT_ALLOWED" };
   }
 
   // 취소·세대 교체 뒤 늦게 도착한 요청과 다른 run의 요청을 폐기한다(§8.4).
@@ -190,6 +207,10 @@ function settleHandoff(ledger, invocationId) {
 }
 
 const HANDOFF_LINE_PATTERN = /^[ \t]*HANDOFF:[ \t]*@?([\p{L}\p{N}_-]+)[ \t]*$/gimu;
+// 단독 "COMPLETE" 또는 "COMPLETE: 요약"만 인식한다. 콜론 없는 뒤따름
+// ("COMPLETE the task ...")은 산문이지 제어 마커가 아니다.
+const COMPLETE_LINE_PATTERN = /^[ \t]*COMPLETE(?::[ \t]*([^\r\n]*?))?[ \t]*$/gim;
+const ASK_USER_LINE_PATTERN = /^[ \t]*ASK_USER:[ \t]*([^\r\n]+?)[ \t]*$/gim;
 const PURPOSE_LINE_PATTERN = /^[ \t]*PURPOSE:[ \t]*([^\r\n]+?)[ \t]*$/im;
 const REASON_LINE_PATTERN = /^[ \t]*REASON:[ \t]*([^\r\n]+?)[ \t]*$/im;
 
@@ -207,25 +228,47 @@ function handoffTargetForToken(token) {
   return null;
 }
 
-// 역할 출력에서 구조화 Handoff 요청을 파싱한다(제안서 §8.1).
-// - 일반 문장 속 @reviewer는 Handoff가 아니다. 줄 전체가
-//   `HANDOFF: @<role>` 형태일 때만 인식한다.
-// - 코드펜스 안의 예시는 무시한다.
-// - 마커가 없으면 null. 서로 다른 대상이 여럿이면 ambiguous로 표시하고
-//   대상을 확정하지 않는다(findControlMarker의 ambiguity 규율 준용).
-function parseHandoffRequest(text) {
+// 역할 출력에서 구조화 제어 행동을 파싱한다(제안서 §8.1의 확장).
+// - 일반 문장 속 @reviewer는 제어가 아니다. 줄 전체가 마커 형태일 때만
+//   인식한다. 코드펜스 안의 예시는 무시한다.
+// - 마커가 없으면 null. 서로 다른 행동이 섞이거나 HANDOFF 대상이 갈리면
+//   ambiguous로 표시하고 확정하지 않는다(findControlMarker의 ambiguity 규율).
+function parseControlOutput(text) {
   const source = maskCodeFences(text);
-  const targets = [];
+
+  const handoffTargets = [];
   for (const match of source.matchAll(HANDOFF_LINE_PATTERN)) {
     const role = handoffTargetForToken(match[1]);
-    targets.push(role || match[1].toLowerCase());
+    handoffTargets.push(role || match[1].toLowerCase());
   }
-  if (targets.length === 0) return null;
-  const distinct = [...new Set(targets)];
-  const known = handoffTargetForToken(targets[targets.length - 1]) || null;
+  const completes = [...source.matchAll(COMPLETE_LINE_PATTERN)];
+  const asks = [...source.matchAll(ASK_USER_LINE_PATTERN)];
+
+  const actions = [];
+  if (handoffTargets.length > 0) actions.push("HANDOFF");
+  if (completes.length > 0) actions.push("COMPLETE");
+  if (asks.length > 0) actions.push("ASK_USER");
+  if (actions.length === 0) return null;
+  if (actions.length > 1) {
+    return { action: null, ambiguous: true };
+  }
+
+  if (actions[0] === "COMPLETE") {
+    const summary = (completes[completes.length - 1][1] || "").trim();
+    return { action: "COMPLETE", summary: summary || null, ambiguous: false };
+  }
+  if (actions[0] === "ASK_USER") {
+    const question = asks[asks.length - 1][1].trim();
+    return { action: "ASK_USER", question: question || null, ambiguous: false };
+  }
+
+  const distinct = [...new Set(handoffTargets)];
+  const last = handoffTargets[handoffTargets.length - 1];
+  const known = isHandoffTarget(last) ? last : null;
   const purposeMatch = source.match(PURPOSE_LINE_PATTERN);
   const reasonMatch = source.match(REASON_LINE_PATTERN);
   return {
+    action: "HANDOFF",
     targetRole: distinct.length === 1 ? known : null,
     purpose: purposeMatch ? purposeMatch[1].trim() : null,
     reason: reasonMatch ? reasonMatch[1].trim() : null,
@@ -239,16 +282,17 @@ module.exports = {
   INTERACTION_SCOPES,
   EXECUTION_POLICIES,
   normalizeInteraction,
-  HANDOFF_ROLES,
-  HANDOFF_TRANSITIONS,
+  HANDOFF_TARGETS,
+  CONTROL_ACTIONS,
   HANDOFF_TARGET_ALIASES,
-  isHandoffAllowed,
+  isHandoffTarget,
   resolveReviewerContract,
+  executionContractFor,
   DEFAULT_HANDOFF_BUDGET,
   createHandoffLedger,
   newInvocationId,
   validateHandoff,
   consumeHandoff,
   settleHandoff,
-  parseHandoffRequest,
+  parseControlOutput,
 };

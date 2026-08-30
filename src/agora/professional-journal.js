@@ -142,9 +142,11 @@ const TRANSITION_MAP = Object.freeze({
 
 // 성공한 FSM 전이 하나를 Journal 이벤트 배열로 바꾼다. 매핑에 없는 전이는
 // 빈 배열이다 — §10.3 어휘 밖의 이벤트 종류를 만들어내지 않는다.
-// frozenRunId는 전이 후 상태에 있을 때만 싣는다. Freeze 전(계획 단계)에는
-// nextRun.frozenRunId가 null이므로, 존재하지 않았던 RUN-xxx에 계획 이벤트가
-// 연결되는 P1 불일치가 구조적으로 차단된다(§10.2).
+// frozenRunId는 전이 전/후 상태 중 하나에 있을 때만 싣는다. Freeze 전(계획
+// 단계)에는 양쪽 다 null이므로, 존재하지 않았던 RUN-xxx에 계획 이벤트가
+// 연결되는 P1 불일치가 구조적으로 차단된다(§10.2). 전이가 frozenRunId를
+// 지우는 경우(REPLAN_RESET 등)에는 prev 쪽 값을 남긴다 — 폐기되는 Run의
+// provenance가 그 interruption 이벤트에서 사라지면 안 된다.
 function journalEventsForTransition(prevRun, event, nextRun, options = {}) {
   const eventType = String(event?.type || "").toUpperCase();
   const mapper = TRANSITION_MAP[eventType];
@@ -153,7 +155,7 @@ function journalEventsForTransition(prevRun, event, nextRun, options = {}) {
   const base = {
     sessionId: options.sessionId || null,
     professionalRunId: run.professionalRunId || null,
-    frozenRunId: (nextRun && nextRun.frozenRunId) || null,
+    frozenRunId: (nextRun && nextRun.frozenRunId) || (prevRun && prevRun.frozenRunId) || null,
     createdAt: options.createdAt,
   };
   return mapper(base, nextRun)

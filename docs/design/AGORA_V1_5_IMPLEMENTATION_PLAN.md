@@ -176,49 +176,85 @@ Stage 0~4는 이번 구현 세션의 범위다. Stage 5~6은 설계를 이 문�
   같은 선례를 따라 일반 턴으로 실행하고 역할 관점·읽기 전용 계약만 프롬프트로
   덧씌운다. 권한은 `min(세션 권한, workspace-read, 역할 cap)` — 세션 권한보다
   높은 권한을 얻는 경로를 만들지 않는다(V1 미래 호환 문서 §4).
+- **구조화 토론 cycle 상한은 hard ceiling 50을 공유**: 자유토론이 이미 50턴을
+  허용하므로 구조화 토론에 별도 magic number(초판 5 cycle)를 두지 않는다.
+  `maxCycleBudget(stepCount) = floor(50 / stepCount)` — 4-step preset이면 12
+  cycle(48턴)이다.
+- **구조화 토론의 step 실패는 즉시 중단**: 각 단계는 다음 단계의 입력
+  계약이다(발안→비평→수정→종합). 한 단계가 transport 실패한 채 계속 가면
+  "비평 없는 비평 반영"처럼 계약이 조용히 무너지므로, 실패 지점에서 토론을
+  중단하고 `discussionMeta.protocol.failedStep`과 표시 문구로 이유를 남긴다.
+  자유토론은 기존대로 계속한다(한 명이 빠져도 나머지가 말할 수 있다).
+- **임시 역할은 발화의 역사적 metadata로 남긴다**: 영구 Agent 속성으로
+  저장하지 않되(제안서 §5.4), 각 구조화 토론 메시지에
+  `discussionTurnMeta{presetId, cycle, step, roleName}`를,
+  `discussionMeta.protocol`에 slot 순서의 `roleAssignments`를 남긴다 — 나중에
+  "GPT · 비평가" 배지나 과거 토론 재현의 근거다.
+- **현재의 `@팀`은 "V1.5 Team Consult"라는 임시 의미다**: 읽기 전용 3역할
+  순차 상담이지 자율 전문팀 실행이 아니다. 향후 자율 팀 실행이 생기면
+  `@팀`(실행)과 `@팀상담`(read-only) 분리 또는 UI Intent 분리를 그때 결정하고,
+  지금의 `@팀` 의미를 영구 계약으로 확정하지 않는다.
 
 ---
 
-## 3. Stage V1.5-0 — Interaction/Handoff 계약 모듈
+## 3. Stage V1.5-0 — Interaction/Handoff 계약 모듈 (재설계판)
 
-**목표**: Target/Intent/Scope/executionPolicy 의미와 Handoff 전이표를 순수
-모듈로 고정한다. 이후 모든 Stage가 이 모듈을 import한다.
+**목표**: Target/Intent/Scope/executionPolicy 의미와 역할 Handoff의 구조적
+검증을 순수 모듈로 고정한다. 이후 모든 Stage가 이 모듈을 import한다.
 
-### 새 파일
+> **재설계 기록**: 초판은 제안서 §8.2의 전이표를 그대로 데이터로 옮겼다
+> (`planner→plan_review→ready→builder→review→complete→archivist`). 검수에서
+> 두 가지가 확인됐다. (1) 표면 어휘(`HANDOFF: @reviewer`)와 내부 어휘
+> (`plan_review`/`review`)가 어긋나 정상 요청이 `HANDOFF_NOT_ALLOWED`로
+> 거부될 수 있었고, `@recorder`의 내부 대응이 `archivist`로 갈라져 있었다.
+> (2) 역할 그래프에 `ready`/`complete` 같은 workflow 상태가 들어간 것 자체가
+> role routing과 workflow state가 다시 섞인 신호이며, 사실상 기존 Professional
+> FSM을 다른 이름으로 복제하는 방향이었다. 그래서 Stage 5 연결 전에 계약을
+> 아래처럼 다시 썼다.
 
-- `src/agora/interaction-contract.js`
-  - `INTERACTION_TARGETS = ["planner","builder","reviewer","recorder","all"]`
-  - `INTERACTION_INTENTS = ["CONSULT","PLAN","REVIEW","EXECUTE","SUMMARIZE"]`
-  - `INTERACTION_SCOPES = ["SINGLE","TEAM"]`
-  - `EXECUTION_POLICIES = ["NONE","STOP_AT_READY","EXECUTE_READY","PREAUTHORIZED_BOUNDED"]`
-  - `normalizeInteraction(input)` — 미지·누락 값은 안전 기본
-    `{intent:"CONSULT", scope:"SINGLE", executionPolicy:"NONE"}`으로 정규화
-    (제안서 §6.2). 자연어 추측으로 executionPolicy를 올릴 수 없다.
-  - `HANDOFF_TRANSITIONS` — 제안서 §8.2 허용 전이표를 데이터로 고정
-    (`planner→plan_review`, `planner→user`, `plan_review→planner`,
-    `plan_review→ready`, `ready→builder`, `builder→review`,
-    `builder→planner`, `builder→user`, `review→builder`, `review→complete`,
-    `review→user`, `complete→archivist`, `archivist→user`)
-  - `isHandoffAllowed(fromRole, toRole)` / `validateHandoff(request, state)` —
-    전이표 + 동일 역할 연속 호출 금지 + budget + stale invocation
-    (`generation`/`invocationId`/`professionalRunId` 불일치) 검증.
-    거부 사유는 enum 문자열(`HANDOFF_NOT_ALLOWED`, `HANDOFF_BUDGET_REACHED`,
-    `HANDOFF_STALE`, `HANDOFF_DUPLICATE`, `HANDOFF_SELF`)로 반환한다.
-  - `DEFAULT_HANDOFF_BUDGET = 8`, `createHandoffLedger()` — 소비 기록과
-    `invocationId` 중복 차단.
-  - `parseHandoffRequest(text)` — 역할 출력의
-    `HANDOFF: @<role>` / `PURPOSE:` / `REASON:` 블록을 코드펜스 제거 후
-    파싱(제안서 §8.1). 일반 문장 속 `@reviewer`는 Handoff로 취급하지 않는다.
+### 계약 원칙
+
+```text
+Role(사람)          planner / builder / reviewer / recorder
+Execution contract  역할에 적용되는 계약 — reviewer는 출처·artifact에 따라
+                    plan_review 또는 review (executionContractFor가 정규화)
+Workflow state/행동 READY/COMPLETE 같은 상태와 ASK_USER 같은 행동 —
+                    역할 그래프에 넣지 않는다
+```
+
+Runtime은 업무 의미 순서("planner 다음엔 반드시 plan_review")를 검증하지
+않는다. 검증하는 것은 **어휘(실존 역할), loop(자기/연속 호출), stale, budget,
+동시성(active invocation 1개)** 뿐이다. 실행 전제조건(Builder는 READY Task가
+있어야 한다 등)은 Stage 5 런타임 연결부가 기존 FSM·Freeze 검증으로 판정한다.
+이렇게 해야 직접 역할 호출·`@팀`·향후 Orchestrator가 같은 API를 쓴다.
+
+### 모듈 구성 (`src/agora/interaction-contract.js`)
+
+- `INTERACTION_TARGETS/INTENTS/SCOPES/EXECUTION_POLICIES` +
+  `normalizeInteraction(input)` — 미지·누락 값은 안전 기본
+  `{intent:"CONSULT", scope:"SINGLE", executionPolicy:"NONE"}`(제안서 §6.2).
+- `HANDOFF_TARGETS = ["planner","builder","reviewer","recorder"]` — 사람
+  역할만. user 반환은 `ASK_USER` 행동, archivist는 recorder의 실행 계약.
+- `CONTROL_ACTIONS = ["HANDOFF","COMPLETE","ASK_USER"]` — 역할 출력의 제어
+  행동. COMPLETE의 수용 여부(검수 통과)는 Runtime이 판정한다.
+- `executionContractFor(targetRole, {sourceRole, hasFrozenArtifacts})` —
+  표면 역할 → specialist stage id 정규화. reviewer 분기는
+  `resolveReviewerContract`(§7.2: 문구가 아니라 출처·artifact로 선택).
+- `validateHandoff/consumeHandoff/settleHandoff` + `createHandoffLedger` —
+  구조적 검증만: 어휘, 자기/연속 호출 금지, budget(기본 8), stale
+  (`generation`/`professionalRunId` 불일치), `invocationId` 중복/동시성.
+  거부 사유 enum: `HANDOFF_NOT_ALLOWED`(어휘 밖), `HANDOFF_SELF`,
+  `HANDOFF_STALE`, `HANDOFF_DUPLICATE`, `HANDOFF_BUSY`,
+  `HANDOFF_BUDGET_REACHED`.
+- `parseControlOutput(text)` — 줄 단위 `HANDOFF: @<role>`(+PURPOSE/REASON),
+  `COMPLETE[: 요약]`, `ASK_USER: 질문` 마커 파싱. 일반 문장 속 멘션·코드펜스
+  예시·산문 속 COMPLETE는 제어가 아니다. 행동 혼재·대상 다중은 ambiguous.
 
 ### 테스트
 
-- `test/interaction-contract.test.js` — 정규화 기본값, 전이표 허용/금지 전수,
-  동일 역할 연속 금지, budget 소진, stale/중복 invocation 거부, HANDOFF 블록
-  파싱(코드펜스 내부 무시 포함).
-
-### 완료 기준
-
-기존 코드는 건드리지 않는다. 새 모듈+테스트만으로 전체 suite green.
+- `test/interaction-contract.test.js` — 정규화 기본값, 역할/상태 분리
+  (ready·complete·archivist·plan_review가 대상이 아님), executionContractFor
+  정규화, 구조 검증(연속 금지·budget·stale·중복·busy), 제어 출력 파싱.
 
 ---
 
@@ -411,18 +447,35 @@ Stage 0~4는 이번 구현 세션의 범위다. Stage 5~6은 설계를 이 문�
 
 ---
 
-## 8. Stage V1.5-5 — 구조화 Role Handoff 런타임 (후속 작업 설계)
+## 8. Stage V1.5-5 — 구조화 Role Handoff 런타임 (후속 작업 설계, 재설계판)
 
-Stage 0의 `interaction-contract.js`가 파서·전이표·budget·ledger를 이미
-제공하므로, 남는 일은 런타임 연결이다. 이번 세션 범위 밖이며 순서만 고정한다.
+Stage 0 재설계판이 파서(`parseControlOutput`)·구조 검증(`validateHandoff`)·
+표면→계약 정규화(`executionContractFor`)·budget·ledger를 제공한다. 남는 일은
+런타임 연결이며, **초판 문서의 "전이표 검증" 접근은 폐기한다** — 그대로
+구현하면 새 이름의 고정 Professional FSM으로 돌아간다.
 
-1. `buildAgentPrompt` 역할 계약에 HANDOFF 출력 형식 안내 추가(허용 대상만).
-2. `runResponseTurn`(chat-room.js:1079-1112)에서 `parseHandoffRequest`로 요청
-   추출 → outcome에 `handoffRequest` 필드 추가.
-3. 소비자: `runPlanBlock` / `runExecutionBlockInner` / `resumeStepPhaseInner`
-   **세 곳 모두**에서 `validateHandoff` 통과 시에만 다음 역할 실행. 거부는
-   Journal `HANDOFF_REJECTED` + 사용자 반환.
-4. Journal에 `HANDOFF_REQUESTED / ACCEPTED / REJECTED` 기록.
+원칙: Handoff 요청의 수용 여부는 두 층으로 갈라 판정한다.
+
+```text
+구조 검증 (interaction-contract)   어휘·loop·stale·budget·동시성
+실행 전제조건 검증 (런타임)         Builder → READY Task·Frozen hash·checkpoint
+                                   Reviewer → 판정할 artifact 존재
+                                   COMPLETE → 검수 통과 여부
+```
+
+순서:
+
+1. `buildAgentPrompt` 역할 계약에 제어 출력 형식(HANDOFF/COMPLETE/ASK_USER)
+   안내 추가.
+2. `runResponseTurn`에서 `parseControlOutput`으로 제어 행동 추출 → outcome에
+   `controlRequest` 필드 추가.
+3. 소비자는 `executionContractFor`로 표면 역할을 실행 계약으로 정규화한 뒤,
+   구조 검증 → 실행 전제조건 검증 순으로 통과할 때만 다음 역할을 실행한다.
+   실행 경로 세 벌(runPlanBlock / runExecutionBlockInner /
+   resumeStepPhaseInner) 모두에 적용하거나, 가능하면 단일 소비 지점으로
+   합친다.
+4. Journal에 `HANDOFF_REQUESTED / ACCEPTED / REJECTED` 기록 —
+   `recordJournalEvent` seam이 이미 있다.
 5. stale 차단: 요청에 `invocationId`+`professionalRunId`를 싣고 ledger로 소비
    기록(재시작 중복 방지 — 제안서 §8.4).
 
