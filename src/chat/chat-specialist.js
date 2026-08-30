@@ -1770,9 +1770,11 @@ class SpecialistMixin {
       // 사용자 대기 상태에서 새로 시작하는 경우, 옛 실행을 원자적으로 종료하고
       // 들고 있던 checkpoint를 정리한 뒤에 새 run을 만든다. 정리에 실패하면
       // 새 run을 만들지 않고 그 자리에서 멈춘다(되돌릴 수단을 잃은 채 진행 금지).
+      let carriedTaskPath = null;
       if (this.specialistResume || this.specialistBlocked) {
         const discarded = await this.discardRunForFreshPlan();
         if (!discarded.ok) return discarded;
+        carriedTaskPath = discarded.carriedTaskPath;
         const cleaned = discarded.discardedCheckpoint
           ? "이전 전문 실행과 작업 전 백업을 정리하고 기획을 처음부터 다시 시작합니다."
           : "이전 전문 실행을 정리하고 기획을 처음부터 다시 시작합니다.";
@@ -1785,6 +1787,9 @@ class SpecialistMixin {
       }
       const run = createProfessionalRun({
         stages,
+        // 이어받은 경로가 있으면 그 지시서를 갱신하고, 없으면(=끝난 실행이나 새 세션에서
+        // 시작하는 진짜 신규 작업) 새 지시서를 만든다.
+        taskPath: carriedTaskPath,
         policy: {
           autoContinueReady: action === "full",
           pauseBeforeReview: false,
@@ -1805,6 +1810,11 @@ class SpecialistMixin {
         planAutoRevisions,
         implementationAutoRevisions,
         action,
+        // 이어받은 지시서가 있으면 새로 만들지 않고 그 파일을 갱신한다.
+        // filename까지 넘겨야 PLANNER_PLAN_READY가 taskId를 채워 화면 배지가 뜬다.
+        taskInfo: carriedTaskPath
+          ? { relativePath: carriedTaskPath, filename: carriedTaskPath.split(/[\/]/).pop() }
+          : null,
       });
       if (action !== "full" || !planResult?.ok) return planResult;
       return this.runProfessionalImplementation({
@@ -4119,6 +4129,14 @@ class SpecialistMixin {
   }
 
   async discardRunForFreshPlan() {
+    // 막힌 작업을 다시 기획하는 것은 대개 "새 작업"이 아니라 "같은 작업의 계약을
+    // 다시 쓰는 것"이다. 그래서 쓰던 작업 지시서 경로를 들고 나가 새 run이 이어받게
+    // 한다. 이걸 놓치면 같은 작업의 지시서가 TASK-003·004·005로 갈라져, 기획자가
+    // 어느 파일이 최신인지 매번 헷갈린다(실제로 그랬다).
+    const carriedTaskPath = this.professionalRun?.taskPath
+      || this.specialistResume?.taskInfo?.relativePath
+      || this.specialistBlocked?.taskPath
+      || null;
     const pending = this.specialistBlocked;
     const heldCheckpoint = pending?.checkpoint || this.specialistResume?.checkpoint || null;
     const runId = pending?.runId || this.specialistResume?.runInfo?.runId || null;
@@ -4177,7 +4195,7 @@ class SpecialistMixin {
     this.professionalPlan = null;
     this.clearRecoveryState();
     this.emitSpecialistState();
-    return { ok: true, discardedCheckpoint: Boolean(heldCheckpoint), warnings };
+    return { ok: true, discardedCheckpoint: Boolean(heldCheckpoint), warnings, carriedTaskPath };
   }
 
   async replanBlocked(workspaceAction = "keep") {

@@ -3857,3 +3857,41 @@ test("PLAN 뒤 실행에서 막혀도 재기획에 필요한 역할이 남아 �
     fs.rmSync(workspace, { recursive: true, force: true });
   }
 });
+
+// 막힌 작업을 PLAN 버튼으로 다시 기획하는 것은 "새 작업"이 아니라 "같은 작업의 계약을
+// 다시 쓰는 것"이다. 그런데 새 run은 taskPath가 비어 있어 매번 새 지시서를 만들었고,
+// 같은 작업의 지시서가 TASK-003·004·005로 갈라져 기획자가 어느 파일이 최신인지
+// 헷갈렸다(실제 세션에서 발생).
+test("막힌 상태에서 다시 기획하면 같은 작업 지시서를 갱신한다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-task-carry-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    runAgent: fakeRunner({
+      claude: [{ ok: true, text: makePlanContract("첫 기획") }, { ok: true, text: makePlanContract("다시 기획") }],
+      codex: [{ ok: true, text: "VERDICT: PASS" }, { ok: true, text: "VERDICT: PASS" }],
+    }),
+  });
+  const stages = {
+    planner: { agent: room.findAgent("claude") },
+    review: { agent: room.findAgent("codex") },
+  };
+
+  const first = await room.startSpecialist({ action: "plan", stages });
+  assert.equal(first.ok, true, first.error);
+  const firstPath = room.professionalRun.taskPath;
+  assert.ok(firstPath, "첫 기획이 지시서를 만들어야 합니다");
+
+  // 사용자 대기 상태를 만들어 PLAN 버튼 재시작 경로를 타게 한다.
+  room.specialistResume = { phase: "plan_ready", stages, action: "plan", mode: "step" };
+  const second = await room.startSpecialist({ action: "plan", stages });
+  assert.equal(second.ok, true, second.error);
+
+  assert.equal(room.professionalRun.taskPath, firstPath, "같은 지시서를 이어써야 합니다");
+  const files = fs.readdirSync(path.join(workspace, ".project-memory", "tasks"));
+  assert.deepEqual(files, [path.basename(firstPath)], `지시서가 갈라졌습니다: ${files}`);
+  // 배지에 쓰이는 taskId도 살아 있어야 한다.
+  assert.ok(room.specialistState().planTaskId, "taskId가 비면 화면 배지가 사라집니다");
+});
