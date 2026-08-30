@@ -530,3 +530,23 @@ test("항목 끝의 괄호 주석은 종류와 무관하게 걷어내고 이름 
   assert.equal(dels[1].description, "설명");
   assert.equal(dels[2].locator, "out/검사(BFI).xlsx");
 });
+
+// 기획자는 파일을 쓰지 않는다(권한 상한 read). Agora가 응답 본문에서 TASK를 추출해
+// 저장한다. 이걸 모르면 기획자가 "파일을 못 쓴다"거나 "대신 덮어써 달라"로 새고,
+// 그러면 응답에 TASK가 없어 필수 섹션 누락으로 반려되는 루프가 생긴다(실제 3회 발생).
+test("기획자 프롬프트는 TASK 파일을 Agora가 저장한다고 알려준다", () => {
+  const { buildAgentPrompt } = require("../src/chat/chat-prompt");
+  const prompt = buildAgentPrompt({
+    agent: { id: "claude", name: "C" },
+    agents: [{ id: "claude", name: "C" }],
+    messages: [{ author: "user", authorType: "user", text: "작업 요청" }],
+    specialist: { stage: "planner" },
+  });
+  assert.match(prompt, /작업 지시서 파일은 Agora가 이 응답에서 추출해 저장합니다/);
+  assert.match(prompt, /TASK 전문을 응답 안에 다시 적어야 합니다/);
+  // 파일을 직접 고치라는 옛 문구가 남으면 같은 오해가 다시 생긴다.
+  assert.ok(
+    !prompt.includes("기존 TASK.md를 덮어쓰지 마세요"),
+    "기획자가 파일을 쓴다고 오해할 문구가 남아 있습니다"
+  );
+});

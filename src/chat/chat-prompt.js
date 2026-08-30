@@ -356,7 +356,12 @@ function buildAgentPrompt({
       lines.push("- 다음 보조 섹션의 포함을 권장합니다: `## Current State / Evidence`, `## Affected Resources`, `## Invariants / Must Preserve`, `## Risks / Open Questions`, `## Dependencies`, `## Related Tasks`.");
       lines.push("- 의존하는 다른 작업이나 선행 조건이 있다면 `## Dependencies` 또는 `## Related Tasks`에 명시하세요.");
       lines.push("- 코드를 수정하거나 구현을 시작하지 마세요. 구현 담당자를 자동으로 부르지 마세요.");
-      lines.push("- BLOCKING 지적을 해결하지 못하거나 수용하지 않을 때는 TASK를 고친 것처럼 다시 쓰지 마세요. `STATUS: NEEDS_DECISION`과 그 이유·사용자에게 필요한 질문을 반환하고, 기존 TASK.md를 덮어쓰지 마세요.");
+      // 기획자는 파일을 쓰지 않는다(권한 상한도 read다). Agora가 응답 본문에서 TASK를
+      // 추출해 파일을 만든다. 이걸 모르면 "파일을 못 써서 못 하겠다"거나 "네가 대신
+      // 덮어써 달라"로 새고, 그러면 응답에 TASK가 없어 필수 섹션 누락으로 반려된다.
+      lines.push("- **작업 지시서 파일은 Agora가 이 응답에서 추출해 저장합니다.** 당신은 파일을 쓰거나 고칠 수 없고 그럴 필요도 없습니다. 사용자나 다른 참가자에게 파일을 대신 써 달라고 요청하지 마세요.");
+      lines.push("- 그래서 **기획을 낼 때마다 TASK 전문을 응답 안에 다시 적어야 합니다.** \"앞 메시지의 것을 쓰세요\"나 \"바뀐 부분만\"으로는 저장되지 않습니다. 이전 판을 그대로 유지하고 싶어도 전문을 다시 적으세요.");
+      lines.push("- BLOCKING 지적을 해결하지 못하거나 수용하지 않을 때는 TASK를 고친 것처럼 다시 쓰지 마세요. `STATUS: NEEDS_DECISION`과 그 이유·사용자에게 필요한 질문만 반환하세요(이때는 TASK 전문을 적지 않습니다).");
       lines.push("- 응답 안에 `STATUS: PLAN_READY` 또는 `STATUS: NEEDS_DECISION` 하나를 넣으세요.");
     } else if (specialist.stage === "plan_review") {
       lines.push("- 이것은 구현 검수가 아니라 기획 검수입니다. 코드를 수정하거나 구현을 시작하지 마세요.");
