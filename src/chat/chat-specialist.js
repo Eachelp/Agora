@@ -252,8 +252,18 @@ class SpecialistMixin {
     }
   }
 
+  // action별 stages는 그 실행에 필요한 역할만 담는다(plan은 기획·기획검수,
+  // implementation은 구현·검토·기록). 그래서 어느 하나만 보면 역할이 빈다:
+  // PLAN -> 실행 순서로 간 뒤 구현이 BLOCKED되면 specialistStages에 기획자가 없어
+  // 재기획이 "기획·검수 담당자를 지정해 주세요"로 거부됐다(프로젝트 설정과 무관하게).
+  // 셋을 겹쳐서 어느 단계에서 남긴 역할이든 살아 있게 한다. 나중 것이 우선한다.
   stagesForSpecialist() {
-    return this.specialistStages || this.professionalRun?.stages || this.specialistResume?.stages || null;
+    const merged = {
+      ...(this.specialistResume?.stages || {}),
+      ...(this.professionalRun?.stages || {}),
+      ...(this.specialistStages || {}),
+    };
+    return Object.keys(merged).length > 0 ? merged : null;
   }
 
   async withProfessionalAuthorization(authorization = "workspace-write", fn) {

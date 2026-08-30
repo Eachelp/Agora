@@ -3820,3 +3820,40 @@ test("백업 정리에 실패해도 취소는 성립한다", () => {
     fs.rmSync(workspace, { recursive: true, force: true });
   }
 });
+
+// action별 stages는 필요한 역할만 담는다(plan=기획·기획검수, implementation=구현·검토·기록).
+// 어느 하나만 보면 역할이 빈다: PLAN -> 실행 순서로 간 뒤 구현이 BLOCKED되면
+// specialistStages에 기획자가 없어 재기획이 "담당자를 지정해 주세요"로 거부됐다.
+test("PLAN 뒤 실행에서 막혀도 재기획에 필요한 역할이 남아 있다", () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-stage-merge-"));
+  try {
+    const room = new ChatRoom({
+      agents: makeAgents(),
+      meta: { workspace },
+      taskManager: new TaskManager(),
+      runAgent: fakeRunner({}),
+    });
+    // PLAN이 남긴 것: 기획·기획검수만
+    room.professionalRun = {
+      node: "IMPLEMENTING", status: "BLOCKED", stopReason: "BLOCKED",
+      policy: { autoContinueReady: false, planAutoRevisions: 0, implementationAutoRevisions: 0 },
+      stages: {
+        planner: { agent: room.findAgent("claude") },
+        planReview: { agent: room.findAgent("codex") },
+      },
+    };
+    // 실행이 남긴 것: 구현·검토·기록만 (기획자 없음)
+    room.specialistStages = {
+      implementation: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+      recorder: { agent: room.findAgent("codex") },
+    };
+
+    const stages = room.stagesForSpecialist();
+    assert.ok(stages.planner?.agent, "기획자가 남아야 재기획이 가능합니다");
+    assert.ok(stages.review?.agent, "검토자도 남아야 합니다");
+    assert.ok(stages.implementation?.agent, "구현자는 실행 단계 것이 유지됩니다");
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
