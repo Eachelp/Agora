@@ -1237,6 +1237,36 @@ class ChatRoom extends EventEmitter {
       : { ok: false, error: outcome.error || "역할 상담 응답에 실패했습니다." };
   }
 
+  // V1.5 팀 상담(제안서 §9.2) — Planner-first 제한 순차 상담. 역할을 병렬
+  // 또는 랜덤 호출하지 않고(INV-1, INV-4) 정해진 순서로 한 명씩 답한다.
+  // Professional Run을 만들지 않고, Task를 Freeze하지 않고, 쓰기 권한을 주지
+  // 않고, Recorder를 자동 호출하지 않는다.
+  async consultTeam(steps = []) {
+    if (this.discussionRequested || this.discussionActive) {
+      return { ok: false, error: "토론이 진행 중에는 팀 상담을 시작할 수 없습니다." };
+    }
+    if (this.isSpecialistLocked()) {
+      return {
+        ok: false,
+        error: "전문 실행이 진행 중이거나 결정을 기다리고 있어 팀 상담을 시작할 수 없습니다.",
+      };
+    }
+    if (!Array.isArray(steps) || steps.length === 0) {
+      return { ok: false, error: "팀 상담에 참여할 역할이 없습니다." };
+    }
+    const order = steps.map((step) => step.roleLabel || step.roleId).join(" → ");
+    this.appendSystem(`팀 상담 시작 · ${order} 순서로 답합니다. (읽기 전용, 실행 없음)`);
+    const generation = this.generation;
+    for (const step of steps) {
+      if (generation !== this.generation) return { ok: false, cancelled: true };
+      const result = await this.consultRole(step);
+      if (!result.ok) return result;
+    }
+    if (generation !== this.generation) return { ok: false, cancelled: true };
+    this.appendSystem("팀 상담을 마쳤습니다. 실행이 필요하면 PLAN 또는 실행 버튼으로 시작해 주세요.");
+    return { ok: true };
+  }
+
   // 다른 AI가 보낸 특정 메시지를 선택한 에이전트에게 전달해 이어서 답하게 합니다.
   // intent: "REVIEW_OPINION"(검토 요청) 또는 "CONTINUE"(이어서 작업).
   handoffMessage(targetAgentId, messageId, intent = "CONTINUE") {

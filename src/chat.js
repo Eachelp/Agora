@@ -4320,6 +4320,14 @@ function mentionTargets() {
       color: "#7c6f64",
       available: roleMentionAvailable(project, role.roleId),
     })),
+    {
+      alias: "팀",
+      label: "팀 상담: 기획자 → 검토자 → 구현자 (읽기 전용)",
+      color: "#7c6f64",
+      available: ["planning", "review", "implementation"].every((roleId) =>
+        roleMentionAvailable(project, roleId)
+      ),
+    },
   ];
 }
 

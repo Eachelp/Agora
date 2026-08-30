@@ -55,6 +55,9 @@ const ROLE_ALIASES = Object.freeze({
   builder: Object.freeze(["builder", "구현자"]),
   reviewer: Object.freeze(["reviewer", "검토자", "검수자"]),
   recorder: Object.freeze(["recorder", "기록자"]),
+  // 팀 상담(제안서 §9.2): 기획자 → 검토자 → 구현자 순차 읽기 전용 상담.
+  // @모두의 기존 브로드캐스트 의미를 바꾸지 않기 위해 별도 멘션으로 둔다.
+  team: Object.freeze(["team", "팀"]),
 });
 
 // 역할 멘션 파싱. parseMentions와 같은 마스킹·토큰 규칙을 쓰되 결과는 역할

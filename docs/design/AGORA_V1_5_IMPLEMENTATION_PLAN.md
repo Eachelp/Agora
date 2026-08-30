@@ -164,6 +164,18 @@ Stage 0~4는 이번 구현 세션의 범위다. Stage 5~6은 설계를 이 문�
   실행을 중단시키지 않는다. 대신 **시스템 메시지로 즉시 알린다**(“이벤트 저장
   실패를 성공으로 숨기지 않는다”는 §10.4 충족). FSM snapshot(meta.json)이 현재
   상태의 기준이고 Journal은 감사 기록이라는 위계(§10.4)를 유지한다.
+- **팀 상담 트리거는 `@팀`(team)**: 제안서 §9.2의 팀 상담(Planner → Reviewer →
+  Builder 순차, run 없음)은 `@모두`가 아니라 새 멘션 `@팀`으로 발동한다.
+  `@모두`는 기존 셔플 브로드캐스트 의미를 그대로 유지한다 — 저장된 습관과
+  테스트가 그 의미를 고정하고 있고, 같은 단어의 의미를 컨텍스트에 따라
+  바꾸면 사용자가 예측할 수 없기 때문이다. `@모두`의 팀 Protocol 전환 여부는
+  V1.5 사용 데이터를 본 뒤 별도로 결정한다.
+- **CONSULT는 전문 stage 턴이 아니라 일반 턴 + consult 컨텍스트**: harness가
+  role이 실린 ExecutionContext에 professionalRunId를 요구해(SessionKey), run
+  없는 stage 턴은 모델이 확정된 경우 fail-closed로 죽는다. recordDiscussion과
+  같은 선례를 따라 일반 턴으로 실행하고 역할 관점·읽기 전용 계약만 프롬프트로
+  덧씌운다. 권한은 `min(세션 권한, workspace-read, 역할 cap)` — 세션 권한보다
+  높은 권한을 얻는 경로를 만들지 않는다(V1 미래 호환 문서 §4).
 
 ---
 
@@ -414,13 +426,16 @@ Stage 0의 `interaction-contract.js`가 파서·전이표·budget·ledger를 이
 5. stale 차단: 요청에 `invocationId`+`professionalRunId`를 싣고 ledger로 소비
    기록(재시작 중복 방지 — 제안서 §8.4).
 
-## 9. Stage V1.5-6 — @모두 Planner-first 팀 실행 (후속 작업 설계)
+## 9. Stage V1.5-6 — @모두 Planner-first 팀 실행 (일부 구현 + 후속 설계)
 
 - `@모두`의 기존 의미(셔플 브로드캐스트)는 **일반 채팅에서 유지**한다. 팀
-  Protocol은 전문모드 컨텍스트(professional 상태 또는 명시 UI)에서만 발동 —
-  기존 `@모두` 테스트(chat-mention, chat-room)를 깨지 않는 경계다.
-- 팀 상담(CONSULT): Planner→Reviewer→Builder 순차 consultRole 3턴,
-  Professional Run 생성 없음, Freeze 없음, write 없음(제안서 §9.2).
+  Protocol은 별도 멘션 `@팀`으로 발동 — 기존 `@모두` 테스트(chat-mention,
+  chat-room)를 깨지 않는 경계다.
+- **팀 상담(CONSULT) — 구현 완료**: `@팀` 멘션이 Planner→Reviewer→Builder
+  순차 consultRole 3턴을 실행한다(`consultTeam`, chat-room.js). Professional
+  Run 생성 없음, Freeze 없음, write 없음, Recorder 자동 호출 없음(제안서
+  §9.2). 뒤 순서는 앞 상담 답변을 대화 기록으로 읽는다. 중간 실패·사용자
+  중지(generation bump)에서 멈춘다.
 - 팀 계획(PLAN): 기존 `chat:specialist:start {action:"plan"}` 재사용.
 - 팀 실행(EXECUTE): READY 있으면 `{action:"implementation"}`, 없으면
   `{action:"plan"}` 후 정지. `전체 실행` 사전 승인 시에만 `{action:"full"}` —

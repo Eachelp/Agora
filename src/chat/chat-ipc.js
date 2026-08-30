@@ -1904,6 +1904,37 @@ function roomMeta(meta) {
           if (roleMentions.length > 0 && agentMentions.length === 0) {
             const entry = room.sendUserMessage({ text, attachments, recordOnly: true });
             if (!entry) throw new Error("보낼 내용이 없습니다.");
+            // @팀: Planner-first 제한 순차 상담(제안서 §9.2). 개별 역할 멘션과
+            // 함께 오면 팀 상담이 우선한다.
+            if (roleMentions.includes("team")) {
+              const project = projectForSession(store.readMeta(sessionId));
+              const steps = [];
+              for (const roleId of ["planner", "reviewer", "builder"]) {
+                const roleDef = CONSULT_ROLE_DEFS[roleId];
+                const resolved = project
+                  ? specialistStageFor(project, room, roleDef.projectRole)
+                  : { ok: false, error: "프로젝트가 없어 역할 담당자를 확인할 수 없습니다." };
+                if (!resolved.ok) {
+                  room.appendSystem(`팀 상담을 시작하지 못했습니다: ${resolved.error}`);
+                  return {};
+                }
+                steps.push({
+                  roleId,
+                  stage: roleDef.stage,
+                  roleLabel: roleDef.label,
+                  agent: resolved.agent,
+                  agentConfig: resolved.agentConfig,
+                });
+              }
+              const team = room.consultTeam(steps);
+              const result = await Promise.race([
+                team,
+                new Promise((resolve) => setImmediate(() => resolve({ ok: true, pending: true }))),
+              ]);
+              team.catch(() => {});
+              if (result && result.ok === false) throw new Error(result.error);
+              return {};
+            }
             const roleDef = CONSULT_ROLE_DEFS[roleMentions[0]];
             const project = projectForSession(store.readMeta(sessionId));
             const resolved = project
