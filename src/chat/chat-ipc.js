@@ -1924,6 +1924,7 @@ function roomMeta(meta) {
                   roleLabel: roleDef.label,
                   agent: resolved.agent,
                   agentConfig: resolved.agentConfig,
+                  attachments,
                 });
               }
               const team = room.consultTeam(steps);
@@ -1951,6 +1952,7 @@ function roomMeta(meta) {
               roleLabel: roleDef.label,
               agent: resolved.agent,
               agentConfig: resolved.agentConfig,
+              attachments,
             });
             // 상담 응답은 오래 걸릴 수 있으므로 시작 확인만 동기로 반환한다.
             // 시작 자체가 거부되면(토론 중 등) 그 오류는 여기서 바로 던진다.

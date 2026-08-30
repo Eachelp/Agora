@@ -1211,7 +1211,7 @@ class ChatRoom extends EventEmitter {
   // 일반 턴으로 실행하고 역할 관점과 읽기 전용 계약만 프롬프트로 덧씌운다.
   // (specialist stage 턴은 harness가 professionalRunId를 요구하므로 run 없는
   // 상담을 stage 턴으로 보내면 fail-closed로 죽는다.)
-  async consultRole({ roleId, stage, agent, agentConfig, roleLabel }) {
+  async consultRole({ roleId, stage, agent, agentConfig, roleLabel, attachments }) {
     if (this.discussionRequested || this.discussionActive) {
       return { ok: false, error: "토론이 진행 중에는 역할을 호출할 수 없습니다." };
     }
@@ -1230,6 +1230,9 @@ class ChatRoom extends EventEmitter {
     const outcome = await this.scheduleResponse(target, {
       consult: { role: roleId, stage: stage || null, label },
       agentConfig,
+      // 질문에 딸린 첨부는 상담 턴에도 전달한다 — 기록만 되고 정작 답하는
+      // 에이전트가 파일을 못 받는 공백을 막는다.
+      attachments: Array.isArray(attachments) ? attachments : [],
     });
     if (!outcome) return { ok: false, cancelled: true };
     return outcome.ok

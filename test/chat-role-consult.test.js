@@ -107,6 +107,24 @@ test("consultRole은 읽기 전용 단일 응답을 만든다", async () => {
   );
 });
 
+test("consultRole은 질문의 첨부를 상담 턴에 전달한다", async () => {
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({}, calls),
+  });
+  const attachment = { id: "att-1", fileName: "diagram.png" };
+  await room.consultRole({
+    roleId: "planner",
+    stage: "planner",
+    roleLabel: "기획자",
+    agent: { id: "claude" },
+    attachments: [attachment],
+  });
+  await settle(room);
+  assert.deepEqual(calls[0].attachments, [attachment]);
+});
+
 test("consultRole은 세션 권한보다 높은 권한을 얻지 못한다", async () => {
   const calls = [];
   const room = new ChatRoom({
