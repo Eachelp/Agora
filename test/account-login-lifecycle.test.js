@@ -113,7 +113,14 @@ function makeSwitching(t, { pathOverride, chatFeature } = {}) {
   });
 
   const notifications = [];
+  const desktopCalls = { stopped: 0, launched: 0 };
   const switching = createAccountSwitching({
+    // 실제 Codex Desktop을 끄고 켜지 않는다. 이 seam이 없으면 npm test가
+    // 사용자의 Codex 앱을 종료·재실행한다(테스트 부작용).
+    codexDesktop: {
+      stop: async () => { desktopCalls.stopped += 1; },
+      launch: async () => { desktopCalls.launched += 1; return { skipped: true }; },
+    },
     electron: {
       app: { getPath: () => userData },
       shell: { openPath: async () => "" },
@@ -131,7 +138,7 @@ function makeSwitching(t, { pathOverride, chatFeature } = {}) {
       showSystemNotice: () => {},
     }),
   });
-  return { switching, notifications, home };
+  return { switching, notifications, home, desktopCalls };
 }
 
 test("AGY prepareLogin 성공 → pre-mutation boundary 정확히 1회", async (t) => {
@@ -701,4 +708,26 @@ test("BLOCKER3-g. complete()를 지키지 않는 seam은 fail-closed다(닫을 �
     /complete\(\)가 없습니다/
   );
   assert.deepEqual(touched, [], "credential을 건드리지 않는다");
+});
+
+
+// npm test가 사용자의 Codex Desktop을 실제로 종료·재실행하던 부작용을 막는다.
+// switchCodexAccount 안에 stop/launch가 직접 박혀 있으면 switchToProfile만 모킹해도
+// 진짜 앱이 꺼졌다 켜진다. seam을 통해서만 부르는지 소스로 고정한다.
+test("계정 전환 테스트는 실제 Codex Desktop을 건드리지 않는다", async (t) => {
+  const { switching, desktopCalls } = makeSwitching(t);
+  switching.codexAccountSwitcher.switchToProfile = () => ({ profile: { label: "T" } });
+
+  await switching.switchCodexAccount("some-profile");
+  // seam을 통해 호출됐다면 카운트가 오른다(= 실제 앱은 안 건드렸다).
+  assert.ok(desktopCalls.stopped >= 1, "종료는 주입된 seam으로 가야 합니다");
+  assert.ok(desktopCalls.launched >= 1, "재실행도 주입된 seam으로 가야 합니다");
+
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "src", "agora", "account-switching.js"), "utf8"
+  );
+  const body = source.slice(source.indexOf("async function switchCodexAccount"));
+  const fn = body.slice(0, body.indexOf("\n  function "));
+  assert.ok(!fn.includes("stopCodexDesktopApp()"), "운영 함수를 직접 부르면 모킹이 무의미해집니다");
+  assert.ok(!fn.includes("launchCodexDesktopApp()"), "운영 함수를 직접 부르면 모킹이 무의미해집니다");
 });

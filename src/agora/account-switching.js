@@ -62,6 +62,14 @@ function createAccountSwitching(ui) {
     getChatFeature,
   } = ui;
 
+  // Codex Desktop 종료·재실행은 실제 사용자 앱을 건드리는 부작용이다.
+  // 테스트가 switchCodexAccount를 통과할 때 진짜 Codex가 꺼졌다 켜지지 않도록
+  // seam으로 분리한다(주입하지 않으면 운영 구현 그대로).
+  const codexDesktop = ui.codexDesktop || {
+    stop: () => stopCodexDesktopApp(),
+    launch: () => launchCodexDesktopApp(),
+  };
+
   // userData에 남기는 간단한 디버그 로그입니다.
   // 로그인 터미널처럼 사용자가 "아무 일도 안 일어났다"고 느끼는 작업은 실제 launcher 오류를 남겨야 추적이 됩니다.
   function appendDebugLog(message) {
@@ -729,7 +737,7 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
 
       let stopError = null;
       try {
-        await stopCodexDesktopApp();
+        await codexDesktop.stop();
       } catch (error) {
         stopError = error;
         appendDebugLog(`Codex Desktop stop failed before switch: ${error.message || String(error)}`);
@@ -741,7 +749,7 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
 
         let launchText = "Codex Desktop App 재실행을 요청했습니다.";
         try {
-          const restartResult = await launchCodexDesktopApp();
+          const restartResult = await codexDesktop.launch();
           launchText = restartResult.skipped
             ? "재시작 설정이 꺼져 있어 auth만 교체했습니다."
             : "Codex Desktop App 재실행을 요청했습니다.";
