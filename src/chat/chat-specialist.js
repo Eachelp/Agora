@@ -263,6 +263,28 @@ class SpecialistMixin {
   // PLAN -> 실행 순서로 간 뒤 구현이 BLOCKED되면 specialistStages에 기획자가 없어
   // 재기획이 "기획·검수 담당자를 지정해 주세요"로 거부됐다(프로젝트 설정과 무관하게).
   // 셋을 겹쳐서 어느 단계에서 남긴 역할이든 살아 있게 한다. 나중 것이 우선한다.
+  // 실행 시작 시점에 저장된 stages 스냅샷에서 기획·기획검수 담당자만 현재 프로젝트
+  // 설정으로 다시 조회해 바꾼다. 재개(기획 답변·WAITING 복원·재기획) 경로에서 쓴다.
+  // refresher가 없거나 조회 실패(false)면 스냅샷을 그대로 둔다 — 설정 저장소를 모르는
+  // 테스트/임베더가 깨지지 않도록 하는 낙진 방어다. 구현·검토·기록 담당자는 실행이
+  // 이미 승인된 계약을 이어가는 단계라 바꾸지 않고, 기획만 재조회한다.
+  refreshPlanStages(stages) {
+    const current = stages && typeof stages === "object" ? { ...stages } : {};
+    if (typeof this.planStagesRefresher !== "function") return current;
+    let refreshed = null;
+    try {
+      refreshed = this.planStagesRefresher();
+    } catch {
+      return current;
+    }
+    if (!refreshed || typeof refreshed !== "object") return current;
+    if (refreshed.planner?.agent) current.planner = refreshed.planner;
+    if (refreshed.planReview?.agent || refreshed.review?.agent) {
+      current.planReview = refreshed.planReview || refreshed.review;
+    }
+    return current;
+  }
+
   stagesForSpecialist() {
     const merged = {
       ...(this.specialistResume?.stages || {}),
@@ -602,7 +624,7 @@ class SpecialistMixin {
     const changedAfterReview = run.stopReason === "TASK_CHANGED_AFTER_REVIEW";
     const feedback = this.waitingPlanFeedback({ run, isPlanning, changedAfterReview, taskContent });
     return {
-      stages: run.stages || this.specialistStages || {},
+      stages: this.refreshPlanStages(run.stages || this.specialistStages || {}),
       mode,
       action,
       planAutoRevisions: policy.planAutoRevisions || 0,
@@ -1533,7 +1555,14 @@ class SpecialistMixin {
         ? "\n=== 기획 수정 요청 끝 ==="
         : "\n=== 사용자 답변 끝 ===";
     const feedback = `${resume.feedback || ""}${editPrefix}${fixText}${editSuffix}`;
-    const result = await this.runPlanBlock({ ...resume, feedback, taskInfo: resume.taskInfo || null });
+    // 재개 시점의 프로젝트 설정을 다시 반영한다. 실행 시작 때 저장한 stages 스냅샷에는
+    // 사용자가 대기 중에 바꾼 기획·기획검수 담당자가 아니라 과거 담당자가 남아 있다.
+    const result = await this.runPlanBlock({
+      ...resume,
+      stages: this.refreshPlanStages(resume.stages),
+      feedback,
+      taskInfo: resume.taskInfo || null,
+    });
     if (resume.action === "full" && result?.ok) {
       return this.runProfessionalImplementation({
         stages: resume.stages,
@@ -4226,9 +4255,10 @@ class SpecialistMixin {
       }
       // 담당자 확인을 먼저 한다. 복원/정리/저널 해제 같은 되돌릴 수 없는 처리
       // 이전에 검증해야, 설정이 비어 있을 때 사용자가 checkpoint와 BLOCKED
-      // 상태를 잃고 막다른 길에 놓이지 않는다.
-      const stages = this.stagesForSpecialist();
-      if (!stages || !stages.planner?.agent || !stages.review?.agent) {
+      // 상태를 잃고 막다른 길에 놓이지 않는다. 재기획은 현재 프로젝트 설정의
+      // 기획·기획검수 담당자로 실행한다(과거 실행의 스냅샷을 쓰지 않는다).
+      const stages = this.refreshPlanStages(this.stagesForSpecialist());
+      if (!stages || !stages.planner?.agent || !(stages.review?.agent || stages.planReview?.agent)) {
         return { ok: false, error: "기획·검수 담당자를 프로젝트 설정에서 지정해 주세요." };
       }
       const runInfo = pending.runId && this.taskManager?.runInfoForId
@@ -4318,7 +4348,10 @@ class SpecialistMixin {
       );
 
       return this.runPlanBlock({
-        stages,
+        stages: {
+          ...stages,
+          planReview: stages.planReview || stages.review,
+        },
         feedback,
         taskInfo,
         action: "plan",

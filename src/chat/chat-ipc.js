@@ -977,6 +977,16 @@ function roomMeta(meta) {
         const updated = store.updateMeta(sessionId, { professionalRun: professionalRun || null });
         return Boolean(updated);
       },
+      // 전문 실행 재개(기획 답변·WAITING 복원·재기획) 시 기획·기획검수 담당자를
+      // 프로젝트 설정에서 다시 읽는다. 실행 시작 때 저장한 stages 스냅샷에는 사용자가
+      // 대기 중에 바꾼 담당자가 아니라 과거 담당자가 남아, 화면 표시와 실제 호출이
+      // 어긋났다(교체 전 기획자가 계속 응답하던 결함).
+      planStagesRefresher: () => {
+        const project = projectForSession(store.readMeta(sessionId));
+        if (!project) return null;
+        const planned = specialistStagesFor(project, room, "plan");
+        return planned.ok ? planned.stages : null;
+      },
       // Stage C — provider-neutral harness lifecycle seam. room은 restore/run 종료
       // fact만 전달하고, project 범위 해석과 registry/adapter 반영은 여기(control
       // plane)와 HarnessRuntime이 맡는다.

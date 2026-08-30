@@ -58,6 +58,7 @@ function stripEmoticonTags(value) {
 }
 
 const DEFAULT_MENTION_CHAIN_LIMIT = 2;
+const LOST_TURN_STALL_SECONDS = 120;
 
 let messageSeq = 0;
 function nextMessageId() {
@@ -96,6 +97,12 @@ class ChatRoom extends EventEmitter {
     this.onProfessionalTaskState = typeof options.onProfessionalTaskState === "function"
       ? options.onProfessionalTaskState
       : null;
+    // 전문 실행 재개(기획 답변·재기획) 시 기획·기획검수 담당자를 현재 프로젝트
+    // 설정에서 다시 조회해 스냅샷을 갱신하는 훅이다. null이면 기존처럼 실행 시작
+    // 시점에 저장된 stages를 그대로 쓴다.
+    this.planStagesRefresher = typeof options.planStagesRefresher === "function"
+      ? options.planStagesRefresher
+      : null;
     // Stage C — provider-neutral harness lifecycle seam(chat-ipc가 주입).
     // { workspaceRestored(), professionalRunEnded({ professionalRunId, invalid }) }
     // 형태이며, room은 lifecycle facts만 전달하고 세션/adapter 내부는 모른다.
@@ -120,6 +127,8 @@ class ChatRoom extends EventEmitter {
     this.turnQueue = [];
     this.deferredTurnQueue = [];
     this.pendingTurns = new Map();
+    this.lostTurnNotified = new Set();
+    this.turnStartedAt = new Map();
     this.turnActive = false;
     this.currentTurn = null;
     // 사용자가 "잠깐"으로 개입하면 다음 사용자 발화 전까지 에이전트발
@@ -565,6 +574,7 @@ class ChatRoom extends EventEmitter {
       promptLimit: this.messages.length,
     };
     if (dedupeKey) this.pendingTurns.set(dedupeKey, item);
+    this.trackTurnWait(item);
     // While a discussion or specialist run is active, defer ordinary
     // (non-discussion, non-specialist) turns so they cannot interject.
     const deferGeneral = (this.discussionActive || this.specialistActive)
@@ -627,6 +637,7 @@ class ChatRoom extends EventEmitter {
         this.pendingTurns.delete(item.dedupeKey);
       }
       item.resolve(undefined);
+      this.notifyLostTurn(item);
       this.emitTurnState();
       return true;
     }
@@ -644,10 +655,12 @@ class ChatRoom extends EventEmitter {
         }
         if (item.generation !== this.generation) {
           item.resolve(undefined);
+          this.notifyLostTurn(item);
           this.emitTurnState();
           continue;
         }
         this.currentTurn = item;
+        this.turnStartedAt.delete(item.turnId);
         this.emitTurnState();
         let outcome;
         try {
@@ -676,6 +689,42 @@ class ChatRoom extends EventEmitter {
       return Promise.resolve();
     }
     return new Promise((resolve) => this.idleWaiters.push(resolve));
+  }
+
+  // General (non-discussion, non-specialist) turns lost to stop/generation
+  // bumps must not disappear silently: tell the user to resend.
+  isGeneralTurn(item) {
+    return !item.context.discussion && !item.context.specialist;
+  }
+
+  trackTurnWait(item) {
+    if (!this.isGeneralTurn(item)) return;
+    if (this.lostTurnNotified.has(item.turnId)) return;
+    this.turnStartedAt.set(item.turnId, Date.now());
+    const stallTimer = setTimeout(() => this.checkTurnStall(item.turnId), LOST_TURN_STALL_SECONDS * 1000);
+    if (typeof stallTimer.unref === "function") stallTimer.unref();
+  }
+
+  checkTurnStall(turnId) {
+    const startedAt = this.turnStartedAt.get(turnId);
+    if (startedAt === undefined) return;
+    if (Date.now() - startedAt < LOST_TURN_STALL_SECONDS * 1000) return;
+    if (this.lostTurnNotified.has(turnId)) return;
+    const queued = this.turnQueue.some((item) => item.turnId === turnId)
+      || this.deferredTurnQueue.some((item) => item.turnId === turnId);
+    if (!queued) return;
+    const item = this.turnQueue.find((item) => item.turnId === turnId)
+      || this.deferredTurnQueue.find((item) => item.turnId === turnId);
+    this.lostTurnNotified.add(turnId);
+    this.appendSystem("@" + item.agent.id + " 응답이 " + LOST_TURN_STALL_SECONDS + "초 넘게 시작되지 않고 있습니다. 응답이 유실됐을 수 있으니 기다리지 말고 다시 보내 주세요.");
+  }
+
+  notifyLostTurn(item) {
+    if (!this.isGeneralTurn(item)) return;
+    if (this.lostTurnNotified.has(item.turnId)) return;
+    this.lostTurnNotified.add(item.turnId);
+    this.turnStartedAt.delete(item.turnId);
+    this.appendSystem("중지로 @" + item.agent.id + " 응답 대기가 취소됐습니다. 방금 질문은 전달되지 않았을 수 있으니 필요하면 다시 보내 주세요.");
   }
 
   resolveIdleWaiters() {
@@ -1373,10 +1422,14 @@ class ChatRoom extends EventEmitter {
 
   stopAllSilently() {
     this.generation += 1;
-    for (const item of [...this.turnQueue, ...this.deferredTurnQueue]) item.resolve(undefined);
+    for (const item of [...this.turnQueue, ...this.deferredTurnQueue]) {
+      item.resolve(undefined);
+      this.notifyLostTurn(item);
+    }
     this.turnQueue = [];
     this.deferredTurnQueue = [];
     this.pendingTurns.clear();
+    this.turnStartedAt.clear();
     this.mentionsMuted = false;
     this.emitTurnState();
     // Stop/interject/reset로 turn을 중지하면 화면에 보이는 모든 승인 카드는 stale하다.

@@ -130,6 +130,53 @@ test("기획서 필수 섹션 누락이 2회를 초과하여 반복되면 NEEDS_
   assert.equal(room.specialistResume.phase, "needs_decision");
 });
 
+test("기획 답변 재개 시 저장된 스냅샷 대신 현재 프로젝트 설정의 기획·기획검수 담당자를 사용한다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-plan-stage-refresh-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const calls = [];
+
+  const replies = {
+    // 과거 기획자(claude)와 새 기획자(codex) 모두 질문 → 답변 후 계약 제출 순서.
+    claude: [
+      { ok: true, text: "## Open Questions\n- A안과 B안 중 무엇을 쓸까요?\n\nSTATUS: NEEDS_DECISION" },
+      // 재개 후 기획 검수 담당자가 된 claude의 통과 판정.
+      { ok: true, text: "기획 검수 통과\nVERDICT: PASS" },
+    ],
+    codex: [
+      // 재개 후 새 기획자가 질문 없이 계약을 제출한다.
+      { ok: true, text: makeValidContract("새 기획자의 목표") },
+    ],
+  };
+
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    runAgent: fakeRunner(replies, calls),
+  });
+
+  // 실행 시작 시점에는 claude가 기획자였다(스냅샷).
+  const started = await room.startSpecialist({
+    action: "plan",
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+    },
+  });
+  assert.equal(started.needsUserDecision, true);
+
+  // 대기 중 사용자가 기획자를 codex로 교체했다고 가정한다(프로젝트 설정 재조회 훅).
+  room.planStagesRefresher = () => ({
+    planner: { agent: room.findAgent("codex") },
+    planReview: { agent: room.findAgent("claude") },
+  });
+
+  const result = await room.answerPlanQuestion("B안으로 진행해 주세요");
+  assert.equal(result.ok, true);
+  // claude(1차 기획, 질문) → codex(재개 기획) → claude(기획 검수) 순서여야 한다.
+  assert.deepEqual(calls.map((c) => c.agentId), ["claude", "codex", "claude"]);
+});
+
 test("실행 게이트에서 필수 heading이 누락된 Task는 TASK_CONTRACT_INCOMPLETE로 중단하고 Builder/Checkpoint를 호출하지 않는다", async (t) => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-exec-gate-missing-"));
   t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
