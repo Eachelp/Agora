@@ -1640,6 +1640,7 @@ function renderProfessionalStatusDetail() {
 
 // --- 에이전트 칩 + 팝오버 ---
 function renderAgents() {
+  renderRailLabels();
   agentChips.textContent = "";
   for (const agent of agents) {
     const chip = document.createElement("button");
@@ -1670,6 +1671,21 @@ function setRailActive(button) {
   if (button) {
     button.classList.add("is-active");
     button.setAttribute("aria-current", "page");
+  }
+}
+
+// 레일 라벨·툴팁을 참가자 이름에서 채운다. HTML에 이름을 또 박으면 개명할 때마다
+// provider-capabilities와 chat.html이 어긋난다. 이름을 아직 못 받았으면 HTML의
+// 초기값을 그대로 둔다.
+function renderRailLabels() {
+  for (const [agentId, button] of railAgentButtons) {
+    const name = agentById(agentId)?.name;
+    if (!button || !name) continue;
+    const label = button.querySelector(".app-rail-label");
+    if (label) label.textContent = name;
+    const hint = `${name} 담당 모델·추론 설정`;
+    button.title = hint;
+    button.setAttribute("aria-label", hint);
   }
 }
 

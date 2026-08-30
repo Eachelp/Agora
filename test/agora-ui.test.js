@@ -586,3 +586,19 @@ test("실행 중에도 일반 모드로 내려 메모를 남길 수 있다", () 
     "일반 모드에서는 실행 중에도 메모를 남길 수 있어야 합니다"
   );
 });
+
+// 레일 라벨을 HTML에만 박으면 참가자 이름을 바꿀 때 provider-capabilities와
+// chat.html이 어긋난다. 이름을 받으면 renderAgents가 덮어쓰고, HTML 값은 첫 페인트용
+// 기본값으로만 남는다.
+test("레일 라벨은 참가자 이름에서 채워지고 HTML은 기본값만 갖는다", () => {
+  const renderer = read("src/chat.js");
+  const html = read("src/chat.html");
+  assert.ok(renderer.includes("function renderRailLabels()"), "레일 라벨 갱신 함수가 있어야 합니다");
+  // 호출부 4곳에 흩지 않고 renderAgents 안에서 한 번에 맞춘다.
+  assert.match(renderer, /function renderAgents\(\) \{\s*\n\s*renderRailLabels\(\);/);
+  // 첫 페인트 기본값도 새 이름이어야 잠깐 옛 이름이 보이지 않는다.
+  assert.ok(html.includes('<span class="app-rail-label">GPT</span>'), "레일 기본값이 옛 이름입니다");
+  assert.ok(html.includes('<span class="app-rail-label">Gemini</span>'), "레일 기본값이 옛 이름입니다");
+  assert.ok(!html.includes('<span class="app-rail-label">Codex</span>'));
+  assert.ok(!html.includes('<span class="app-rail-label">AGY</span>'));
+});
