@@ -565,3 +565,24 @@ test("살아 있는 전문 실행은 조작 버튼을 스스로 드러낸다", (
   // 끄지는 않는다 — 숨기는 것은 사용자의 선택으로 남긴다.
   assert.ok(!body.includes("professionalModeEnabled = false"), "자동으로 끄면 사용자의 선택을 덮습니다");
 });
+
+// "실행 중 → 일반 모드 → 메모"가 계약인데, 토글이 실행 중에 잠기고 입력창도
+// specialistActive면 닫혀 그 경로에 도달할 수가 없었다. 토글은 표시·라우팅만
+// 바꾸고 실행 상태는 건드리지 않으므로 실행 중에도 열려 있어야 한다.
+test("실행 중에도 일반 모드로 내려 메모를 남길 수 있다", () => {
+  const renderer = read("src/chat.js");
+  // 토글은 세션 유무로만 막는다.
+  assert.ok(
+    renderer.includes("specialistButton.disabled = !activeSessionId;"),
+    "실행 중이라고 모드 토글을 잠그면 메모 경로에 도달할 수 없습니다"
+  );
+  assert.ok(
+    renderer.includes('specialistButton.addEventListener("click", () => {\n  if (!activeSessionId) return;'),
+    "클릭 가드도 실행 중을 막으면 안 됩니다"
+  );
+  // 일반 모드면 실행 중에도 입력창이 열린다.
+  assert.ok(
+    renderer.includes("if (!professionalModeEnabled) return false;"),
+    "일반 모드에서는 실행 중에도 메모를 남길 수 있어야 합니다"
+  );
+});

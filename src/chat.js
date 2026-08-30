@@ -419,9 +419,9 @@ function setSpecialistState(state = {}) {
 function specialistLocksComposer() {
   // READY 상태에서는 기획 수정을 허용하기 위해 composer를 잠그지 않는다.
   if (specialistNode === "READY" && !specialistActive) return false;
-  // 일반 모드를 고른 사용자는 메모를 남길 수 있어야 한다. 실제로 턴이 도는
-  // 동안만 잠근다(그때는 입력해도 큐에 끼어들 뿐이다).
-  if (!professionalModeEnabled && !specialistActive) return false;
+  // 일반 모드를 고른 사용자는 실행 중에도 메모를 남길 수 있어야 한다.
+  // recordOnly는 턴을 예약하지 않아 진행 중인 실행에 끼어들지 않는다.
+  if (!professionalModeEnabled) return false;
   return Boolean(specialistActive || specialistBlockedAvailable || (specialistResumeAvailable && !specialistNeedsInput));
 }
 
@@ -1509,7 +1509,9 @@ function renderHeader() {
     planner.agentId && effectivePlanReview.agentId && implementation.agentId && review.agentId
       && recorder.agentId
   );
-  specialistButton.disabled = !activeSessionId || specialistRunning || specialistActive;
+  // 모드 토글은 표시와 입력 라우팅만 바꾸고 실행 상태는 건드리지 않는다. 실행 중에
+  // 잠그면 "실행 중 일반 모드로 메모를 남긴다"는 경로에 도달할 수가 없다.
+  specialistButton.disabled = !activeSessionId;
   specialistButton.setAttribute("aria-checked", String(professionalModeEnabled));
   specialistButton.title = specialistBlockedAvailable
       ? "구현이 막혔습니다. 다음 처리 방법을 선택하세요"
@@ -2869,7 +2871,7 @@ function renderSpecialistDialog(details = null) {
 }
 
 specialistButton.addEventListener("click", () => {
-  if (!activeSessionId || specialistRunning || specialistActive) return;
+  if (!activeSessionId) return;
   if (specialistBlockedAvailable) {
     openSpecialistDialog();
     return;
@@ -4528,7 +4530,7 @@ function lockComposer(locked) {
   attachButton.disabled = locked || specialistNeedsInput;
   // 일반 모드를 고른 동안에는 전문 조작 문구를 쓰지 않는다. 그 발화는 실행을
   // 건드리지 않고 기획자가 다음 라운드에 읽을 메모로만 남는다.
-  const noteOnly = !professionalModeEnabled && professionalRunWasLive && !specialistActive;
+  const noteOnly = !professionalModeEnabled && professionalRunWasLive;
   if (noteOnly) {
     composerInput.disabled = false;
     sendButton.disabled = false;

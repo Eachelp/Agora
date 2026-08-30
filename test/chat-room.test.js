@@ -3701,3 +3701,49 @@ test("TASK 저장이 실패해도 전문 실행이 RUNNING으로 갇히지 않�
   assert.ok(isStateAllowed({ node: state.node, status: state.status }, "cancel"));
   assert.ok(isStateAllowed({ node: state.node, status: state.status }, "send"));
 });
+
+// 불변식을 진입점마다 붙이면 빠지는 경로가 생긴다(resumeSpecialist, replanBlocked).
+// 모든 전문 실행 진입점이 지나는 공통 래퍼에 걸어야 전부 덮인다.
+test("어느 진입점으로 들어와도 RUNNING이 갇힌 채 남지 않는다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-strand-wrapper-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    runAgent: fakeRunner({}),
+  });
+  room.professionalRun = {
+    node: "IMPLEMENTING", status: "RUNNING", stopReason: null,
+    policy: { autoContinueReady: false, planAutoRevisions: 0, implementationAutoRevisions: 0 },
+    stages: {},
+  };
+  // 공통 래퍼를 지나기만 하면(무엇을 하든) 갇힌 RUNNING은 정리된다.
+  await room.withProfessionalAuthorization("workspace-write", async () => "noop");
+  assert.notEqual(room.specialistState().status, "RUNNING");
+});
+
+// 정책 표는 살아 있는 run에서 취소를 허용하는데, cancelSpecialist가 active/resume만
+// 보면 "된다고 해놓고 안 되는 버튼"이 된다.
+test("실행 상태만 남은 run도 취소할 수 있다", () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-cancel-stateonly-"));
+  try {
+    const room = new ChatRoom({
+      agents: makeAgents(),
+      meta: { workspace },
+      taskManager: new TaskManager(),
+      initialProfessionalRun: {
+        node: "PLANNING", status: "INTERRUPTED", stopReason: "EXECUTION_INTERRUPTED",
+        policy: { autoContinueReady: false, planAutoRevisions: 0, implementationAutoRevisions: 0 },
+        stages: {},
+      },
+      runAgent: fakeRunner({}),
+    });
+    assert.equal(room.specialistActive, false);
+    assert.equal(room.specialistResume, null);
+    const result = room.cancelSpecialist();
+    assert.equal(result.ok, true, result.error);
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});

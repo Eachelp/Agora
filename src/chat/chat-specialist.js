@@ -263,6 +263,10 @@ class SpecialistMixin {
       return await fn();
     } finally {
       this.activeRunAuthorization = prev;
+      // 모든 전문 실행 진입점이 이 래퍼를 지난다. 진입점마다 따로 붙이면
+      // resumeSpecialist·replanBlocked처럼 빠지는 경로가 생기므로 여기 한 곳에 둔다.
+      // 중첩 호출(예: builder status 교정)에서는 specialistActive가 켜져 있어 no-op다.
+      this.settleStrandedProfessionalRun();
     }
   }
 
@@ -1479,11 +1483,7 @@ class SpecialistMixin {
   // Open Question·기획 검수 피드백에 대한 사용자 답변을 Planner의 다음 입력으로 보관합니다.
   async answerPlanQuestion(answer) {
     return this.withProfessionalAuthorization("workspace-write", async () => {
-      try {
-        return await this._answerPlanQuestion(answer);
-      } finally {
-        this.settleStrandedProfessionalRun();
-      }
+      return await this._answerPlanQuestion(answer);
     });
   }
 
@@ -1557,13 +1557,8 @@ class SpecialistMixin {
     // run-scoped 권한(workspace-write)을 켜 둔다. 단계별 상한은 그 아래에서
     // 다시 좁혀진다(planner/plan_review=read, recorder=chat 등).
     return this.withProfessionalAuthorization("workspace-write", async () => {
-      try {
-        if (options.action) return await this.startProfessionalAction(options);
-        return await this.startLegacySpecialist(options);
-      } finally {
-        // 어느 경로로 빠져나오든 갇힌 RUNNING을 남기지 않는다.
-        this.settleStrandedProfessionalRun();
-      }
+      if (options.action) return await this.startProfessionalAction(options);
+      return await this.startLegacySpecialist(options);
     });
   }
 
@@ -2153,7 +2148,15 @@ class SpecialistMixin {
   // 승인 대기 중인 전문 실행을 명시적으로 끝냅니다.
   // 이미 만들어진 Builder 변경은 복원하지 않고 보존합니다. 복원이 필요하면 BLOCKED 메뉴를 씁니다.
   cancelSpecialist() {
-    if (!this.specialistActive && !this.specialistResume) {
+    // 정책 표는 살아 있는 run에서 취소를 허용한다. 그런데 여기서 active/resume만
+    // 보면, 실행이 끝난 뒤 상태만 남은 경우(예: INTERRUPTED로 정리된 run)에
+    // "취소할 전문 실행이 없습니다"로 거부해 정책과 실제 동작이 어긋난다.
+    // 사용자에게는 "된다고 해놓고 안 되는 버튼"으로 보인다.
+    const hasLiveRun = Boolean(
+      this.professionalRun &&
+      !(this.professionalRun.node === "COMPLETED" && this.professionalRun.status === "COMPLETED")
+    );
+    if (!this.specialistActive && !this.specialistResume && !hasLiveRun) {
       return { ok: false, error: "취소할 전문 실행이 없습니다." };
     }
     const professionalAct = Boolean(
