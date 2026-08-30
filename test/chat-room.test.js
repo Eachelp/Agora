@@ -3895,3 +3895,47 @@ test("막힌 상태에서 다시 기획하면 같은 작업 지시서를 갱신�
   // 배지에 쓰이는 taskId도 살아 있어야 한다.
   assert.ok(room.specialistState().planTaskId, "taskId가 비면 화면 배지가 사라집니다");
 });
+
+// 취소 메시지가 출처를 말하지 않아, 사용자가 누른 것인지 Agora가 스스로 한 것인지
+// 구분할 수 없었다. "저절로 취소됐다"는 신고를 추적하고도 원인을 확정하지 못한 이유다.
+test("전문 실행 취소 메시지는 어디서 왔는지 밝힌다", () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-cancel-origin-"));
+  try {
+    const make = () => new ChatRoom({
+      agents: makeAgents(),
+      meta: { workspace },
+      taskManager: new TaskManager(),
+      initialProfessionalRun: {
+        node: "PLANNING", status: "INTERRUPTED", stopReason: "EXECUTION_INTERRUPTED",
+        policy: { autoContinueReady: false, planAutoRevisions: 0, implementationAutoRevisions: 0 },
+        stages: {},
+      },
+      runAgent: fakeRunner({}),
+    });
+    const lastSystem = (room) =>
+      room.messages.filter((m) => m.authorType === "system").slice(-1)[0]?.text || "";
+
+    const byStop = make();
+    byStop.cancelSpecialist("중지를 눌러 ");
+    assert.match(lastSystem(byStop), /^중지를 눌러 전문 실행을 취소했습니다/);
+
+    const byChoice = make();
+    byChoice.cancelSpecialist("선택하신 대로 ");
+    assert.match(lastSystem(byChoice), /^선택하신 대로 전문 실행을 취소했습니다/);
+
+    // 출처를 안 넘기면 예전 문구 그대로다(호출부를 빠뜨려도 깨지지 않는다).
+    const bare = make();
+    bare.cancelSpecialist();
+    assert.match(lastSystem(bare), /^전문 실행을 취소했습니다/);
+
+    // 중지 버튼 경로가 실제로 출처를 넘기는지 소스로 고정한다.
+    const roomSrc = fs.readFileSync(
+      path.join(__dirname, "..", "src", "chat", "chat-room.js"), "utf8");
+    assert.ok(roomSrc.includes('cancelSpecialist("중지를 눌러 ")'), "중지 경로가 출처를 넘겨야 합니다");
+    const ipcSrc = fs.readFileSync(
+      path.join(__dirname, "..", "src", "chat", "chat-ipc.js"), "utf8");
+    assert.ok(ipcSrc.includes('cancelSpecialist("선택하신 대로 ")'), "선택 바 경로가 출처를 넘겨야 합니다");
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});

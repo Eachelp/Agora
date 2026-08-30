@@ -602,7 +602,7 @@ class ChatRoom extends EventEmitter {
   // 버리며, 다음 사용자 발화 전까지 에이전트발 호출을 만들지 않습니다.
   interject() {
     if (this.specialistActive || this.specialistResume) {
-      const cancelled = this.cancelSpecialist();
+      const cancelled = this.cancelSpecialist("개입으로 ");
       this.mentionsMuted = true;
       return { dropped: 0, interrupted: Boolean(cancelled.ok) };
     }
@@ -1355,7 +1355,7 @@ class ChatRoom extends EventEmitter {
 
   stopAll() {
     if (this.specialistActive || this.specialistResume) {
-      const cancelled = this.cancelSpecialist();
+      const cancelled = this.cancelSpecialist("중지를 눌러 ");
       if (cancelled.ok) return;
     }
     const hadWork = this.cancels.size > 0 || this.typingCounts.size > 0
@@ -1365,7 +1365,7 @@ class ChatRoom extends EventEmitter {
   }
 
   clear() {
-    if (this.specialistActive || this.specialistResume) this.cancelSpecialist();
+    if (this.specialistActive || this.specialistResume) this.cancelSpecialist("세션을 비우며 ");
     this.stopAllSilently();
     this.messages = [];
     this.emit("reset");

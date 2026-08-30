@@ -2061,7 +2061,7 @@ function roomMeta(meta) {
       wrap(async ({ sessionId }) => {
         requireSession(sessionId);
         const room = getRoom(sessionId);
-        const result = room.cancelSpecialist();
+        const result = room.cancelSpecialist("선택하신 대로 ");
         if (!result.ok) throw new Error(result.error);
         return { meta: publicMeta(store.readMeta(sessionId)), specialist: room.specialistState() };
       })

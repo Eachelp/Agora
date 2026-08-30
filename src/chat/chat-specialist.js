@@ -2186,7 +2186,10 @@ class SpecialistMixin {
     }
   }
 
-  cancelSpecialist() {
+  // 취소 메시지가 출처를 말하지 않아, 사용자가 누른 것인지 Agora가 스스로 한 것인지
+  // 구분할 수 없었다. 그 때문에 "저절로 취소됐다"는 신고를 한참 추적하고도 원인을
+  // 확정하지 못했다. 부르는 쪽이 짧은 출처 문구를 넘겨 메시지가 스스로 밝히게 한다.
+  cancelSpecialist(origin = "") {
     // 정책 표는 살아 있는 run에서 취소를 허용한다. 그런데 여기서 active/resume만
     // 보면, 실행이 끝난 뒤 상태만 남은 경우(예: INTERRUPTED로 정리된 run)에
     // "취소할 전문 실행이 없습니다"로 거부해 정책과 실제 동작이 어긋난다.
@@ -2232,7 +2235,7 @@ class SpecialistMixin {
             : "implementation",
         round: this.professionalRun?.implementationRound || 1,
         stopReason: "USER_INTERRUPTED",
-        message: "사용자가 전문 실행을 중지했습니다. 현재 변경과 복구 정보는 그대로 유지합니다. 아래에서 다음 처리를 선택해 주세요.",
+        message: `${origin || "사용자가 "}전문 실행을 중지했습니다. 현재 변경과 복구 정보는 그대로 유지합니다. 아래에서 다음 처리를 선택해 주세요.`,
       });
       return { ...held, ok: true, cancelled: true };
     }
@@ -2247,10 +2250,10 @@ class SpecialistMixin {
       this.emitSpecialistState();
       this.appendSystem(
         heldBlocked
-          ? `전문 실행을 취소했습니다. 구현자가 만든 변경은 그대로 남습니다.${
+          ? `${origin}전문 실행을 취소했습니다. 구현자가 만든 변경은 그대로 남습니다.${
               discardedBackup ? " 작업 전 백업은 정리했습니다." : ""
             }`
-          : "전문 실행을 취소했습니다."
+          : `${origin}전문 실행을 취소했습니다.`
       );
       return { ok: true, cancelled: true };
     }
@@ -2259,7 +2262,7 @@ class SpecialistMixin {
     }
     this.clearRecoveryState();
     this.emitSpecialistState();
-    this.appendSystem("전문 실행을 취소했습니다. 현재 작업 결과는 그대로 유지됩니다.");
+    this.appendSystem(`${origin}전문 실행을 취소했습니다. 현재 작업 결과는 그대로 유지됩니다.`);
     return { ok: true, cancelled: true };
   }
 
