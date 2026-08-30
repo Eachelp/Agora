@@ -3664,3 +3664,40 @@ test("장부 기록이 실패해도 새 기획은 시작된다", async (t) => {
   assert.match(systemText, /Workflow 상태를 갱신하지 못했습니다/);
   assert.match(systemText, /새 기획에는 영향이 없습니다/);
 });
+
+// RUNNING은 "턴이 실제로 떠 있다"는 뜻이어야 한다. TASK 저장 실패처럼 상태 전이
+// 없이 return하는 경로가 있으면 실행은 끝났는데 상태만 RUNNING으로 남고,
+// 그러면 정책 표가 취소만 허용하는데 cancelSpecialist도 거부해 사용자가 갇힌다.
+test("TASK 저장이 실패해도 전문 실행이 RUNNING으로 갇히지 않는다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-task-save-fail-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    // 작업 목록 등록 실패를 강제한다(TASK_INDEX_FAILED 경로).
+    onTaskCreated: () => false,
+    runAgent: fakeRunner({
+      claude: [{ ok: true, text: makePlanContract("초안") }],
+      codex: [{ ok: true, text: "VERDICT: PASS" }],
+    }),
+  });
+
+  const result = await room.startSpecialist({
+    action: "plan",
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.stopReason, "TASK_INDEX_FAILED");
+  // 여기서 RUNNING으로 남으면 취소도 버튼도 막혀 빠져나갈 길이 없다.
+  const state = room.specialistState();
+  assert.notEqual(state.status, "RUNNING", "실행이 끝났는데 RUNNING으로 남으면 안 됩니다");
+  // 그리고 실제로 빠져나갈 수 있어야 한다.
+  const { isStateAllowed } = require("../src/chat/professional-ipc-policy");
+  assert.ok(isStateAllowed({ node: state.node, status: state.status }, "cancel"));
+  assert.ok(isStateAllowed({ node: state.node, status: state.status }, "send"));
+});

@@ -30,18 +30,18 @@
 const nodeStatusKey = ({ node, status }) => `${node || "?"}:${status || "?"}`;
 
 const POLICY_TABLE = {
-  "PLANNING:RUNNING": ["cancel"],
-  "PLANNING:WAITING": ["planAnswer", "cancel"],
-  "PLAN_REVIEW:RUNNING": ["cancel"],
-  "PLAN_REVIEW:WAITING": ["planAnswer", "cancel"],
-  "READY:WAITING": ["startImpl", "startFull", "planEdit", "cancel"],
-  "IMPLEMENTING:RUNNING": ["cancel"],
-  "IMPLEMENTING:WAITING": ["resume", "cancel"],
-  "IMPLEMENTING:BLOCKED": ["blockedAction", "blockDetails", "cancel"],
-  "REVIEWING:RUNNING": ["cancel"],
-  "REVIEWING:WAITING": ["resume", "continueReview", "continueRecord", "cancel"],
-  "RECORDING:RUNNING": ["cancel"],
-  "RECORDING:WAITING": ["retryRecorder", "recordRegen", "cancel"],
+  "PLANNING:RUNNING": ["cancel", "recordOnly-send"],
+  "PLANNING:WAITING": ["planAnswer", "cancel", "recordOnly-send"],
+  "PLAN_REVIEW:RUNNING": ["cancel", "recordOnly-send"],
+  "PLAN_REVIEW:WAITING": ["planAnswer", "cancel", "recordOnly-send"],
+  "READY:WAITING": ["startImpl", "startFull", "planEdit", "cancel", "recordOnly-send"],
+  "IMPLEMENTING:RUNNING": ["cancel", "recordOnly-send"],
+  "IMPLEMENTING:WAITING": ["resume", "cancel", "recordOnly-send"],
+  "IMPLEMENTING:BLOCKED": ["blockedAction", "blockDetails", "cancel", "recordOnly-send"],
+  "REVIEWING:RUNNING": ["cancel", "recordOnly-send"],
+  "REVIEWING:WAITING": ["resume", "continueReview", "continueRecord", "cancel", "recordOnly-send"],
+  "RECORDING:RUNNING": ["cancel", "recordOnly-send"],
+  "RECORDING:WAITING": ["retryRecorder", "recordRegen", "cancel", "recordOnly-send"],
   "COMPLETED:COMPLETED": ["send", "startImpl", "startFull", "recordRegen", "discussion", "handoff", "simplify"],
 };
 

@@ -10,27 +10,37 @@ const {
   isStateAllowed,
 } = require("../src/chat/professional-ipc-policy");
 
-test("READY 상태에서는 startImpl·startFull·planEdit·cancel만 허용한다 (recordOnly-send 제외)", () => {
+// recordOnly-send는 응답을 예약하지 않고 메시지만 남긴다. 구현자·검수자·기록자는
+// 대화를 아예 보지 않으므로(ROLE_CONTEXT_POLICY 실측) 동결된 계약이 오염될 경로가
+// 없고, 기획자만 다음 라운드에 읽는다. 이게 없으면 실행이 도는 동안 사용자가
+// 방향을 일러 줄 수단이 사라진다. 반면 응답을 부르는 send/discussion은 계속 막는다.
+test("READY 상태는 실행 조작과 메모만 허용하고 응답을 부르는 동작은 막는다", () => {
   const allowed = allowedIpcFor({ node: "READY", status: "WAITING" });
   assert.ok(allowed.includes("startImpl"));
   assert.ok(allowed.includes("startFull"));
   assert.ok(allowed.includes("planEdit"));
   assert.ok(allowed.includes("cancel"));
-  assert.ok(!allowed.includes("recordOnly-send"));
-  assert.ok(!allowed.includes("send"));
+  assert.ok(allowed.includes("recordOnly-send"), "메모는 남길 수 있어야 합니다");
+  assert.ok(!allowed.includes("send"), "전원이 응답하는 일반 발화는 막아야 합니다");
   assert.ok(!allowed.includes("discussion"));
 });
 
-test("PLANNING WAITING 및 PLAN_REVIEW WAITING에서도 recordOnly-send는 제외된다", () => {
+test("기획 대기 상태는 답변·취소에 더해 메모를 허용한다", () => {
   const planningAllowed = allowedIpcFor({ node: "PLANNING", status: "WAITING" });
-  assert.deepEqual(planningAllowed, ["planAnswer", "cancel"]);
+  assert.deepEqual(planningAllowed, ["planAnswer", "cancel", "recordOnly-send"]);
   const reviewAllowed = allowedIpcFor({ node: "PLAN_REVIEW", status: "WAITING" });
-  assert.deepEqual(reviewAllowed, ["planAnswer", "cancel"]);
+  assert.deepEqual(reviewAllowed, ["planAnswer", "cancel", "recordOnly-send"]);
+  // 응답을 부르는 일반 발화는 여전히 막는다.
+  assert.ok(!planningAllowed.includes("send"));
 });
 
-test("IMPLEMENTING RUNNING에서는 cancel만 허용한다", () => {
+// 구현이 도는 동안에도 메모는 남길 수 있다. recordOnly는 턴을 예약하지 않아
+// 진행 중인 실행에 끼어들지 않고, 구현자는 대화를 보지도 않는다.
+test("구현 실행 중에는 취소와 메모만 허용한다", () => {
   const allowed = allowedIpcFor({ node: "IMPLEMENTING", status: "RUNNING" });
-  assert.deepEqual(allowed, ["cancel"]);
+  assert.deepEqual(allowed, ["cancel", "recordOnly-send"]);
+  assert.ok(!allowed.includes("send"), "실행 중 일반 발화는 막아야 합니다");
+  assert.ok(!allowed.includes("resume"), "실행을 진전시키는 동작은 막아야 합니다");
 });
 
 test("COMPLETED에서는 send·discussion·handoff·simplify 등이 허용된다", () => {

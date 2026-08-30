@@ -404,7 +404,13 @@ class ChatRoom extends EventEmitter {
     const recordOnly = Boolean(payload.recordOnly);
     if (!trimmed && attachments.length === 0) return null;
     // renderer 잠금이 늦게 반영되거나 우회되어도 전문 실행 맥락에는 일반 대화가 끼지 않습니다.
-    if (this.isSpecialistLocked()) {
+    //
+    // 다만 recordOnly는 예외입니다. 이것은 응답을 예약하지 않고 메시지만 남기므로
+    // 진행 중인 실행에 끼어들지 않고, 구현자·검수자·기록자는 대화를 아예 보지
+    // 않으므로(ROLE_CONTEXT_POLICY) 동결된 계약도 오염되지 않습니다. 기획자만
+    // 다음 라운드에 읽습니다. 이걸 막으면 실행이 도는 동안 사용자가 방향을
+    // 일러 줄 수단이 사라집니다.
+    if (!recordOnly && this.isSpecialistLocked()) {
       throw new Error("전문 실행이 진행 중이거나 승인 대기 중입니다. 먼저 작업을 완료하거나 취소해 주세요.");
     }
 

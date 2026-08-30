@@ -1478,7 +1478,13 @@ class SpecialistMixin {
 
   // Open Question·기획 검수 피드백에 대한 사용자 답변을 Planner의 다음 입력으로 보관합니다.
   async answerPlanQuestion(answer) {
-    return this.withProfessionalAuthorization("workspace-write", () => this._answerPlanQuestion(answer));
+    return this.withProfessionalAuthorization("workspace-write", async () => {
+      try {
+        return await this._answerPlanQuestion(answer);
+      } finally {
+        this.settleStrandedProfessionalRun();
+      }
+    });
   }
 
   async _answerPlanQuestion(answer) {
@@ -1524,14 +1530,40 @@ class SpecialistMixin {
   }
 
   // 기존 호출 경로는 유지합니다. action을 명시한 새 화면만 버튼형 전문 실행을 씁니다.
+  // RUNNING은 "턴이 실제로 떠 있다"는 뜻이어야 한다. 실행이 끝났는데 상태가
+  // RUNNING으로 남으면 사용자가 갇힌다: 정책 표는 RUNNING에서 취소만 허용하는데
+  // cancelSpecialist는 specialistActive/specialistResume가 이미 꺼져 있어
+  // "취소할 전문 실행이 없습니다"로 거부한다. 버튼도 전부 비활성이다.
+  //
+  // 이런 경로는 TASK 저장 실패처럼 전이 없이 return하는 지점마다 생긴다. 그 지점을
+  // 하나씩 고치는 대신, 블록이 끝나는 자리에서 불변식을 세운다. 앱을 다시 열면
+  // 어차피 RUNNING이 INTERRUPTED로 바뀌므로(생성자), 실행 중에도 같게 만드는 것이다.
+  settleStrandedProfessionalRun() {
+    if (!this.professionalRun) return false;
+    if (this.professionalRun.status !== "RUNNING") return false;
+    if (this.specialistActive) return false;
+    const transition = this.transitionProfessional({
+      type: "INTERRUPT",
+      stopReason: "EXECUTION_INTERRUPTED",
+    });
+    if (!transition.ok) return false;
+    this.emitSpecialistState();
+    return true;
+  }
+
   async startSpecialist(options = {}) {
     if (options.stages) this.specialistStages = options.stages;
     // 전문 실행은 세션 권한을 영구히 바꾸지 않고, 이 실행 동안만 유효한
     // run-scoped 권한(workspace-write)을 켜 둔다. 단계별 상한은 그 아래에서
     // 다시 좁혀진다(planner/plan_review=read, recorder=chat 등).
     return this.withProfessionalAuthorization("workspace-write", async () => {
-      if (options.action) return this.startProfessionalAction(options);
-      return this.startLegacySpecialist(options);
+      try {
+        if (options.action) return await this.startProfessionalAction(options);
+        return await this.startLegacySpecialist(options);
+      } finally {
+        // 어느 경로로 빠져나오든 갇힌 RUNNING을 남기지 않는다.
+        this.settleStrandedProfessionalRun();
+      }
     });
   }
 

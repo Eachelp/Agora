@@ -419,6 +419,9 @@ function setSpecialistState(state = {}) {
 function specialistLocksComposer() {
   // READY 상태에서는 기획 수정을 허용하기 위해 composer를 잠그지 않는다.
   if (specialistNode === "READY" && !specialistActive) return false;
+  // 일반 모드를 고른 사용자는 메모를 남길 수 있어야 한다. 실제로 턴이 도는
+  // 동안만 잠근다(그때는 입력해도 큐에 끼어들 뿐이다).
+  if (!professionalModeEnabled && !specialistActive) return false;
   return Boolean(specialistActive || specialistBlockedAvailable || (specialistResumeAvailable && !specialistNeedsInput));
 }
 
@@ -4186,7 +4189,9 @@ function autoresize() {
 
 async function sendCurrentMessage() {
   const text = composerInput.value.trim();
-  if (specialistNeedsInput) {
+  // 기획 답변·기획 수정은 전문 모드의 조작이다. 사용자가 일반 모드를 골랐으면
+  // 그 발화는 실행을 건드리지 않고 "다음 기획용 메모"로만 남는다(아래 send 경로).
+  if (specialistNeedsInput && professionalModeEnabled) {
     if (!text) return;
     const draftText = composerInput.value;
     composerInput.value = "";
@@ -4205,8 +4210,8 @@ async function sendCurrentMessage() {
     composerInput.focus();
     return;
   }
-  // READY 상태에서 텍스트 입력은 기획 수정으로 라우팅한다.
-  if (specialistNode === "READY" && !specialistActive && text) {
+  // READY 상태에서 텍스트 입력은 기획 수정으로 라우팅한다(전문 모드일 때만).
+  if (specialistNode === "READY" && !specialistActive && text && professionalModeEnabled) {
     const draftText = composerInput.value;
     composerInput.value = "";
     closeMentionPopup();
@@ -4243,7 +4248,9 @@ async function sendCurrentMessage() {
       text,
       attachmentIds,
       independent,
-      professionalModeEnabled
+      // 전문 실행이 살아 있는 동안에는 일반 모드에서도 메모로만 남긴다.
+      // 그러지 않으면 참가자 전원이 응답해 실행 맥락에 일반 대화가 섞인다.
+      professionalModeEnabled || professionalRunWasLive
     )
   );
   if (result) {
@@ -4519,7 +4526,15 @@ function lockComposer(locked) {
   composerInput.disabled = locked;
   sendButton.disabled = locked;
   attachButton.disabled = locked || specialistNeedsInput;
-  if (specialistNeedsInput) {
+  // 일반 모드를 고른 동안에는 전문 조작 문구를 쓰지 않는다. 그 발화는 실행을
+  // 건드리지 않고 기획자가 다음 라운드에 읽을 메모로만 남는다.
+  const noteOnly = !professionalModeEnabled && professionalRunWasLive && !specialistActive;
+  if (noteOnly) {
+    composerInput.disabled = false;
+    sendButton.disabled = false;
+    composerInput.placeholder = "기획자에게 남길 메모를 입력하세요. 실행은 그대로 진행됩니다 (Enter 전송)";
+    sendButton.textContent = "메모 남기기";
+  } else if (specialistNeedsInput) {
     if (specialistStopReason === "CHECKPOINT_FAILED") {
       composerInput.placeholder = "아래에서 다음 처리를 선택하세요";
       composerInput.disabled = true;
