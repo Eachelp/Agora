@@ -2,10 +2,25 @@ const { buildConversationWindow } = require("./chat-summary-window");
 const { roleContextNotice, includesPromptContext, roleSees } = require("./professional-role-context");
 
 const DEFAULT_MAX_MESSAGES = 40;
-const MAX_SPECIALIST_PROMPT_CHARS = 24 * 1024;
+// 전문 실행 프롬프트 상한. 압축(위 conversation window)을 거친 뒤에도 남는
+// 계약 입력(diff/Evidence)이 클 때를 위한 최후 방어선이며, 평소 프롬프트 크기를
+// 정하는 값이 아니다. 낮게 두면 긴 실행에서 정상 작업이 거부된다.
+const MAX_SPECIALIST_PROMPT_CHARS = 72 * 1024;
 const MAX_MESSAGE_CHARS = 4 * 1024;
 const MAX_REVIEW_DIFF_CHARS = 12 * 1024;
 const MAX_REVIEW_EVIDENCE_CHARS = 4 * 1024;
+
+// 기록 산출물의 출력 계약. 전문 실행 Recorder와 토론 기록이 같은 JSON을 내야
+// parseRecorderOutput이 둘 다 읽을 수 있으므로 한 곳에서만 정의한다.
+const RECORDER_OUTPUT_LINES = [
+  "- 아래 JSON 형식으로만 답하세요. 코드 블록을 써도 되고 안 써도 됩니다.",
+  "- summary에는 이번 작업에서 확인된 사실, 결정, 완료 내용, 남은 작업을 Markdown으로 적으세요.",
+  "- decisions에는 대화에서 실제로 합의된 내용만 넣으세요.",
+  "- nextActions에는 대화에서 명시적으로 언급된 다음 할 일만 넣으세요.",
+  "- 대화에 없는 계획을 지어내지 마세요. 추측이나 확인되지 않은 내용을 사실처럼 기록하지 마세요.",
+  "- 프로젝트 규칙 변경이 필요하면 nextActions에 제안만 적고, 직접 규칙을 바꾸지 마세요.",
+  '{"summary": "...", "decisions": [{"title": "...", "content": "..."}], "nextActions": [{"title": "...", "description": "..."}]}',
+];
 
 function boundedText(value, limit, label) {
   const text = String(value || "");
@@ -68,7 +83,12 @@ function buildAgentPrompt({
   simplifyMeta = null,
   extraLines = [],
 }) {
-  const isBuilder = specialist?.stage === "implementation";
+  // 출력 계약을 어긴 응답을 다시 청하는 호출. 원래 단계 지침을 **대체**한다.
+  // 덧붙이면 "실제 구현을 수행하세요"와 "고치지 마세요"가 한 프롬프트 안에서
+  // 충돌해, 형식만 고치려던 호출이 2차 구현 라운드가 된다.
+  const repairKind = specialist?.repairKind || null;
+  const isStatusRepair = repairKind === "builder_status";
+  const isBuilder = specialist?.stage === "implementation" && !isStatusRepair;
   const isCleanReviewer = specialist?.stage === "review";
   const isPlanReviewer = specialist?.stage === "plan_review";
   const isProfessionalRecorder = specialist?.stage === "recorder" && specialist?.professional === true;
@@ -97,7 +117,15 @@ function buildAgentPrompt({
         ? messages.filter((message) => message?.authorType === "user")
         : []
     : messages;
-  const useGeneralSummaryWindow = !isSpecialist && !isDiscussionSummary && !isSimplify && !discussion;
+  // 대화 기록 압축은 전문 실행에도 적용한다. 예전에는 전문 실행만 압축을 끄고
+  // 하드 예산으로 막았는데, 그러면 토론이 길수록 그 토론을 재료로 삼는 PLAN이
+  // 오히려 실행되지 못했다. 압축을 꺼도 slice(-maxMessages) 밖은 요약조차 없이
+  // 버려지므로, "조용히 버림"보다 "요약해서 남김"이 낫다.
+  //
+  // 계약 입력(Frozen Task 본문·diff·Evidence)은 이 창을 타지 않고 별도 블록으로
+  // 원문 그대로 들어간다. 역할별 차단(ROLE_CONTEXT_POLICY)도 위 sourceMessages에서
+  // 이미 적용돼 있어, 압축은 "볼 수 있는 범위 안에서" 줄이기만 한다.
+  const useGeneralSummaryWindow = !isDiscussionSummary && !isSimplify && !discussion;
   // 최근 대화(recent)를 그릴지 여부: transcript 또는 context를 보는
   // 역할만 그린다. 둘 다 차단된 역할은 대화 블록 전체를 생략한다.
   const useTranscriptWindow = specialistRole
@@ -122,7 +150,10 @@ function buildAgentPrompt({
   const compressedHistory = conversationWindow?.compacted ? conversationWindow.summary : [];
 
   const lines = [];
-  if (isBuilder) {
+  if (isStatusRepair) {
+    lines.push("당신은 Agora 전문 실행의 Builder이고, 직전 응답에 완료 선언이 빠졌거나 서로 모순되었습니다.");
+    lines.push("이번 호출은 **선언을 확정하는 것만**이 목적입니다. 구현을 다시 하거나 파일을 고치지 마세요.");
+  } else if (isBuilder) {
     lines.push("당신은 Agora 전문 실행의 Builder입니다. 이 호출에서 실제 구현을 수행하세요.");
     lines.push("아래 실행 계약과 현재 단계 지침만 따르세요. 다른 에이전트에게 구현을 위임하거나 호출하지 마세요.");
   } else if (isCleanReviewer) {
@@ -135,19 +166,29 @@ function buildAgentPrompt({
     lines.push("당신은 Agora 전문 실행의 Recorder입니다.");
     lines.push("대화 transcript나 다른 에이전트의 자유 설명은 보지 않습니다. Frozen Task, 최종 변경 요약, 검수 판정과 실행 근거만 기록하세요.");
   } else if (isDiscussionSummary) {
-    lines.push(`당신은 Agora의 토론 결론 종합자 "@${agent.id}"(${agent.name})입니다.`);
+    lines.push(
+      discussionSummary?.record
+        ? `당신은 Agora의 토론 기록자 "@${agent.id}"(${agent.name})입니다.`
+        : `당신은 Agora의 토론 결론 종합자 "@${agent.id}"(${agent.name})입니다.`
+    );
     lines.push("앞서 진행된 논의(사용자 질문, 사전 발언, 토론 전체)를 객관적으로 분석해 핵심 결론을 명확하고 구조화된 요약 카드로 정리하세요.");
     lines.push("");
     lines.push("작성 규칙:");
     lines.push("- 새로운 파일 수정이나 도구 명령을 제안하지 말고, 오직 제시된 대화 내용에만 근거해 정리하세요.");
     lines.push("- 다른 참가자를 @멘션으로 호출하지 마세요.");
     lines.push("- 대화에서 쓰인 언어로 답하세요.");
-    lines.push("- 아래의 고정 섹션 구조를 정확히 지켜 Markdown으로 작성하세요:");
-    lines.push("  ## 논의 주제");
-    lines.push("  ## 공통 합의점");
-    lines.push("  ## 주요 쟁점과 입장");
-    lines.push("  ## 권장 결론");
-    lines.push("  ## 사용자 결정 사항 / 다음 행동");
+    if (discussionSummary?.record) {
+      // 토론 기록은 전문 실행이 아니라 대화를 근거로 하는 일반 턴이다.
+      // 출력만 프로젝트 기억에 저장할 수 있는 JSON 계약을 따른다.
+      lines.push(...RECORDER_OUTPUT_LINES);
+    } else {
+      lines.push("- 아래의 고정 섹션 구조를 정확히 지켜 Markdown으로 작성하세요:");
+      lines.push("  ## 논의 주제");
+      lines.push("  ## 공통 합의점");
+      lines.push("  ## 주요 쟁점과 입장");
+      lines.push("  ## 권장 결론");
+      lines.push("  ## 사용자 결정 사항 / 다음 행동");
+    }
     if (discussionSummary?.incomplete || (discussionSummary?.failures && discussionSummary.failures > 0)) {
       lines.push("");
       lines.push("⚠ 주의: 이번 토론은 정해진 실행 예산 도달, 사용자 중단 또는 일부 참가자 오류로 인해 '미완성' 상태로 종료되었습니다. 요약 상단에 토론이 미완성으로 끝났음을 알리고, 합의가 불완전하거나 오류로 누락된 지점을 분명히 밝히세요.");
@@ -293,10 +334,20 @@ function buildAgentPrompt({
       lines.push("- 하나의 작업이 하나의 명확한 목표와 완료 조건을 갖도록 큰 작업을 분해하세요.");
       lines.push("- TASK에는 다음 8개 필수 섹션을 반드시 정확한 헤딩(`## Goal`, `## Inputs / Source Data`, `## Requirements`, `## Work Approach`, `## Deliverables`, `## Acceptance Criteria`, `## Verification Plan`, `## Out of Scope`)과 함께 본문(실제 설명)을 포함해 작성하세요.");
       lines.push("- `## Inputs / Source Data`와 `## Deliverables`는 목록으로 적고, 없으면 생략하지 말고 `- 없음`이라고 명시하세요. 생략과 '없음'은 다른 의미입니다.");
+      // 파서는 앞뒤 공백을 둔 대시로만 설명을 분리한다. 괄호 설명은 경로의 일부가
+      // 되어 파일을 못 찾는다(실제로 백업본이 ABSENT로 판정된 적이 있다).
+      lines.push("- `## Deliverables`의 각 항목은 **경로만** 적거나 `경로 — 설명` 형태로 적으세요(대시 앞뒤에 공백). `경로 (설명)`처럼 괄호로 붙이면 괄호까지 경로로 읽혀 산출물을 찾지 못합니다.");
       lines.push("- 입력 항목은 `` `경로` `` 또는 URL로 적습니다. 작업 중 내용이 바뀌면 안 되는 자료는 `(frozen)`, 실행 시점에 달라질 수 있는 자료는 `(live)`를 붙이세요. 표시가 없으면 파일은 frozen, URL은 live로 처리됩니다.");
+      // Inputs의 각 줄은 그대로 파일 경로로 해석되어 존재 여부를 검사받는다.
+      // 산문이나 상수 설명이 섞이면 "승인된 입력 파일을 찾을 수 없습니다"로 죽는다.
+      lines.push("- `## Inputs / Source Data`의 **한 줄에는 실제 경로나 URL 하나만** 적으세요. 각 줄은 그대로 파일로 취급되어 존재 여부를 검사합니다. 설명이 필요하면 `경로 — 설명` 형태로 대시 뒤에 적고, 크기·주석을 괄호로 덧붙이지 마세요.");
+      lines.push("- 파일이 아닌 참고 사항(상수·규칙·전제 등)은 Inputs에 넣지 말고 `## Current State / Evidence`나 `## Invariants / Must Preserve`에 적으세요.");
       lines.push("- `## Verification Plan`에는 사람이 읽을 설명과 함께 아래 형식의 ```json 블록을 하나 넣으세요. 이 목록은 승인 시점에 동결되며 이후 아무도 바꿀 수 없습니다.");
       lines.push('  형식: [{"id":"V1","method":"process|predicate|review|human","statement":"무엇을 확인하는가", ...}]');
       lines.push('  - `process`: 프로그램 실행으로 확인. `"executable"`과 `"argv"` 배열을 구조화해 적습니다(셸 문자열 금지). 예: {"id":"V1","method":"process","statement":"전체 테스트 통과","executable":"npm","argv":["test"]}');
+      // 실행기는 산문을 읽지 않는다. 작업 디렉터리를 설명 문장에만 적으면 저장소
+      // 루트에서 실행되어 임포트가 깨진다(실제로 구현 라운드가 이것 때문에 날아갔다).
+      lines.push('  - `process`의 선택 필드: `"cwd"`(실행 위치, 저장소 루트 기준 상대경로), `"timeoutMs"`, `"envNames"`(전달할 환경변수 이름 목록), `"expect":{"exitCode":0}`. **작업 디렉터리는 반드시 `cwd` 필드로 적으세요.** 설명 문장에만 적으면 실행기가 읽지 못해 다른 위치에서 실행됩니다. 예: {"id":"V1","method":"process","statement":"하위 프로젝트 테스트 통과","executable":"py","argv":["-3.12","-m","pytest","-q"],"cwd":"20_projects/01_어휘"}');
       lines.push('  - `predicate`: 산출물을 직접 열어 확인. `"check"`에 `kind`와 `path`를 적습니다. 사용 가능한 kind: exists, absent, hash, text.contains, text.matches, text.section, text.lines, json.path, csv.rows, csv.column. 예: {"id":"V2","method":"predicate","statement":"보고서에 결론 절이 있다","check":{"kind":"text.section","path":"report.md","expected":"결론"}}');
       lines.push('  - `review`: 기계가 판정할 수 없어 검수자의 판단이 필요한 항목. 예: {"id":"V3","method":"review","statement":"번역 논조가 원문과 맞는가"}');
       lines.push('  - `human`: 되돌릴 수 없는 외부 행동 등 사용자 승인이 필요한 항목. 꼭 필요할 때만 쓰세요. 승인 남발은 안전장치를 무력화합니다.');
@@ -305,7 +356,12 @@ function buildAgentPrompt({
       lines.push("- 다음 보조 섹션의 포함을 권장합니다: `## Current State / Evidence`, `## Affected Resources`, `## Invariants / Must Preserve`, `## Risks / Open Questions`, `## Dependencies`, `## Related Tasks`.");
       lines.push("- 의존하는 다른 작업이나 선행 조건이 있다면 `## Dependencies` 또는 `## Related Tasks`에 명시하세요.");
       lines.push("- 코드를 수정하거나 구현을 시작하지 마세요. 구현 담당자를 자동으로 부르지 마세요.");
-      lines.push("- BLOCKING 지적을 해결하지 못하거나 수용하지 않을 때는 TASK를 고친 것처럼 다시 쓰지 마세요. `STATUS: NEEDS_DECISION`과 그 이유·사용자에게 필요한 질문을 반환하고, 기존 TASK.md를 덮어쓰지 마세요.");
+      // 기획자는 파일을 쓰지 않는다(권한 상한도 read다). Agora가 응답 본문에서 TASK를
+      // 추출해 파일을 만든다. 이걸 모르면 "파일을 못 써서 못 하겠다"거나 "네가 대신
+      // 덮어써 달라"로 새고, 그러면 응답에 TASK가 없어 필수 섹션 누락으로 반려된다.
+      lines.push("- **작업 지시서 파일은 Agora가 이 응답에서 추출해 저장합니다.** 당신은 파일을 쓰거나 고칠 수 없고 그럴 필요도 없습니다. 사용자나 다른 참가자에게 파일을 대신 써 달라고 요청하지 마세요.");
+      lines.push("- 그래서 **기획을 낼 때마다 TASK 전문을 응답 안에 다시 적어야 합니다.** \"앞 메시지의 것을 쓰세요\"나 \"바뀐 부분만\"으로는 저장되지 않습니다. 이전 판을 그대로 유지하고 싶어도 전문을 다시 적으세요.");
+      lines.push("- BLOCKING 지적을 해결하지 못하거나 수용하지 않을 때는 TASK를 고친 것처럼 다시 쓰지 마세요. `STATUS: NEEDS_DECISION`과 그 이유·사용자에게 필요한 질문만 반환하세요(이때는 TASK 전문을 적지 않습니다).");
       lines.push("- 응답 안에 `STATUS: PLAN_READY` 또는 `STATUS: NEEDS_DECISION` 하나를 넣으세요.");
     } else if (specialist.stage === "plan_review") {
       lines.push("- 이것은 구현 검수가 아니라 기획 검수입니다. 코드를 수정하거나 구현을 시작하지 마세요.");
@@ -317,6 +373,28 @@ function buildAgentPrompt({
       lines.push("- 기존 대화와 사용자 결정만으로 기획자가 고칠 수 있는 문제만 `scope: IN`으로 표시하세요.");
       lines.push("- 사용자 결정이 필요한 문제는 `## Open Questions`에 질문으로 적으세요. 이 질문은 자동 보완하지 않고 사용자에게 반환됩니다.");
       lines.push("- Open Question이 남아 있으면 PASS로 처리하지 말고 FIX_REQUIRED로 반환하세요.");
+      if (repairKind === "format") {
+        // 판정 자체는 유효하다. 표기만 계약에 맞추면 사용자를 부를 필요가 없다.
+        lines.push("");
+        lines.push("직전 응답의 **표기가 계약에 맞지 않아** 다시 청합니다. 판단을 바꾸지 말고 형식만 고쳐 같은 검수 결과를 다시 내세요.");
+        lines.push("- `VERDICT:`는 응답 전체에 정확히 하나만 두세요. 서로 다른 판정을 여러 번 쓰면 최종 판정을 확정할 수 없습니다.");
+        lines.push("- FIX_REQUIRED라면 모든 이슈에 `scope: IN` 또는 `scope: OUT`을 빠짐없이 표시하세요. 이 표시가 없으면 기획자가 고칠 수 있는 문제인지 판단할 수 없습니다.");
+      } else if (repairKind === "unknown") {
+        // UNKNOWN은 형식 실패가 아니라 "판정 못 하겠다"는 유효한 답일 수 있다.
+        // 둘 중 하나를 강제하면 fail-closed 성격을 오히려 망친다.
+        lines.push("");
+        lines.push("직전 응답이 `VERDICT: UNKNOWN`이었습니다. 같은 근거를 한 번 더 검토해 주세요.");
+        lines.push("- 판정할 근거가 있으면 `VERDICT: PASS` 또는 `VERDICT: FIX_REQUIRED`로 확정하세요.");
+        lines.push("- **여전히 근거가 부족하면 `VERDICT: UNKNOWN`을 그대로 유지하세요.** 확신 없이 통과시키거나 반려하지 마세요.");
+        lines.push("- UNKNOWN을 유지한다면 무엇이 있어야 판정할 수 있는지 한 줄로 적으세요.");
+      }
+    } else if (isStatusRepair) {
+      // 여기서 원래 구현 지침을 대체한다. 함께 두면 "구현을 진행하세요"와
+      // "고치지 마세요"가 충돌해 형식 교정이 2차 구현 라운드로 변한다.
+      lines.push("- 파일을 수정하거나 명령을 실행하지 마세요. 이미 한 작업의 상태만 확정하면 됩니다.");
+      lines.push("- 직전 응답에서 실제로 무엇을 했는지 돌아보고, 작업이 끝났으면 `STATUS: DONE`, 막혀서 진행하지 못했으면 `STATUS: BLOCKED`를 응답에 정확히 하나만 넣으세요.");
+      lines.push("- 두 선언을 함께 쓰지 마세요. 어느 쪽인지 판단이 서지 않으면 `STATUS: BLOCKED`와 그 이유를 적으세요.");
+      lines.push("- 구현 내용을 다시 설명할 필요는 없습니다. 선언과 한두 문장의 근거면 충분합니다.");
     } else if (specialist.stage === "implementation") {
       lines.push("- 현재 결정과 작업 범위 안에서 실제 구현을 진행하세요.");
       lines.push("- 작업을 끝낸 뒤 변경 내용과 검증 결과를 짧게 정리하세요.");
@@ -422,13 +500,7 @@ function buildAgentPrompt({
         lines.push(boundedText(JSON.stringify(specialist.evidence), MAX_REVIEW_EVIDENCE_CHARS, "Evidence").text);
         lines.push("=== 실행 근거 요약 끝 ===");
       }
-      lines.push("- 아래 JSON 형식으로만 답하세요. 코드 블록을 써도 되고 안 써도 됩니다.");
-      lines.push("- summary에는 이번 작업에서 확인된 사실, 결정, 완료 내용, 남은 작업을 Markdown으로 적으세요.");
-      lines.push("- decisions에는 대화에서 실제로 합의된 내용만 넣으세요.");
-      lines.push("- nextActions에는 대화에서 명시적으로 언급된 다음 할 일만 넣으세요.");
-      lines.push("- 대화에 없는 계획을 지어내지 마세요. 추측이나 확인되지 않은 내용을 사실처럼 기록하지 마세요.");
-      lines.push("- 프로젝트 규칙 변경이 필요하면 nextActions에 제안만 적고, 직접 규칙을 바꾸지 마세요.");
-      lines.push('{"summary": "...", "decisions": [{"title": "...", "content": "..."}], "nextActions": [{"title": "...", "description": "..."}]}');
+      lines.push(...RECORDER_OUTPUT_LINES);
     }
     lines.push("=== 전문 모드 끝 ===");
   }

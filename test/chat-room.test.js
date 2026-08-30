@@ -44,8 +44,8 @@ function makeAgents() {
 
 // 즉시 응답하는 페이크 러너: replies[에이전트 id] 배열을 순서대로 소비합니다.
 function fakeRunner(replies, calls = []) {
-  return ({ agent, prompt, attachments }) => {
-    calls.push({ agentId: agent.id, prompt, attachments });
+  return ({ agent, prompt, attachments, permissionMode }) => {
+    calls.push({ agentId: agent.id, prompt, attachments, permissionMode });
     const queue = replies[agent.id] || [];
     const next = queue.length > 0 ? queue.shift() : { ok: true, text: "…" };
     return { promise: Promise.resolve(next), cancel: () => {} };
@@ -645,7 +645,8 @@ test("Builder STATUS가 누락되면 DONE이 아니라 사용자 결정으로 �
   assert.equal(result.ok, false);
   assert.equal(result.stopReason, "BUILDER_STATUS_MISSING");
   assert.equal(result.blocked, true);
-  assert.deepEqual(calls.map((call) => call.agentId), ["codex"]);
+  // 선언 확정을 한 번 청한 뒤에도 확정되지 않아야 사용자에게 온다(검수자는 부르지 않는다).
+  assert.deepEqual(calls.map((call) => call.agentId), ["codex", "codex"]);
   assert.equal(room.specialistBlocked.blockReason, "BUILDER_STATUS_MISSING");
 });
 
@@ -671,7 +672,8 @@ test("Builder STATUS가 서로 다르면 AMBIGUOUS로 멈춘다", async () => {
   assert.equal(result.ok, false);
   assert.equal(result.stopReason, "BUILDER_STATUS_AMBIGUOUS");
   assert.equal(result.blocked, true);
-  assert.deepEqual(calls.map((call) => call.agentId), ["codex"]);
+  // 선언 확정을 한 번 청한 뒤에도 하나로 확정되지 않아야 사용자에게 온다.
+  assert.deepEqual(calls.map((call) => call.agentId), ["codex", "codex"]);
 });
 
 test("멘션이 없으면 세션에 참여 중인 모든 에이전트가 응답한다", async () => {
@@ -2448,6 +2450,14 @@ test("기획 자동 보완 중에도 Open Question은 사용자에게 반환한�
   assert.equal(result.stopReason, "NEEDS_DECISION");
   assert.equal(room.specialistState().needsInput, true);
   assert.deepEqual(calls.map((call) => call.agentId), ["claude", "codex"]);
+
+  // 화면에는 "기획 자동 보완 3회"가 켜져 있는데 이 경로는 그 예산을 한 번도 쓰지
+  // 않는다. 그 사실을 밝히지 않으면 설정이 동작하지 않는 것처럼 보인다.
+  const systemText = room.messages
+    .filter((message) => message.authorType === "system")
+    .map((message) => message.text)
+    .join("\n");
+  assert.match(systemText, /자동 보완\(0\/3회\)은 쓰지 않았습니다/);
 });
 
 test("구현 자동 보완 스위치 값은 버튼형 구현·검수의 제한 루프에 적용된다", async (t) => {
@@ -3261,4 +3271,671 @@ test("승인 seam: legacy whole-turn requestApproval도 stopAllSilently에서 ap
   assert.equal(await p, false);
   assert.deepEqual(resolved, [reqId]);
   assert.equal(room.pendingApprovals.size, 0);
+});
+
+// Open Questions는 "자동 보완이냐 사용자냐"의 갈림길이다. 검수자가 "없음"이라고
+// 답하면서 왜 없는지 덧붙이는 것이 자연스러운데, 예전에는 문장 전체가 정확히
+// "없음"일 때만 비었다고 봐서 그 설명을 사용자 질문으로 오해했다. 지적이 전부
+// scope: IN이어도 자동 보완이 꺼지고 사용자 답변을 기다렸다(실제로 재현됨).
+test("Open Questions가 '없음'으로 시작하면 이유가 붙어도 질문 없음으로 본다", () => {
+  const { hasOpenQuestions } = require("../src/chat/chat-specialist");
+  const none = [
+    "없음. 위 항목은 현재 확정된 결정 안에서 기획자가 보완할 수 있습니다.",
+    "없음",
+    "- 없음",
+    "없습니다.",
+    "해당 없음",
+    "None.",
+    "N/A",
+  ];
+  for (const body of none) {
+    assert.equal(hasOpenQuestions(`## Open Questions\n${body}`), false, body);
+  }
+
+  const asked = [
+    "1. 어느 화면까지 포함할까요?",
+    "기존 파일을 백업해야 하나요, 로그만 남기면 되나요?",
+    // "없음"으로 시작해도 그것이 단어의 일부면 질문이다(경계 판정).
+    "없음처리 기준을 사용자가 정해 주세요",
+  ];
+  for (const body of asked) {
+    assert.equal(hasOpenQuestions(`## Open Questions\n${body}`), true, body);
+  }
+
+  // 섹션 자체가 없으면 당연히 질문도 없다.
+  assert.equal(hasOpenQuestions("VERDICT: PASS\n지적 없음"), false);
+});
+
+// 답변 대기 상태로 앱을 껐다 켜면, 예전에는 입력칸만 열리고 답변은 거부됐다
+// (needsInput은 professionalRun을 보는데 _answerPlanQuestion은 specialistResume를
+// 요구했다). 그리고 복원하더라도 Task 내용만 넣으면 Reviewer 지적이 통째로 날아간다.
+test("검수 답변 대기는 재시작 후에도 답변이 되고 Reviewer 지적을 유지한다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-resume-restart-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const reviewText = "사용자 결정이 필요합니다.\nVERDICT: FIX_REQUIRED\nISSUES:\n1.\nscope: IN\nseverity: BLOCKING\nrepeat: NO\nproblem: 대상 미정\nevidence: 대화에 없음\nimpact: 범위 불명확\n## Open Questions\n1. 어느 화면까지 포함할까요?";
+  let persisted = null;
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    persistProfessionalRun: (run) => { persisted = run; return true; },
+    runAgent: fakeRunner({
+      claude: [{ ok: true, text: makePlanContract("초안") }],
+      codex: [{ ok: true, text: reviewText }],
+    }),
+  });
+
+  const first = await room.startSpecialist({
+    action: "full",
+    planAutoRevisions: 3,
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+      implementation: { agent: room.findAgent("claude") },
+      recorder: { agent: room.findAgent("codex") },
+    },
+  });
+  assert.equal(first.ok, false);
+  assert.equal(first.stopReason, "NEEDS_DECISION");
+  assert.equal(persisted?.node, "PLAN_REVIEW");
+  assert.equal(persisted?.status, "WAITING");
+  // WAITING을 만든 발화 id가 실제로 기록됐는가 (runResponseTurn -> 전이까지 배선).
+  assert.ok(persisted.feedbackMessageId, "정지를 만든 발화 id가 남아야 합니다");
+
+  // --- 앱 재시작을 흉내낸다: 같은 메시지·같은 run으로 방을 다시 만든다 ---
+  const calls = [];
+  const restarted = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    initialMessages: room.messages,
+    initialProfessionalRun: persisted,
+    runAgent: fakeRunner({
+      claude: [{ ok: true, text: makePlanContract("보완 기획") }],
+      codex: [{ ok: true, text: "기획 검수 통과\nVERDICT: PASS" }],
+    }, calls),
+  });
+
+  const state = restarted.specialistState();
+  assert.equal(state.needsInput, true);
+  assert.equal(state.available, true, "specialistResume가 복원되어야 합니다");
+  // 원래 "전체 실행"이었다는 사실이 살아 있어야 답변 후 구현까지 이어진다.
+  assert.equal(restarted.specialistResume.action, "full");
+
+  const answered = await restarted.answerPlanQuestion("첫 화면까지만 포함하세요.");
+  // 답변 자체가 거부되면 안 된다(예전에는 여기서 막혔다).
+  assert.ok(
+    !/답변을 기다리는 기획 질문이 없거나/.test(answered?.error || ""),
+    answered?.error || ""
+  );
+  // 재시작 전 Reviewer 지적이 Planner 프롬프트에 그대로 실려야 한다.
+  assert.match(calls[0].prompt, /어느 화면까지 포함할까요/);
+  assert.match(calls[0].prompt, /범위 불명확/);
+  // action: "full"이 살아 있어야 기획·검수 뒤 구현까지 이어간다.
+  // (기획 → 검수 → 구현 세 번째 호출이 나오는 것이 그 증거다)
+  assert.deepEqual(calls.slice(0, 3).map((call) => call.agentId), ["claude", "codex", "claude"]);
+});
+
+// feedbackMessageId가 없던 시절의 WAITING도 살려야 한다. 전문 응답 메시지에는
+// agentMeta.specialistStage가 이미 저장되므로 그것으로 되찾는다.
+test("구형 답변 대기(발화 id 없음)도 최근 검수 발화로 복원한다", () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-resume-legacy-"));
+  try {
+    const room = new ChatRoom({
+      agents: makeAgents(),
+      meta: { workspace },
+      taskManager: new TaskManager(),
+      initialMessages: [
+        { id: "m1", authorType: "agent", author: "claude", text: "기획 초안", agentMeta: { specialistStage: "planner" } },
+        { id: "m2", authorType: "agent", author: "codex", text: "VERDICT: FIX_REQUIRED\n오래된 검수 지적", agentMeta: { specialistStage: "plan_review" } },
+      ],
+      initialProfessionalRun: {
+        node: "PLAN_REVIEW",
+        status: "WAITING",
+        stopReason: "FIX_REQUIRED",
+        // feedbackMessageId 없음 — 구형 상태
+        policy: { autoContinueReady: false, planAutoRevisions: 3, implementationAutoRevisions: 0 },
+        stages: {},
+      },
+      runAgent: fakeRunner({}),
+    });
+    assert.equal(room.specialistState().needsInput, true);
+    assert.match(room.specialistResume.feedback, /오래된 검수 지적/);
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+// TASK_CHANGED_AFTER_REVIEW도 PLAN_REVIEW:WAITING이지만 이를 만든 에이전트 발화가
+// 없다. fallback을 그대로 적용하면 직전에 PASS를 낸 Reviewer 발화를 끌어와
+// 이미 해소된 지적을 다시 먹인다.
+test("승인 후 Task 변경 대기는 옛 검수 발화를 되살리지 않는다", () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-resume-changed-"));
+  try {
+    const room = new ChatRoom({
+      agents: makeAgents(),
+      meta: { workspace },
+      taskManager: new TaskManager(),
+      initialMessages: [
+        { id: "m1", authorType: "agent", author: "codex", text: "VERDICT: PASS\n이미 해소된 지적", agentMeta: { specialistStage: "plan_review" } },
+      ],
+      initialProfessionalRun: {
+        node: "PLAN_REVIEW",
+        status: "WAITING",
+        stopReason: "TASK_CHANGED_AFTER_REVIEW",
+        policy: { autoContinueReady: false, planAutoRevisions: 3, implementationAutoRevisions: 0 },
+        stages: {},
+      },
+      runAgent: fakeRunner({}),
+    });
+    assert.equal(room.specialistState().needsInput, true);
+    assert.match(room.specialistResume.feedback, /변경되어 재검수가 필요/);
+    assert.ok(!room.specialistResume.feedback.includes("이미 해소된 지적"));
+    assert.ok(!room.specialistResume.previousIssues, "해소된 구조화 이슈를 되살리면 안 됩니다");
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+// 화면에서 버튼만 열고 백엔드가 거부하면 "눌리는데 실패하는 버튼"이 된다.
+// isSpecialistLocked는 대기 상태도 잠금으로 봤으므로 plan/full은 busy 기준을 쓴다.
+test("답변 대기 상태에서도 기획을 처음부터 다시 시작할 수 있다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-fresh-plan-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    initialProfessionalRun: {
+      node: "PLAN_REVIEW",
+      status: "WAITING",
+      stopReason: "FIX_REQUIRED",
+      policy: { autoContinueReady: false, planAutoRevisions: 3, implementationAutoRevisions: 0 },
+      stages: {},
+    },
+    initialMessages: [
+      { id: "m1", authorType: "agent", author: "codex", text: "VERDICT: FIX_REQUIRED\n옛 지적", agentMeta: { specialistStage: "plan_review" } },
+    ],
+    runAgent: fakeRunner({
+      claude: [{ ok: true, text: makePlanContract("새 기획") }],
+      codex: [{ ok: true, text: "기획 검수 통과\nVERDICT: PASS" }],
+    }),
+  });
+  assert.equal(room.specialistState().available, true, "대기 상태여야 합니다");
+
+  const result = await room.startSpecialist({
+    action: "plan",
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+    },
+  });
+
+  assert.equal(result.ok, true, result.error);
+  // 옛 대기 상태가 남아 있으면 안 된다.
+  assert.equal(room.specialistBlocked, null);
+  assert.equal(room.specialistState().planTaskId, "TASK-001");
+  assert.match(
+    room.messages.map((m) => m.text).join("\n"),
+    /기획을 처음부터 다시 시작합니다/
+  );
+});
+
+// 실행 중(turn이 떠 있는 상태)에는 여전히 막아야 한다. 리셋 통로가 진행 중인
+// 실행을 덮어쓰면 그 실행의 작업이 조용히 사라진다.
+test("실행 중에는 기획 재시작을 거부한다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-fresh-plan-busy-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    runAgent: fakeRunner({}),
+  });
+  room.specialistActive = true;
+  const result = await room.startSpecialist({
+    action: "plan",
+    stages: { planner: { agent: room.findAgent("claude") }, review: { agent: room.findAgent("codex") } },
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /이미 다른 전문 작업이나 토론이 진행 중/);
+});
+
+// 검수자가 VERDICT를 여러 개 쓰거나 scope를 빠뜨린 것은 사용자가 대신 답해 줄 수
+// 있는 문제가 아니라 출력 계약 실패다. 같은 검수자에게 한 번 더 청한다.
+test("검수 표기가 계약에 안 맞으면 사용자 대신 검수자에게 다시 청한다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-review-repair-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    runAgent: fakeRunner({
+      claude: [{ ok: true, text: makePlanContract("초안") }],
+      codex: [
+        // scope 표기가 없어 최종 판정을 확정할 수 없다.
+        { ok: true, text: "VERDICT: FIX_REQUIRED\nISSUES:\n1.\nproblem: 검증 부족\nevidence: 없음\nimpact: 판단 불가" },
+        // 형식을 고쳐 다시 낸 응답.
+        { ok: true, text: "기획 검수 통과\nVERDICT: PASS" },
+      ],
+    }, calls),
+  });
+
+  const result = await room.startSpecialist({
+    action: "plan",
+    planAutoRevisions: 3,
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+    },
+  });
+
+  assert.equal(result.ok, true, result.error);
+  // 기획 1회 + 검수 2회(원본 + 형식 재요청). 기획자를 다시 부르지 않는다.
+  assert.deepEqual(calls.map((call) => call.agentId), ["claude", "codex", "codex"]);
+  assert.match(calls[2].prompt, /표기가 계약에 맞지 않아/);
+  assert.match(calls[2].prompt, /판단을 바꾸지 말고/);
+  const systemText = room.messages.filter((m) => m.authorType === "system").map((m) => m.text).join("\n");
+  assert.match(systemText, /자동 보완 횟수와 무관/);
+});
+
+// UNKNOWN은 형식 실패가 아니라 "판정할 근거가 부족하다"는 유효한 답일 수 있다.
+// 다시 청하되 둘 중 하나를 강제하지 않고, 그대로 UNKNOWN이면 사용자에게 올린다.
+test("판정 불가(UNKNOWN)는 한 번 더 청하되 유지되면 사용자에게 올린다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-review-unknown-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    runAgent: fakeRunner({
+      claude: [{ ok: true, text: makePlanContract("초안") }],
+      codex: [
+        { ok: true, text: "근거가 부족합니다.\nVERDICT: UNKNOWN" },
+        { ok: true, text: "여전히 근거가 부족합니다.\nVERDICT: UNKNOWN" },
+      ],
+    }, calls),
+  });
+
+  const result = await room.startSpecialist({
+    action: "plan",
+    planAutoRevisions: 3,
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.stopReason, "INSUFFICIENT_EVIDENCE");
+  assert.deepEqual(calls.map((call) => call.agentId), ["claude", "codex", "codex"]);
+  // 둘 중 하나를 강제하지 않는다 — fail-closed 성격을 지켜야 한다.
+  assert.match(calls[2].prompt, /UNKNOWN`을 그대로 유지하세요/);
+});
+
+// 구현자가 파일은 고쳤는데 STATUS만 빠뜨린 경우, 구현 프롬프트로 다시 부르면
+// 2차 구현 라운드가 되어 파일을 또 건드린다. 선언만 확정하는 전용 호출이어야 한다.
+test("구현 선언 누락은 재구현이 아니라 선언 확정만 다시 청한다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-builder-repair-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    runAgent: fakeRunner({
+      claude: [
+        { ok: true, text: makePlanContract("초안") },
+        // 구현은 했는데 STATUS 선언이 없다.
+        { ok: true, text: "요청하신 파일을 수정했습니다." },
+        // 선언만 확정한 응답.
+        { ok: true, text: "작업은 끝났습니다.\nSTATUS: DONE" },
+      ],
+      codex: [
+        { ok: true, text: "기획 검수 통과\nVERDICT: PASS" },
+        { ok: true, text: "검토 통과\nVERDICT: PASS" },
+        { ok: true, text: '{"summary": "기록", "decisions": [], "nextActions": []}' },
+      ],
+    }, calls),
+  });
+
+  await room.startSpecialist({
+    action: "full",
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+      implementation: { agent: room.findAgent("claude") },
+      recorder: { agent: room.findAgent("codex") },
+    },
+  });
+
+  // 선언 확정 호출이 실제로 나갔고, 구현 지침이 아니라 교정 지침을 받았다.
+  const repair = calls.find((call) => /선언을 확정하는 것만/.test(call.prompt));
+  assert.ok(repair, "선언 확정 전용 호출이 있어야 합니다");
+  assert.match(repair.prompt, /파일을 수정하거나 명령을 실행하지 마세요/);
+  // 구현 지침("실제 구현을 진행하세요")이 함께 실리면 상충 계약이 된다.
+  assert.ok(!/실제 구현을 진행하세요/.test(repair.prompt), "구현 지침이 함께 실리면 안 됩니다");
+  // 이번 호출의 권한은 읽기 전용이어야 한다.
+  assert.equal(repair.permissionMode, "workspace-read");
+});
+
+// 지시서나 workflow 기록이 사라진 상태야말로 처음부터 다시 시작해야 할 때다.
+// 장부 기록 실패로 새 기획을 막으면 "정리를 못 해서 시작할 수 없는" 역설이 된다.
+// (실제로 workspace의 .project-memory가 지워진 뒤 사용자가 여기에 갇혔다)
+test("장부 기록이 실패해도 새 기획은 시작된다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-discard-bookkeeping-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    // workflow 갱신이 항상 실패하는 상황(지시서가 사라져 활성 task를 못 찾는 경우).
+    onProfessionalTaskState: () => false,
+    initialProfessionalRun: {
+      node: "PLAN_REVIEW",
+      status: "WAITING",
+      stopReason: "NEEDS_DECISION",
+      taskPath: ".project-memory/tasks/TASK-001.md",
+      policy: { autoContinueReady: false, planAutoRevisions: 3, implementationAutoRevisions: 0 },
+      stages: {},
+    },
+    initialMessages: [
+      { id: "m1", authorType: "agent", author: "codex", text: "VERDICT: FIX_REQUIRED\n옛 지적", agentMeta: { specialistStage: "plan_review" } },
+    ],
+    runAgent: fakeRunner({
+      claude: [{ ok: true, text: makePlanContract("새 기획") }],
+      codex: [{ ok: true, text: "기획 검수 통과\nVERDICT: PASS" }],
+    }),
+  });
+
+  const result = await room.startSpecialist({
+    action: "plan",
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+    },
+  });
+
+  assert.equal(result.ok, true, result.error);
+  // 실패한 정리는 감추지 않고 알린다.
+  const systemText = room.messages.filter((m) => m.authorType === "system").map((m) => m.text).join("\n");
+  assert.match(systemText, /Workflow 상태를 갱신하지 못했습니다/);
+  assert.match(systemText, /새 기획에는 영향이 없습니다/);
+});
+
+// RUNNING은 "턴이 실제로 떠 있다"는 뜻이어야 한다. TASK 저장 실패처럼 상태 전이
+// 없이 return하는 경로가 있으면 실행은 끝났는데 상태만 RUNNING으로 남고,
+// 그러면 정책 표가 취소만 허용하는데 cancelSpecialist도 거부해 사용자가 갇힌다.
+test("TASK 저장이 실패해도 전문 실행이 RUNNING으로 갇히지 않는다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-task-save-fail-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    // 작업 목록 등록 실패를 강제한다(TASK_INDEX_FAILED 경로).
+    onTaskCreated: () => false,
+    runAgent: fakeRunner({
+      claude: [{ ok: true, text: makePlanContract("초안") }],
+      codex: [{ ok: true, text: "VERDICT: PASS" }],
+    }),
+  });
+
+  const result = await room.startSpecialist({
+    action: "plan",
+    stages: {
+      planner: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.stopReason, "TASK_INDEX_FAILED");
+  // 여기서 RUNNING으로 남으면 취소도 버튼도 막혀 빠져나갈 길이 없다.
+  const state = room.specialistState();
+  assert.notEqual(state.status, "RUNNING", "실행이 끝났는데 RUNNING으로 남으면 안 됩니다");
+  // 그리고 실제로 빠져나갈 수 있어야 한다.
+  const { isStateAllowed } = require("../src/chat/professional-ipc-policy");
+  assert.ok(isStateAllowed({ node: state.node, status: state.status }, "cancel"));
+  assert.ok(isStateAllowed({ node: state.node, status: state.status }, "send"));
+});
+
+// 불변식을 진입점마다 붙이면 빠지는 경로가 생긴다(resumeSpecialist, replanBlocked).
+// 모든 전문 실행 진입점이 지나는 공통 래퍼에 걸어야 전부 덮인다.
+test("어느 진입점으로 들어와도 RUNNING이 갇힌 채 남지 않는다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-strand-wrapper-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    runAgent: fakeRunner({}),
+  });
+  room.professionalRun = {
+    node: "IMPLEMENTING", status: "RUNNING", stopReason: null,
+    policy: { autoContinueReady: false, planAutoRevisions: 0, implementationAutoRevisions: 0 },
+    stages: {},
+  };
+  // 공통 래퍼를 지나기만 하면(무엇을 하든) 갇힌 RUNNING은 정리된다.
+  await room.withProfessionalAuthorization("workspace-write", async () => "noop");
+  assert.notEqual(room.specialistState().status, "RUNNING");
+});
+
+// 정책 표는 살아 있는 run에서 취소를 허용하는데, cancelSpecialist가 active/resume만
+// 보면 "된다고 해놓고 안 되는 버튼"이 된다.
+test("실행 상태만 남은 run도 취소할 수 있다", () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-cancel-stateonly-"));
+  try {
+    const room = new ChatRoom({
+      agents: makeAgents(),
+      meta: { workspace },
+      taskManager: new TaskManager(),
+      initialProfessionalRun: {
+        node: "PLANNING", status: "INTERRUPTED", stopReason: "EXECUTION_INTERRUPTED",
+        policy: { autoContinueReady: false, planAutoRevisions: 0, implementationAutoRevisions: 0 },
+        stages: {},
+      },
+      runAgent: fakeRunner({}),
+    });
+    assert.equal(room.specialistActive, false);
+    assert.equal(room.specialistResume, null);
+    const result = room.cancelSpecialist();
+    assert.equal(result.ok, true, result.error);
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+// BLOCKED/INVALID는 status가 RUNNING이 아니라 ACT 보존 분기에 걸리지 않는다.
+// 그 상태의 checkpoint는 specialistBlocked가 들고 있으므로 취소가 함께 정리하지
+// 않으면 "취소했습니다"라고 해놓고 선택지가 계속 뜨고 백업은 고아로 남는다.
+test("BLOCKED에서 취소하면 보류 상태와 백업이 함께 정리된다", () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-cancel-blocked-"));
+  try {
+    const cleaned = [];
+    const room = new ChatRoom({
+      agents: makeAgents(),
+      meta: { workspace },
+      taskManager: new TaskManager(),
+      checkpoint: {
+        createCheckpoint: async () => ({ supported: false }),
+        restoreCheckpoint: async () => ({ ok: true }),
+        cleanupCheckpoint: (cp) => { cleaned.push(cp.checkpointId); return { ok: true }; },
+      },
+      initialProfessionalRun: {
+        node: "IMPLEMENTING", status: "BLOCKED", stopReason: "BLOCKED", blockReason: "BLOCKED",
+        policy: { autoContinueReady: false, planAutoRevisions: 0, implementationAutoRevisions: 0 },
+        stages: {},
+      },
+      runAgent: fakeRunner({}),
+    });
+    room.specialistBlocked = {
+      checkpoint: { supported: true, checkpointId: "cp-abc", storageRoot: workspace },
+      canRestore: true, taskPath: null, runId: null, stage: "implementation", blockReason: "BLOCKED",
+    };
+
+    const result = room.cancelSpecialist();
+    assert.equal(result.ok, true, result.error);
+    assert.equal(room.specialistBlocked, null, "보류 상태가 남으면 선택지가 계속 뜹니다");
+    assert.deepEqual(cleaned, ["cp-abc"], "백업이 고아로 남으면 안 됩니다");
+    assert.equal(room.specialistState().blocked, false);
+    const systemText = room.messages.filter((m) => m.authorType === "system").map((m) => m.text).join("\n");
+    assert.match(systemText, /구현자가 만든 변경은 그대로 남습니다/);
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+// 백업 정리에 실패해도 취소는 성립해야 한다. 탈출 경로를 디스크 사정으로 막으면
+// "정리를 못 해서 나갈 수 없는" 역설이 된다.
+test("백업 정리에 실패해도 취소는 성립한다", () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-cancel-cleanfail-"));
+  try {
+    const room = new ChatRoom({
+      agents: makeAgents(),
+      meta: { workspace },
+      taskManager: new TaskManager(),
+      checkpoint: {
+        createCheckpoint: async () => ({ supported: false }),
+        restoreCheckpoint: async () => ({ ok: true }),
+        cleanupCheckpoint: () => { throw new Error("디스크 오류"); },
+      },
+      initialProfessionalRun: {
+        node: "IMPLEMENTING", status: "BLOCKED", stopReason: "BLOCKED",
+        policy: { autoContinueReady: false, planAutoRevisions: 0, implementationAutoRevisions: 0 },
+        stages: {},
+      },
+      runAgent: fakeRunner({}),
+    });
+    room.specialistBlocked = {
+      checkpoint: { supported: true, checkpointId: "cp-x", storageRoot: workspace },
+      canRestore: true, taskPath: null, runId: null, stage: "implementation", blockReason: "BLOCKED",
+    };
+    const result = room.cancelSpecialist();
+    assert.equal(result.ok, true, "정리 실패가 취소를 막으면 안 됩니다");
+    assert.equal(room.specialistBlocked, null);
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+// action별 stages는 필요한 역할만 담는다(plan=기획·기획검수, implementation=구현·검토·기록).
+// 어느 하나만 보면 역할이 빈다: PLAN -> 실행 순서로 간 뒤 구현이 BLOCKED되면
+// specialistStages에 기획자가 없어 재기획이 "담당자를 지정해 주세요"로 거부됐다.
+test("PLAN 뒤 실행에서 막혀도 재기획에 필요한 역할이 남아 있다", () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-stage-merge-"));
+  try {
+    const room = new ChatRoom({
+      agents: makeAgents(),
+      meta: { workspace },
+      taskManager: new TaskManager(),
+      runAgent: fakeRunner({}),
+    });
+    // PLAN이 남긴 것: 기획·기획검수만
+    room.professionalRun = {
+      node: "IMPLEMENTING", status: "BLOCKED", stopReason: "BLOCKED",
+      policy: { autoContinueReady: false, planAutoRevisions: 0, implementationAutoRevisions: 0 },
+      stages: {
+        planner: { agent: room.findAgent("claude") },
+        planReview: { agent: room.findAgent("codex") },
+      },
+    };
+    // 실행이 남긴 것: 구현·검토·기록만 (기획자 없음)
+    room.specialistStages = {
+      implementation: { agent: room.findAgent("claude") },
+      review: { agent: room.findAgent("codex") },
+      recorder: { agent: room.findAgent("codex") },
+    };
+
+    const stages = room.stagesForSpecialist();
+    assert.ok(stages.planner?.agent, "기획자가 남아야 재기획이 가능합니다");
+    assert.ok(stages.review?.agent, "검토자도 남아야 합니다");
+    assert.ok(stages.implementation?.agent, "구현자는 실행 단계 것이 유지됩니다");
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+// 막힌 작업을 PLAN 버튼으로 다시 기획하는 것은 "새 작업"이 아니라 "같은 작업의 계약을
+// 다시 쓰는 것"이다. 그런데 새 run은 taskPath가 비어 있어 매번 새 지시서를 만들었고,
+// 같은 작업의 지시서가 TASK-003·004·005로 갈라져 기획자가 어느 파일이 최신인지
+// 헷갈렸다(실제 세션에서 발생).
+test("막힌 상태에서 다시 기획하면 같은 작업 지시서를 갱신한다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-task-carry-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    runAgent: fakeRunner({
+      claude: [{ ok: true, text: makePlanContract("첫 기획") }, { ok: true, text: makePlanContract("다시 기획") }],
+      codex: [{ ok: true, text: "VERDICT: PASS" }, { ok: true, text: "VERDICT: PASS" }],
+    }),
+  });
+  const stages = {
+    planner: { agent: room.findAgent("claude") },
+    review: { agent: room.findAgent("codex") },
+  };
+
+  const first = await room.startSpecialist({ action: "plan", stages });
+  assert.equal(first.ok, true, first.error);
+  const firstPath = room.professionalRun.taskPath;
+  assert.ok(firstPath, "첫 기획이 지시서를 만들어야 합니다");
+
+  // 사용자 대기 상태를 만들어 PLAN 버튼 재시작 경로를 타게 한다.
+  room.specialistResume = { phase: "plan_ready", stages, action: "plan", mode: "step" };
+  const second = await room.startSpecialist({ action: "plan", stages });
+  assert.equal(second.ok, true, second.error);
+
+  assert.equal(room.professionalRun.taskPath, firstPath, "같은 지시서를 이어써야 합니다");
+  const files = fs.readdirSync(path.join(workspace, ".project-memory", "tasks"));
+  assert.deepEqual(files, [path.basename(firstPath)], `지시서가 갈라졌습니다: ${files}`);
+  // 배지에 쓰이는 taskId도 살아 있어야 한다.
+  assert.ok(room.specialistState().planTaskId, "taskId가 비면 화면 배지가 사라집니다");
+});
+
+// 취소 메시지가 출처를 말하지 않아, 사용자가 누른 것인지 Agora가 스스로 한 것인지
+// 구분할 수 없었다. "저절로 취소됐다"는 신고를 추적하고도 원인을 확정하지 못한 이유다.
+test("전문 실행 취소 메시지는 어디서 왔는지 밝힌다", () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-cancel-origin-"));
+  try {
+    const make = () => new ChatRoom({
+      agents: makeAgents(),
+      meta: { workspace },
+      taskManager: new TaskManager(),
+      initialProfessionalRun: {
+        node: "PLANNING", status: "INTERRUPTED", stopReason: "EXECUTION_INTERRUPTED",
+        policy: { autoContinueReady: false, planAutoRevisions: 0, implementationAutoRevisions: 0 },
+        stages: {},
+      },
+      runAgent: fakeRunner({}),
+    });
+    const lastSystem = (room) =>
+      room.messages.filter((m) => m.authorType === "system").slice(-1)[0]?.text || "";
+
+    const byStop = make();
+    byStop.cancelSpecialist("중지를 눌러 ");
+    assert.match(lastSystem(byStop), /^중지를 눌러 전문 실행을 취소했습니다/);
+
+    const byChoice = make();
+    byChoice.cancelSpecialist("선택하신 대로 ");
+    assert.match(lastSystem(byChoice), /^선택하신 대로 전문 실행을 취소했습니다/);
+
+    // 출처를 안 넘기면 예전 문구 그대로다(호출부를 빠뜨려도 깨지지 않는다).
+    const bare = make();
+    bare.cancelSpecialist();
+    assert.match(lastSystem(bare), /^전문 실행을 취소했습니다/);
+
+    // 중지 버튼 경로가 실제로 출처를 넘기는지 소스로 고정한다.
+    const roomSrc = fs.readFileSync(
+      path.join(__dirname, "..", "src", "chat", "chat-room.js"), "utf8");
+    assert.ok(roomSrc.includes('cancelSpecialist("중지를 눌러 ")'), "중지 경로가 출처를 넘겨야 합니다");
+    const ipcSrc = fs.readFileSync(
+      path.join(__dirname, "..", "src", "chat", "chat-ipc.js"), "utf8");
+    assert.ok(ipcSrc.includes('cancelSpecialist("선택하신 대로 ")'), "선택 바 경로가 출처를 넘겨야 합니다");
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
 });

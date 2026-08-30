@@ -249,9 +249,14 @@ const PROVIDER_DEFS = Object.freeze([
   }),
   Object.freeze({
     id: "codex",
-    name: "Codex",
+    // 이름표는 도구가 아니라 대화 상대(모델 계열)로 적는다. 모델 드롭다운이 이미
+    // "GPT-5.6-Sol"이라 "Codex"와 어긋났다. 설치·계정 문구는 실제 도구 이름인
+    // Codex CLI를 그대로 쓴다 — 설치하는 것과 대화하는 것은 다르다.
+    name: "GPT",
     color: "#10a37f",
-    aliases: Object.freeze(["codex"]),
+    // 첫 별칭이 @ 자동완성 목록에 뜬다(chat.js의 mentionTargets). 새 이름을 앞에
+    // 두되 옛 별칭을 남겨 @codex 습관과 저장된 대화 속 호출이 계속 동작하게 한다.
+    aliases: Object.freeze(["gpt", "codex"]),
     command: "codex",
     installHint: "Codex CLI가 필요합니다. npm i -g @openai/codex 참고",
     installUrl: "https://developers.openai.com/codex/cli",
@@ -271,9 +276,9 @@ const PROVIDER_DEFS = Object.freeze([
   }),
   Object.freeze({
     id: "agy",
-    name: "Antigravity",
+    name: "Gemini",
     color: "#4285f4",
-    aliases: Object.freeze(["agy", "antigravity"]),
+    aliases: Object.freeze(["gemini", "agy", "antigravity"]),
     command: "agy",
     installHint: "agy CLI가 설치되어 있지 않습니다. https://antigravity.google/docs/cli/install 참고",
     installUrl: "https://antigravity.google/docs/cli/install",

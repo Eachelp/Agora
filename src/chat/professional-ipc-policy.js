@@ -30,26 +30,51 @@
 const nodeStatusKey = ({ node, status }) => `${node || "?"}:${status || "?"}`;
 
 const POLICY_TABLE = {
-  "PLANNING:RUNNING": ["cancel"],
-  "PLANNING:WAITING": ["planAnswer", "cancel"],
-  "PLAN_REVIEW:RUNNING": ["cancel"],
-  "PLAN_REVIEW:WAITING": ["planAnswer", "cancel"],
-  "READY:WAITING": ["startImpl", "startFull", "planEdit", "cancel"],
-  "IMPLEMENTING:RUNNING": ["cancel"],
-  "IMPLEMENTING:WAITING": ["resume", "cancel"],
-  "IMPLEMENTING:BLOCKED": ["blockedAction", "blockDetails", "cancel"],
-  "REVIEWING:RUNNING": ["cancel"],
-  "REVIEWING:WAITING": ["resume", "continueReview", "continueRecord", "cancel"],
-  "RECORDING:RUNNING": ["cancel"],
-  "RECORDING:WAITING": ["retryRecorder", "recordRegen", "cancel"],
+  "PLANNING:RUNNING": ["cancel", "recordOnly-send"],
+  "PLANNING:WAITING": ["planAnswer", "cancel", "recordOnly-send"],
+  "PLAN_REVIEW:RUNNING": ["cancel", "recordOnly-send"],
+  "PLAN_REVIEW:WAITING": ["planAnswer", "cancel", "recordOnly-send"],
+  "READY:WAITING": ["startImpl", "startFull", "planEdit", "cancel", "recordOnly-send"],
+  "IMPLEMENTING:RUNNING": ["cancel", "recordOnly-send"],
+  "IMPLEMENTING:WAITING": ["resume", "cancel", "recordOnly-send"],
+  "IMPLEMENTING:BLOCKED": ["blockedAction", "blockDetails", "cancel", "recordOnly-send"],
+  "REVIEWING:RUNNING": ["cancel", "recordOnly-send"],
+  "REVIEWING:WAITING": ["resume", "continueReview", "continueRecord", "cancel", "recordOnly-send"],
+  "RECORDING:RUNNING": ["cancel", "recordOnly-send"],
+  "RECORDING:WAITING": ["retryRecorder", "recordRegen", "cancel", "recordOnly-send"],
   "COMPLETED:COMPLETED": ["send", "startImpl", "startFull", "recordRegen", "discussion", "handoff", "simplify"],
 };
+
+// 표에 없는 (node, status) 조합에서도 남겨 두는 탈출 동작.
+// 전문 실행을 시작하거나 진전시키는 동작(startImpl/startFull/resume/planAnswer/
+// planEdit/continue*/retry*)은 절대 포함하지 않는다. 여기 있는 것들은 실행을
+// 앞으로 밀지 않고 권한도 넓히지 않는, 나가는 방향의 동작뿐이다.
+// recordOnly-send는 전문 모드에서 사용자가 다음 작업 요청을 초안으로 남기는 것이라
+// 일반 send보다 권한이 좁다. 이게 빠져 있으면 실행을 중지한 뒤 전문 모드에서
+// 방향을 다시 일러 줄 수가 없다 — 나가는 길은 열어 놓고 정작 말은 못 하는 상태다.
+const EXIT_ACTIONS = Object.freeze([
+  "send",
+  "recordOnly-send",
+  "discussion",
+  "handoff",
+  "simplify",
+  "blockDetails",
+  "cancel",
+]);
 
 // 전문 실행이 활성(COMPLETED 아님)인 상태에서 허용되는 IPC만 반환한다.
 function allowedIpcFor(runState = {}) {
   const key = nodeStatusKey(runState);
   if (POLICY_TABLE[key] !== undefined) return POLICY_TABLE[key];
-  return [];
+  // 표에 없는 조합은 여전히 fail-closed지만, 사용자를 상태에 가두지는 않는다.
+  // INTERRUPT 전이는 어떤 node에서든 status를 INTERRUPTED로 바꿀 수 있고 앱을
+  // 실행 도중 닫아도 복원 시 INTERRUPTED가 되는데, 그 조합이 표에 하나도 없어서
+  // 허용 목록이 비었다. 그래서 PLAN을 취소하기만 해도 그 세션에서는 다시 대화도
+  // 토론도 취소도 할 수 없었다. fail-closed는 실행을 진전시키는 동작에 적용하는
+  // 것이지 일반 대화로 돌아가는 것을 막는 데 쓰는 것이 아니다.
+  // 실제로 turn이 떠 있는 상태(RUNNING)에서는 취소만 남긴다.
+  if (runState.status === "RUNNING") return ["cancel"];
+  return EXIT_ACTIONS;
 }
 
 // runState가 활성 전문 실행을 나타내는지(COMPLETED/COMPLETED가 아님) 여부.

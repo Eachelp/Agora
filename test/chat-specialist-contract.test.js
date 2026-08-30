@@ -1274,3 +1274,39 @@ test("READY + missing TASK.md rehydration: 파일 부재 시 생성 즉시 planR
   assert.equal(calls.length, 0, "AI 호출이 없어야 한다");
   assert.equal(checkpointCalls.length, 0, "Checkpoint 호출이 없어야 한다");
 });
+
+// 검수자가 "(없음 — 사용자 결정이 필요한 사항은 없습니다)"라고 명시했는데도 여는 괄호
+// 하나 때문에 질문으로 읽어, 결정할 것이 없다고 적힌 라운드에서 사용자를 세웠다.
+// 부정 표현 앞의 괄호·강조는 자연스러운 글쓰기이므로 판정 전에 걷어낸다.
+test("Open Questions의 '없음'은 괄호·강조가 붙어도 질문으로 읽지 않는다", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "src", "chat", "chat-specialist.js"), "utf8"
+  );
+  const body = source.slice(source.indexOf("function hasOpenQuestions"));
+  const hasOpenQuestions = new Function("return " + body.slice(0, body.indexOf("\n}\n") + 2))();
+
+  for (const empty of [
+    "(없음 — 사용자 결정이 필요한 사항은 없습니다. V8은 검수자 판단 항목입니다.)",
+    "없음",
+    "**없음** 위 항목은 기획자가 보완할 수 있습니다",
+    "없음. 그러나 다음 라운드에서 다시 봅니다",
+    "(None — nothing needs a decision.)",
+  ]) {
+    assert.equal(hasOpenQuestions(`## Open Questions\n${empty}`), false, empty);
+  }
+  // 진짜 질문은 괄호 안에 있어도 사용자에게 가야 한다.
+  for (const asking of ["백업을 파일로 뜰까요?", "(백업을 파일로 뜰까요?)"]) {
+    assert.equal(hasOpenQuestions(`## Open Questions\n${asking}`), true, asking);
+  }
+});
+
+// 기록 담당자를 못 찾으면 두 경로 모두 조용히 건너뛰고 "통과했습니다"로 끝났다.
+// 기록은 이 실행의 산출물 중 하나이므로 빠졌으면 반드시 알려야 한다.
+test("기록을 건너뛰면 조용히 넘어가지 않고 알린다", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "src", "chat", "chat-specialist.js"), "utf8"
+  );
+  const skips = source.match(/기록 담당자가 지정되지 않아 이번 실행의 기록을 남기지 못했습니다/g) || [];
+  assert.equal(skips.length, 2, `기록 생략 안내가 두 경로 모두에 있어야 합니다(현재 ${skips.length})`);
+  assert.ok(source.includes("} else if (recordAfter) {"), "본 실행 경로의 생략 분기가 필요합니다");
+});

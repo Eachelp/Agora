@@ -728,7 +728,13 @@ function createChatFeature(options) {
       const context = {
         projectId: projectIdForMeta(meta),
         workspaceId,
-        professionalRunId: room?.professionalRun?.professionalRunId || null,
+        // professionalRunId와 role은 반드시 함께 있거나 함께 없어야 한다.
+        // professionalRun은 세션에 한 번 생기면 계속 남으므로, 이 값을 무조건 실으면
+        // 전문 실행을 한 번이라도 돌린 세션의 "모든" 일반 턴(채팅·토론 종합·기록)이
+        // professional intent로 오인된다. 그러면 role이 없어 SessionKey를 만들 수 없고
+        // harness가 fail-closed하면서 "Professional harness session identity를 안전하게
+        // 계산할 수 없습니다"로 죽는다. 아래 provenance 필드들과 같은 게이트를 쓴다.
+        professionalRunId: specialistStage ? (room?.professionalRun?.professionalRunId || null) : null,
         role: specialistStage || null,
         providerId: agent.id,
         modelKey: normalizeChoice(agent.model) || null,
@@ -917,7 +923,14 @@ function roomMeta(meta) {
     if (!room || !project) return { ok: false, error: "토론 프로젝트를 찾을 수 없습니다." };
     const recorder = specialistStageFor(project, room, "recorder");
     if (!recorder.ok) return recorder;
-    const result = await room.runRecorder(recorder);
+    // 토론 기록은 전문 실행이 아닙니다. 전문 실행 Recorder 단계로 보내면 run 권한과
+    // Professional session identity(professionalRunId)를 요구하는데 토론에는 Run이
+    // 없어 매번 실패했고, recorder 역할의 context 경계 때문에 정작 요약할 대화조차
+    // 보지 못했습니다. 대화를 읽는 일반 턴으로 실행하고 출력 형식만 기록 계약을 씁니다.
+    const result = await room.scheduleResponse(recorder.agent, {
+      discussionSummary: { record: true },
+      agentConfig: recorder.agentConfig,
+    });
     if (result?.ok && result.text) {
       const entry = saveRecorderOutput(project.id, result.text, "토론 요약 초안", {
         chatId: sessionId,
@@ -2048,7 +2061,7 @@ function roomMeta(meta) {
       wrap(async ({ sessionId }) => {
         requireSession(sessionId);
         const room = getRoom(sessionId);
-        const result = room.cancelSpecialist();
+        const result = room.cancelSpecialist("선택하신 대로 ");
         if (!result.ok) throw new Error(result.error);
         return { meta: publicMeta(store.readMeta(sessionId)), specialist: room.specialistState() };
       })

@@ -2,11 +2,12 @@
 // checkpoint의 영속 위치와 경로 해석은 이 모듈이 단일 책임으로 맡습니다.
 "use strict";
 
-const { execFile } = require("node:child_process");
+const { execFile, spawn } = require("node:child_process");
 const { promisify } = require("node:util");
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { sha256FileSync } = require("./assurance/file-digest");
 
 const execFileAsync = promisify(execFile);
 const CHECKPOINT_SCHEMA_VERSION = 2;
@@ -16,10 +17,14 @@ function sha256Buffer(buf) {
   return crypto.createHash("sha256").update(buf).digest("hex");
 }
 
+// checkpoint artifact는 크기가 예측되지 않는다(tracked.patch가 수백 MB, untracked
+// 사본이 100MB를 넘기도 한다). 통째로 읽어 해시하면 방금 스트리밍으로 피한 메모리
+// 급증을 바로 다음 줄에서 다시 만든다. 청크 해시를 쓴다.
 function sha256File(filePath) {
   try {
-    const buf = fs.readFileSync(filePath);
-    return { bytes: buf.length, sha256: sha256Buffer(buf) };
+    const bytes = fs.statSync(filePath).size;
+    const sha256 = sha256FileSync(filePath);
+    return sha256 ? { bytes, sha256 } : null;
   } catch {
     return null;
   }
@@ -32,6 +37,58 @@ async function git(root, args) {
     windowsHide: true,
   });
   return stdout;
+}
+
+// git 출력을 메모리에 담지 않고 파일로 곧장 흘려보낸다.
+//
+// 예전에는 `git diff --binary HEAD` 전체를 execFile로 버퍼에 받은 뒤 파일에 썼다.
+// 그런데 변경 파일이 많거나 바이너리 삭제가 섞이면 diff는 쉽게 수백 MB가 되고
+// (실측: 변경 29,000여 건인 저장소에서 552MB), maxBuffer 상한에 걸려
+// "Git 명령 실행에 실패했습니다"로 죽었다. 저장소 상태 문제가 아니라 받는 방식
+// 문제였다. 어차피 곧바로 파일에 쓸 내용이므로 버퍼를 거칠 이유가 없다.
+function gitToFile(root, args, outPath) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("git", args, { cwd: root, windowsHide: true });
+    const out = fs.createWriteStream(outPath);
+    let stderr = "";
+    let exitCode = null;
+    let closed = false;
+    let failure = null;
+
+    // 프로세스 종료와 파일 닫힘이 **둘 다** 끝나야 patch가 온전히 쓰였다고 말할 수 있다.
+    const settle = () => {
+      if (exitCode === null || !closed) return;
+      if (failure) return reject(failure);
+      if (exitCode === 0) return resolve();
+      reject(new Error(`git ${args[0]} 실패 (exit ${exitCode}): ${stderr.trim().slice(0, 500)}`));
+    };
+
+    child.stderr.on("data", (chunk) => {
+      // 경고까지 다 모으면 메모리를 또 쓰게 된다. 진단에 필요한 만큼만 남긴다.
+      if (stderr.length < 4096) stderr += String(chunk);
+    });
+    child.on("error", (error) => {
+      failure = error;
+      exitCode = -1;
+      closed = true;
+      out.destroy();
+      settle();
+    });
+    out.on("error", (error) => {
+      failure = error;
+      closed = true;
+      settle();
+    });
+    out.on("close", () => {
+      closed = true;
+      settle();
+    });
+    child.on("close", (code) => {
+      exitCode = code === null ? -1 : code;
+      settle();
+    });
+    child.stdout.pipe(out);
+  });
 }
 
 function resolveWorkspace(root) {
@@ -243,11 +300,10 @@ async function createCheckpoint(workspaceRoot, options = {}) {
       );
       baselineSha = String(headOut).trim();
     }
-    const diffOut = await guardAsync("CHECKPOINT_GIT_FAILED", "git diff 수집에 실패했습니다.", () =>
-      git(repo, ["diff", "--binary", "HEAD"])
-    );
-    guard("CHECKPOINT_STORAGE_FAILED", "tracked.patch 저장에 실패했습니다.", () =>
-      fs.writeFileSync(path.join(dir, "tracked.patch"), diffOut, "utf8")
+    // diff는 크기가 예측되지 않으므로(바이너리 삭제 하나로 수백 MB가 된다)
+    // 버퍼에 받지 않고 tracked.patch로 곧장 흘려보낸다.
+    await guardAsync("CHECKPOINT_GIT_FAILED", "git diff 수집에 실패했습니다.", () =>
+      gitToFile(repo, ["diff", "--binary", "HEAD"], path.join(dir, "tracked.patch"))
     );
 
     const untrackedOut = await guardAsync("CHECKPOINT_GIT_FAILED", "untracked 목록 수집에 실패했습니다.", () =>

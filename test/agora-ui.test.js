@@ -121,6 +121,28 @@ test("사이드바 행은 한 줄이고 부차 정보가 먼저 줄어든다", (
   assert.ok(css.includes("flex: 0 100 auto"), "부차 정보가 먼저 줄어들어야 합니다");
 });
 
+// 토론에는 Run이 없다. 전문 실행 Recorder 단계로 보내면 run 권한과 Professional
+// session identity를 요구해 합의로 끝날 때마다 실패했다. 일반 턴으로 실행해야 한다.
+test("토론 자동 기록은 전문 실행 경로를 타지 않는다", () => {
+  const ipc = read("src/chat/chat-ipc.js");
+  const body = ipc.slice(ipc.indexOf("async function recordDiscussion"));
+  const fn = body.slice(0, body.indexOf("\n  function "));
+  assert.ok(fn.includes("discussionSummary: { record: true }"), "토론 기록은 대화를 읽는 일반 턴이어야 합니다");
+  assert.ok(!fn.includes("runRecorder"), "전문 실행 Recorder 단계를 쓰면 안 됩니다");
+  assert.ok(!fn.includes("withProfessionalAuthorization"), "run-scoped 권한을 요구하면 안 됩니다");
+});
+
+// 버튼 활성 조건과 백엔드 요구 역할이 어긋나면 "눌리는데 실패하는 버튼"이 된다.
+test("전문 실행 버튼은 백엔드가 요구하는 역할을 기준으로 활성화된다", () => {
+  const renderer = read("src/chat.js");
+  // 기록 버튼은 검토자가 아니라 기록 담당자를 본다.
+  assert.ok(renderer.includes("professionalRecordButton.disabled = !recorder.agentId"));
+  // 전체 실행은 백엔드가 기록 담당자까지 요구한다.
+  assert.ok(renderer.includes("&& recorder.agentId"));
+  // 비활성 이유를 툴팁으로 알린다.
+  assert.ok(renderer.includes("기록 담당자가 필요합니다"));
+});
+
 test("사용량 스트립은 접기/펼치기이고 접힌 동안 조회하지 않는다", () => {
   const html = read("src/chat.html");
   const renderer = read("src/chat.js");
@@ -469,4 +491,114 @@ test("토론 종료 알림은 결론 종합 버튼을 제공하고 토론 종합
   assert.match(renderer, /role-discussion-summary/);
   assert.match(css, /\.role-badge\.role-discussion-summary/);
   assert.match(css, /\.discussion-summary-button/);
+});
+
+// 승인 이후 단계(입력 재대조, 검증 계획 검사 등)에서 거부되면 run은 READY:WAITING에
+// 머무는데, 예전에는 그 상태에서 PLAN 버튼이 꺼져 있어 같은 실행 버튼을 반복해서
+// 누르는 것 말고 길이 없었다. READY는 Builder가 돌기 전이라 되돌릴 것이 없고
+// FSM도 READY -> PLANNING 복귀를 지원하므로 다시 기획할 수 있어야 한다.
+test("승인 상태(READY)에서도 기획을 처음부터 다시 시작할 수 있다", () => {
+  const renderer = read("src/chat.js");
+  const line = renderer.slice(renderer.indexOf("const planStartable"));
+  const decl = line.slice(0, line.indexOf(";"));
+  assert.ok(decl.includes('specialistNode === "READY"'), "READY에서 PLAN을 다시 시작할 수 있어야 합니다");
+  // 사용자를 기다리는 상태(BLOCKED·답변 대기)에서도 다시 시작할 수 있어야 한다.
+  assert.ok(decl.includes("awaitingUser"), "대기 상태에서도 새 기획을 시작할 수 있어야 합니다");
+  // 실행 중에는 여전히 막혀야 한다(리셋 통로가 진행 중 실행을 덮어쓰면 안 된다).
+  assert.ok(
+    renderer.includes("professionalPlanButton.disabled = !planConfigured || specialistBusy || !planStartable"),
+    "진행 중 실행은 여전히 막아야 합니다"
+  );
+  // "바쁨"과 "대기"가 다시 한 값으로 합쳐지면 같은 결함이 되살아난다.
+  assert.ok(renderer.includes("const specialistBusy = Boolean(specialistRunning || specialistActive || ordinaryTurnBusy)"));
+  assert.ok(renderer.includes("const awaitingUser = Boolean(specialistBlockedAvailable || specialistResumeAvailable)"));
+  // 되돌릴 수 없는 폐기이므로 확인을 받는다.
+  assert.ok(renderer.includes("기획부터 다시 시작할까요"), "폐기 전에 확인해야 합니다");
+});
+
+// checkpoint 실패는 사용자가 골라야 진행된다. 백엔드(resumeSpecialist)는 예전부터
+// retry / proceed_unprotected를 처리했지만 화면에 버튼이 없고 preload가 action을
+// 전달하지도 않아서, composer가 "선택 대기"로 잠긴 채 고를 방법이 없었다.
+test("사용자가 골라야 진행되는 지점에는 실제 선택 버튼이 있다", () => {
+  const html = read("src/chat.html");
+  const renderer = read("src/chat.js");
+  const preload = read("src/chat-preload.js");
+  assert.match(html, /id="specialist-choice-bar"/);
+  assert.ok(renderer.includes("CHECKPOINT_FAILED: ["), "checkpoint 실패 선택지가 정의되어야 합니다");
+  for (const action of ["retry", "proceed_unprotected"]) {
+    assert.ok(renderer.includes(`"${action}"`), `${action} 선택지가 있어야 합니다`);
+  }
+  assert.ok(renderer.includes("specialistCancel(activeSessionId)"), "취소 선택지가 있어야 합니다");
+  // composer를 잠그는 곳에서 반드시 선택지도 함께 그린다(잠금과 선택지는 한 쌍이다).
+  assert.ok(renderer.includes("renderSpecialistChoice();"), "잠금과 함께 선택지를 그려야 합니다");
+  // BLOCKED도 composer를 잠그고 "아래에서 선택해 주세요"라고 안내한다. 선택지가
+  // 헤더 모드 토글 뒤 모달에만 있으면 안내와 위치가 정반대가 된다.
+  assert.ok(renderer.includes("if (specialistBlockedAvailable) {"), "BLOCKED에도 선택 경로가 있어야 합니다");
+  const blockedBranch = renderer.slice(renderer.indexOf("function specialistChoicesNow"));
+  assert.ok(
+    blockedBranch.slice(0, 600).includes("openSpecialistDialog()"),
+    "BLOCKED 선택지는 기존 모달로 이어져야 합니다"
+  );
+  // preload가 action을 넘기지 않으면 어떤 버튼도 의미가 없다.
+  assert.match(preload, /SPECIALIST_RESUME, \{ sessionId, action \}/);
+});
+
+// professionalModeEnabled는 화면 로컬 값이라 토글을 눌러야만 바뀌었다. 그래서
+// BLOCKED 모달에서 재기획을 시작하거나 앱을 다시 열어 실행이 복원되면, 실행은
+// 돌아가는데 화면은 일반 모드에 머물러 PLAN·실행 버튼이 보이지 않았다.
+test("살아 있는 전문 실행은 조작 버튼을 스스로 드러낸다", () => {
+  const renderer = read("src/chat.js");
+  const setter = renderer.slice(renderer.indexOf("function setSpecialistState"));
+  const body = setter.slice(0, setter.indexOf("\nfunction "));
+  assert.ok(body.includes("professionalModeEnabled = true"), "실행이 살아나면 켜져야 합니다");
+  assert.ok(
+    body.includes('specialistNode === "COMPLETED" && specialistStatus === "COMPLETED"'),
+    "끝난 실행까지 켜지 않아야 합니다"
+  );
+  // **살아나는 순간에만** 켠다. 매 이벤트마다 켜면 사용자가 내린 토글을 계속
+  // 덮어써, 실행 중에 일반 대화로 빠져나가 기획자에게 말할 수가 없어진다.
+  assert.ok(
+    body.includes("if (runLive && !professionalRunWasLive) professionalModeEnabled = true;"),
+    "전이 시점에만 켜야 사용자의 토글이 유지됩니다"
+  );
+  assert.ok(body.includes("professionalRunWasLive = runLive;"), "직전 상태를 기억해야 합니다");
+  // 끄지는 않는다 — 숨기는 것은 사용자의 선택으로 남긴다.
+  assert.ok(!body.includes("professionalModeEnabled = false"), "자동으로 끄면 사용자의 선택을 덮습니다");
+});
+
+// "실행 중 → 일반 모드 → 메모"가 계약인데, 토글이 실행 중에 잠기고 입력창도
+// specialistActive면 닫혀 그 경로에 도달할 수가 없었다. 토글은 표시·라우팅만
+// 바꾸고 실행 상태는 건드리지 않으므로 실행 중에도 열려 있어야 한다.
+test("실행 중에도 일반 모드로 내려 메모를 남길 수 있다", () => {
+  const renderer = read("src/chat.js");
+  // 토글은 세션 유무로만 막는다.
+  assert.ok(
+    renderer.includes("specialistButton.disabled = !activeSessionId;"),
+    "실행 중이라고 모드 토글을 잠그면 메모 경로에 도달할 수 없습니다"
+  );
+  assert.ok(
+    renderer.includes('specialistButton.addEventListener("click", () => {\n  if (!activeSessionId) return;'),
+    "클릭 가드도 실행 중을 막으면 안 됩니다"
+  );
+  // 일반 모드면 실행 중에도 입력창이 열린다.
+  assert.ok(
+    renderer.includes("if (!professionalModeEnabled) return false;"),
+    "일반 모드에서는 실행 중에도 메모를 남길 수 있어야 합니다"
+  );
+});
+
+// 레일 라벨을 HTML에만 박으면 참가자 이름을 바꿀 때 provider-capabilities와
+// chat.html이 어긋난다. 이름을 받으면 renderAgents가 덮어쓰고, HTML 값은 첫 페인트용
+// 기본값으로만 남는다.
+test("레일 라벨은 참가자 이름에서 채워지고 HTML은 기본값만 갖는다", () => {
+  const renderer = read("src/chat.js");
+  const html = read("src/chat.html");
+  assert.ok(renderer.includes("function renderRailLabels()"), "레일 라벨 갱신 함수가 있어야 합니다");
+  // 호출부 4곳에 흩지 않고 renderAgents 안에서 한 번에 맞춘다.
+  assert.match(renderer, /function renderAgents\(\) \{\s*\n\s*renderRailLabels\(\);/);
+  // 첫 페인트 기본값도 새 이름이어야 잠깐 옛 이름이 보이지 않는다.
+  assert.ok(html.includes('<span class="app-rail-label">GPT</span>'), "레일 기본값이 옛 이름입니다");
+  assert.ok(html.includes('<span class="app-rail-label">Gemini</span>'), "레일 기본값이 옛 이름입니다");
+  assert.ok(!html.includes('<span class="app-rail-label">Codex</span>'));
+  assert.ok(!html.includes('<span class="app-rail-label">AGY</span>'));
 });

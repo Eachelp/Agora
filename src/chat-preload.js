@@ -135,8 +135,10 @@ contextBridge.exposeInMainWorld("chatApi", {
     ipcRenderer.invoke(INVOKE.SPECIALIST_START, { sessionId, ...options }),
   specialistPlanAnswer: (sessionId, text) =>
     ipcRenderer.invoke(INVOKE.SPECIALIST_PLAN_ANSWER, { sessionId, text }),
-  specialistResume: (sessionId) =>
-    ipcRenderer.invoke(INVOKE.SPECIALIST_RESUME, { sessionId }),
+  // action은 checkpoint 실패 후 선택(retry / proceed_unprotected)을 전달한다.
+  // 이 인자가 빠져 있어 백엔드가 지원하는 선택지를 화면에서 고를 수 없었다.
+  specialistResume: (sessionId, action) =>
+    ipcRenderer.invoke(INVOKE.SPECIALIST_RESUME, { sessionId, action }),
   specialistCancel: (sessionId) =>
     ipcRenderer.invoke(INVOKE.SPECIALIST_CANCEL, { sessionId }),
   specialistResolveBlocked: (sessionId, action) =>

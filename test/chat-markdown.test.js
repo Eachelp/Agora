@@ -92,3 +92,26 @@ test("디코딩할 수 없는 주소도 원문을 잃지 않는다", () => {
   assert.equal(token.type, "file");
   assert.ok(token.path.includes("%E0%A4%A"));
 });
+
+// 에이전트가 실제로 내보내는 형태: ## 제목과 파이프 표.
+// 둘 다 렌더되지 않으면 화면에 원문 기호가 그대로 노출된다.
+test("## 제목과 파이프 표를 블록으로 인식한다", () => {
+  const md = [
+    "## 산출물",
+    "",
+    "| 산출물 | 크기 |",
+    "|---|---:|",
+    "| a.json | 28MB |",
+    "",
+    "본문에 | 파이프가 있어도 표가 아니다",
+  ].join("\n");
+  const blocks = tokenizeBlocks(md);
+  assert.deepEqual(blocks.map((b) => b.type), ["heading", "table", "paragraph"]);
+  assert.equal(blocks[0].level, 2);
+  assert.equal(blocks[1].header.length, 2);
+  assert.equal(blocks[1].rows.length, 1);
+
+  // 셀 안에서도 인라인 토큰이 그대로 동작한다.
+  const bold = tokenizeBlocks(["| **굵게** |", "|---|", "| 값 |"].join("\n"))[0];
+  assert.equal(bold.header[0][0].type, "bold");
+});

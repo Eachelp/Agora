@@ -48,7 +48,11 @@ test("README가 .agora 저장소·권한·첨부·AGY 구분을 문서화한다"
   assert.match(readme, /워크스페이스와 권한/);
   assert.match(readme, /첨부 파일/);
   assert.match(readme, /IDE와 `agy` CLI는 별개/);
-  assert.match(readme, /자격 증명은 저장하지 않습니다/);
+  // 예전 문구는 "자격 증명은 저장하지 않습니다"였는데 사실이 아니었다 — 계정 전환은
+  // 각 CLI의 auth.json 사본을 ~/.agora 아래에 둔다. 저장하지 않는 것은 비밀번호이고,
+  // 저장하는 것은 인증정보 사본이다. 둘을 구분해 밝히는지 확인한다.
+  assert.match(readme, /비밀번호를 직접 입력받지 않습니다/);
+  assert.match(readme, /인증정보 사본을 이 PC에 저장/);
 });
 
 test("위험 우회 플래그는 명시적 자동 승인 경로에만 있다", () => {

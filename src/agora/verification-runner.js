@@ -196,7 +196,12 @@ function admitVerificationStep(spec = {}, context = {}) {
     return failure(RUNNER_ERRORS.INVALID_SPEC, "실행 인자가 허용 개수를 넘었습니다.");
   }
   for (const arg of argv) {
-    if (typeof arg !== "string" || /[\r\n\0]/.test(arg)) {
+    // 인자의 줄바꿈은 막지 않는다. 아래 spawn은 shell:false라 인자가 셸 해석을
+    // 거치지 않고 그대로 전달되므로(`python -c`의 여러 줄 스크립트가 정상 형태),
+    // 줄바꿈을 막아도 얻는 안전은 없고 계획만 읽기 어려워진다. shell 문자열 금지
+    // 계약은 executable 쪽 검사와 shell:false가 지킨다. NUL은 C 문자열 종료
+    // 문자라 인자에 담길 수 없으므로 계속 거부한다.
+    if (typeof arg !== "string" || arg.includes("\0")) {
       return failure(RUNNER_ERRORS.INVALID_SPEC, "실행 인자가 올바르지 않습니다.");
     }
   }

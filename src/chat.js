@@ -13,6 +13,7 @@ const attachmentRow = document.getElementById("attachment-row");
 const btnModeSequential = document.getElementById("btn-mode-sequential");
 const btnModeIndependent = document.getElementById("btn-mode-independent");
 const responseModeBar = document.getElementById("response-mode-bar");
+const specialistChoiceBar = document.getElementById("specialist-choice-bar");
 
 let isIndependentResponseMode = false;
 
@@ -129,6 +130,13 @@ let specialistPlanReady = false;
 let specialistNode = null;
 let specialistStatus = null;
 let professionalModeEnabled = false;
+// 직전 상태에서 전문 실행이 살아 있었는지. "살아나는 순간"에만 전문 모드를 켜기
+// 위한 것이며, 매 이벤트마다 켜서 사용자의 토글을 덮어쓰지 않기 위해 둔다.
+let professionalRunWasLive = false;
+// 기획안 미리보기 폭. 사용자가 조절한 값을 기억한다(popover는 열 때마다 재생성된다).
+const PLAN_PREVIEW_WIDTH_KEY = "agora.chat.planPreviewWidth";
+let planPreviewResizeObserver = null;
+
 // 승인된 기획안(TASK.md) 경로/제목. "기획안 보기" 버튼으로 열람합니다.
 let specialistPlanTaskPath = null;
 let specialistPlanTaskId = null;
@@ -391,16 +399,92 @@ function setSpecialistState(state = {}) {
   specialistMissingSections = Array.isArray(state.missingSections) && state.missingSections.length > 0
     ? [...state.missingSections]
     : null;
+  // 전문 실행이 **새로 살아날 때** 그 조작 버튼을 한 번 드러낸다.
+  //
+  // professionalModeEnabled는 화면 로컬 값이라 사용자가 토글을 눌러야만 바뀌었다.
+  // 그래서 앱을 다시 열어 실행이 복원되면 실행은 돌아가는데 화면은 일반 모드에
+  // 머물러 PLAN·실행 버튼이 보이지 않았다.
+  //
+  // 다만 매 상태 이벤트마다 켜면 사용자가 내린 토글을 계속 덮어써, 실행 중에
+  // 일반 대화로 빠져나가 말할 수가 없다. 기획자는 대화를 읽는 유일한 역할이므로
+  // 그 길이 막히면 진행 방향을 다시 일러 줄 수단이 사라진다.
+  // 그래서 "죽어 있다 → 살아났다"로 바뀌는 순간에만 켜고, 그 뒤 사용자가 끈 것은
+  // 존중한다. 끄는 일은 어느 경우에도 코드가 하지 않는다.
+  const runLive = Boolean(specialistNode)
+    && !(specialistNode === "COMPLETED" && specialistStatus === "COMPLETED");
+  if (runLive && !professionalRunWasLive) professionalModeEnabled = true;
+  professionalRunWasLive = runLive;
 }
 
 function specialistLocksComposer() {
   // READY 상태에서는 기획 수정을 허용하기 위해 composer를 잠그지 않는다.
   if (specialistNode === "READY" && !specialistActive) return false;
+  // 일반 모드를 고른 사용자는 실행 중에도 메모를 남길 수 있어야 한다.
+  // recordOnly는 턴을 예약하지 않아 진행 중인 실행에 끼어들지 않는다.
+  if (!professionalModeEnabled) return false;
   return Boolean(specialistActive || specialistBlockedAvailable || (specialistResumeAvailable && !specialistNeedsInput));
 }
 
 function syncComposerLock() {
   lockComposer(Boolean(activeApproval || specialistLocksComposer()));
+  renderSpecialistChoice();
+}
+
+// 사용자가 골라야만 진행되는 지점의 선택지를 실제 버튼으로 만든다.
+// 백엔드(resumeSpecialist/cancelSpecialist)는 예전부터 이 선택들을 처리했지만
+// 화면에 버튼이 없어서, composer가 "선택 대기"로 잠긴 채 고를 방법이 없었다.
+const SPECIALIST_CHOICES = {
+  CHECKPOINT_FAILED: [
+    { label: "재시도", title: "백업을 다시 만든 뒤 Builder를 시작합니다", run: () => window.chatApi.specialistResume(activeSessionId, "retry") },
+    { label: "무보호 진행", title: "백업 없이 실행합니다. 사전 스냅샷이 없어 회귀 검증 신뢰도가 제한됩니다", confirm: "작업 전 상태 백업 없이 실행할까요? 문제가 생겨도 실행 전으로 되돌릴 수 없습니다.", run: () => window.chatApi.specialistResume(activeSessionId, "proceed_unprotected") },
+    { label: "취소", title: "전문 실행을 중단합니다", run: () => window.chatApi.specialistCancel(activeSessionId) },
+  ],
+};
+
+// composer를 잠그면서 "선택해 주세요"라고 안내하는 상태는 모두 여기에 선택지가
+// 있어야 한다. BLOCKED는 선택지가 헤더의 모드 토글 버튼 뒤 모달에만 있어서,
+// "아래에서 선택해 주세요"라는 안내와 실제 위치가 정반대였다. 선택지 자체는
+// 모달이 이미 잘 설명하고 있으므로 여는 길만 안내한 자리에 만든다.
+function specialistChoicesNow() {
+  if (specialistBlockedAvailable) {
+    return [{
+      label: "다음 처리 선택",
+      title: "구현이 막혔습니다. 변경 유지·복원·재기획·지시서 수정 중에서 고릅니다",
+      run: () => { openSpecialistDialog(); return Promise.resolve(null); },
+    }];
+  }
+  return specialistNeedsInput ? SPECIALIST_CHOICES[specialistStopReason] : null;
+}
+
+function renderSpecialistChoice() {
+  const choices = specialistChoicesNow();
+  specialistChoiceBar.replaceChildren();
+  specialistChoiceBar.hidden = !choices;
+  if (!choices) return;
+  const label = document.createElement("span");
+  label.className = "response-mode-label";
+  label.textContent = "다음 처리:";
+  specialistChoiceBar.append(label);
+  for (const choice of choices) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "mode-chip";
+    button.textContent = choice.label;
+    button.title = choice.title;
+    button.addEventListener("click", async () => {
+      if (choice.confirm && !window.confirm(choice.confirm)) return;
+      specialistChoiceBar.hidden = true;
+      const result = await call(choice.run());
+      if (!result) {
+        renderSpecialistChoice();
+        return;
+      }
+      if (result.specialist) setSpecialistState(result.specialist);
+      syncComposerLock();
+      renderHeader();
+    });
+    specialistChoiceBar.append(button);
+  }
 }
 
 function doctorStatus(diagnostic) {
@@ -1414,6 +1498,7 @@ function renderHeader() {
   const planReview = roleConfigFromProject(project, "plan_review");
   const implementation = roleConfigFromProject(project, "implementation");
   const review = roleConfigFromProject(project, "review");
+  const recorder = roleConfigFromProject(project, "recorder");
   const effectivePlanReview = planReview.agentId ? planReview : review;
   // 단계별 IPC 요구 조건과 버튼 활성 조건을 맞춥니다.
   // PLAN은 기획자와 기획 검수(비어 있으면 검토 담당자 재사용)만 필요하고,
@@ -1422,8 +1507,11 @@ function renderHeader() {
   const implementationConfigured = Boolean(implementation.agentId && review.agentId);
   const fullConfigured = Boolean(
     planner.agentId && effectivePlanReview.agentId && implementation.agentId && review.agentId
+      && recorder.agentId
   );
-  specialistButton.disabled = !activeSessionId || specialistRunning || specialistActive;
+  // 모드 토글은 표시와 입력 라우팅만 바꾸고 실행 상태는 건드리지 않는다. 실행 중에
+  // 잠그면 "실행 중 일반 모드로 메모를 남긴다"는 경로에 도달할 수가 없다.
+  specialistButton.disabled = !activeSessionId;
   specialistButton.setAttribute("aria-checked", String(professionalModeEnabled));
   specialistButton.title = specialistBlockedAvailable
       ? "구현이 막혔습니다. 다음 처리 방법을 선택하세요"
@@ -1445,21 +1533,31 @@ function renderHeader() {
       (roomTurnState.queue || []).length > 0 ||
       (roomTurnState.deferred || []).length > 0
   );
-  const blockedOrBusy = Boolean(
-    specialistRunning ||
-      specialistActive ||
-      specialistBlockedAvailable ||
-      specialistResumeAvailable ||
-      ordinaryTurnBusy
-  );
-  const planStartable = !specialistNode || specialistNode === "COMPLETED" || specialistStatus === "INTERRUPTED" || specialistNeedsInput;
-  professionalPlanButton.disabled = !planConfigured || blockedOrBusy || !planStartable;
+  // "실행 중이라 바쁘다"와 "사용자를 기다린다"는 서로 다른 상태다. 예전에는 둘을
+  // 한 값으로 묶어서, BLOCKED나 검수 답변 대기처럼 **사용자가 다시 시작하고 싶은
+  // 바로 그 상태**에서 PLAN 버튼까지 꺼졌다. 그러면 걸려 있는 질문에 답하는 것
+  // 말고 길이 없어, 계약이 잘못 잡혔을 때 그 계약 안에서만 맴돌게 된다.
+  const specialistBusy = Boolean(specialistRunning || specialistActive || ordinaryTurnBusy);
+  const awaitingUser = Boolean(specialistBlockedAvailable || specialistResumeAvailable);
+  const blockedOrBusy = specialistBusy || awaitingUser;
+  // READY는 기획이 승인만 된 상태다. Builder가 돌지 않았으니 되돌릴 변경도
+  // checkpoint도 없고, FSM은 이미 READY -> PLANNING 복귀를 지원한다(USER_ANSWER_PLAN).
+  // 여기서 PLAN을 막으면 승인 이후 단계에서 거부됐을 때(승인 입력 재대조 실패,
+  // 검증 계획 거부 등) 같은 실행 버튼을 반복해서 누르는 것 말고 길이 없어진다.
+  // 사용자를 기다리는 상태(BLOCKED·답변 대기·중단)는 전부 "처음부터 다시"가
+  // 열려 있어야 한다. 백엔드도 plan/full은 busy 기준만 본다.
+  const planStartable = !specialistNode
+    || specialistNode === "COMPLETED"
+    || specialistNode === "READY"
+    || specialistStatus === "INTERRUPTED"
+    || awaitingUser
+    || specialistNeedsInput;
+  professionalPlanButton.disabled = !planConfigured || specialistBusy || !planStartable;
   professionalImplementationButton.disabled = !implementationConfigured || blockedOrBusy || !specialistPlanReady;
   const canRegenerateRecord = specialistNode === "COMPLETED" || (specialistNode === "RECORDING" && specialistStatus === "WAITING");
   professionalRecordButton.hidden = !canRegenerateRecord;
-  professionalRecordButton.disabled = !review.agentId || blockedOrBusy;
-  professionalRecordButton.title = "완료된 실행의 기록을 다시 만듭니다";
-  professionalFullButton.disabled = !fullConfigured || blockedOrBusy || !planStartable;
+  professionalRecordButton.disabled = !recorder.agentId || blockedOrBusy;
+  professionalFullButton.disabled = !fullConfigured || specialistBusy || !planStartable;
   // 버튼이 비활성인 이유를 툴팁으로 알려, 눌리지 않는 것처럼 보이지 않게 합니다.
   const roleSetupHint = "프로젝트 설정(⋯)에서 담당자를 지정하면 사용할 수 있습니다";
   professionalPlanButton.title = ordinaryTurnBusy
@@ -1471,7 +1569,12 @@ function renderHeader() {
     ? "일반 응답이 끝난 뒤 전체 전문 실행을 시작할 수 있습니다"
     : fullConfigured
       ? "기획 검수 PASS 후 별도 승인 없이 구현·검수·기록까지 이어서 실행합니다"
-      : `기획·구현·검토 담당자가 모두 필요합니다. ${roleSetupHint}`;
+      : `기획·구현·검토·기록 담당자가 모두 필요합니다. ${roleSetupHint}`;
+  // 기록 버튼도 다른 버튼처럼 비활성 이유를 알려 줍니다. 이유 없이 눌리지 않으면
+  // 고장으로 보입니다.
+  professionalRecordButton.title = recorder.agentId
+    ? "완료된 실행의 기록을 다시 만듭니다"
+    : `기록 담당자가 필요합니다. ${roleSetupHint}`;
   // 저장된 기획안이 있으면(승인 대기 중이거나 통과한 경우) 열람 버튼을 노출합니다.
   const hasPlanTask = Boolean(specialistPlanTaskPath);
   professionalPlanViewButton.hidden = !hasPlanTask;
@@ -1537,6 +1640,7 @@ function renderProfessionalStatusDetail() {
 
 // --- 에이전트 칩 + 팝오버 ---
 function renderAgents() {
+  renderRailLabels();
   agentChips.textContent = "";
   for (const agent of agents) {
     const chip = document.createElement("button");
@@ -1567,6 +1671,21 @@ function setRailActive(button) {
   if (button) {
     button.classList.add("is-active");
     button.setAttribute("aria-current", "page");
+  }
+}
+
+// 레일 라벨·툴팁을 참가자 이름에서 채운다. HTML에 이름을 또 박으면 개명할 때마다
+// provider-capabilities와 chat.html이 어긋난다. 이름을 아직 못 받았으면 HTML의
+// 초기값을 그대로 둔다.
+function renderRailLabels() {
+  for (const [agentId, button] of railAgentButtons) {
+    const name = agentById(agentId)?.name;
+    if (!button || !name) continue;
+    const label = button.querySelector(".app-rail-label");
+    if (label) label.textContent = name;
+    const hint = `${name} 담당 모델·추론 설정`;
+    button.title = hint;
+    button.setAttribute("aria-label", hint);
   }
 }
 
@@ -2768,7 +2887,7 @@ function renderSpecialistDialog(details = null) {
 }
 
 specialistButton.addEventListener("click", () => {
-  if (!activeSessionId || specialistRunning || specialistActive) return;
+  if (!activeSessionId) return;
   if (specialistBlockedAvailable) {
     openSpecialistDialog();
     return;
@@ -2793,6 +2912,21 @@ async function openPlanPreview(anchor) {
   if (!result) return;
   openPopover(anchor, (root) => {
     root.classList.add("plan-preview-popover");
+    // 조절한 폭을 기억한다. popover는 열 때마다 다시 만들어지므로 저장하지 않으면
+    // 볼 때마다 다시 늘려야 해서 조절 기능이 반쪽이 된다.
+    const savedWidth = Number(localStorage.getItem(PLAN_PREVIEW_WIDTH_KEY));
+    if (Number.isFinite(savedWidth) && savedWidth >= 280) {
+      root.style.width = `${Math.min(savedWidth, Math.round(window.innerWidth * 0.94))}px`;
+    }
+    if (typeof ResizeObserver === "function") {
+      const observer = new ResizeObserver(() => {
+        if (root.hidden) return;
+        try { localStorage.setItem(PLAN_PREVIEW_WIDTH_KEY, String(Math.round(root.offsetWidth))); } catch {}
+      });
+      observer.observe(root);
+      planPreviewResizeObserver?.disconnect();
+      planPreviewResizeObserver = observer;
+    }
     const head = document.createElement("div");
     head.className = "popover-head";
     const title = document.createElement("strong");
@@ -2836,6 +2970,16 @@ specialistBackdrop.addEventListener("click", (event) => {
 
 async function runProfessionalAction(action) {
   if (!activeSessionId || specialistRunning || specialistActive) return;
+  // 대기 중인 실행이 있는데 기획을 새로 시작하면 그 실행과 작업 전 백업이 사라진다.
+  // 되돌릴 수 없으므로 한 번 확인받는다.
+  if ((action === "plan" || action === "full") && (specialistBlockedAvailable || specialistResumeAvailable)) {
+    const keptChanges = "구현자가 만든 파일 변경은 그대로 남습니다.";
+    if (!window.confirm(
+      `진행 중이던 전문 실행을 버리고 기획부터 다시 시작할까요?\n\n작업 전 백업(checkpoint)과 대기 중인 답변 요청이 사라집니다. ${keptChanges}`
+    )) {
+      return;
+    }
+  }
   specialistRunning = true;
   specialistActive = true;
   renderHeader();
@@ -3192,6 +3336,39 @@ function renderRichText(container, text) {
       pre.append(code);
       wrap.append(bar, pre);
       container.append(wrap);
+    } else if (block.type === "heading") {
+      // 에이전트가 흔히 쓰는 ## 제목. h1~h6을 그대로 만들되 크기는 CSS가 정합니다.
+      const heading = document.createElement("h" + block.level);
+      heading.className = "md-heading";
+      renderInlineTokens(heading, block.tokens);
+      container.append(heading);
+    } else if (block.type === "table") {
+      // 좁은 사이드바/말풍선에서 표가 넘칠 수 있으므로 표만 가로 스크롤합니다.
+      const wrap = document.createElement("div");
+      wrap.className = "table-wrap";
+      const table = document.createElement("table");
+      table.className = "md-table";
+      const thead = document.createElement("thead");
+      const headRow = document.createElement("tr");
+      for (const cellTokens of block.header) {
+        const th = document.createElement("th");
+        renderInlineTokens(th, cellTokens);
+        headRow.append(th);
+      }
+      thead.append(headRow);
+      const tbody = document.createElement("tbody");
+      for (const rowTokens of block.rows) {
+        const tr = document.createElement("tr");
+        for (const cellTokens of rowTokens) {
+          const td = document.createElement("td");
+          renderInlineTokens(td, cellTokens);
+          tr.append(td);
+        }
+        tbody.append(tr);
+      }
+      table.append(thead, tbody);
+      wrap.append(table);
+      container.append(wrap);
     } else if (block.type === "list") {
       const list = document.createElement(block.ordered ? "ol" : "ul");
       list.className = "md-list";
@@ -3452,11 +3629,14 @@ function renderMessage(message) {
     }
 
     // 5. 토론 결론 종합 배지
-    if (message.discussionSummary || agentMeta.discussionSummary) {
+    const summaryMeta = message.discussionSummary || agentMeta.discussionSummary;
+    if (summaryMeta) {
       const summaryBadge = document.createElement("span");
       summaryBadge.className = "role-badge role-discussion-summary";
-      summaryBadge.textContent = "📊 토론 종합";
-      summaryBadge.title = "이전 토론을 종합한 요약 카드입니다";
+      summaryBadge.textContent = summaryMeta.record ? "🗂 토론 기록" : "📊 토론 종합";
+      summaryBadge.title = summaryMeta.record
+        ? "토론 내용을 프로젝트 기억 초안으로 남긴 기록입니다"
+        : "이전 토론을 종합한 요약 카드입니다";
       meta.append(summaryBadge);
     }
 
@@ -4027,7 +4207,9 @@ function autoresize() {
 
 async function sendCurrentMessage() {
   const text = composerInput.value.trim();
-  if (specialistNeedsInput) {
+  // 기획 답변·기획 수정은 전문 모드의 조작이다. 사용자가 일반 모드를 골랐으면
+  // 그 발화는 실행을 건드리지 않고 "다음 기획용 메모"로만 남는다(아래 send 경로).
+  if (specialistNeedsInput && professionalModeEnabled) {
     if (!text) return;
     const draftText = composerInput.value;
     composerInput.value = "";
@@ -4046,8 +4228,8 @@ async function sendCurrentMessage() {
     composerInput.focus();
     return;
   }
-  // READY 상태에서 텍스트 입력은 기획 수정으로 라우팅한다.
-  if (specialistNode === "READY" && !specialistActive && text) {
+  // READY 상태에서 텍스트 입력은 기획 수정으로 라우팅한다(전문 모드일 때만).
+  if (specialistNode === "READY" && !specialistActive && text && professionalModeEnabled) {
     const draftText = composerInput.value;
     composerInput.value = "";
     closeMentionPopup();
@@ -4084,7 +4266,9 @@ async function sendCurrentMessage() {
       text,
       attachmentIds,
       independent,
-      professionalModeEnabled
+      // 전문 실행이 살아 있는 동안에는 일반 모드에서도 메모로만 남긴다.
+      // 그러지 않으면 참가자 전원이 응답해 실행 맥락에 일반 대화가 섞인다.
+      professionalModeEnabled || professionalRunWasLive
     )
   );
   if (result) {
@@ -4360,7 +4544,15 @@ function lockComposer(locked) {
   composerInput.disabled = locked;
   sendButton.disabled = locked;
   attachButton.disabled = locked || specialistNeedsInput;
-  if (specialistNeedsInput) {
+  // 일반 모드를 고른 동안에는 전문 조작 문구를 쓰지 않는다. 그 발화는 실행을
+  // 건드리지 않고 기획자가 다음 라운드에 읽을 메모로만 남는다.
+  const noteOnly = !professionalModeEnabled && professionalRunWasLive;
+  if (noteOnly) {
+    composerInput.disabled = false;
+    sendButton.disabled = false;
+    composerInput.placeholder = "기획자에게 남길 메모를 입력하세요. 실행은 그대로 진행됩니다 (Enter 전송)";
+    sendButton.textContent = "메모 남기기";
+  } else if (specialistNeedsInput) {
     if (specialistStopReason === "CHECKPOINT_FAILED") {
       composerInput.placeholder = "아래에서 다음 처리를 선택하세요";
       composerInput.disabled = true;

@@ -368,3 +368,185 @@ test("Frozen Verification Plan이 실행 중 바뀌면 무결성 검사가 잡�
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// 계획을 쓰는 것은 사람이 아니라 Planner다. `["--limit", 100]`처럼 숫자 인자를 쓰는
+// 계획이 흔한데, 이걸 거부하면 사용자가 손댈 수 없는 이유로 실행 전체가 막힌다.
+// 셸을 거치지 않으므로 숫자·불리언은 문자열 형태가 하나뿐이라 그대로 확정해도 된다.
+test("process criterion의 숫자·불리언 인자는 문자열로 확정한다", () => {
+  const plan = verificationPlan.parseVerificationPlan(`\`\`\`json
+[{"id":"V1","method":"process","statement":"표본 검사","executable":"python","argv":["run.py","--limit",100,"--strict",true]}]
+\`\`\``);
+  assert.equal(plan.ok, true, plan.error);
+  assert.deepEqual(plan.criteria[0].step.argv, ["run.py", "--limit", "100", "--strict", "true"]);
+});
+
+// 모양이 정해지지 않는 값은 계속 거부하되, 어느 항목의 몇 번째 인자인지 밝힌다.
+// 그렇지 않으면 사용자는 고칠 곳을 찾을 수 없다.
+test("모양이 없는 실행 인자는 거부하고 위치를 알려준다", () => {
+  const plan = verificationPlan.parseVerificationPlan(`\`\`\`json
+[{"id":"V7","method":"process","statement":"검사","executable":"python","argv":["run.py",{"a":1}]}]
+\`\`\``);
+  assert.equal(plan.ok, false);
+  assert.match(plan.error, /V7/);
+  assert.match(plan.error, /2번째/);
+});
+
+// `python -c`에 여러 줄 스크립트를 넘기는 것은 정상적인 검사 형태다. runner가
+// shell:false로 spawn하므로 인자는 셸 해석을 거치지 않고, 줄바꿈을 막으면 계획이
+// 읽기 어려운 한 줄짜리로 몰릴 뿐 같은 일을 그대로 할 수 있다. NUL만 거부한다.
+test("여러 줄 스크립트를 실행 인자로 넘길 수 있다", () => {
+  const script = "import json\np='out/manifest.json'\nm=json.load(open(p,encoding='utf-8'))\nassert m['ok']\n";
+  const plan = verificationPlan.parseVerificationPlan(`\`\`\`json
+[{"id":"V6","method":"process","statement":"매니페스트 확인","executable":"python","argv":["-c",${JSON.stringify(script)}]}]
+\`\`\``);
+  assert.equal(plan.ok, true, plan.error);
+  assert.equal(plan.criteria[0].step.argv[1], script);
+});
+
+// 64MB를 넘는 입력을 frozen으로 선언하면 지문을 못 떠 "확인할 수 없음"이 되고
+// 계약 자체가 성립하지 않았다. 실제로는 확인할 수 있는 파일인데 readFileSync가
+// 통째로 읽는 방식이라 상한을 낮게 둔 것이었다. 청크로 읽어 해시한다.
+test("64MB를 넘는 frozen 입력도 지문을 뜬다", () => {
+  const { sha256FileSync, MAX_DIGEST_BYTES, CHUNK_BYTES } = require("../src/agora/assurance/file-digest");
+  const root = tempRoot("agora-bigfile-");
+  try {
+    // 청크 경계를 넘겨 마지막 부분 청크까지 해시에 들어가는지 확인한다.
+    const size = CHUNK_BYTES * 2 + 12345;
+    const file = path.join(root, "big.json");
+    const fd = fs.openSync(file, "w");
+    const chunk = Buffer.alloc(CHUNK_BYTES, 7);
+    fs.writeSync(fd, chunk);
+    fs.writeSync(fd, chunk);
+    fs.writeSync(fd, Buffer.alloc(12345, 9));
+    fs.closeSync(fd);
+
+    const expected = crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+    assert.equal(sha256FileSync(file), expected);
+    assert.ok(MAX_DIGEST_BYTES > 64 * 1024 * 1024, "상한이 64MB에 묶여 있으면 안 됩니다");
+
+    const bound = inputBinding.bindInputs(
+      [{ inputId: "I1", locator: "big.json", kind: "file", mode: "frozen" }],
+      { root }
+    );
+    assert.equal(bound.bindings[0].state, "BOUND");
+    assert.equal(bound.bindings[0].sha256, expected);
+    assert.deepEqual(bound.unboundFrozen, []);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("읽을 수 없는 파일은 지문 대신 null을 돌려준다", () => {
+  const { sha256FileSync } = require("../src/agora/assurance/file-digest");
+  assert.equal(sha256FileSync(path.join(tempRoot("agora-nofile-"), "없는파일.json")), null);
+});
+
+// "too-large"만 보고는 파일을 줄여야 하는지, live로 선언해야 하는지 알 수 없다.
+// 실제 크기와 상한이 함께 나와야 사용자가 판단할 수 있다.
+test("크기 초과 사유는 실제 크기와 상한을 함께 밝힌다", () => {
+  const { tooLargeReason } = require("../src/agora/assurance/file-digest");
+  const reason = tooLargeReason(110512941);
+  assert.match(reason, /105\.4MB/);
+  assert.match(reason, /상한 4\.0GB/);
+});
+
+// 모드 표시는 `(frozen)`이 정석이지만 실제로는 `(frozen, 39MB)`처럼 메모를 덧붙인다.
+// 예전에는 정확히 `(frozen)`만 인식해서 모드도 못 읽고 괄호가 경로에 남아
+// "승인된 입력 파일을 찾을 수 없습니다"로 죽었다.
+test("모드 표시에 메모가 붙어도 경로와 모드를 바르게 읽는다", () => {
+  const parsed = taskSchema.parseTaskV2(
+    ["## Goal", "g",
+      "## Inputs / Source Data",
+      "- `resources/split_manifest.json` (frozen, 39MB)",
+      "- `docs/note.md` (live · 자주 바뀜)",
+      "- `resources/검사(BFI).xlsx`",
+      "## Requirements", "r", "## Work Approach", "w", "## Deliverables", "- 없음",
+      "## Acceptance Criteria", "a", "## Verification Plan", "v", "## Out of Scope", "o"].join("\n")
+  );
+  const items = parsed.inputs.items;
+  assert.equal(items[0].locator, "resources/split_manifest.json");
+  assert.equal(items[0].mode, "frozen");
+  assert.equal(items[0].modeDeclared, true);
+  assert.equal(items[1].locator, "docs/note.md");
+  assert.equal(items[1].mode, "live");
+  // 모드 토큰이 없는 괄호는 파일 이름의 일부다. 건드리면 안 된다.
+  assert.equal(items[2].locator, "resources/검사(BFI).xlsx");
+});
+
+// Inputs에 산문이 섞이면 그 문장이 통째로 경로가 되어 오류 문구를 읽을 수 없었다.
+// 경계를 따옴표로 보이고 길면 줄여, 어느 항목이 경로가 아닌지 드러낸다.
+test("경로가 아닌 입력 항목은 오류에서 눈에 띄게 인용된다", () => {
+  const root = tempRoot("agora-bad-input-");
+  try {
+    const prose = "계약 상수(소스 실측): 시드 language_aig_phase4_split_seed_v1, 컷오프 8000/9000/10000, 해시 규칙 sha256";
+    const built = frozenContract.buildFrozenContract(
+      ["## Goal", "g",
+        "## Inputs / Source Data",
+        `- ${prose}`,
+        "## Requirements", "r", "## Work Approach", "w", "## Deliverables", "- 없음",
+        "## Acceptance Criteria", "a", "## Verification Plan", "v", "## Out of Scope", "o"].join("\n"),
+      { root }
+    );
+    assert.equal(built.ok, false);
+    assert.equal(built.code, "FROZEN_INPUT_MISSING");
+    assert.match(built.error, /^승인된 입력 파일을 찾을 수 없습니다: "/);
+    // 길면 줄여서 오류 한 줄이 읽히게 한다.
+    assert.match(built.error, /…"$/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Planner는 `(frozen)` 말고도 `(mutable)`, `(신규, 사본)`, `(39MB)`처럼 무엇이든 적는다.
+// 아는 낱말만 걷어내면 모르는 주석이 경로에 남아 "파일을 찾을 수 없습니다"가 된다.
+// 끝에 공백을 두고 붙은 괄호만 걷고, 이름 가운데 괄호는 실제 파일이므로 유지한다.
+test("항목 끝의 괄호 주석은 종류와 무관하게 걷어내고 이름 속 괄호는 지킨다", () => {
+  const parsed = taskSchema.parseTaskV2(
+    ["## Goal", "g",
+      "## Inputs / Source Data",
+      "- `src/language_aig/models.py` (mutable)",
+      "- `resources/split_manifest.json` (frozen, 39MB)",
+      "- `resources/검사(BFI).xlsx`",
+      "## Requirements", "r", "## Work Approach", "w",
+      "## Deliverables",
+      "- `out/a.json` (신규, 무변경 사본)",
+      "- out/b.json — 설명",
+      "- `out/검사(BFI).xlsx`",
+      "## Acceptance Criteria", "a", "## Verification Plan", "v", "## Out of Scope", "o"].join("\n")
+  );
+  const inputs = parsed.inputs.items.map((i) => i.locator);
+  assert.deepEqual(inputs, [
+    "src/language_aig/models.py",
+    "resources/split_manifest.json",
+    "resources/검사(BFI).xlsx",
+  ]);
+  // 모드 표시가 든 괄호는 여전히 모드로 읽힌다.
+  assert.equal(parsed.inputs.items[1].mode, "frozen");
+  assert.equal(parsed.inputs.items[1].modeDeclared, true);
+
+  const dels = parsed.deliverables.items;
+  assert.equal(dels[0].locator, "out/a.json", "닫는 백틱까지 함께 벗겨져야 합니다");
+  assert.equal(dels[1].locator, "out/b.json");
+  assert.equal(dels[1].description, "설명");
+  assert.equal(dels[2].locator, "out/검사(BFI).xlsx");
+});
+
+// 기획자는 파일을 쓰지 않는다(권한 상한 read). Agora가 응답 본문에서 TASK를 추출해
+// 저장한다. 이걸 모르면 기획자가 "파일을 못 쓴다"거나 "대신 덮어써 달라"로 새고,
+// 그러면 응답에 TASK가 없어 필수 섹션 누락으로 반려되는 루프가 생긴다(실제 3회 발생).
+test("기획자 프롬프트는 TASK 파일을 Agora가 저장한다고 알려준다", () => {
+  const { buildAgentPrompt } = require("../src/chat/chat-prompt");
+  const prompt = buildAgentPrompt({
+    agent: { id: "claude", name: "C" },
+    agents: [{ id: "claude", name: "C" }],
+    messages: [{ author: "user", authorType: "user", text: "작업 요청" }],
+    specialist: { stage: "planner" },
+  });
+  assert.match(prompt, /작업 지시서 파일은 Agora가 이 응답에서 추출해 저장합니다/);
+  assert.match(prompt, /TASK 전문을 응답 안에 다시 적어야 합니다/);
+  // 파일을 직접 고치라는 옛 문구가 남으면 같은 오해가 다시 생긴다.
+  assert.ok(
+    !prompt.includes("기존 TASK.md를 덮어쓰지 마세요"),
+    "기획자가 파일을 쓴다고 오해할 문구가 남아 있습니다"
+  );
+});

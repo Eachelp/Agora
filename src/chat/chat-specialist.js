@@ -97,7 +97,27 @@ function hasOpenQuestions(text) {
     .replace(/^\s*STATUS:\s*\w+.*$/gim, "")
     .replace(/^\s*(?:[-*]|\d+[.)])\s*/gm, "")
     .trim();
-  return content.length > 0 && !/^(?:없음|없습니다|none|n\/?a)\.?$/i.test(content);
+  // "없음"이라고 답하면서 왜 없는지 덧붙이는 것이 자연스러운 글쓰기다. 예전에는
+  // 문장 전체가 정확히 "없음"일 때만 비었다고 봤기 때문에, 검수자가
+  // "없음. 위 항목은 기획자가 보완할 수 있습니다"라고 쓰면 그 설명을 사용자 질문으로
+  // 오해해 자동 보완을 끄고 사용자 답변을 기다렸다. 지적이 전부 scope: IN이어도
+  // 마찬가지였다. 앞머리가 부정이면 뒤에 무엇이 붙든 질문 없음으로 본다.
+  //
+  // 이 판정은 검증 통과 여부가 아니라 "자동 보완이냐 사용자냐"의 갈림길이다.
+  // 과하게 막으면 사용자가 매번 손으로 풀어야 하고, 덜 막아도 다음 라운드에서
+  // 검수자가 같은 지적을 다시 낼 수 있으므로(repeat 추적) 회복 가능하다.
+  // 경계는 \b가 아니라 유니코드 lookahead로 본다. \b는 \w(=ASCII)만 알기 때문에
+  // "없음." 뒤에서 경계를 찾지 못해 한글 부정 표현이 전부 통과하지 못했다.
+  //
+  // 부정 표현 앞에 괄호나 강조 표시가 붙는 것도 자연스러운 글쓰기다. 실제로
+  // "(없음 — 사용자 결정이 필요한 사항은 없습니다)"라고 쓴 검수를 여는 괄호 하나
+  // 때문에 질문으로 읽어, 결정할 것이 없다고 명시한 라운드에서 사용자를 세웠다.
+  // 판정 전에 앞머리 장식을 걷어낸다(비었는지 판단은 원문 content로 한다).
+  const opening = content.replace(/^[\s([{<"'*_`「『“‘]+/u, "");
+  if (/^(?:없음|없습니다|없다|해당\s*없음|특이사항\s*없음|none|n\/?a)(?![\p{L}\p{N}])/iu.test(opening)) {
+    return false;
+  }
+  return content.length > 0;
 }
 
 // Plan Reviewer의 다음 라운드에는 자유 서술이 아니라 추적 가능한 ISSUES
@@ -238,8 +258,18 @@ class SpecialistMixin {
     }
   }
 
+  // action별 stages는 그 실행에 필요한 역할만 담는다(plan은 기획·기획검수,
+  // implementation은 구현·검토·기록). 그래서 어느 하나만 보면 역할이 빈다:
+  // PLAN -> 실행 순서로 간 뒤 구현이 BLOCKED되면 specialistStages에 기획자가 없어
+  // 재기획이 "기획·검수 담당자를 지정해 주세요"로 거부됐다(프로젝트 설정과 무관하게).
+  // 셋을 겹쳐서 어느 단계에서 남긴 역할이든 살아 있게 한다. 나중 것이 우선한다.
   stagesForSpecialist() {
-    return this.specialistStages || this.professionalRun?.stages || this.specialistResume?.stages || null;
+    const merged = {
+      ...(this.specialistResume?.stages || {}),
+      ...(this.professionalRun?.stages || {}),
+      ...(this.specialistStages || {}),
+    };
+    return Object.keys(merged).length > 0 ? merged : null;
   }
 
   async withProfessionalAuthorization(authorization = "workspace-write", fn) {
@@ -249,6 +279,10 @@ class SpecialistMixin {
       return await fn();
     } finally {
       this.activeRunAuthorization = prev;
+      // 모든 전문 실행 진입점이 이 래퍼를 지난다. 진입점마다 따로 붙이면
+      // resumeSpecialist·replanBlocked처럼 빠지는 경로가 생기므로 여기 한 곳에 둔다.
+      // 중첩 호출(예: builder status 교정)에서는 specialistActive가 켜져 있어 no-op다.
+      this.settleStrandedProfessionalRun();
     }
   }
 
@@ -530,6 +564,84 @@ class SpecialistMixin {
       changes,
       review,
     };
+  }
+
+  // PLANNING / PLAN_REVIEW 가 WAITING인 상태의 specialistResume를 재구성한다.
+  //
+  // 예전에는 READY 노드만 복원해서, 답변 대기 상태로 앱을 껐다 켜면 입력칸은
+  // 열리는데(needsInput은 professionalRun만 본다) _answerPlanQuestion이
+  // specialistResume.phase를 요구해 답변이 거부됐다. 화면과 백엔드가 어긋나
+  // 사용자는 그동안 쌓인 검수 맥락을 잃었다.
+  //
+  // 생성자(앱 재시작)와 TASK_CHANGED_AFTER_REVIEW 전이 양쪽에서 쓴다.
+  // 한쪽만 채우면 "재시작해야만 입력이 작동하는" 상태가 새로 생긴다.
+  resumeForWaitingPlan() {
+    const run = this.professionalRun;
+    if (!run || run.status !== "WAITING") return null;
+    if (run.node !== "PLANNING" && run.node !== "PLAN_REVIEW") return null;
+
+    const policy = run.policy || {};
+    // action이 빠지면 원래 "전체 실행"이던 작업이 답변 후 PLAN에서 멈춘다
+    // (_answerPlanQuestion이 resume.action === "full"을 본다). ProfessionalRun에
+    // 새 필드를 넣을 필요는 없다 — policy.autoContinueReady가 이미 그 값이다.
+    const action = policy.autoContinueReady ? "full" : "plan";
+    const implementationAutoRevisions = policy.implementationAutoRevisions || 0;
+    const mode = action === "full" || implementationAutoRevisions > 0 ? "auto" : "step";
+
+    let taskContent = "";
+    if (run.taskPath) {
+      try {
+        taskContent = this.taskManager?.resolveTaskContract?.(
+          { contentSource: "file", taskPath: run.taskPath },
+          this.meta.workspace
+        )?.content || "";
+      } catch {}
+    }
+
+    const isPlanning = run.node === "PLANNING";
+    const changedAfterReview = run.stopReason === "TASK_CHANGED_AFTER_REVIEW";
+    const feedback = this.waitingPlanFeedback({ run, isPlanning, changedAfterReview, taskContent });
+    return {
+      stages: run.stages || this.specialistStages || {},
+      mode,
+      action,
+      planAutoRevisions: policy.planAutoRevisions || 0,
+      implementationAutoRevisions,
+      taskInfo: taskFileInfo(run.taskPath),
+      feedback,
+      // TASK_CHANGED_AFTER_REVIEW에는 해소할 구조화 이슈가 없다. 이전 라운드
+      // 이슈를 끌어오면 이미 통과한 지적을 다시 먹인다.
+      ...(isPlanning || changedAfterReview
+        ? {}
+        : { previousIssues: structuredIssuesFromReview(feedback) }),
+      phase: isPlanning ? "needs_decision" : "plan_review_fix_required",
+    };
+  }
+
+  // WAITING을 만든 발화를 되찾는다. Task 내용은 primary가 아니라 최종 fallback이다 —
+  // 다음 Planner에게 전달되어야 하는 핵심은 "Reviewer가 무엇을 지적했는가"다.
+  waitingPlanFeedback({ run, isPlanning, changedAfterReview, taskContent }) {
+    // 1. 승인 후 Task가 바뀐 경우에는 WAITING을 만든 에이전트 발화가 없다.
+    //    아래 fallback을 적용하면 직전에 PASS를 낸 Reviewer 발화를 끌어와
+    //    이미 해소된 지적을 다시 먹인다.
+    if (changedAfterReview) {
+      return `승인 후 작업 지시서가 변경되어 재검수가 필요합니다.\n\n${taskContent}`.trim();
+    }
+    // 2. 새 실행은 WAITING 전이 시 발화 id를 남긴다.
+    if (run.feedbackMessageId) {
+      const found = this.messages.find((message) => message.id === run.feedbackMessageId);
+      if (found?.text) return found.text;
+    }
+    // 3. 구형 상태 호환: 이 필드가 없던 시절의 WAITING도 살려야 한다.
+    //    전문 응답 메시지에는 agentMeta.specialistStage가 이미 저장돼 있다.
+    const wantedStage = isPlanning ? "planner" : "plan_review";
+    for (let index = this.messages.length - 1; index >= 0; index -= 1) {
+      const message = this.messages[index];
+      if (message?.error || !message?.text) continue;
+      if (message.agentMeta?.specialistStage === wantedStage) return message.text;
+    }
+    // 4. 최종 fallback.
+    return taskContent;
   }
 
   holdForRecovery({
@@ -1081,6 +1193,9 @@ class SpecialistMixin {
       ? Math.min(3, Math.max(0, planAutoRevisions))
       : 0;
     let planRevisionCount = 0;
+    // 검수자의 출력 계약 실패는 사용자 결정이 아니라 형식 실패다. 한 번만 다시
+    // 청하고, 그래도 안 되면 사용자에게 올린다. 자동 보완 예산과는 별개로 센다.
+    let planReviewRepairUsed = false;
     let contractRepairCount = 0;
     const MAX_CONTRACT_REPAIRS = 2;
     let nextFeedback = feedback;
@@ -1113,6 +1228,7 @@ class SpecialistMixin {
           const transition = this.transitionProfessional({
             type: "PLANNER_NEEDS_DECISION",
             stopReason: "NEEDS_DECISION",
+            feedbackMessageId: plannerResult?.messageId || null,
           });
           if (!transition.ok) return this.professionalTransitionFailure("planner", transition);
           this.specialistResume = {
@@ -1144,6 +1260,7 @@ class SpecialistMixin {
           const transition = this.transitionProfessional({
             type: "PLANNER_NEEDS_DECISION",
             stopReason: "NEEDS_DECISION",
+            feedbackMessageId: plannerResult?.messageId || null,
           });
           if (!transition.ok) return this.professionalTransitionFailure("planner", transition);
           this.specialistResume = {
@@ -1224,7 +1341,7 @@ class SpecialistMixin {
         }
 
         const planText = nextTaskInfo?.content || plannerResult.text || "";
-        const planReview = await this.scheduleResponse(planReviewAgent.agent, {
+        let planReview = await this.scheduleResponse(planReviewAgent.agent, {
           specialist: {
             stage: "plan_review",
             round: planRound,
@@ -1242,7 +1359,36 @@ class SpecialistMixin {
           });
           return this.specialistFail(planReviewAgent, "plan_review", planRevisionCount, planReview);
         }
-        const contract = this.parseReviewContract(planReview.text || "", planReview.specialistSignal);
+        let contract = this.parseReviewContract(planReview.text || "", planReview.specialistSignal);
+
+        // 출력 계약 실패(표기 누락·모순)와 UNKNOWN은 성격이 다르지만, 둘 다
+        // 사용자가 대신 답해 줄 수 있는 문제가 아니다. 같은 검수자에게 한 번 더 청한다.
+        const repairKind = this.reviewRepairKind(contract);
+        if (repairKind && !planReviewRepairUsed) {
+          planReviewRepairUsed = true;
+          this.appendSystem(
+            repairKind === "unknown"
+              ? "기획 검수가 판정을 내리지 못해 같은 근거로 한 번 더 검수를 요청합니다. (자동 보완 횟수와 무관)"
+              : "기획 검수 응답의 표기가 계약에 맞지 않아 형식만 고쳐 다시 요청합니다. (자동 보완 횟수와 무관)"
+          );
+          const repaired = await this.scheduleResponse(planReviewAgent.agent, {
+            specialist: {
+              stage: "plan_review",
+              round: planRound,
+              maxRounds: planRevisionLimit + 1,
+              feedback: planText,
+              previousIssues: previousPlanIssues,
+              repairKind,
+            },
+            agentConfig: planReviewAgent.agentConfig,
+          });
+          if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
+          // 재요청이 실패하면 원래 응답으로 계속 간다(사용자에게 올라간다).
+          if (repaired?.ok) {
+            planReview = repaired;
+            contract = this.parseReviewContract(repaired.text || "", repaired.specialistSignal);
+          }
+        }
         previousPlanIssues = structuredIssuesFromReview(planReview.text || "");
         if (contract.verdict === "PASS") {
           const transition = this.transitionProfessional({
@@ -1289,6 +1435,7 @@ class SpecialistMixin {
           type: contract.verdict === "UNKNOWN" ? "PLAN_REVIEW_UNKNOWN" : "PLAN_REVIEW_FIX",
           canAutoRevise: false,
           stopReason: contract.stopReason || contract.verdict,
+          feedbackMessageId: planReview?.messageId || null,
         });
         if (!transition.ok) return this.professionalTransitionFailure("plan_review", transition);
         this.specialistResume = {
@@ -1304,7 +1451,14 @@ class SpecialistMixin {
         };
         this.appendSystem(
           contract.stopReason === "NEEDS_DECISION"
+            // 사용자 질문은 자동 보완보다 우선한다(질문의 답이 요구사항을 바꾸므로
+            // 답 없이 기획을 고치면 추측이 된다). 다만 화면에는 "자동 보완 N회"가
+            // 켜져 있으니, 그 예산을 쓰지 않았다는 사실을 밝히지 않으면 설정이
+            // 동작하지 않는 것처럼 보인다.
             ? "기획 검수자가 사용자 결정이 필요한 질문을 남겨 자동 진행을 멈췄습니다. 아래 전용 입력칸에서 답해 주세요."
+              + (planRevisionLimit > 0
+                ? ` 사용자 답변이 필요한 질문은 자동 보완으로 해결할 수 없어 기획 자동 보완(${planRevisionCount}/${planRevisionLimit}회)은 쓰지 않았습니다. 답변 뒤 남은 지적은 자동 보완으로 이어집니다.`
+                : "")
             : contract.stopReason === "AMBIGUOUS_VERDICT"
             ? "기획 검수 응답에서 서로 다른 VERDICT 표기가 여러 번 발견되어 어느 것이 최종 판정인지 판단할 수 없습니다. 아래 전용 입력칸에서 보완 내용을 알려 주세요."
             : contract.verdict === "UNKNOWN"
@@ -1344,7 +1498,9 @@ class SpecialistMixin {
 
   // Open Question·기획 검수 피드백에 대한 사용자 답변을 Planner의 다음 입력으로 보관합니다.
   async answerPlanQuestion(answer) {
-    return this.withProfessionalAuthorization("workspace-write", () => this._answerPlanQuestion(answer));
+    return this.withProfessionalAuthorization("workspace-write", async () => {
+      return await this._answerPlanQuestion(answer);
+    });
   }
 
   async _answerPlanQuestion(answer) {
@@ -1390,14 +1546,35 @@ class SpecialistMixin {
   }
 
   // 기존 호출 경로는 유지합니다. action을 명시한 새 화면만 버튼형 전문 실행을 씁니다.
+  // RUNNING은 "턴이 실제로 떠 있다"는 뜻이어야 한다. 실행이 끝났는데 상태가
+  // RUNNING으로 남으면 사용자가 갇힌다: 정책 표는 RUNNING에서 취소만 허용하는데
+  // cancelSpecialist는 specialistActive/specialistResume가 이미 꺼져 있어
+  // "취소할 전문 실행이 없습니다"로 거부한다. 버튼도 전부 비활성이다.
+  //
+  // 이런 경로는 TASK 저장 실패처럼 전이 없이 return하는 지점마다 생긴다. 그 지점을
+  // 하나씩 고치는 대신, 블록이 끝나는 자리에서 불변식을 세운다. 앱을 다시 열면
+  // 어차피 RUNNING이 INTERRUPTED로 바뀌므로(생성자), 실행 중에도 같게 만드는 것이다.
+  settleStrandedProfessionalRun() {
+    if (!this.professionalRun) return false;
+    if (this.professionalRun.status !== "RUNNING") return false;
+    if (this.specialistActive) return false;
+    const transition = this.transitionProfessional({
+      type: "INTERRUPT",
+      stopReason: "EXECUTION_INTERRUPTED",
+    });
+    if (!transition.ok) return false;
+    this.emitSpecialistState();
+    return true;
+  }
+
   async startSpecialist(options = {}) {
     if (options.stages) this.specialistStages = options.stages;
     // 전문 실행은 세션 권한을 영구히 바꾸지 않고, 이 실행 동안만 유효한
     // run-scoped 권한(workspace-write)을 켜 둔다. 단계별 상한은 그 아래에서
     // 다시 좁혀진다(planner/plan_review=read, recorder=chat 등).
     return this.withProfessionalAuthorization("workspace-write", async () => {
-      if (options.action) return this.startProfessionalAction(options);
-      return this.startLegacySpecialist(options);
+      if (options.action) return await this.startProfessionalAction(options);
+      return await this.startLegacySpecialist(options);
     });
   }
 
@@ -1407,7 +1584,12 @@ class SpecialistMixin {
   // - record: 기록관만 수동 실행
   // - full: 기획·검수와 구현·검수를 연속 실행하되 질문/보완/막힘에서 중단
   async startProfessionalAction(options = {}) {
-    if (this.discussionRequested || this.discussionActive || this.isSpecialistLocked()) {
+    // 기획(plan/full)은 "처음부터 다시"이므로 사용자 대기 상태에서도 시작할 수 있어야
+    // 한다. 실제로 turn이 떠 있을 때만 막는다. 나머지 action(구현/기록)은 이어가기
+    // 이므로 기존 잠금 의미를 그대로 쓴다.
+    const restartsPlan = options.action === "plan" || options.action === "full";
+    const startBlocked = restartsPlan ? this.isSpecialistBusy() : this.isSpecialistLocked();
+    if (this.discussionRequested || this.discussionActive || startBlocked) {
       return { ok: false, error: "이미 다른 전문 작업이나 토론이 진행 중입니다." };
     }
     // 일반 응답이 실행·대기 중이면 전문 실행을 큐 뒤에 넣지 않고 즉시 거부합니다.
@@ -1591,8 +1773,29 @@ class SpecialistMixin {
     }
 
     if (action === "plan" || action === "full") {
+      // 사용자 대기 상태에서 새로 시작하는 경우, 옛 실행을 원자적으로 종료하고
+      // 들고 있던 checkpoint를 정리한 뒤에 새 run을 만든다. 정리에 실패하면
+      // 새 run을 만들지 않고 그 자리에서 멈춘다(되돌릴 수단을 잃은 채 진행 금지).
+      let carriedTaskPath = null;
+      if (this.specialistResume || this.specialistBlocked) {
+        const discarded = await this.discardRunForFreshPlan();
+        if (!discarded.ok) return discarded;
+        carriedTaskPath = discarded.carriedTaskPath;
+        const cleaned = discarded.discardedCheckpoint
+          ? "이전 전문 실행과 작업 전 백업을 정리하고 기획을 처음부터 다시 시작합니다."
+          : "이전 전문 실행을 정리하고 기획을 처음부터 다시 시작합니다.";
+        // 정리에 실패한 항목은 감추지 않는다. 다만 그것 때문에 시작을 막지도 않는다.
+        this.appendSystem(
+          discarded.warnings?.length
+            ? `${cleaned} (${discarded.warnings.join(", ")} — 새 기획에는 영향이 없습니다)`
+            : cleaned
+        );
+      }
       const run = createProfessionalRun({
         stages,
+        // 이어받은 경로가 있으면 그 지시서를 갱신하고, 없으면(=끝난 실행이나 새 세션에서
+        // 시작하는 진짜 신규 작업) 새 지시서를 만든다.
+        taskPath: carriedTaskPath,
         policy: {
           autoContinueReady: action === "full",
           pauseBeforeReview: false,
@@ -1613,6 +1816,11 @@ class SpecialistMixin {
         planAutoRevisions,
         implementationAutoRevisions,
         action,
+        // 이어받은 지시서가 있으면 새로 만들지 않고 그 파일을 갱신한다.
+        // filename까지 넘겨야 PLANNER_PLAN_READY가 taskId를 채워 화면 배지가 뜬다.
+        taskInfo: carriedTaskPath
+          ? { relativePath: carriedTaskPath, filename: carriedTaskPath.split(/[\/]/).pop() }
+          : null,
       });
       if (action !== "full" || !planResult?.ok) return planResult;
       return this.runProfessionalImplementation({
@@ -1669,6 +1877,11 @@ class SpecialistMixin {
       if (!liveTask?.content || hashText(liveTask.content) !== this.professionalRun.approvedTaskHash) {
         const transition = this.transitionProfessional({ type: "TASK_CHANGED_AFTER_REVIEW" });
         if (!transition.ok) return this.professionalTransitionFailure("plan_review", transition);
+        // 이 전이는 예전에 specialistResume를 만들지 않아, 안내는 뜨는데 입력이
+        // 먹지 않았다(재시작해야만 동작). 복원 helper를 여기서도 써서 같은
+        // WAITING 상태를 즉시 구성한다.
+        this.specialistResume = this.resumeForWaitingPlan();
+        this.emitSpecialistState();
         this.appendSystem("기획 검수 후 TASK.md가 바뀌어 구현을 시작하지 않았습니다. 기획 검수를 다시 통과시켜 주세요.");
         return {
           ok: false,
@@ -1960,8 +2173,32 @@ class SpecialistMixin {
 
   // 승인 대기 중인 전문 실행을 명시적으로 끝냅니다.
   // 이미 만들어진 Builder 변경은 복원하지 않고 보존합니다. 복원이 필요하면 BLOCKED 메뉴를 씁니다.
-  cancelSpecialist() {
-    if (!this.specialistActive && !this.specialistResume) {
+  // BLOCKED 보류를 끝내고 그 백업을 정리한다. 정리 실패는 알리되 막지 않는다 —
+  // 이건 탈출 경로이고, 지우지 못한 폴더 때문에 취소가 거부되면 사용자가 갇힌다.
+  discardBlockedHold(heldBlocked, checkpoint) {
+    if (!heldBlocked) return false;
+    this.specialistBlocked = null;
+    if (!checkpoint || !this.checkpointEngine) return false;
+    try {
+      return this.checkpointEngine.cleanupCheckpoint(checkpoint)?.ok !== false;
+    } catch {
+      return false;
+    }
+  }
+
+  // 취소 메시지가 출처를 말하지 않아, 사용자가 누른 것인지 Agora가 스스로 한 것인지
+  // 구분할 수 없었다. 그 때문에 "저절로 취소됐다"는 신고를 한참 추적하고도 원인을
+  // 확정하지 못했다. 부르는 쪽이 짧은 출처 문구를 넘겨 메시지가 스스로 밝히게 한다.
+  cancelSpecialist(origin = "") {
+    // 정책 표는 살아 있는 run에서 취소를 허용한다. 그런데 여기서 active/resume만
+    // 보면, 실행이 끝난 뒤 상태만 남은 경우(예: INTERRUPTED로 정리된 run)에
+    // "취소할 전문 실행이 없습니다"로 거부해 정책과 실제 동작이 어긋난다.
+    // 사용자에게는 "된다고 해놓고 안 되는 버튼"으로 보인다.
+    const hasLiveRun = Boolean(
+      this.professionalRun &&
+      !(this.professionalRun.node === "COMPLETED" && this.professionalRun.status === "COMPLETED")
+    );
+    if (!this.specialistActive && !this.specialistResume && !hasLiveRun) {
       return { ok: false, error: "취소할 전문 실행이 없습니다." };
     }
     const professionalAct = Boolean(
@@ -1973,9 +2210,14 @@ class SpecialistMixin {
       ? this.taskManager.runInfoForId(this.professionalRun.frozenRunId, this.meta.workspace)
       : null;
     const taskInfo = professionalAct ? taskFileInfo(this.professionalRun?.taskPath) : null;
+    // BLOCKED/INVALID는 status가 RUNNING이 아니라 professionalAct에 걸리지 않는다.
+    // 그런데 그 상태의 checkpoint는 specialistBlocked가 들고 있으므로 여기서 함께
+    // 집어야 한다. 안 그러면 "취소했습니다"라고 해놓고 BLOCKED 선택지가 계속 떠 있고
+    // 백업은 아무도 도달할 수 없는 고아로 디스크에 남는다.
+    const heldBlocked = this.specialistBlocked;
     const checkpoint = professionalAct
       ? this.checkpointForProfessionalRun()
-      : this.specialistResume?.checkpoint || null;
+      : this.specialistResume?.checkpoint || heldBlocked?.checkpoint || null;
     this.specialistResume = null;
     this.specialistActive = false;
     this.stopAllSilently();
@@ -1993,16 +2235,26 @@ class SpecialistMixin {
             : "implementation",
         round: this.professionalRun?.implementationRound || 1,
         stopReason: "USER_INTERRUPTED",
-        message: "사용자가 전문 실행을 중지했습니다. 현재 변경과 복구 정보는 그대로 유지합니다. 아래에서 다음 처리를 선택해 주세요.",
+        message: `${origin || "사용자가 "}전문 실행을 중지했습니다. 현재 변경과 복구 정보는 그대로 유지합니다. 아래에서 다음 처리를 선택해 주세요.`,
       });
       return { ...held, ok: true, cancelled: true };
     }
     if (this.professionalRun) {
       const transition = this.transitionProfessional({ type: "INTERRUPT", stopReason: "USER_INTERRUPTED" });
       if (!transition.ok) return this.professionalTransitionFailure("planner", transition);
+      // BLOCKED에서 취소했다면 그 보류 상태와 백업까지 함께 끝낸다. 남겨 두면
+      // 취소했다고 알려 놓고 선택지가 계속 뜨고, 백업은 도달 불가한 채 남는다.
+      // 정리 실패가 취소를 막지는 않는다(탈출 경로다). 사용자 변경은 그대로 둔다.
+      const discardedBackup = this.discardBlockedHold(heldBlocked, checkpoint);
       this.clearRecoveryState();
       this.emitSpecialistState();
-      this.appendSystem("전문 실행을 취소했습니다.");
+      this.appendSystem(
+        heldBlocked
+          ? `${origin}전문 실행을 취소했습니다. 구현자가 만든 변경은 그대로 남습니다.${
+              discardedBackup ? " 작업 전 백업은 정리했습니다." : ""
+            }`
+          : `${origin}전문 실행을 취소했습니다.`
+      );
       return { ok: true, cancelled: true };
     }
     if (checkpoint && this.checkpointEngine) {
@@ -2010,7 +2262,7 @@ class SpecialistMixin {
     }
     this.clearRecoveryState();
     this.emitSpecialistState();
-    this.appendSystem("전문 실행을 취소했습니다. 현재 작업 결과는 그대로 유지됩니다.");
+    this.appendSystem(`${origin}전문 실행을 취소했습니다. 현재 작업 결과는 그대로 유지됩니다.`);
     return { ok: true, cancelled: true };
   }
 
@@ -2266,7 +2518,7 @@ class SpecialistMixin {
           });
         }
         // Builder 실행.
-        const builderResult = await this.scheduleResponse(implementation.agent, {
+        let builderResult = await this.scheduleResponse(implementation.agent, {
           specialist: { stage: "implementation", round: 1, maxRounds: 1, feedback: runInfo ? "" : feedback, frozenTask: frozenTaskMeta() },
           agentConfig: implementation.agentConfig,
         });
@@ -2295,6 +2547,8 @@ class SpecialistMixin {
           });
         }
         if (!builderResult?.ok) return this.specialistFail(implementation, "implementation", 1, builderResult);
+        // 선언 누락·모순은 사용자 결정이 아니라 출력 계약 실패다. 읽기 전용으로 한 번 다시 청한다.
+        builderResult = await this.repairBuilderStatus(implementation, builderResult, requestedGeneration);
         if (builderResult.builderStatus !== "DONE") return holdForBlocked(1, builderResult, builderResult.builderStatus);
         // 구현 완료 → 사용자 확인 대기.
         const changeSnapshot = await describeWorkspaceChanges(workspace, {
@@ -2511,7 +2765,7 @@ class SpecialistMixin {
           });
         }
         // Builder 보완 후 다시 검토.
-        const builderResult = await this.scheduleResponse(implementation.agent, {
+        let builderResult = await this.scheduleResponse(implementation.agent, {
           specialist: { stage: "implementation", round: 2, maxRounds: 1, feedback: resume.reviewText || feedback, frozenTask: frozenTaskMeta() },
           agentConfig: implementation.agentConfig,
         });
@@ -2542,6 +2796,8 @@ class SpecialistMixin {
           }
           return this.specialistFail(implementation, "implementation", 2, builderResult);
         }
+        // 선언 누락·모순은 사용자 결정이 아니라 출력 계약 실패다. 읽기 전용으로 한 번 다시 청한다.
+        builderResult = await this.repairBuilderStatus(implementation, builderResult, requestedGeneration);
         if (builderResult.builderStatus !== "DONE") return holdForBlocked(2, builderResult, builderResult.builderStatus);
         const changeSnapshot = await describeWorkspaceChanges(workspace, {
           checkpoint,
@@ -2677,6 +2933,10 @@ class SpecialistMixin {
             this.appendSystem(`전문 모드 구현·검토는 통과했지만 기록관이 결과를 정리하지 못했습니다. (${recordError})`);
             return { ok: true, completedIterations: 1, recorded: false, recording: recorderResult?.text || "", recordError };
           }
+        } else {
+          // 기록은 이 실행의 산출물 중 하나다. 담당자가 없다고 조용히 건너뛰면
+          // 사용자는 "통과했습니다"만 보고 기록이 빠진 것을 모른다.
+          this.appendSystem("기록 담당자가 지정되지 않아 이번 실행의 기록을 남기지 못했습니다. 프로젝트 설정에서 지정한 뒤 \"기록 다시 생성\"으로 남길 수 있습니다.");
         }
         // Stage D-C — step에서도 Recorder 결과가 provenance 사슬을 닫는다(§26).
         this.recordAssuranceRecorder({ runInfo, ok: Boolean(recorderResult?.ok) });
@@ -3140,6 +3400,7 @@ class SpecialistMixin {
       await restoreCheckpoint();
       return this.specialistFail(implementation, "implementation", round, builderResult);
     }
+    builderResult = await this.repairBuilderStatus(implementation, builderResult, requestedGeneration);
     if (builderResult.builderStatus !== "DONE") {
       return holdForBlocked(round, builderResult, builderResult.builderStatus);
     }
@@ -3519,6 +3780,7 @@ class SpecialistMixin {
         await restoreCheckpoint();
         return this.specialistFail(implementation, "implementation", round, builderResult);
       }
+      builderResult = await this.repairBuilderStatus(implementation, builderResult, requestedGeneration);
       if (builderResult.builderStatus !== "DONE") {
         return holdForBlocked(round, builderResult, builderResult.builderStatus);
       }
@@ -3612,6 +3874,10 @@ class SpecialistMixin {
         this.appendSystem(`전문 모드 구현·검토는 통과했지만 기록관이 결과를 정리하지 못했습니다. (${recordError})`);
         return { ok: true, completedIterations: round, recorded: false, recording: recorderResult?.text || "", recordError };
       }
+    } else if (recordAfter) {
+      // 기록은 이 실행의 산출물 중 하나다. 담당자를 못 찾았다고 조용히 건너뛰면
+      // 사용자는 "통과했습니다"만 보고 기록이 빠진 것을 모른다.
+      this.appendSystem("기록 담당자가 지정되지 않아 이번 실행의 기록을 남기지 못했습니다. 프로젝트 설정에서 지정한 뒤 \"기록 다시 생성\"으로 남길 수 있습니다.");
     }
 
     if (runInfo?.runDir && this.taskManager?.writeRunResult && !this.taskManager.writeRunResult(runInfo, {
@@ -3819,6 +4085,134 @@ class SpecialistMixin {
       canRestore: Boolean(pending.canRestore),
       block,
     };
+  }
+
+  // 계약 자체를 버리고 PLAN부터 완전히 새로 시작하기 전에, 기존 실행을 원자적으로
+  // 종료한다. 이 정리 없이 새 ProfessionalRun을 덮어쓰면 옛 대기 상태가 메모리에
+  // 남고 기존 harness run이 고아가 된다(REPLAN_RESET이 lineage 폐기 = RETIRE다).
+  //
+  // 순서는 replanBlocked와 같다. checkpoint를 먼저 지우고 전이가 실패하면
+  // "기존 run은 살아 있는데 되돌릴 수단만 사라진" 더 나쁜 부분 실패가 된다.
+  // 구현자가 파일은 고쳤는데 완료 선언만 빠뜨렸거나 둘 다 쓴 경우, 이것은 사용자
+  // 결정 사항이 아니라 출력 계약 실패다. 같은 구현자에게 선언만 다시 청한다.
+  //
+  // **구현 프롬프트로 다시 부르면 안 된다.** "실제 구현을 수행하세요"가 살아 있으면
+  // 형식 교정이 2차 구현 라운드가 되어 이미 고친 파일을 또 건드린다. 전용 지침으로
+  // 대체하고(chat-prompt의 repairKind), 이번 호출의 authority만 workspace-read로
+  // 낮춘다 — 역할은 그대로 Builder지만 stage cap과 min을 취해 읽기 전용이 된다.
+  //
+  // 한 builder 응답당 한 번만 시도한다(호출자가 결과 하나에 대해 한 번 부른다).
+  // 라운드·자동 보완 예산·checkpoint 어느 것도 소비하지 않는다.
+  async repairBuilderStatus(builderStage, builderResult, requestedGeneration) {
+    const declaration = builderResult?.builderStatus;
+    if (declaration !== "MISSING" && declaration !== "AMBIGUOUS") return builderResult;
+    if (!builderStage?.agent) return builderResult;
+
+    this.appendSystem(
+      declaration === "MISSING"
+        ? "구현 결과에 완료 선언(STATUS)이 없어 선언만 다시 요청합니다. 구현을 다시 하지 않으며 자동 보완 횟수와 무관합니다."
+        : "구현 결과에 서로 다른 완료 선언이 있어 하나로 확정해 달라고 다시 요청합니다. 자동 보완 횟수와 무관합니다."
+    );
+    const repaired = await this.withProfessionalAuthorization("workspace-read", () =>
+      this.scheduleResponse(builderStage.agent, {
+        specialist: { stage: "implementation", repairKind: "builder_status" },
+        agentConfig: builderStage.agentConfig,
+      })
+    );
+    if (requestedGeneration !== this.generation) return builderResult;
+    if (!repaired?.ok) return builderResult;
+    if (repaired.builderStatus !== "DONE" && repaired.builderStatus !== "BLOCKED") return builderResult;
+
+    // 실행 결과·변경·evidence는 첫 호출의 것을 그대로 두고 선언만 확정한다.
+    return { ...builderResult, builderStatus: repaired.builderStatus, statusRepaired: true };
+  }
+
+  // 검수 응답을 다시 청해야 하는지, 청한다면 무엇을 요구할지 판정한다.
+  //
+  //   format   출력 계약 실패. 표기가 누락·모순돼 최종 판정을 확정할 수 없다.
+  //            판단 자체는 유효하므로 형식만 고쳐 달라고 한다.
+  //   unknown  검수자가 "판정할 근거가 부족하다"고 답한 경우. 이것은 형식 실패가
+  //            아니라 유효한 판단일 수 있으므로 둘 중 하나를 강제하지 않는다.
+  //
+  // 둘 다 사용자가 대신 답해 줄 수 있는 문제가 아니다. 사용자 개입은 요구사항·범위가
+  // 바뀌어야 풀리는 문제에만 쓴다.
+  reviewRepairKind(contract) {
+    if (!contract) return null;
+    if (contract.stopReason === "AMBIGUOUS_VERDICT" || contract.stopReason === "SCOPE_UNSPECIFIED") {
+      return "format";
+    }
+    if (contract.verdict === "UNKNOWN") return "unknown";
+    return null;
+  }
+
+  async discardRunForFreshPlan() {
+    // 막힌 작업을 다시 기획하는 것은 대개 "새 작업"이 아니라 "같은 작업의 계약을
+    // 다시 쓰는 것"이다. 그래서 쓰던 작업 지시서 경로를 들고 나가 새 run이 이어받게
+    // 한다. 이걸 놓치면 같은 작업의 지시서가 TASK-003·004·005로 갈라져, 기획자가
+    // 어느 파일이 최신인지 매번 헷갈린다(실제로 그랬다).
+    const carriedTaskPath = this.professionalRun?.taskPath
+      || this.specialistResume?.taskInfo?.relativePath
+      || this.specialistBlocked?.taskPath
+      || null;
+    const pending = this.specialistBlocked;
+    const heldCheckpoint = pending?.checkpoint || this.specialistResume?.checkpoint || null;
+    const runId = pending?.runId || this.specialistResume?.runInfo?.runId || null;
+    const taskPath = pending?.taskPath || this.specialistResume?.taskInfo?.relativePath || null;
+
+    // 1. 기존 run 결과와 workflow 상태를 남긴다 — **최선 노력이다.**
+    //
+    // 이건 장부 기록이지 상태 정합성이 아니다. 실패해도 새 기획을 막지 않는다.
+    // 막으면 "정리를 못 해서 새로 시작할 수 없는" 역설이 된다. 실제로 workspace의
+    // .project-memory가 지워진 상태에서 이 기록이 실패해 사용자가 갇혔다 —
+    // 지시서가 사라진 그 상황이야말로 처음부터 다시 시작해야 하는 때다.
+    const warnings = [];
+    const runInfo = runId && this.taskManager?.runInfoForId
+      ? this.taskManager.runInfoForId(runId, this.meta.workspace)
+      : null;
+    if (runInfo && this.taskManager?.writeRunResult) {
+      if (!this.taskManager.writeRunResult(runInfo, {
+        status: "BLOCKED",
+        stopReason: pending?.blockReason || "REPLAN_DISCARDED",
+      })) {
+        warnings.push("이전 Run 결과를 기록하지 못했습니다");
+      }
+    }
+    if (taskPath && !this.updateProfessionalTaskState({
+      taskPath,
+      status: "blocked",
+      activeRunId: null,
+      lastRunId: runId,
+    })) {
+      warnings.push("이전 작업의 Workflow 상태를 갱신하지 못했습니다");
+    }
+
+    // 2. lineage 폐기(RETIRE). **여기만 차단 사유다.**
+    // 이 전이가 실패하면 옛 run이 살아 있는 채로 새 run을 만들게 되고,
+    // harness에는 종료가 통지되지 않아 실행이 고아가 된다.
+    if (this.professionalRun) {
+      const transition = this.transitionProfessional({ type: "REPLAN_RESET", carriedFromRunId: runId });
+      if (!transition.ok) {
+        return { ok: false, error: transition.reason || "기존 실행을 종료하지 못해 새 기획을 시작하지 않았습니다." };
+      }
+    }
+
+    // 3. checkpoint 정리도 최선 노력이다. 사용자가 이미 "버린다"고 선택했고
+    // 옛 run은 위에서 종료됐다. 지우지 못한 폴더는 디스크 문제일 뿐이며,
+    // 그것 때문에 새 시작을 막으면 다시 같은 역설이 된다.
+    if (heldCheckpoint && this.checkpointEngine) {
+      const cleanup = this.checkpointEngine.cleanupCheckpoint(heldCheckpoint);
+      if (cleanup?.ok === false) {
+        warnings.push("이전 작업 전 백업을 지우지 못해 디스크에 남았습니다");
+      }
+    }
+
+    // 4. 옛 대기 상태를 남김없이 지운다.
+    this.specialistResume = null;
+    this.specialistBlocked = null;
+    this.professionalPlan = null;
+    this.clearRecoveryState();
+    this.emitSpecialistState();
+    return { ok: true, discardedCheckpoint: Boolean(heldCheckpoint), warnings, carriedTaskPath };
   }
 
   async replanBlocked(workspaceAction = "keep") {

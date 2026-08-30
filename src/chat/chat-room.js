@@ -156,6 +156,9 @@ class ChatRoom extends EventEmitter {
       } catch {}
     }
     this.specialistStages = this.professionalRun?.stages || null;
+    // 답변 대기(PLANNING/PLAN_REVIEW + WAITING)도 복원한다. 예전에는 READY만
+    // 복원해서, 그 상태로 앱을 껐다 켜면 입력칸은 열리는데 답변은 거부됐다.
+    this.specialistResume = this.resumeForWaitingPlan();
     if (this.professionalRun?.node === "READY" && this.professionalRun.taskPath) {
       let contract = null;
       try {
@@ -367,6 +370,13 @@ class ChatRoom extends EventEmitter {
     this.emit("specialist-resume-state", this.specialistState());
   }
 
+  // "실행 중이라 바쁘다"와 "사용자를 기다린다"는 다른 상태다. 둘을 한 판정으로
+  // 묶으면 사용자가 다시 시작하고 싶은 바로 그 상태(BLOCKED·답변 대기)에서
+  // 새 기획까지 막혀, 걸려 있는 질문에 답하는 것 말고 길이 없어진다.
+  isSpecialistBusy() {
+    return Boolean(this.specialistActive);
+  }
+
   isSpecialistLocked() {
     return Boolean(this.specialistActive || this.specialistResume || this.specialistBlocked);
   }
@@ -394,7 +404,13 @@ class ChatRoom extends EventEmitter {
     const recordOnly = Boolean(payload.recordOnly);
     if (!trimmed && attachments.length === 0) return null;
     // renderer 잠금이 늦게 반영되거나 우회되어도 전문 실행 맥락에는 일반 대화가 끼지 않습니다.
-    if (this.isSpecialistLocked()) {
+    //
+    // 다만 recordOnly는 예외입니다. 이것은 응답을 예약하지 않고 메시지만 남기므로
+    // 진행 중인 실행에 끼어들지 않고, 구현자·검수자·기록자는 대화를 아예 보지
+    // 않으므로(ROLE_CONTEXT_POLICY) 동결된 계약도 오염되지 않습니다. 기획자만
+    // 다음 라운드에 읽습니다. 이걸 막으면 실행이 도는 동안 사용자가 방향을
+    // 일러 줄 수단이 사라집니다.
+    if (!recordOnly && this.isSpecialistLocked()) {
       throw new Error("전문 실행이 진행 중이거나 승인 대기 중입니다. 먼저 작업을 완료하거나 취소해 주세요.");
     }
 
@@ -586,7 +602,7 @@ class ChatRoom extends EventEmitter {
   // 버리며, 다음 사용자 발화 전까지 에이전트발 호출을 만들지 않습니다.
   interject() {
     if (this.specialistActive || this.specialistResume) {
-      const cancelled = this.cancelSpecialist();
+      const cancelled = this.cancelSpecialist("개입으로 ");
       this.mentionsMuted = true;
       return { dropped: 0, interrupted: Boolean(cancelled.ok) };
     }
@@ -1054,7 +1070,9 @@ class ChatRoom extends EventEmitter {
       if (discussionSignal === "PASS" && !text) return { ok: true, discussionSignal };
     }
 
-    this.appendMessage({
+    // WAITING 전이가 "이 발화가 정지를 만들었다"를 기록할 수 있도록 id를 돌려준다.
+    // 이게 없으면 재시작 뒤 Reviewer 지적을 되찾을 방법이 없다.
+    const appended = this.appendMessage({
       authorType: "agent",
       author: agent.id,
       text,
@@ -1083,6 +1101,7 @@ class ChatRoom extends EventEmitter {
       specialistSignal,
       plannerStatus,
       builderStatus,
+      messageId: appended?.id || null,
       text,
       runId,
       evidence: result.evidence || null,
@@ -1336,7 +1355,7 @@ class ChatRoom extends EventEmitter {
 
   stopAll() {
     if (this.specialistActive || this.specialistResume) {
-      const cancelled = this.cancelSpecialist();
+      const cancelled = this.cancelSpecialist("중지를 눌러 ");
       if (cancelled.ok) return;
     }
     const hadWork = this.cancels.size > 0 || this.typingCounts.size > 0
@@ -1346,7 +1365,7 @@ class ChatRoom extends EventEmitter {
   }
 
   clear() {
-    if (this.specialistActive || this.specialistResume) this.cancelSpecialist();
+    if (this.specialistActive || this.specialistResume) this.cancelSpecialist("세션을 비우며 ");
     this.stopAllSilently();
     this.messages = [];
     this.emit("reset");

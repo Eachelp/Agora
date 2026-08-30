@@ -10,27 +10,37 @@ const {
   isStateAllowed,
 } = require("../src/chat/professional-ipc-policy");
 
-test("READY 상태에서는 startImpl·startFull·planEdit·cancel만 허용한다 (recordOnly-send 제외)", () => {
+// recordOnly-send는 응답을 예약하지 않고 메시지만 남긴다. 구현자·검수자·기록자는
+// 대화를 아예 보지 않으므로(ROLE_CONTEXT_POLICY 실측) 동결된 계약이 오염될 경로가
+// 없고, 기획자만 다음 라운드에 읽는다. 이게 없으면 실행이 도는 동안 사용자가
+// 방향을 일러 줄 수단이 사라진다. 반면 응답을 부르는 send/discussion은 계속 막는다.
+test("READY 상태는 실행 조작과 메모만 허용하고 응답을 부르는 동작은 막는다", () => {
   const allowed = allowedIpcFor({ node: "READY", status: "WAITING" });
   assert.ok(allowed.includes("startImpl"));
   assert.ok(allowed.includes("startFull"));
   assert.ok(allowed.includes("planEdit"));
   assert.ok(allowed.includes("cancel"));
-  assert.ok(!allowed.includes("recordOnly-send"));
-  assert.ok(!allowed.includes("send"));
+  assert.ok(allowed.includes("recordOnly-send"), "메모는 남길 수 있어야 합니다");
+  assert.ok(!allowed.includes("send"), "전원이 응답하는 일반 발화는 막아야 합니다");
   assert.ok(!allowed.includes("discussion"));
 });
 
-test("PLANNING WAITING 및 PLAN_REVIEW WAITING에서도 recordOnly-send는 제외된다", () => {
+test("기획 대기 상태는 답변·취소에 더해 메모를 허용한다", () => {
   const planningAllowed = allowedIpcFor({ node: "PLANNING", status: "WAITING" });
-  assert.deepEqual(planningAllowed, ["planAnswer", "cancel"]);
+  assert.deepEqual(planningAllowed, ["planAnswer", "cancel", "recordOnly-send"]);
   const reviewAllowed = allowedIpcFor({ node: "PLAN_REVIEW", status: "WAITING" });
-  assert.deepEqual(reviewAllowed, ["planAnswer", "cancel"]);
+  assert.deepEqual(reviewAllowed, ["planAnswer", "cancel", "recordOnly-send"]);
+  // 응답을 부르는 일반 발화는 여전히 막는다.
+  assert.ok(!planningAllowed.includes("send"));
 });
 
-test("IMPLEMENTING RUNNING에서는 cancel만 허용한다", () => {
+// 구현이 도는 동안에도 메모는 남길 수 있다. recordOnly는 턴을 예약하지 않아
+// 진행 중인 실행에 끼어들지 않고, 구현자는 대화를 보지도 않는다.
+test("구현 실행 중에는 취소와 메모만 허용한다", () => {
   const allowed = allowedIpcFor({ node: "IMPLEMENTING", status: "RUNNING" });
-  assert.deepEqual(allowed, ["cancel"]);
+  assert.deepEqual(allowed, ["cancel", "recordOnly-send"]);
+  assert.ok(!allowed.includes("send"), "실행 중 일반 발화는 막아야 합니다");
+  assert.ok(!allowed.includes("resume"), "실행을 진전시키는 동작은 막아야 합니다");
 });
 
 test("COMPLETED에서는 send·discussion·handoff·simplify 등이 허용된다", () => {
@@ -40,9 +50,16 @@ test("COMPLETED에서는 send·discussion·handoff·simplify 등이 허용된다
   assert.ok(allowed.includes("simplify"));
 });
 
-test("알 수 없는 상태 조합은 빈 배열을 반환한다 (fail-closed)", () => {
+// 예전에는 알 수 없는 조합이 빈 배열이었는데, INTERRUPTED 계열이 전부 표에 없어서
+// 중단된 실행이 세션을 영구히 잠갔다. 이제 실행을 진전시키는 동작만 fail-closed로
+// 막고, 나가는 방향의 동작은 남긴다.
+test("알 수 없는 상태 조합은 나가는 동작만 허용한다 (실행 진전은 fail-closed)", () => {
   const allowed = allowedIpcFor({ node: "UNKNOWN", status: "UNKNOWN" });
-  assert.deepEqual(allowed, []);
+  assert.ok(allowed.includes("cancel"));
+  assert.ok(allowed.includes("send"));
+  for (const action of ["startImpl", "startFull", "resume", "planAnswer", "planEdit"]) {
+    assert.ok(!allowed.includes(action), `${action}이 열리면 안 됩니다`);
+  }
 });
 
 test("isActiveProfessionalRun은 COMPLETED/COMPLETED만 비활성으로 보고 나머지는 활성(fail-closed)으로 식별한다", () => {
@@ -98,4 +115,73 @@ test("chat:message:handoff는 SIMPLIFY/SIMPLIFY_SELF를 simplify 액션으로 �
   assert.ok(ternary, "policyAction 분류식이 존재해야 한다");
   assert.equal(ternary[1], "simplify", "SIMPLIFY/SIMPLIFY_SELF는 simplify 액션이어야 한다");
   assert.equal(ternary[2], "handoff", "일반 intent는 handoff 액션이어야 한다");
+});
+
+// 전문 실행을 한 번이라도 돌린 세션은 professionalRun이 계속 남는다. 그래서 이 값을
+// 게이트 없이 실으면 이후 모든 일반 턴(채팅·토론 종합·토론 기록)이 professional intent로
+// 오인되고, role이 없어 SessionKey를 만들 수 없어 harness가 fail-closed한다.
+// professionalRunId와 role은 반드시 같은 조건으로 실려야 한다.
+test("일반 턴은 professionalRunId를 달고 나가지 않는다", () => {
+  const source = require("node:fs").readFileSync(
+    require("node:path").join(__dirname, "..", "src", "chat", "chat-ipc.js"),
+    "utf8"
+  );
+  const runId = source.match(/^\s*professionalRunId: (.+),$/m);
+  const role = source.match(/^\s*role: (.+),$/m);
+  assert.ok(runId && role, "ExecutionContext에 professionalRunId와 role이 있어야 합니다");
+  assert.ok(
+    runId[1].startsWith("specialistStage ?"),
+    `professionalRunId는 specialistStage로 게이트해야 합니다: ${runId[1]}`
+  );
+  assert.ok(role[1].startsWith("specialistStage"), `role 게이트가 바뀌었습니다: ${role[1]}`);
+});
+
+// role 없이 professionalRunId만 있는 context는 harness에서 반드시 실패한다.
+// 위 게이트가 지키려는 대상을 명시적으로 고정해 둔다.
+test("role 없는 professionalRunId는 SessionKey를 만들 수 없다", () => {
+  const { deriveSessionKey } = require("../src/harness/harness-session-key");
+  const base = {
+    projectId: "p1",
+    workspaceId: "w1",
+    providerId: "agy",
+    modelKey: "gemini-3.7-flash",
+    permissionMode: "chat",
+  };
+  assert.equal(deriveSessionKey({ ...base, professionalRunId: "PR-1", role: null }), null);
+  assert.ok(deriveSessionKey({ ...base, professionalRunId: "PR-1", role: "recorder" }));
+});
+
+// INTERRUPT 전이는 어떤 node에서든 status를 INTERRUPTED로 바꾸고, 앱을 실행 도중
+// 닫아도 복원 시 INTERRUPTED가 된다. 그 조합이 표에 하나도 없어서 허용 목록이
+// 비었고, PLAN을 취소하기만 해도 그 세션에서 다시는 대화·토론·취소를 할 수 없었다.
+test("중단된 전문 실행은 일반 대화로 돌아가는 길을 막지 않는다", () => {
+  for (const node of ["PLANNING", "PLAN_REVIEW", "READY", "IMPLEMENTING", "REVIEWING", "RECORDING"]) {
+    const state = { node, status: "INTERRUPTED" };
+    // recordOnly-send가 빠지면 실행을 멈춘 뒤 전문 모드에서 방향을 다시 일러 줄 수 없다.
+    for (const action of ["send", "recordOnly-send", "discussion", "handoff", "simplify", "cancel"]) {
+      assert.ok(isStateAllowed(state, action), `${node}:INTERRUPTED에서 ${action}이 막혔습니다`);
+    }
+  }
+});
+
+// 탈출구를 열어도 실행을 진전시키는 동작은 여전히 allowlist에만 있어야 한다.
+test("표에 없는 상태에서도 실행을 진전시키는 동작은 열리지 않는다", () => {
+  const state = { node: "PLANNING", status: "INTERRUPTED" };
+  for (const action of ["startImpl", "startFull", "resume", "planAnswer", "planEdit", "continueReview", "retryRecorder"]) {
+    assert.equal(isStateAllowed(state, action), false, `${action}이 열리면 안 됩니다`);
+  }
+});
+
+// turn이 실제로 떠 있는 동안에는 끼어들지 못하게 취소만 남긴다.
+test("표에 없는 RUNNING 상태는 취소만 허용한다", () => {
+  const state = { node: "NEW_NODE", status: "RUNNING" };
+  assert.deepEqual(allowedIpcFor(state), ["cancel"]);
+  assert.equal(isStateAllowed(state, "send"), false);
+});
+
+// 기존 표의 차단은 그대로여야 한다(fallback이 표를 덮어쓰면 안 된다).
+test("표에 있는 상태의 차단은 fallback이 덮어쓰지 않는다", () => {
+  assert.equal(isStateAllowed({ node: "PLANNING", status: "RUNNING" }, "send"), false);
+  assert.equal(isStateAllowed({ node: "PLANNING", status: "WAITING" }, "discussion"), false);
+  assert.equal(isStateAllowed({ node: "IMPLEMENTING", status: "RUNNING" }, "handoff"), false);
 });
