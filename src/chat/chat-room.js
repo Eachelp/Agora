@@ -893,6 +893,10 @@ class ChatRoom extends EventEmitter {
       !context.specialist &&
       !context.discussionSummary &&
       !context.simplifyMeta &&
+      // V1.5 역할 상담(CONSULT)은 workspace-read 상한으로 강등되는 읽기 전용
+      // 턴이라 mutation 참여자가 아니다. 여기서 lease를 잡으면 다른 방의 실제
+      // 쓰기 실행과 서로를 불필요하게 막는다.
+      !context.consult &&
       this.meta.permissionMode === "workspace-write";
     if (!generalWorkspaceWrite) return this.runResponseTurn(agent, context, generation);
 
@@ -1147,7 +1151,17 @@ class ChatRoom extends EventEmitter {
       if (discussionSignal === "AGREE" && !text) {
         text = "동의합니다.";
       }
-      if (discussionSignal === "PASS" && !text) return { ok: true, discussionSignal };
+      if (discussionSignal === "PASS" && !text) {
+        if (context.discussion.role) {
+          // 구조화 토론의 단계 발언은 조용히 사라지면 안 된다. 빈 PASS를
+          // 그냥 건너뛰면 다음 단계가 이 단계가 실행된 사실조차 못 보고,
+          // cyclesCompleted는 실행된 것으로 세어진다. "덧붙일 것 없음"도
+          // 단계의 결과이므로 기록으로 남긴다.
+          text = "(이 단계에서 덧붙일 내용이 없습니다.)";
+        } else {
+          return { ok: true, discussionSignal };
+        }
+      }
     }
 
     // WAITING 전이가 "이 발화가 정지를 만들었다"를 기록할 수 있도록 id를 돌려준다.
@@ -1263,7 +1277,18 @@ class ChatRoom extends EventEmitter {
     for (const step of steps) {
       if (generation !== this.generation) return { ok: false, cancelled: true };
       const result = await this.consultRole(step);
-      if (!result.ok) return result;
+      if (!result.ok) {
+        // 중간 중단을 조용히 넘기지 않는다. IPC는 시작 확인 후 결과를 받지
+        // 않으므로(pending 반환), 남은 순서가 실행되지 않은 이유는 여기서
+        // 채팅에 남겨야 사용자에게 보인다. 사용자 중지(cancelled)는 중지
+        // 경로가 이미 자체 안내를 남기므로 제외한다.
+        if (!result.cancelled) {
+          this.appendSystem(
+            `팀 상담이 중간에 중단되었습니다: ${result.error || "역할 상담 응답에 실패했습니다."}`
+          );
+        }
+        return result;
+      }
     }
     if (generation !== this.generation) return { ok: false, cancelled: true };
     this.appendSystem("팀 상담을 마쳤습니다. 실행이 필요하면 PLAN 또는 실행 버튼으로 시작해 주세요.");

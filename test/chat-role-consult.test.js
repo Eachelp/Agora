@@ -125,6 +125,41 @@ test("consultRole은 질문의 첨부를 상담 턴에 전달한다", async () =
   assert.deepEqual(calls[0].attachments, [attachment]);
 });
 
+test("consultRole은 배타적 workspace mutation lease를 잡지 않는다", async () => {
+  const leaseCalls = [];
+  const mutationLease = {
+    acquire(request) {
+      leaseCalls.push(request);
+      return { ok: true, token: `t${leaseCalls.length}` };
+    },
+    release: () => true,
+  };
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { permissionMode: "workspace-write", workspace: "/tmp/agora-lease-test" },
+    mutationLease,
+    runAgent: fakeRunner({}, calls),
+  });
+
+  // 일반 workspace-write 턴은 lease를 잡는다(스텁 동작 확인).
+  room.sendUserMessage("@claude 파일 좀 봐줘");
+  await settle(room);
+  assert.equal(leaseCalls.length, 1);
+
+  // 읽기 전용 상담은 mutation 참여자가 아니므로 lease를 잡지 않아야 한다.
+  leaseCalls.length = 0;
+  const result = await room.consultRole({
+    roleId: "builder",
+    stage: "implementation",
+    roleLabel: "구현자",
+    agent: { id: "codex" },
+  });
+  await settle(room);
+  assert.equal(result.ok, true);
+  assert.equal(leaseCalls.length, 0, "CONSULT 턴이 workspace lease를 잡으면 안 됩니다");
+});
+
 test("consultRole은 세션 권한보다 높은 권한을 얻지 못한다", async () => {
   const calls = [];
   const room = new ChatRoom({
@@ -347,6 +382,58 @@ test("역할 담당자가 없으면 조용히 무시하지 않고 안내를 남�
     (message) => message.authorType === "system" && /기획자 상담을 시작하지 못했습니다/.test(message.text)
   );
   assert.ok(systemNotice, "시작 실패 안내가 채팅에 남아야 합니다");
+});
+
+test("professionalDraft가 켜져 있어도 방이 놀고 있으면 역할 멘션은 상담으로 간다", async () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-consult-ipc-")));
+  const calls = [];
+  const feature = makeFeature(root, {
+    capabilities: fakeCapabilities(),
+    runAgent: fakeRunner({}, calls),
+  });
+
+  const state = await feature.invoke("chat:state");
+  const sessionId = state.activeSessionId;
+  await feature.invoke("chat:projects:update", {
+    projectId: state.activeProjectId,
+    patch: { defaultRoles: { review: { agentId: "codex" } } },
+  });
+
+  // 전문 실행이 한 번 살아난 세션의 렌더러는 이후 모든 전송에
+  // professionalDraft=true를 붙인다. 실행이 끝난(놀고 있는) 방에서는 그래도
+  // 역할 멘션이 CONSULT로 라우팅되어야 한다 — 플래그만 보고 막으면 역할
+  // 멘션이 설계된 문맥에서 기능이 영구히 죽는다.
+  const sent = await feature.invoke("chat:send", {
+    sessionId,
+    text: "@검토자 이 계획 리스크 있어?",
+    professionalDraft: true,
+  });
+  assert.equal(sent.ok, true);
+  assert.equal(sent.consult, true, "상담 라우팅 여부를 렌더러에 알려야 합니다");
+  await waitFor(() => calls.length >= 1);
+  assert.deepEqual(calls.map((call) => call.agentId), ["codex"]);
+  assert.match(calls[0].prompt, /역할 상담: 검토자/);
+});
+
+test("professionalDraft 메모(역할 멘션 없음)는 여전히 기록만 한다", async () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-consult-ipc-")));
+  const calls = [];
+  const feature = makeFeature(root, {
+    capabilities: fakeCapabilities(),
+    runAgent: fakeRunner({}, calls),
+  });
+
+  const state = await feature.invoke("chat:state");
+  const sessionId = state.activeSessionId;
+  const sent = await feature.invoke("chat:send", {
+    sessionId,
+    text: "다음 계획에서 로그인 흐름을 고려해줘",
+    professionalDraft: true,
+  });
+  assert.equal(sent.ok, true);
+  assert.equal(sent.consult, undefined);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(calls.length, 0, "메모는 어떤 응답도 예약하지 않아야 합니다");
 });
 
 test("agent 멘션이 함께 있으면 기존 동작이 우선한다", async () => {

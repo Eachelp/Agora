@@ -238,6 +238,72 @@ test("중간 단계의 CONCLUDE와 AGREE는 순서를 바꾸지 못한다", asyn
   assert.equal(result.concluded, false);
 });
 
+test("구조화 토론의 빈 PASS는 조용히 사라지지 않고 기록으로 남는다", async () => {
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner(
+      {
+        // 첫 답변은 토론 전 브로드캐스트가 소비한다. 비평(2번째 순서)이
+        // 지시를 무시하고 빈 PASS 마커만 낸다.
+        codex: [
+          { ok: true, text: "확인" },
+          { ok: true, text: "[[CODEPET_DISCUSSION:PASS]]" },
+        ],
+      },
+      calls
+    ),
+  });
+  room.sendUserMessage("주제입니다");
+  await settle(room);
+  calls.length = 0;
+
+  const result = await room.startDiscussion({
+    protocol: {
+      presetId: "shaping",
+      participantIds: ["claude", "codex", "agy"],
+      cycleBudget: 1,
+    },
+  });
+  await settle(room);
+
+  // 자유토론이라면 빈 PASS는 메시지 없이 넘어가지만, 구조화 토론에서는
+  // 단계가 실행된 사실이 transcript에 남아야 다음 단계가 읽을 수 있다.
+  assert.equal(result.completed, 4);
+  const critic = room.messages.find(
+    (message) => message.authorType === "agent" && message.author === "codex"
+      && /덧붙일 내용이 없습니다/.test(message.text)
+  );
+  assert.ok(critic, "빈 PASS 단계가 기록으로 남아야 합니다");
+});
+
+test("자유토론의 빈 PASS는 기존대로 메시지를 남기지 않는다", async () => {
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner(
+      {
+        codex: [
+          { ok: true, text: "확인" },
+          { ok: true, text: "[[CODEPET_DISCUSSION:PASS]]" },
+        ],
+      },
+      calls
+    ),
+  });
+  room.sendUserMessage("주제입니다");
+  await settle(room);
+  const before = room.messages.length;
+
+  await room.startDiscussion({ turnBudget: 3 });
+  await settle(room);
+
+  const codexMessages = room.messages
+    .slice(before)
+    .filter((message) => message.authorType === "agent" && message.author === "codex");
+  assert.equal(codexMessages.length, 0, "자유토론의 빈 PASS는 메시지를 만들지 않아야 합니다");
+});
+
 test("사용할 수 없는 참가자가 배정되면 시작을 거부한다", async () => {
   const agents = makeAgents();
   agents[2].available = false;

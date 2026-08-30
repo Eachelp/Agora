@@ -88,6 +88,29 @@ test("consultTeam은 중간 실패에서 멈춘다", async () => {
   assert.deepEqual(calls.map((call) => call.agentId), ["claude"]);
 });
 
+test("consultTeam이 중간에 막히면 이유를 채팅에 남긴다", async () => {
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: ({ agent, prompt, attachments, permissionMode }) => {
+      calls.push({ agentId: agent.id, prompt, attachments, permissionMode });
+      // 첫 순서(기획자)가 답하는 사이 사용자가 토론 시작을 눌렀다고 가정한다.
+      room.discussionRequested = true;
+      return { promise: Promise.resolve({ ok: true, text: "…" }), cancel: () => {} };
+    },
+  });
+  const result = await room.consultTeam(teamSteps());
+  await settle(room);
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(calls.map((call) => call.agentId), ["claude"]);
+  const notice = room.messages.find(
+    (message) => message.authorType === "system" && /팀 상담이 중간에 중단되었습니다/.test(message.text)
+  );
+  assert.ok(notice, "중간 중단 사유가 시스템 메시지로 남아야 합니다");
+  assert.match(notice.text, /토론/);
+});
+
 test("consultTeam은 토론·전문 실행 중에는 시작하지 않는다", async () => {
   const room = new ChatRoom({ agents: makeAgents(), runAgent: fakeRunner({}) });
   room.discussionActive = true;

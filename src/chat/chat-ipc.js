@@ -1898,7 +1898,16 @@ function roomMeta(meta) {
         // agent/group 멘션이 하나라도 있으면 기존 동작이 우선한다(호환 경계).
         // 역할 멘션은 그 외의 메시지에서만 해석하며, metadata 없는 멘션은
         // 항상 CONSULT다 — 실행은 PLAN/실행/전체 실행 버튼 경로뿐이다(INV-2).
-        if (!professionalDraft) {
+        //
+        // 라우팅 판단은 렌더러의 professionalDraft 플래그만으로 하지 않는다.
+        // 그 플래그는 전문 실행이 한 번 살아난 세션에서 계속 true로 남으므로,
+        // 플래그만 보면 역할 멘션이 설계된 문맥(전문모드 세션)에서 CONSULT가
+        // 영구히 막힌다. 실행·토론이 실제로 진행 중일 때만 메모(recordOnly)
+        // 동작을 보존하고, 방이 놀고 있으면 역할 멘션을 상담으로 보낸다.
+        const preserveProfessionalMemo =
+          Boolean(professionalDraft) &&
+          (room.isSpecialistLocked() || room.discussionRequested || room.discussionActive);
+        if (!preserveProfessionalMemo) {
           const roleMentions = parseRoleMentions(String(text || ""));
           const agentMentions = parseMentions(String(text || ""), room.agents, GROUP_ALIASES);
           if (roleMentions.length > 0 && agentMentions.length === 0) {
@@ -1916,7 +1925,7 @@ function roomMeta(meta) {
                   : { ok: false, error: "프로젝트가 없어 역할 담당자를 확인할 수 없습니다." };
                 if (!resolved.ok) {
                   room.appendSystem(`팀 상담을 시작하지 못했습니다: ${resolved.error}`);
-                  return {};
+                  return { consult: true };
                 }
                 steps.push({
                   roleId,
@@ -1934,7 +1943,7 @@ function roomMeta(meta) {
               ]);
               team.catch(() => {});
               if (result && result.ok === false) throw new Error(result.error);
-              return {};
+              return { consult: true };
             }
             const roleDef = CONSULT_ROLE_DEFS[roleMentions[0]];
             const project = projectForSession(store.readMeta(sessionId));
@@ -1944,7 +1953,7 @@ function roomMeta(meta) {
             if (!resolved.ok) {
               // 조용한 무시 금지: 왜 응답이 없는지 채팅에 남긴다.
               room.appendSystem(`${roleDef.label} 상담을 시작하지 못했습니다: ${resolved.error}`);
-              return {};
+              return { consult: true };
             }
             const consult = room.consultRole({
               roleId: roleMentions[0],
@@ -1962,7 +1971,7 @@ function roomMeta(meta) {
             ]);
             consult.catch(() => {});
             if (result && result.ok === false) throw new Error(result.error);
-            return {};
+            return { consult: true };
           }
         }
         const entry = room.sendUserMessage({

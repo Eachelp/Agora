@@ -4489,7 +4489,9 @@ async function sendCurrentMessage() {
   if (result) {
     pendingAttachments = [];
     renderPendingAttachments();
-    if (professionalModeEnabled) {
+    // 역할 멘션이 상담(CONSULT)으로 라우팅된 전송은 메모가 아니다 — 곧 역할
+    // 담당자의 답이 오므로 "기록했습니다" 안내를 띄우지 않는다.
+    if (professionalModeEnabled && !result.consult) {
       flashNotice("작업 요청을 기록했습니다. PLAN 또는 전체 실행을 선택하세요.", false);
     }
   } else {
