@@ -32,6 +32,7 @@ const {
 const {
   installDeterministicProfessionalRecorder,
 } = require("./chat-professional-recorder");
+const { resolveProtocol, speakerForTurn, isFinalStep } = require("../agora/discussion-protocol");
 
 // 채팅방 오케스트레이션.
 // - 멘션이 없으면 세션 참가자 전체, 있으면 멘션된 참가자만 응답합니다.
@@ -1304,9 +1305,26 @@ class ChatRoom extends EventEmitter {
 
 
   // 자율 토론: 차례대로 말하되 합의/패스/결론 신호에 따라 일찍 끝냅니다.
+  // V1.5: options.protocol이 있으면 구조화 토론이다 — Preset이 정한 임시
+  // 역할·발언 순서·cycle 수를 따르고, 모델 출력은 그 순서를 바꿀 수 없다.
   async startDiscussion(options = {}) {
-    let pool = this.enabledAgents();
-    if (Array.isArray(options.agentIds) && options.agentIds.length > 0) {
+    const enabled = this.enabledAgents();
+    const agentById = new Map(enabled.map((agent) => [agent.id, agent]));
+    let pool = enabled;
+    let protocol = null;
+    if (options.protocol) {
+      const resolved = resolveProtocol(options.protocol);
+      if (!resolved.ok) return { ok: false, error: resolved.error };
+      protocol = resolved.protocol;
+      const missing = protocol.participantIds.filter((id) => !agentById.has(id));
+      if (missing.length > 0) {
+        return {
+          ok: false,
+          error: `구조화 토론에 배정된 참가자를 사용할 수 없습니다: ${missing.join(", ")}`,
+        };
+      }
+      pool = [...new Set(protocol.participantIds)].map((id) => agentById.get(id));
+    } else if (Array.isArray(options.agentIds) && options.agentIds.length > 0) {
       const wanted = new Set(options.agentIds);
       pool = pool.filter((agent) => wanted.has(agent.id));
     }
@@ -1341,10 +1359,19 @@ class ChatRoom extends EventEmitter {
 
     // 호출별 turnBudget이 방 기본값보다 우선한다. 방 인스턴스는 세션 수명
     // 동안 캐시되므로 생성자 옵션만으로는 실행 중 길이 변경이 불가능하다.
-    const budget = clampDiscussionTurnBudget(options.turnBudget, this.discussionRunBudget);
-    this.appendSystem(
-      `자율 토론 시작 · ${pool.map((agent) => `@${agent.id}`).join(", ")} · 최대 ${budget}턴`
-    );
+    // 구조화 토론의 길이는 발언 수가 아니라 Protocol cycle 수가 결정한다.
+    const budget = protocol
+      ? protocol.totalTurns
+      : clampDiscussionTurnBudget(options.turnBudget, this.discussionRunBudget);
+    if (protocol) {
+      this.appendSystem(
+        `구조화 토론 시작 · ${protocol.presetName} Preset · ${pool.map((agent) => `@${agent.id}`).join(", ")} · ${protocol.cycleBudget}사이클(최대 ${budget}턴)`
+      );
+    } else {
+      this.appendSystem(
+        `자율 토론 시작 · ${pool.map((agent) => `@${agent.id}`).join(", ")} · 최대 ${budget}턴`
+      );
+    }
 
     const generation = this.generation;
     let completed = 0;
@@ -1356,13 +1383,38 @@ class ChatRoom extends EventEmitter {
       for (let turn = 1; turn <= budget; turn += 1) {
         if (generation !== this.generation) { wasStopped = true; break; }
         if (this.discussionInterrupted) { concluded = true; wasStopped = true; break; }
-        const agent = pool[(turn - 1) % pool.length];
+        const speaker = protocol ? speakerForTurn(protocol, turn) : null;
+        const agent = protocol
+          ? agentById.get(speaker.agentId)
+          : pool[(turn - 1) % pool.length];
         const outcome = await this.scheduleResponse(agent, {
-          discussion: { turn, maxTurns: budget },
+          discussion: protocol
+            ? {
+                turn,
+                maxTurns: budget,
+                role: speaker.role,
+                cycle: speaker.cycle,
+                cycleBudget: protocol.cycleBudget,
+                step: speaker.step,
+                stepCount: protocol.stepCount,
+                finalStep: isFinalStep(protocol, turn),
+              }
+            : { turn, maxTurns: budget },
         });
         completed += 1;
         if (!outcome?.ok) failures += 1;
         const signal = outcome?.discussionSignal || "CONTINUE";
+        if (protocol) {
+          // 구조화 토론의 조기 종료는 cycle 마지막 단계(종합/판정)의 CONCLUDE
+          // 뿐이다. 중간 단계의 신호는 순서를 바꾸지 못한다(INV-1). 연속
+          // AGREE/PASS 규칙도 쓰지 않는다 — 같은 참가자가 여러 slot을 맡으면
+          // "전원이 조용한 한 바퀴"라는 의미가 성립하지 않기 때문이다.
+          if (signal === "CONCLUDE" && isFinalStep(protocol, turn)) {
+            concluded = true;
+            break;
+          }
+          continue;
+        }
         if (signal === "CONCLUDE") { concluded = true; break; }
         if (signal === "AGREE" || signal === "PASS") settled += 1;
         else settled = 0;
@@ -1402,6 +1454,18 @@ class ChatRoom extends EventEmitter {
           reason,
           failures,
           participants: pool.map((agent) => agent.id),
+          // 구조화 토론에만 존재하는 additive 필드 — 예전 판은 무시한다.
+          ...(protocol
+            ? {
+                protocol: {
+                  presetId: protocol.presetId,
+                  presetName: protocol.presetName,
+                  cycleBudget: protocol.cycleBudget,
+                  stepCount: protocol.stepCount,
+                  cyclesCompleted: Math.floor(completed / protocol.stepCount),
+                },
+              }
+            : {}),
         },
       });
       this.discussionActive = false;

@@ -91,6 +91,9 @@ const specialistCloseBtn = document.getElementById("specialist-close");
 let providers = [];
 let diagnostics = [];
 let projects = [];
+// V1.5 구조화 토론 Preset 목록. 정의는 main의 discussion-protocol.js가 갖고
+// 렌더러는 fullState로 받은 요약본만 쓴다 — 하드코딩 중복을 두지 않는다.
+let discussionPresets = [];
 let activeProjectId = null;
 let sessions = [];
 // 트리 사이드바용: 프로젝트 id → 그 프로젝트의 세션 목록.
@@ -153,6 +156,9 @@ const IMPLEMENTATION_AUTO_REVISE_KEY = "agora.chat.implementationAutoRevise";
 const IMPLEMENTATION_AUTO_LIMIT_KEY = "agora.chat.implementationAutoLimit";
 const DISCUSSION_LENGTH_KEY = "agora.chat.discussionLength";
 const DISCUSSION_CUSTOM_TURNS_KEY = "agora.chat.discussionCustomTurns";
+const DISCUSSION_MODE_KEY = "agora.chat.discussionMode";
+const DISCUSSION_PRESET_KEY = "agora.chat.discussionPreset";
+const DISCUSSION_CYCLES_KEY = "agora.chat.discussionCycles";
 // V1.5 토론 길이 선택지. "manual"(직접 중단할 때까지)도 무한이 아니라
 // 실행 상한 50턴을 가진다 — Runtime에 무한루프를 만들지 않는다.
 const DISCUSSION_LENGTH_PRESETS = Object.freeze({
@@ -3187,16 +3193,92 @@ discussionButton.addEventListener("click", () => {
     desc.textContent = "한 턴씩 차례로 말하고, 합의·결론·패스가 이어지면 스스로 끝냅니다.";
     root.append(desc);
 
+    // V1.5: 자유토론과 구조화 토론을 한 팝오버에서 고른다. 구조화 토론은
+    // Preset이 임시 역할과 발언 순서를 정하고, 길이는 cycle 수가 정한다.
+    const modeSelect = document.createElement("select");
+    for (const [value, label] of [
+      ["free", "자유토론"],
+      ["structured", "구조화 토론"],
+    ]) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      modeSelect.append(option);
+    }
+    const savedMode = localStorage.getItem(DISCUSSION_MODE_KEY);
+    modeSelect.value =
+      savedMode === "structured" && discussionPresets.length > 0 ? "structured" : "free";
+    if (discussionPresets.length === 0) modeSelect.disabled = true;
+    root.append(makeField("토론 방식", modeSelect));
+
+    const availableAgents = agents.filter((agent) => agent.available && agent.enabled);
+
     const checkboxes = [];
-    for (const agent of agents) {
-      if (!agent.available || !agent.enabled) continue;
+    const checkboxFields = [];
+    for (const agent of availableAgents) {
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
       checkbox.checked = true;
       checkbox.dataset.agentId = agent.id;
       checkboxes.push(checkbox);
-      root.append(makeField(`@${agent.id} (${agent.name})`, checkbox));
+      const field = makeField(`@${agent.id} (${agent.name})`, checkbox);
+      checkboxFields.push(field);
+      root.append(field);
     }
+
+    // --- 구조화 토론 설정 ---
+    const presetSelect = document.createElement("select");
+    for (const preset of discussionPresets) {
+      const option = document.createElement("option");
+      option.value = preset.id;
+      option.textContent = `${preset.name} (${preset.stepNames.join(" → ")})`;
+      presetSelect.append(option);
+    }
+    const savedPreset = localStorage.getItem(DISCUSSION_PRESET_KEY);
+    if (savedPreset && discussionPresets.some((preset) => preset.id === savedPreset)) {
+      presetSelect.value = savedPreset;
+    }
+    const presetField = makeField("Preset", presetSelect);
+
+    const cycleSelect = document.createElement("select");
+    for (let cycles = 1; cycles <= 5; cycles += 1) {
+      const option = document.createElement("option");
+      option.value = String(cycles);
+      option.textContent = `${cycles} 사이클`;
+      cycleSelect.append(option);
+    }
+    const savedCycles = Number.parseInt(localStorage.getItem(DISCUSSION_CYCLES_KEY), 10);
+    cycleSelect.value = String(
+      Number.isInteger(savedCycles) && savedCycles >= 1 && savedCycles <= 5 ? savedCycles : 3
+    );
+    const cycleField = makeField("반복", cycleSelect);
+
+    const slotWrap = document.createElement("div");
+    let slotSelects = [];
+    const rebuildSlots = () => {
+      slotWrap.replaceChildren();
+      slotSelects = [];
+      const preset = discussionPresets.find((entry) => entry.id === presetSelect.value);
+      if (!preset) return;
+      for (let slot = 0; slot < preset.slotCount; slot += 1) {
+        const select = document.createElement("select");
+        for (const agent of availableAgents) {
+          const option = document.createElement("option");
+          option.value = agent.id;
+          option.textContent = `@${agent.id} (${agent.name})`;
+          select.append(option);
+        }
+        if (availableAgents.length > 0) {
+          select.value = availableAgents[slot % availableAgents.length].id;
+        }
+        slotSelects.push(select);
+        slotWrap.append(makeField(preset.slotLabels[slot] || `역할 ${slot + 1}`, select));
+      }
+    };
+    presetSelect.addEventListener("change", rebuildSlots);
+    rebuildSlots();
+
+    root.append(presetField, cycleField, slotWrap);
 
     // V1.5: 토론 길이를 고를 수 있다. 저장된 선택이 없으면 기존 기본(9턴)
     // 그대로다. "직접 중단할 때까지"도 상한 50턴 안에서만 돈다.
@@ -3228,19 +3310,54 @@ discussionButton.addEventListener("click", () => {
     );
     const customField = makeField("발언 수 (3~50)", customInput);
 
-    const syncCustomField = () => {
-      customField.hidden = lengthSelect.value !== "custom";
-    };
-    lengthSelect.addEventListener("change", syncCustomField);
-    syncCustomField();
+    const lengthField = makeField("토론 길이", lengthSelect);
+    root.append(lengthField, customField);
 
-    root.append(makeField("토론 길이", lengthSelect), customField);
+    // 자유토론에는 참가자 체크박스·길이를, 구조화 토론에는 Preset·반복·역할
+    // 배정을 보여 준다(제안서 §11.1: 자유토론에서 cycle UI를 숨긴다).
+    const syncModeFields = () => {
+      const structured = modeSelect.value === "structured";
+      for (const field of checkboxFields) field.hidden = structured;
+      lengthField.hidden = structured;
+      customField.hidden = structured || lengthSelect.value !== "custom";
+      presetField.hidden = !structured;
+      cycleField.hidden = !structured;
+      slotWrap.hidden = !structured;
+    };
+    modeSelect.addEventListener("change", syncModeFields);
+    lengthSelect.addEventListener("change", syncModeFields);
+    syncModeFields();
 
     const startBtn = document.createElement("button");
     startBtn.type = "button";
     startBtn.className = "button button-primary popover-submit";
     startBtn.textContent = "토론 시작";
     startBtn.addEventListener("click", async () => {
+      if (modeSelect.value === "structured") {
+        const preset = discussionPresets.find((entry) => entry.id === presetSelect.value);
+        if (!preset) {
+          flashNotice("구조화 토론 Preset을 선택해야 합니다.");
+          return;
+        }
+        const roleAssignments = slotSelects.map((select) => select.value);
+        if (new Set(roleAssignments).size < 2) {
+          flashNotice("구조화 토론에는 서로 다른 참가자가 두 명 이상 필요합니다.");
+          return;
+        }
+        const cycleBudget = Number.parseInt(cycleSelect.value, 10);
+        localStorage.setItem(DISCUSSION_MODE_KEY, "structured");
+        localStorage.setItem(DISCUSSION_PRESET_KEY, preset.id);
+        localStorage.setItem(DISCUSSION_CYCLES_KEY, String(cycleBudget));
+        closePopover();
+        await call(
+          window.chatApi.discussionStart(activeSessionId, undefined, {
+            presetId: preset.id,
+            cycleBudget,
+            roleAssignments,
+          })
+        );
+        return;
+      }
       const agentIds = checkboxes
         .filter((checkbox) => checkbox.checked)
         .map((checkbox) => checkbox.dataset.agentId);
@@ -3253,6 +3370,7 @@ discussionButton.addEventListener("click", () => {
         lengthChoice === "custom"
           ? boundedDiscussionTurns(customInput.value)
           : DISCUSSION_LENGTH_PRESETS[lengthChoice] || DISCUSSION_LENGTH_PRESETS.short;
+      localStorage.setItem(DISCUSSION_MODE_KEY, "free");
       localStorage.setItem(DISCUSSION_LENGTH_KEY, lengthChoice);
       if (lengthChoice === "custom") {
         localStorage.setItem(DISCUSSION_CUSTOM_TURNS_KEY, String(turnBudget));
@@ -4488,6 +4606,7 @@ window.chatApi.onMaximizedState((isMaximized) => {
 function applyFullState(full) {
   if (full.providers) providers = full.providers;
   if (full.diagnostics) diagnostics = full.diagnostics;
+  if (full.discussionPresets) discussionPresets = full.discussionPresets;
   if (full.projects) projects = full.projects;
   if (full.workflow) workflow = full.workflow;
   if (Object.hasOwn(full, "activeProjectId")) activeProjectId = full.activeProjectId;

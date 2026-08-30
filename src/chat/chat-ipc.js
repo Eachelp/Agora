@@ -32,6 +32,7 @@ const {
   DEFAULT_DISCUSSION_RUN_BUDGET,
   clampDiscussionTurnBudget,
 } = require("./chat-room");
+const { DISCUSSION_PRESETS } = require("../agora/discussion-protocol");
 const { MAX_SPECIALIST_PROMPT_CHARS } = require("./chat-prompt");
 const { isStateAllowed, allowedIpcFor, isActiveProfessionalRun } = require("./professional-ipc-policy");
 const {
@@ -1252,6 +1253,24 @@ function roomMeta(meta) {
     return entry;
   }
 
+  // 렌더러가 구조화 토론 UI를 그릴 때 쓰는 Preset 목록. 정의는
+  // discussion-protocol.js 한 곳에만 있고 렌더러는 이 요약본만 본다.
+  function publicDiscussionPresets() {
+    return Object.values(DISCUSSION_PRESETS).map((preset) => {
+      const slotLabels = [];
+      for (const step of preset.steps) {
+        if (!slotLabels[step.slot]) slotLabels[step.slot] = step.roleName;
+      }
+      return {
+        id: preset.id,
+        name: preset.name,
+        slotCount: preset.slotCount,
+        slotLabels,
+        stepNames: preset.steps.map((step) => step.roleName),
+      };
+    });
+  }
+
   async function fullState({ refreshProviders = false } = {}) {
     ensureStore();
     const service = ensureCapabilityService();
@@ -1268,6 +1287,7 @@ function roomMeta(meta) {
       diagnostics: toDiagnostics(records),
       permissionModes: PERMISSION_MODES,
       discussionMaxTurns: DEFAULT_DISCUSSION_RUN_BUDGET,
+      discussionPresets: publicDiscussionPresets(),
       ...sessionsPayload(),
       activeSessionId,
       session: activeSessionId ? sessionState(activeSessionId) : null,
@@ -1903,7 +1923,7 @@ function roomMeta(meta) {
 
     ipcMain.handle(
       "chat:discussion:start",
-      wrap(async ({ sessionId, agentIds, turnBudget }) => {
+      wrap(async ({ sessionId, agentIds, turnBudget, presetId, cycleBudget, roleAssignments }) => {
         requireSession(sessionId);
         const room = getRoom(sessionId);
         enforceProfessionalPolicy(room, "discussion");
@@ -1915,8 +1935,27 @@ function roomMeta(meta) {
         const cleanTurnBudget = Number.isInteger(turnBudget)
           ? clampDiscussionTurnBudget(turnBudget, undefined)
           : undefined;
+        // 구조화 토론: preset id는 정의된 것만 통과시키고, 세부 검증(역할
+        // 배정 수·cycle clamp)은 resolveProtocol 한 곳에서 한다.
+        let protocol;
+        if (typeof presetId === "string" && presetId) {
+          if (!DISCUSSION_PRESETS[presetId]) {
+            throw new Error(`알 수 없는 토론 Preset입니다: ${presetId}`);
+          }
+          protocol = {
+            presetId,
+            participantIds: Array.isArray(roleAssignments)
+              ? roleAssignments.filter((id) => typeof id === "string")
+              : [],
+            cycleBudget: Number.isInteger(cycleBudget) ? cycleBudget : undefined,
+          };
+        }
         // 토론은 오래 걸리므로 시작 확인만 동기로 반환하고, 진행은 이벤트로 전달됩니다.
-        const started = room.startDiscussion({ agentIds: cleanIds, turnBudget: cleanTurnBudget });
+        const started = room.startDiscussion({
+          agentIds: cleanIds,
+          turnBudget: cleanTurnBudget,
+          protocol,
+        });
         const result = await Promise.race([
           started,
           new Promise((resolve) => setImmediate(() => resolve({ ok: true, pending: true }))),

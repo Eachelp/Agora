@@ -223,6 +223,49 @@ test("chat:discussion:start가 turnBudget을 실행까지 전달한다", async (
   assert.match(calls[0].prompt, /자율 토론 1\/4턴/);
 });
 
+test("chat:discussion:start가 구조화 토론 preset을 전달하고 미지 preset을 거부한다", async () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-discussion-ipc-")));
+  const calls = [];
+  const feature = makeFeature(root, {
+    capabilities: fakeCapabilities(),
+    runAgent: fakeRunner({}, calls),
+  });
+
+  const state = await feature.invoke("chat:state");
+  const sessionId = state.activeSessionId;
+  assert.ok(Array.isArray(state.discussionPresets));
+  assert.deepEqual(
+    state.discussionPresets.map((preset) => preset.id),
+    ["shaping", "grill", "redteam"],
+  );
+
+  await feature.invoke("chat:send", { sessionId, text: "토론 주제입니다" });
+  await waitFor(() => calls.length >= 3);
+  calls.length = 0;
+
+  const rejected = await feature.invoke("chat:discussion:start", {
+    sessionId,
+    presetId: "nope",
+    roleAssignments: ["claude", "codex", "agy"],
+  });
+  assert.equal(rejected.ok, false);
+  assert.match(rejected.error, /알 수 없는 토론 Preset/);
+
+  const started = await feature.invoke("chat:discussion:start", {
+    sessionId,
+    presetId: "shaping",
+    cycleBudget: 1,
+    roleAssignments: ["claude", "codex", "agy"],
+  });
+  assert.equal(started.ok, true);
+  await waitFor(() => calls.length >= 4);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.deepEqual(
+    calls.map((call) => call.agentId),
+    ["claude", "codex", "claude", "agy"],
+  );
+});
+
 test("chat:discussion:start의 비정수 turnBudget은 기본 9턴 경로를 탄다", async () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-discussion-ipc-")));
   const calls = [];
