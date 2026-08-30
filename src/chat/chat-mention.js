@@ -72,7 +72,13 @@ function parseRoleMentions(text) {
     if (previous && /[\p{L}\p{N}_@-]/u.test(previous)) continue;
     const token = match[1];
     for (const [roleId, aliases] of Object.entries(ROLE_ALIASES)) {
-      if (aliases.some((alias) => tokenMatchesAlias(token, alias))) {
+      // "팀"은 조사 허용 prefix 매칭을 쓰면 @팀장·@팀원 같은 흔한 단어에
+      // 오발동해 세 역할 상담을 시작해 버린다. 팀 별칭만 정확 일치를 요구한다
+      // (직함 역할 별칭은 @기획자야처럼 조사가 붙는 일이 잦아 prefix 유지).
+      const matched = roleId === "team"
+        ? aliases.some((alias) => alias.toLowerCase() === token.toLowerCase())
+        : aliases.some((alias) => tokenMatchesAlias(token, alias));
+      if (matched) {
         if (!seen.has(roleId)) {
           seen.add(roleId);
           mentioned.push(roleId);

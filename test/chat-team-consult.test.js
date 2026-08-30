@@ -43,6 +43,12 @@ test("parseRoleMentions: @팀/@team을 team으로 인식한다", () => {
   assert.deepEqual(parseRoleMentions("@team what do you think?"), ["team"]);
 });
 
+test("parseRoleMentions: @팀장·@팀원 같은 다른 단어는 팀 상담을 발동하지 않는다", () => {
+  assert.deepEqual(parseRoleMentions("@팀장 회의 잡아줘"), []);
+  assert.deepEqual(parseRoleMentions("@팀원들 모여봐"), []);
+  assert.deepEqual(parseRoleMentions("@teams 채널에 올려줘"), []);
+});
+
 test("consultTeam은 기획자 → 검토자 → 구현자 순서로 한 명씩 답한다", async () => {
   const calls = [];
   const room = new ChatRoom({
