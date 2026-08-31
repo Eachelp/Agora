@@ -126,6 +126,10 @@ function createHandoffLedger(options = {}) {
     ? options.budget
     : DEFAULT_HANDOFF_BUDGET;
   return {
+    // budget의 root identity — 이 원장이 어느 사용자 발화에서 파생됐는가.
+    // "사용자 발화 1회당 8회"가 실제로 성립하려면 새 사용자 지시가 새
+    // 원장(새 epoch)을 받아야 한다. handoffLedgerForRoot가 그 판정을 한다.
+    rootMessageId: options.rootMessageId || null,
     budget,
     // 복원 없이 새로 만들면 0. used를 복원하지 않으면 재시작이 곧 예산
     // 리셋이 되어 상한이 의미를 잃는다.
@@ -143,11 +147,42 @@ function createHandoffLedger(options = {}) {
 function serializeHandoffLedger(ledger) {
   if (!ledger || typeof ledger !== "object") return null;
   return {
+    rootMessageId: ledger.rootMessageId || null,
     budget: ledger.budget,
     used: ledger.used,
     consumedInvocationIds: [...(ledger.consumedInvocationIds || [])],
     lastTargetRole: ledger.lastTargetRole || null,
     activeInvocationId: ledger.activeInvocationId || null,
+  };
+}
+
+// 앱 크래시·강제 종료 후의 복원. 죽은 프로세스가 잡고 있던
+// activeInvocationId를 그대로 복원하면 이후 모든 Handoff가 HANDOFF_BUSY로
+// 막힌다(ghost BUSY). 그 invocation을 INTERRUPTED로 폐기한다: 소비 기록에는
+// 남겨 재실행(중복)을 막고, active 슬롯만 비워 새 요청이 흐르게 한다.
+// 호출자는 interruptedInvocationId로 Journal에 중단 사실을 남길 수 있다.
+function recoverHandoffLedger(state) {
+  const ledger = createHandoffLedger(state || {});
+  const interruptedInvocationId = ledger.activeInvocationId || null;
+  if (interruptedInvocationId) {
+    ledger.consumedInvocationIds.add(interruptedInvocationId);
+    ledger.activeInvocationId = null;
+  }
+  return { ledger, interruptedInvocationId };
+}
+
+// 사용자 발화별 budget epoch 판정. 저장된 원장이 같은 root(사용자 발화)의
+// 것이면 이어 쓰고, 새 사용자 지시면 새 예산의 새 원장을 만든다 — 이렇게
+// 해야 "발화 1회당 8회"가 Professional Run 전체 예산으로 변질되지 않는다.
+// 복원 경로이므로 crash recovery 규칙(recoverHandoffLedger)도 함께 적용된다.
+function handoffLedgerForRoot(previousState, rootMessageId, options = {}) {
+  const root = rootMessageId || null;
+  if (previousState && previousState.rootMessageId === root && root !== null) {
+    return recoverHandoffLedger(previousState);
+  }
+  return {
+    ledger: createHandoffLedger({ ...options, rootMessageId: root }),
+    interruptedInvocationId: null,
   };
 }
 
@@ -315,12 +350,23 @@ function parseControlOutput(text) {
   }
 
   if (actions[0] === "COMPLETE") {
-    const summary = (completes[completes.length - 1][1] || "").trim();
-    return { action: "COMPLETE", summary: summary || null, ambiguous: false };
+    // HANDOFF의 distinct-대상 규칙과 같은 규율: 서로 다른 값이 여러 번
+    // 나오면 어느 쪽이 진짜인지 단정하지 않는다. 동일 줄 반복은 하나로 본다.
+    const summaries = [...new Set(completes.map((match) => (match[1] || "").trim()))];
+    if (summaries.length > 1) {
+      return { action: "COMPLETE", summary: null, ambiguous: true };
+    }
+    return { action: "COMPLETE", summary: summaries[0] || null, ambiguous: false };
   }
   if (actions[0] === "ASK_USER") {
-    const question = asks[asks.length - 1][1].trim();
-    return { action: "ASK_USER", question: question || null, ambiguous: false };
+    // 질문이 여러 개면 마지막 것만 남기고 나머지를 조용히 버리게 된다 —
+    // 사용자가 내려야 할 결정 하나를 잃는 것이므로 ambiguous로 반환해
+    // 모델이 한 줄로 다시 묻게 한다.
+    const questions = [...new Set(asks.map((match) => (match[1] || "").trim()))];
+    if (questions.length > 1) {
+      return { action: "ASK_USER", question: null, ambiguous: true };
+    }
+    return { action: "ASK_USER", question: questions[0] || null, ambiguous: false };
   }
 
   const distinct = [...new Set(handoffTargets)];
@@ -352,6 +398,8 @@ module.exports = {
   DEFAULT_HANDOFF_BUDGET,
   createHandoffLedger,
   serializeHandoffLedger,
+  recoverHandoffLedger,
+  handoffLedgerForRoot,
   newInvocationId,
   validateHandoff,
   consumeHandoff,

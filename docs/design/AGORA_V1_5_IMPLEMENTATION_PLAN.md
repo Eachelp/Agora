@@ -246,9 +246,22 @@ Runtime은 업무 의미 순서("planner 다음엔 반드시 plan_review")를 �
   거부 사유 enum: `HANDOFF_NOT_ALLOWED`(어휘 밖), `HANDOFF_SELF`,
   `HANDOFF_STALE`, `HANDOFF_DUPLICATE`, `HANDOFF_BUSY`,
   `HANDOFF_BUDGET_REACHED`.
+- **Lifecycle 규칙** (Stage 5 소비자가 따라야 하는 계약):
+  - `recoverHandoffLedger(state)` — 크래시 복원 시 죽은 active invocation을
+    INTERRUPTED로 폐기한다: 소비 기록에는 남겨 재실행(중복)을 막고 active
+    슬롯만 비운다. 이 규칙이 없으면 강제 종료 후 모든 Handoff가
+    `HANDOFF_BUSY`(ghost BUSY)로 막힌다. 반환된 `interruptedInvocationId`는
+    Journal 기록용이다.
+  - `handoffLedgerForRoot(previousState, rootMessageId)` — budget의 root
+    identity는 사용자 발화다. 원장에 `rootMessageId`를 두고, 새 사용자
+    지시가 오면 새 예산의 새 원장(새 epoch)을 만든다. 이게 없으면 "발화
+    1회당 8회"가 Professional Run 전체 예산으로 변질된다.
 - `parseControlOutput(text)` — 줄 단위 `HANDOFF: @<role>`(+PURPOSE/REASON),
   `COMPLETE[: 요약]`, `ASK_USER: 질문` 마커 파싱. 일반 문장 속 멘션·코드펜스
-  예시·산문 속 COMPLETE는 제어가 아니다. 행동 혼재·대상 다중은 ambiguous.
+  예시·산문 속 COMPLETE는 제어가 아니다. 행동 혼재·HANDOFF 대상 다중은
+  ambiguous이고, **서로 다른 ASK_USER 질문·COMPLETE 요약이 여럿인 경우도
+  ambiguous다** — 마지막 것만 남기면 사용자가 내려야 할 결정 하나를 조용히
+  잃는다(동일 줄 반복은 하나로 본다).
 
 ### 테스트
 
@@ -480,10 +493,17 @@ Stage 0 재설계판이 파서(`parseControlOutput`)·구조 검증(`validateHan
                                    COMPLETE → 검수 통과 여부
 ```
 
-순서:
+순서 (**Archivist 준비가 Handoff consumer보다 먼저다**):
 
+0. **Archivist 실행 계약 완성**: (a) `ROLE_CONTEXT_POLICY`에 archivist 정책
+   등록 — **정책 없는 role은 roleSees()가 전체 context를 돌려주므로**,
+   등록 전에 `specialist.stage = "archivist"` 턴을 실행하면 보수적 차단이
+   아니라 context 제한이 풀린다. 등록이 프롬프트·소비 연결보다 먼저다.
+   (b) chat-prompt에 archivist 계약 분기(사람이 읽는 정리, 새 결정·판정
+   생성 금지, `derivedSummary` 표시). (c) 그 다음에야
+   `executionContractFor("recorder")` 결과를 실제로 소비한다.
 1. `buildAgentPrompt` 역할 계약에 제어 출력 형식(HANDOFF/COMPLETE/ASK_USER)
-   안내 추가.
+   안내 추가 — end-anchor 규칙(마지막 연속 블록만 유효)도 프롬프트에 명시.
 2. `runResponseTurn`에서 `parseControlOutput`으로 제어 행동 추출 → outcome에
    `controlRequest` 필드 추가.
 3. 소비자는 `executionContractFor`로 표면 역할을 실행 계약으로 정규화한 뒤,
@@ -493,23 +513,27 @@ Stage 0 재설계판이 파서(`parseControlOutput`)·구조 검증(`validateHan
    합친다.
 4. Journal에 `HANDOFF_REQUESTED / ACCEPTED / REJECTED` 기록 —
    `recordJournalEvent` seam이 이미 있다.
-5. **Ledger의 authoritative 영속화**: Handoff 원장(`used /
+5. **Ledger의 authoritative 영속화**: Handoff 원장(`rootMessageId / used /
    consumedInvocationIds / activeInvocationId / lastTargetRole`)은
    `serializeHandoffLedger` 결과를 `professionalRun.handoffState`에 싣고
-   기존 `persistProfessionalRun`(fail-closed) 경로로 저장한다. 재시작 시
-   `createHandoffLedger(handoffState)`로 복원한다 — used를 복원하지 않으면
-   재시작이 곧 예산 리셋이다. **Journal에 의존하지 않는다** — Journal은
-   실패해도 실행이 계속되는 비권위 감사 기록이다(§10.4).
-6. **identity는 Runtime이 주입한다**: `sourceRole`·`professionalRunId`·
+   기존 `persistProfessionalRun`(fail-closed) 경로로 저장한다.
+   **Journal에 의존하지 않는다** — Journal은 실패해도 실행이 계속되는
+   비권위 감사 기록이다(§10.4).
+6. **복원은 두 규칙을 따른다**: 재시작 시
+   `handoffLedgerForRoot(persistedState, 현재 root 발화 id)`로 복원한다 —
+   (a) 죽은 active invocation은 INTERRUPTED로 폐기(소비 기록 유지, active
+   슬롯 해제 — ghost BUSY 방지)하고 `interruptedInvocationId`를 Journal에
+   남긴다. (b) 새 사용자 지시는 새 budget epoch를 받는다 — 아니면 "발화
+   1회당 8회"가 Run 전체 예산으로 변질된다.
+7. **identity는 Runtime이 주입한다**: `sourceRole`·`professionalRunId`·
    `generation`·`invocationId`는 모델 출력에서 읽지 않고, 소비 지점이 현재
    invocation의 실제 값으로 채운다. 모델 출력에서 오는 것은 targetRole·
-   purpose·reason뿐이며 그것도 end-anchor 제어 블록에서만 읽는다.
-7. **Recorder/Archivist 분리**: `executionContractFor("recorder")`는
-   `"archivist"`(사람이 읽는 정리를 만드는 LLM 계약, cap chat)를 돌려준다.
-   기존 professional `recorder` stage는 deterministic finalizer가 가로채
-   LLM을 호출하지 않으므로, Handoff의 @기록자를 그 stage로 연결하면
-   "기록 역할을 맡은 AI" 대신 finalizer가 불린다. Stage 5 배선은 archivist
-   계약의 프롬프트 분기(chat-prompt)와 context 정책을 새로 붙인다.
+   purpose·reason·question·summary뿐이며 그것도 end-anchor 제어 블록에서만
+   읽는다.
+8. **Recorder/Archivist 분리 유지**: `executionContractFor("recorder")`는
+   `"archivist"`(cap chat)를 돌려준다. 기존 professional `recorder` stage는
+   deterministic finalizer가 가로채 LLM을 호출하지 않으므로, @기록자를 그
+   stage로 연결하면 "기록 역할을 맡은 AI" 대신 finalizer가 불린다.
    deterministic System Journal/finalizer는 Runtime 기능이지 Handoff 대상이
    아니다.
 

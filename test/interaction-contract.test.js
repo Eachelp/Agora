@@ -16,6 +16,8 @@ const {
   DEFAULT_HANDOFF_BUDGET,
   createHandoffLedger,
   serializeHandoffLedger,
+  recoverHandoffLedger,
+  handoffLedgerForRoot,
   validateHandoff,
   consumeHandoff,
   settleHandoff,
@@ -309,6 +311,73 @@ test("consumeHandoff: 검증 실패 시 원장을 건드리지 않는다", () =>
   assert.equal(ledger.consumedInvocationIds.size, 0);
 });
 
+test("recoverHandoffLedger: 죽은 active invocation은 INTERRUPTED로 폐기된다", () => {
+  const ledger = createHandoffLedger({ budget: 8, rootMessageId: "msg-1" });
+  consumeHandoff(
+    { sourceRole: "planner", targetRole: "reviewer", invocationId: "inv-7" },
+    { ledger },
+  );
+  // Reviewer 실행 중 앱 강제 종료 — settle 없이 직렬화된 상태로 재시작.
+  const persisted = serializeHandoffLedger(ledger);
+  assert.equal(persisted.activeInvocationId, "inv-7");
+
+  const { ledger: recovered, interruptedInvocationId } = recoverHandoffLedger(persisted);
+  assert.equal(interruptedInvocationId, "inv-7");
+  assert.equal(recovered.activeInvocationId, null);
+  // ghost BUSY가 사라져 새 Handoff가 흐른다.
+  const next = validateHandoff(
+    { sourceRole: "reviewer", targetRole: "builder", invocationId: "inv-8" },
+    { ledger: recovered },
+  );
+  assert.equal(next.ok, true);
+  // 중단된 invocation의 재실행(중복)은 계속 막힌다.
+  const replay = validateHandoff(
+    { sourceRole: "planner", targetRole: "builder", invocationId: "inv-7" },
+    { ledger: recovered },
+  );
+  assert.equal(replay.reason, "HANDOFF_DUPLICATE");
+  // used도 유지된다 — 복구가 예산 리셋이 되지 않는다.
+  assert.equal(recovered.used, 1);
+});
+
+test("handoffLedgerForRoot: 새 사용자 발화는 새 budget epoch를 받는다", () => {
+  const ledger = createHandoffLedger({ budget: 8, rootMessageId: "msg-1" });
+  for (let i = 0; i < 6; i += 1) {
+    consumeHandoff(
+      {
+        sourceRole: i % 2 === 0 ? "planner" : "reviewer",
+        targetRole: i % 2 === 0 ? "reviewer" : "planner",
+        invocationId: `inv-${i}`,
+      },
+      { ledger },
+    );
+    settleHandoff(ledger, `inv-${i}`);
+  }
+  const persisted = serializeHandoffLedger(ledger);
+  assert.equal(persisted.used, 6);
+
+  // 같은 발화의 복원 — 예산을 이어 쓴다(발화당 상한 유지).
+  const sameRoot = handoffLedgerForRoot(persisted, "msg-1");
+  assert.equal(sameRoot.ledger.used, 6);
+  assert.equal(sameRoot.ledger.rootMessageId, "msg-1");
+
+  // 새 사용자 지시("아니, API는 건드리지 마. 다시 해.") — 새 epoch, 새 예산.
+  // 이게 없으면 8회가 발화당이 아니라 Run 전체 예산으로 변질된다.
+  const newRoot = handoffLedgerForRoot(persisted, "msg-2");
+  assert.equal(newRoot.ledger.used, 0);
+  assert.equal(newRoot.ledger.rootMessageId, "msg-2");
+  assert.equal(newRoot.interruptedInvocationId, null);
+
+  // 같은 root의 복원은 crash recovery 규칙도 함께 적용한다.
+  consumeHandoff(
+    { sourceRole: "planner", targetRole: "builder", invocationId: "inv-9" },
+    { ledger },
+  );
+  const crashed = handoffLedgerForRoot(serializeHandoffLedger(ledger), "msg-1");
+  assert.equal(crashed.interruptedInvocationId, "inv-9");
+  assert.equal(crashed.ledger.activeInvocationId, null);
+});
+
 // --- 제어 출력 파싱 ---
 
 test("parseControlOutput: HANDOFF/PURPOSE/REASON 블록을 파싱한다", () => {
@@ -352,6 +421,29 @@ test("parseControlOutput: COMPLETE와 ASK_USER 행동을 파싱한다", () => {
     question: "배포 대상 환경이 스테이징인가요?",
     ambiguous: false,
   });
+});
+
+test("parseControlOutput: 서로 다른 ASK_USER 질문이 여럿이면 ambiguous", () => {
+  // 마지막 질문만 남기면 사용자가 내려야 할 결정 하나를 조용히 잃는다.
+  const parsed = parseControlOutput(
+    ["ASK_USER: API 버전을 유지할까요?", "ASK_USER: DB migration도 허용할까요?"].join("\n")
+  );
+  assert.equal(parsed.action, "ASK_USER");
+  assert.equal(parsed.ambiguous, true);
+  assert.equal(parsed.question, null);
+  // 동일 줄 반복은 하나로 본다(HANDOFF distinct 규칙과 같은 규율).
+  const repeated = parseControlOutput(
+    ["ASK_USER: API 버전을 유지할까요?", "ASK_USER: API 버전을 유지할까요?"].join("\n")
+  );
+  assert.equal(repeated.ambiguous, false);
+  assert.equal(repeated.question, "API 버전을 유지할까요?");
+});
+
+test("parseControlOutput: 서로 다른 COMPLETE 요약이 여럿이면 ambiguous", () => {
+  const parsed = parseControlOutput(["COMPLETE: 구현 완료", "COMPLETE: 검수 대기"].join("\n"));
+  assert.equal(parsed.action, "COMPLETE");
+  assert.equal(parsed.ambiguous, true);
+  assert.equal(parsed.summary, null);
 });
 
 test("parseControlOutput: 산문 속 COMPLETE는 제어가 아니다", () => {
