@@ -252,10 +252,15 @@ Runtime은 업무 의미 순서("planner 다음엔 반드시 plan_review")를 �
     슬롯만 비운다. 이 규칙이 없으면 강제 종료 후 모든 Handoff가
     `HANDOFF_BUSY`(ghost BUSY)로 막힌다. 반환된 `interruptedInvocationId`는
     Journal 기록용이다.
-  - `handoffLedgerForRoot(previousState, rootMessageId)` — budget의 root
-    identity는 사용자 발화다. 원장에 `rootMessageId`를 두고, 새 사용자
+  - `recoverHandoffLedgerForRoot(previousState, rootMessageId)` — budget의
+    root identity는 사용자 발화다. 원장에 `rootMessageId`를 두고, 새 사용자
     지시가 오면 새 예산의 새 원장(새 epoch)을 만든다. 이게 없으면 "발화
-    1회당 8회"가 Professional Run 전체 예산으로 변질된다.
+    1회당 8회"가 Professional Run 전체 예산으로 변질된다. 두 fail-closed
+    규칙: root 누락은 `HANDOFF_ROOT_REQUIRED`로 거부한다(누락 배선 버그가
+    호출마다 budget을 리셋하는 것을 방지), 그리고 이 함수는 **재시작/세션
+    복원 전용**이다 — 같은 root 복원에도 crash recovery가 적용되어 active
+    invocation을 폐기하므로, 살아 있는 run 중에는 방이 든 in-memory ledger를
+    그대로 쓴다.
 - `parseControlOutput(text)` — 줄 단위 `HANDOFF: @<role>`(+PURPOSE/REASON),
   `COMPLETE[: 요약]`, `ASK_USER: 질문` 마커 파싱. 일반 문장 속 멘션·코드펜스
   예시·산문 속 COMPLETE는 제어가 아니다. 행동 혼재·HANDOFF 대상 다중은
@@ -520,7 +525,9 @@ Stage 0 재설계판이 파서(`parseControlOutput`)·구조 검증(`validateHan
    **Journal에 의존하지 않는다** — Journal은 실패해도 실행이 계속되는
    비권위 감사 기록이다(§10.4).
 6. **복원은 두 규칙을 따른다**: 재시작 시
-   `handoffLedgerForRoot(persistedState, 현재 root 발화 id)`로 복원한다 —
+   `recoverHandoffLedgerForRoot(persistedState, 현재 root 발화 id)`로
+   복원한다(재시작/복원 전용 — 살아 있는 run은 in-memory ledger 유지,
+   root 누락은 HANDOFF_ROOT_REQUIRED) —
    (a) 죽은 active invocation은 INTERRUPTED로 폐기(소비 기록 유지, active
    슬롯 해제 — ghost BUSY 방지)하고 `interruptedInvocationId`를 Journal에
    남긴다. (b) 새 사용자 지시는 새 budget epoch를 받는다 — 아니면 "발화

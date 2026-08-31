@@ -171,16 +171,36 @@ function recoverHandoffLedger(state) {
   return { ledger, interruptedInvocationId };
 }
 
-// 사용자 발화별 budget epoch 판정. 저장된 원장이 같은 root(사용자 발화)의
-// 것이면 이어 쓰고, 새 사용자 지시면 새 예산의 새 원장을 만든다 — 이렇게
-// 해야 "발화 1회당 8회"가 Professional Run 전체 예산으로 변질되지 않는다.
-// 복원 경로이므로 crash recovery 규칙(recoverHandoffLedger)도 함께 적용된다.
-function handoffLedgerForRoot(previousState, rootMessageId, options = {}) {
+// 사용자 발화별 budget epoch 판정 — **재시작/세션 복원 전용 API**다.
+// 저장된 원장이 같은 root(사용자 발화)의 것이면 이어 쓰고, 새 사용자 지시면
+// 새 예산의 새 원장을 만든다 — 이렇게 해야 "발화 1회당 8회"가 Professional
+// Run 전체 예산으로 변질되지 않는다.
+//
+// 두 가지 fail-closed 규칙:
+// 1. rootMessageId가 없으면 거부한다(HANDOFF_ROOT_REQUIRED). 배선 버그로
+//    root 전달이 누락되면 호출마다 새 epoch가 만들어져 budget이 조용히
+//    리셋되기 때문이다 — 실행하지 않는 쪽이 안전하다.
+// 2. 같은 root의 복원에는 crash recovery 규칙(recoverHandoffLedger)이 항상
+//    적용되어 active invocation이 INTERRUPTED로 폐기된다. 살아 있는 run
+//    도중에 "현재 ledger 가져오기" 용도로 이 함수를 다시 부르면 실행 중인
+//    invocation의 동시성 lock이 풀린다 — 평상시에는 방이 들고 있는
+//    in-memory ledger 객체를 그대로 쓰고, 이 함수는 앱 재시작·세션 복원
+//    시점에만 호출한다(이름이 recover-인 이유).
+function recoverHandoffLedgerForRoot(previousState, rootMessageId, options = {}) {
   const root = rootMessageId || null;
-  if (previousState && previousState.rootMessageId === root && root !== null) {
-    return recoverHandoffLedger(previousState);
+  if (!root) {
+    return {
+      ok: false,
+      reason: "HANDOFF_ROOT_REQUIRED",
+      ledger: null,
+      interruptedInvocationId: null,
+    };
+  }
+  if (previousState && previousState.rootMessageId === root) {
+    return { ok: true, ...recoverHandoffLedger(previousState) };
   }
   return {
+    ok: true,
     ledger: createHandoffLedger({ ...options, rootMessageId: root }),
     interruptedInvocationId: null,
   };
@@ -399,7 +419,7 @@ module.exports = {
   createHandoffLedger,
   serializeHandoffLedger,
   recoverHandoffLedger,
-  handoffLedgerForRoot,
+  recoverHandoffLedgerForRoot,
   newInvocationId,
   validateHandoff,
   consumeHandoff,

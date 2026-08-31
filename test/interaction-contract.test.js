@@ -17,7 +17,7 @@ const {
   createHandoffLedger,
   serializeHandoffLedger,
   recoverHandoffLedger,
-  handoffLedgerForRoot,
+  recoverHandoffLedgerForRoot,
   validateHandoff,
   consumeHandoff,
   settleHandoff,
@@ -340,7 +340,7 @@ test("recoverHandoffLedger: 죽은 active invocation은 INTERRUPTED로 폐기된
   assert.equal(recovered.used, 1);
 });
 
-test("handoffLedgerForRoot: 새 사용자 발화는 새 budget epoch를 받는다", () => {
+test("recoverHandoffLedgerForRoot: 새 사용자 발화는 새 budget epoch를 받는다", () => {
   const ledger = createHandoffLedger({ budget: 8, rootMessageId: "msg-1" });
   for (let i = 0; i < 6; i += 1) {
     consumeHandoff(
@@ -357,13 +357,15 @@ test("handoffLedgerForRoot: 새 사용자 발화는 새 budget epoch를 받는�
   assert.equal(persisted.used, 6);
 
   // 같은 발화의 복원 — 예산을 이어 쓴다(발화당 상한 유지).
-  const sameRoot = handoffLedgerForRoot(persisted, "msg-1");
+  const sameRoot = recoverHandoffLedgerForRoot(persisted, "msg-1");
+  assert.equal(sameRoot.ok, true);
   assert.equal(sameRoot.ledger.used, 6);
   assert.equal(sameRoot.ledger.rootMessageId, "msg-1");
 
   // 새 사용자 지시("아니, API는 건드리지 마. 다시 해.") — 새 epoch, 새 예산.
   // 이게 없으면 8회가 발화당이 아니라 Run 전체 예산으로 변질된다.
-  const newRoot = handoffLedgerForRoot(persisted, "msg-2");
+  const newRoot = recoverHandoffLedgerForRoot(persisted, "msg-2");
+  assert.equal(newRoot.ok, true);
   assert.equal(newRoot.ledger.used, 0);
   assert.equal(newRoot.ledger.rootMessageId, "msg-2");
   assert.equal(newRoot.interruptedInvocationId, null);
@@ -373,9 +375,28 @@ test("handoffLedgerForRoot: 새 사용자 발화는 새 budget epoch를 받는�
     { sourceRole: "planner", targetRole: "builder", invocationId: "inv-9" },
     { ledger },
   );
-  const crashed = handoffLedgerForRoot(serializeHandoffLedger(ledger), "msg-1");
+  const crashed = recoverHandoffLedgerForRoot(serializeHandoffLedger(ledger), "msg-1");
+  assert.equal(crashed.ok, true);
   assert.equal(crashed.interruptedInvocationId, "inv-9");
   assert.equal(crashed.ledger.activeInvocationId, null);
+});
+
+test("recoverHandoffLedgerForRoot: rootMessageId 누락은 fail-closed로 거부한다", () => {
+  const ledger = createHandoffLedger({ budget: 8, rootMessageId: "msg-1" });
+  consumeHandoff(
+    { sourceRole: "planner", targetRole: "reviewer", invocationId: "inv-1" },
+    { ledger },
+  );
+  const persisted = serializeHandoffLedger(ledger);
+
+  // 배선 버그로 root 전달이 누락되면 호출마다 새 epoch가 만들어져 budget이
+  // 조용히 리셋된다 — 새 원장을 만들지 말고 거부해야 한다.
+  for (const missing of [null, undefined, ""]) {
+    const result = recoverHandoffLedgerForRoot(persisted, missing);
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "HANDOFF_ROOT_REQUIRED");
+    assert.equal(result.ledger, null, "새 epoch를 만들면 안 됩니다");
+  }
 });
 
 // --- 제어 출력 파싱 ---
