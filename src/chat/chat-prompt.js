@@ -553,7 +553,7 @@ function buildAgentPrompt({
     } else if (specialist.stage === "archivist") {
       // V1.5 Archivist(제안서 §7.4) — System Journal과 canonical artifact를
       // 읽어 사람용 정리를 만든다. 판정·승인 상태를 만들거나 바꾸지 않는다.
-      if (specialist.journal) {
+      if (Array.isArray(specialist.journal) ? specialist.journal.length > 0 : specialist.journal) {
         lines.push("=== System Journal (실행 사실 기록) ===");
         lines.push(
           boundedText(JSON.stringify(specialist.journal), MAX_REVIEW_EVIDENCE_CHARS, "Journal").text
@@ -592,7 +592,7 @@ function buildAgentPrompt({
           "- DONE이면 `HANDOFF: @reviewer`를, BLOCKED이면 `ASK_USER: <질문 한 줄>` 또는 계획 자체가 문제면 `HANDOFF: @planner`(재기획 요청)를 붙일 수 있습니다.",
         ],
         review: [
-          "- PASS면 `COMPLETE` 또는 사람용 정리가 필요하면 `HANDOFF: @recorder`를, FIX_REQUIRED면 `HANDOFF: @builder`(범위 내 보완) 또는 `HANDOFF: @planner`(계획 문제)를 붙일 수 있습니다.",
+          "- PASS면 `COMPLETE` 또는 사람용 정리가 필요하면 `HANDOFF: @recorder`를, FIX_REQUIRED면 `HANDOFF: @builder`(범위 내 보완) 또는 `HANDOFF: @planner`(계획 문제)를, UNKNOWN이면 `ASK_USER: <질문 한 줄>`을 붙일 수 있습니다.",
         ],
       };
       const guide = controlGuides[specialist.stage];

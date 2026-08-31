@@ -1610,24 +1610,28 @@ class ChatRoom extends EventEmitter {
       if (generation !== this.generation) wasStopped = true;
       const endMessageId = this.messages[this.messages.length - 1]?.id || startMessageId;
       const incomplete = Boolean(wasStopped || (!concluded && completed >= budget) || failures > 0);
+      // "failed"는 구조화 토론의 즉시 중단(단계 실패로 break)에만 쓴다 —
+      // protocolFailedStep이 그 유일한 신호다. 자유토론은 한 명이 실패해도
+      // 나머지가 계속 말하고 예산까지 진행하므로, 도중의 일시적 실패로
+      // "실패로 마쳤습니다"로 오표기하지 않는다(실제 종료 사유는 예산 도달).
+      const structuredFailure = Boolean(protocolFailedStep);
       const reason = wasStopped
         ? "interrupted"
-        : failures > 0 && !concluded
+        : structuredFailure
           ? "failed"
           : (!concluded && completed >= budget)
             ? "budget"
             : "concluded";
-      // 표시 문구는 reason 판정과 같은 우선순위(interrupted > failed >
-      // budget > concluded)를 쓴다. 예전에는 budget을 먼저 검사해, 실패가
-      // 있었는데도 "예산 도달"로 표시되는 불일치가 있었다.
+      // 표시 문구도 같은 우선순위(interrupted > failed > budget > concluded).
+      const budgetText = failures > 0
+        ? `토론 실행 예산(${budget}회)에 도달해 여기서 마쳤습니다. (일부 응답 실패 포함)`
+        : `토론 실행 예산(${budget}회)에 도달해 여기서 마쳤습니다.`;
       const conclusionText = wasStopped
         ? (this.discussionInterrupted ? "사용자 개입으로 토론을 여기서 마쳤습니다." : "사용자가 중지해 토론을 여기서 마쳤습니다.")
-        : failures > 0 && !concluded
-          ? (protocolFailedStep
-              ? `${protocolFailedStep.role.name} 단계 응답 실패로 구조화 토론을 중단했습니다.`
-              : "일부 에이전트 응답 실패로 토론을 마쳤습니다.")
+        : structuredFailure
+          ? `${protocolFailedStep.role.name} 단계 응답 실패로 구조화 토론을 중단했습니다.`
           : (!concluded && completed >= budget)
-            ? `토론 실행 예산(${budget}회)에 도달해 여기서 마쳤습니다.`
+            ? budgetText
             : "참가자들이 합의하거나 결론에 도달해 토론을 마쳤습니다.";
 
       this.appendMessage({

@@ -145,13 +145,14 @@ test("handoff ledger는 직렬화-복원 roundtrip으로 같은 판정을 유지
     "HANDOFF_BUSY",
   );
   assert.equal(settleHandoff(restored, "inv-2"), true);
-  // 연속 호출 금지(lastTargetRole)도 복원된다.
+  // 연속 호출 금지(lastTargetRole)도 복원된다. 진짜 self-handoff와 구분되는
+  // 별도 코드(HANDOFF_REPEAT)로 거부한다.
   assert.equal(
     validateHandoff(
       { sourceRole: "reviewer", targetRole: "builder", invocationId: "inv-3" },
       { ledger: restored },
     ).reason,
-    "HANDOFF_SELF",
+    "HANDOFF_REPEAT",
   );
   assert.equal(serializeHandoffLedger(null), null);
 });
@@ -212,7 +213,8 @@ test("validateHandoff: 동일 역할 연속 호출을 거부한다", () => {
     { ledger },
   );
   assert.equal(repeat.ok, false);
-  assert.equal(repeat.reason, "HANDOFF_SELF");
+  // 진짜 self-handoff(fromRole===toRole)와 구분되는 별도 코드다.
+  assert.equal(repeat.reason, "HANDOFF_REPEAT");
 });
 
 test("validateHandoff: 예산 소진 시 HANDOFF_BUDGET_REACHED", () => {

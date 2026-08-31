@@ -1995,6 +1995,19 @@ function roomMeta(meta) {
               if (result && result.ok === false) throw new Error(result.error);
               return { consult: true };
             }
+            // 개별 역할 상담은 한 번에 한 명만 답한다. 여러 역할을 함께
+            // 멘션하면 첫 역할만 응답하므로, 무시된 역할을 조용히 버리지
+            // 않고 왜 응답이 없는지 안내한다(위 resolved.ok 실패 안내와 같은
+            // 원칙). 여러 역할을 함께 듣고 싶으면 @팀을 쓴다.
+            if (roleMentions.length > 1) {
+              const ignored = roleMentions
+                .slice(1)
+                .map((id) => CONSULT_ROLE_DEFS[id]?.label || id)
+                .join(", ");
+              room.appendSystem(
+                `개별 역할 상담은 한 번에 한 명만 답합니다. ${CONSULT_ROLE_DEFS[roleMentions[0]]?.label || roleMentions[0]}만 응답하며 ${ignored}은(는) 이번에 제외됩니다. 여러 역할을 함께 들으려면 @팀을 사용하세요.`
+              );
+            }
             const roleDef = CONSULT_ROLE_DEFS[roleMentions[0]];
             const project = projectForSession(store.readMeta(sessionId));
             const resolved = project
@@ -2083,7 +2096,11 @@ function roomMeta(meta) {
         // 배정 수·cycle clamp)은 resolveProtocol 한 곳에서 한다.
         let protocol;
         if (typeof presetId === "string" && presetId) {
-          if (!DISCUSSION_PRESETS[presetId]) {
+          // 소유 프로퍼티만 인정한다. presetId가 'constructor'/'toString' 같은
+          // 상속 키면 DISCUSSION_PRESETS[presetId]가 Object.prototype 멤버라
+          // truthy가 되어, IPC의 빠른 실패가 뚫리고 resolveProtocol이
+          // 'Object Preset...' 같은 혼란스러운 에러를 던진다.
+          if (!Object.prototype.hasOwnProperty.call(DISCUSSION_PRESETS, presetId)) {
             throw new Error(`알 수 없는 토론 Preset입니다: ${presetId}`);
           }
           protocol = {

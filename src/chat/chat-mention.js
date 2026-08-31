@@ -107,9 +107,24 @@ function parseTeamRunDirective(text) {
     if (!isTeam) continue;
     const rest = source.slice(match.index + match[0].length);
     const next = rest.match(/^\s+(\S+)/u);
-    if (!next) return false;
-    const word = next[1].replace(/[:,.!?]+$/u, "");
-    return word === "실행" || word.toLowerCase() === "run";
+    // 이 @팀에 이어지는 토큰이 없으면(문장 끝 등) 실행이 아니다. 하지만
+    // 뒤에 또 다른 @팀 실행이 있을 수 있으므로 조기 종료하지 않고 계속 본다.
+    if (!next) continue;
+    // 전각 구두점·생략부호·물결까지 꼬리에서 떼어낸다.
+    const word = next[1].replace(/[:,.!?…~。！？，、]+$/u, "");
+    if (word !== "실행" && word.toLowerCase() !== "run") continue;
+    // "실행 계획/방안/..."은 실행 명령이 아니라 명사구(실행 계획을 검토해줘)
+    // 상담이다 — CONSULT가 자연어만으로 EXECUTE 경계를 넘지 않게 한다(INV-2).
+    // 실행 토큰 다음 토큰이 그 복합어 머리로 시작하면 실행으로 보지 않는다.
+    const afterRun = rest.replace(/^\s+\S+/u, "").match(/^\s+(\S+)/u);
+    if (afterRun) {
+      const NOUN_HEADS = [
+        "계획", "방안", "방법", "결과", "전략", "여부", "순서", "내역",
+        "기록", "과정", "현황", "상태", "방향", "우선순위", "일정", "범위", "단계",
+      ];
+      if (NOUN_HEADS.some((head) => afterRun[1].startsWith(head))) continue;
+    }
+    return true;
   }
   return false;
 }

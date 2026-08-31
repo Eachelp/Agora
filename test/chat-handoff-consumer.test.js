@@ -277,6 +277,166 @@ test("Reviewer가 PASS + COMPLETE로 끝나도 builder→reviewer invocation은 
   assert.equal(persistedRun.handoffState.activeInvocationId, null);
 });
 
+test("planner NEEDS_DECISION의 ASK_USER 질문이 사용자 화면에 노출된다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-handoff-ask-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const journal = [];
+  const needsDecisionPlan = [
+    "## Goal",
+    "로그인 기능",
+    "STATUS: NEEDS_DECISION",
+    "",
+    "ASK_USER: DB는 Postgres와 MySQL 중 무엇으로 할까요?",
+  ].join("\n");
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    appendProfessionalEvent: (event) => {
+      journal.push(event);
+      return true;
+    },
+    runAgent: fakeRunner({
+      claude: [{ ok: true, text: needsDecisionPlan }],
+      codex: [],
+    }),
+  });
+  room.sendUserMessage({ text: "작업해줘", recordOnly: true });
+
+  const result = await room.startSpecialist({ action: "full", stages: fullStages(room) });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.stopReason, "NEEDS_DECISION");
+  // 프롬프트는 질문을 본문이 아니라 ASK_USER 제어 줄에 담게 하고 그 줄은
+  // 화면에서 strip되므로, 소비 지점에서 다시 노출하지 않으면 질문이 사라진다.
+  assert.ok(
+    room.messages.some(
+      (message) =>
+        message.authorType === "system" &&
+        /DB는 Postgres와 MySQL 중 무엇으로 할까요/.test(message.text)
+    ),
+    "ASK_USER 질문이 사용자에게 보여야 합니다"
+  );
+  // 제어 줄 자체는 에이전트 표시 텍스트에서 벗겨진다.
+  const agentMessages = room.messages.filter((message) => message.authorType === "agent");
+  for (const message of agentMessages) {
+    assert.ok(!/^ASK_USER:/m.test(message.text));
+  }
+});
+
+test("자동 보완 루프에서 검토자가 handoff를 생략해도 재검토 HANDOFF가 거짓 거부되지 않는다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-handoff-mixed-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const journal = [];
+  let persistedRun = null;
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    persistProfessionalRun: (run) => {
+      persistedRun = run;
+      return true;
+    },
+    appendProfessionalEvent: (event) => {
+      journal.push(event);
+      return true;
+    },
+    readProfessionalEvents: () => journal.slice(),
+    runAgent: fakeRunner({
+      claude: [
+        { ok: true, text: `${makePlanContract("혼합 보완")}\n\nHANDOFF: @reviewer` },
+        { ok: true, text: "구현 완료\nSTATUS: DONE\n\nHANDOFF: @reviewer" },
+        { ok: true, text: "보완 완료\nSTATUS: DONE\n\nHANDOFF: @reviewer" },
+      ],
+      codex: [
+        { ok: true, text: "기획 검수 통과\nVERDICT: PASS\n\nHANDOFF: @builder" },
+        // 1라운드 검토자는 구조화 FIX는 내되 HANDOFF 제어 줄을 생략한다(흔한 출력).
+        {
+          ok: true,
+          text: "수정이 필요합니다\nVERDICT: FIX_REQUIRED\nISSUES:\n1.\nscope: IN\nseverity: BLOCKING\nlocation: a.js\nproblem: 버그\nevidence: 실패\nimpact: 회귀",
+        },
+        { ok: true, text: "구현 검수 통과\nVERDICT: PASS" },
+      ],
+    }),
+  });
+  room.sendUserMessage({ text: "작업해줘", recordOnly: true });
+
+  const result = await room.startSpecialist({ action: "full", maxAutoRevisions: 1, stages: fullStages(room) });
+
+  assert.equal(result.ok, true);
+  // 2라운드 builder→reviewer가 lastTargetRole 잔존으로 HANDOFF_SELF/REPEAT
+  // 거짓 거부되던 버그가 없어야 한다.
+  const falseRejects = journal.filter(
+    (event) =>
+      event.type === "HANDOFF_REJECTED" &&
+      (event.status === "HANDOFF_SELF" || event.status === "HANDOFF_REPEAT")
+  );
+  assert.deepEqual(falseRejects, [], "정당한 재검토 HANDOFF가 거짓 거부되면 안 됩니다");
+  // 두 라운드의 builder→reviewer가 모두 수용된다(reviewer, builder, reviewer, reviewer).
+  const acceptedRoles = journal
+    .filter((event) => event.type === "HANDOFF_ACCEPTED")
+    .map((event) => event.role);
+  assert.deepEqual(acceptedRoles, ["reviewer", "builder", "reviewer", "reviewer"]);
+});
+
+test("다회차 자동 보완이 예산을 소진하지 않고 최종 Archivist까지 도달한다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-handoff-budget-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const journal = [];
+  let persistedRun = null;
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    persistProfessionalRun: (run) => {
+      persistedRun = run;
+      return true;
+    },
+    appendProfessionalEvent: (event) => {
+      journal.push(event);
+      return true;
+    },
+    readProfessionalEvents: () => journal.slice(),
+    runAgent: fakeRunner({
+      claude: [
+        { ok: true, text: `${makePlanContract("다회차 보완")}\n\nHANDOFF: @reviewer` },
+        { ok: true, text: "구현 완료 r1\nSTATUS: DONE\n\nHANDOFF: @reviewer" },
+        { ok: true, text: "구현 완료 r2\nSTATUS: DONE\n\nHANDOFF: @reviewer" },
+        { ok: true, text: "구현 완료 r3\nSTATUS: DONE\n\nHANDOFF: @reviewer" },
+      ],
+      codex: [
+        { ok: true, text: "기획 검수 통과\nVERDICT: PASS\n\nHANDOFF: @builder" },
+        { ok: true, text: "수정 필요 r1\nVERDICT: FIX_REQUIRED\nISSUES:\n1.\nscope: IN\nseverity: BLOCKING\nlocation: a.js\nproblem: 버그1\nevidence: 실패\nimpact: 회귀\n\nHANDOFF: @builder" },
+        { ok: true, text: "수정 필요 r2\nVERDICT: FIX_REQUIRED\nISSUES:\n1.\nscope: IN\nseverity: BLOCKING\nlocation: b.js\nproblem: 버그2\nevidence: 실패\nimpact: 회귀\n\nHANDOFF: @builder" },
+        { ok: true, text: "구현 검수 통과\nVERDICT: PASS\n\nHANDOFF: @recorder" },
+        { ok: true, text: "사람용 정리: 완료했습니다." },
+      ],
+    }),
+  });
+  room.sendUserMessage({ text: "작업해줘", recordOnly: true });
+
+  const result = await room.startSpecialist({ action: "full", maxAutoRevisions: 3, stages: fullStages(room) });
+
+  assert.equal(result.ok, true);
+  // 예산은 자동 보완 예산(3회)에 맞춰 넓혀진다: 8 + 2*3 = 14. 정상 흐름 8 hop은
+  // 예산 안에 들어 마지막 reviewer→recorder(Archivist) 요청까지 수용된다.
+  assert.equal(persistedRun.handoffState.budget, 14);
+  assert.ok(persistedRun.handoffState.used <= 14);
+  // 예산 소진 거부가 사용자 화면에 스팸되지 않는다(overlay 내부 사정은 journal-only).
+  assert.ok(
+    !room.messages.some(
+      (message) =>
+        message.authorType === "system" && /요청을 수용하지 않았습니다/.test(message.text)
+    ),
+    "예산 관련 거부 메시지가 사용자에게 노출되면 안 됩니다"
+  );
+  // 검토자가 요청한 Archivist 정리가 유실 없이 실행된다.
+  const archivistStarted = journal.some(
+    (event) => event.type === "ROLE_STARTED" && event.purpose === "archivist"
+  );
+  assert.ok(archivistStarted, "최종 Archivist 요청이 예산 소진으로 유실되면 안 됩니다");
+});
+
 // --- 소비 seam 단위 동작 ---
 
 function makeConsumerRoom(overrides = {}) {

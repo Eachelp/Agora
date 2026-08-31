@@ -210,8 +210,15 @@ function createHandoffLedger(options = {}) {
     // 복원 없이 새로 만들면 0. used를 복원하지 않으면 재시작이 곧 예산
     // 리셋이 되어 상한이 의미를 잃는다.
     used: Number.isInteger(options.used) && options.used >= 0 ? options.used : 0,
+    // 소비 집합은 배열(직렬화본)과 Set(살아 있는 원장) 양쪽을 받는다.
+    // 배열만 방어하면 살아 있는 원장을 실수로 넘겼을 때 소비·dedup 기록이
+    // 통째로 리셋되어(fail-open) 예산·중복 방어가 뚫린다.
     consumedInvocationIds: new Set(
-      Array.isArray(options.consumedInvocationIds) ? options.consumedInvocationIds : [],
+      options.consumedInvocationIds instanceof Set
+        ? options.consumedInvocationIds
+        : Array.isArray(options.consumedInvocationIds)
+          ? options.consumedInvocationIds
+          : [],
     ),
     lastTargetRole: options.lastTargetRole || null,
     activeInvocationId: options.activeInvocationId || null,
@@ -328,7 +335,10 @@ function validateHandoff(request = {}, state = {}) {
       return { ok: false, reason: "HANDOFF_BUSY" };
     }
     if (ledger.lastTargetRole && ledger.lastTargetRole === toRole) {
-      return { ok: false, reason: "HANDOFF_SELF" };
+      // 직전에 넘긴 역할로 곧바로 다시 넘기는 것(연속 동일 대상)은 진짜
+      // self-handoff(fromRole===toRole)와 원인이 다르다 — 감사 로그·안내가
+      // 원인을 구분할 수 있도록 별도 코드를 쓴다.
+      return { ok: false, reason: "HANDOFF_REPEAT" };
     }
     if (ledger.used >= ledger.budget) {
       return { ok: false, reason: "HANDOFF_BUDGET_REACHED" };
@@ -405,7 +415,10 @@ function trailingControlBlock(source) {
 
 function maskCodeFences(text) {
   return String(text || "")
-    .replace(/```[\s\S]*?(?:```|$)/g, (match) => " ".repeat(match.length))
+    // 개행은 보존한다 — masked 텍스트와 원문의 줄 수가 어긋나면
+    // stripControlOutput이 masked 인덱스로 원문을 잘라 본문을 삭제한다.
+    // (여러 줄 펜스를 공백으로 통째 치환하면 줄 구조가 붕괴한다.)
+    .replace(/```[\s\S]*?(?:```|$)/g, (match) => match.replace(/[^\n]/g, " "))
     .replace(/`[^`\r\n]*`/g, (match) => " ".repeat(match.length));
 }
 

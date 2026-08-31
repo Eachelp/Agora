@@ -41,6 +41,20 @@ test("stripControlOutput: 꼬리 제어 블록만 표시 텍스트에서 제거�
   assert.equal(stripControlOutput(fenced), fenced);
   // 전체가 제어 블록이면 빈 문자열이다.
   assert.equal(stripControlOutput("COMPLETE"), "");
+  // 여러 줄 코드펜스가 본문에 있고 그 뒤에 꼬리 제어 블록이 오면, 펜스 앞
+  // 본문(닫는 ``` 포함)을 보존하고 제어 줄만 제거한다. maskCodeFences가
+  // 펜스 내부 개행을 뭉개면 masked/원문 줄 수가 어긋나 본문을 잘라먹었다.
+  const withFence = ["구현했습니다.", "```diff", "+const x = 1;", "```", "STATUS: DONE", "HANDOFF: @reviewer"].join("\n");
+  assert.equal(
+    stripControlOutput(withFence),
+    ["구현했습니다.", "```diff", "+const x = 1;", "```", "STATUS: DONE"].join("\n")
+  );
+  // 펜스가 꼬리 제어 블록 바로 앞이어도 코드 본문이 통째로 유실되지 않는다.
+  const fenceThenControl = ["설명 문단입니다.", "```js", "const a = 1;", "const b = 2;", "```", "HANDOFF: @reviewer"].join("\n");
+  assert.equal(
+    stripControlOutput(fenceThenControl),
+    ["설명 문단입니다.", "```js", "const a = 1;", "const b = 2;", "```"].join("\n")
+  );
 });
 
 test("전문 역할 턴의 제어 출력이 추출·기록되고 표시 텍스트에서 벗겨진다", async () => {

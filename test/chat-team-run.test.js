@@ -26,6 +26,23 @@ test("parseTeamRunDirective: 멘션 바로 다음 토큰이 '실행'일 때만 �
   assert.equal(parseTeamRunDirective("`@팀 실행` 문법 설명"), false);
 });
 
+test("parseTeamRunDirective: '실행 <명사>' 복합어 상담은 실행으로 승격하지 않는다", () => {
+  // "실행 계획/방안/..."은 명사구다 — CONSULT가 EXECUTE 경계를 넘지 않는다(INV-2).
+  assert.equal(parseTeamRunDirective("@팀 실행 계획을 같이 검토해줘"), false);
+  assert.equal(parseTeamRunDirective("@팀 실행 방안 제안해줘"), false);
+  assert.equal(parseTeamRunDirective("@팀 실행 결과를 정리해줘"), false);
+  assert.equal(parseTeamRunDirective("@팀 실행 순서 알려줘"), false);
+  // 실제 실행 지시는 그대로 발동한다(다음 토큰이 복합어 머리가 아니다).
+  assert.equal(parseTeamRunDirective("@팀 실행 로그인 기능 만들어줘"), true);
+  assert.equal(parseTeamRunDirective("@팀 실행 해줘"), true);
+});
+
+test("parseTeamRunDirective: 앞선 @팀 뒤에 토큰이 없어도 뒤의 '@팀 실행'을 놓치지 않는다", () => {
+  // 첫 @팀에서 조기 종료하지 않고 계속 스캔한다.
+  assert.equal(parseTeamRunDirective("@팀\n실행 로그인 기능"), true);
+  assert.equal(parseTeamRunDirective("@팀. 그리고 @팀 실행 진행"), true);
+});
+
 // --- IPC 라우팅 (chat-team-consult.test.js의 harness 패턴) ---
 
 function fakeRecord(id, name, aliases) {
