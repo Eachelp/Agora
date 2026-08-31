@@ -96,6 +96,11 @@ function safeBlockReason(value) {
 // 화면에 제어 태그가 그대로 노출되지 않도록 텍스트에서만 조용히 제거합니다.
 const EMOTICON_TAG_PATTERN = /\[\[CODEPET_EMOTE:[^\]\r\n]+\]\]/g;
 
+// Archivist(사람용 정리)에 넘기는 System Journal 최근 사건 수. 프롬프트
+// 예산을 넘지 않으면서 "무엇을 하기로→무엇이 바뀌었고→어떻게 확인했는지"의
+// 최근 흐름을 담기에 충분한 창이다.
+const ARCHIVIST_JOURNAL_WINDOW = 40;
+
 function stripEmoticonTags(value) {
   return String(value || "")
     .replace(EMOTICON_TAG_PATTERN, "")
@@ -4393,7 +4398,7 @@ class SpecialistMixin {
     if (archivistRequested && recorder?.agent && requestedGeneration === this.generation) {
       this.appendSystem("검토자의 요청으로 기록 정리(Archivist)를 시작합니다.");
       const journalEntries = typeof this.readProfessionalEvents === "function"
-        ? (this.readProfessionalEvents() || []).slice(-40)
+        ? (this.readProfessionalEvents() || []).slice(-ARCHIVIST_JOURNAL_WINDOW)
         : [];
       this.recordJournalEvent?.({
         type: "ROLE_STARTED",
