@@ -338,6 +338,9 @@ function buildAgentPrompt({
       implementation: "구현",
       review: "검토",
       recorder: "기록",
+      // V1.5 — 사람이 읽기 좋은 정리를 만드는 LLM 계약. deterministic
+      // recorder finalizer와 다른 실행 계약이다.
+      archivist: "기록 정리",
     };
     lines.push("");
     lines.push(`=== 전문 모드: ${stageLabels[specialist.stage] || specialist.stage} ===`);
@@ -547,6 +550,32 @@ function buildAgentPrompt({
         lines.push("=== 실행 근거 요약 끝 ===");
       }
       lines.push(...RECORDER_OUTPUT_LINES);
+    } else if (specialist.stage === "archivist") {
+      // V1.5 Archivist(제안서 §7.4) — System Journal과 canonical artifact를
+      // 읽어 사람용 정리를 만든다. 판정·승인 상태를 만들거나 바꾸지 않는다.
+      if (specialist.journal) {
+        lines.push("=== System Journal (실행 사실 기록) ===");
+        lines.push(
+          boundedText(JSON.stringify(specialist.journal), MAX_REVIEW_EVIDENCE_CHARS, "Journal").text
+        );
+        lines.push("=== System Journal 끝 ===");
+      }
+      if (specialist.finalVerdict) {
+        lines.push(`최종 검수 판정: ${specialist.finalVerdict}`);
+      }
+      if (Object.prototype.hasOwnProperty.call(specialist, "reviewDiff")) {
+        lines.push("=== 최종 변경 요약 ===");
+        lines.push(boundedText(specialist.reviewDiff, MAX_REVIEW_DIFF_CHARS, "최종 변경").text);
+        lines.push("=== 최종 변경 요약 끝 ===");
+      }
+      if (specialist.evidence) {
+        lines.push("=== 실행 근거 요약 ===");
+        lines.push(boundedText(JSON.stringify(specialist.evidence), MAX_REVIEW_EVIDENCE_CHARS, "Evidence").text);
+        lines.push("=== 실행 근거 요약 끝 ===");
+      }
+      lines.push("- 위 기록과 산출물만을 근거로, 사람이 읽기 좋은 정리를 작성하세요.");
+      lines.push("- 새로운 사실·결정·판정을 만들지 마세요. 기록에 없는 내용은 '기록에 없음'이라고 밝히세요.");
+      lines.push("- 이 정리는 파생 요약(derivedSummary)입니다. canonical verdict나 승인 상태를 바꾸지 않습니다.");
     }
     lines.push("=== 전문 모드 끝 ===");
   }

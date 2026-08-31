@@ -42,6 +42,8 @@ const {
   isFinalStep,
   DISCUSSION_HARD_TURN_CEILING,
 } = require("../agora/discussion-protocol");
+// V1.5 Stage 5 — 역할 출력의 구조화 제어 행동(HANDOFF/COMPLETE/ASK_USER).
+const { parseControlOutput, stripControlOutput } = require("../agora/interaction-contract");
 
 // 채팅방 오케스트레이션.
 // - 멘션이 없으면 세션 참가자 전체, 있으면 멘션된 참가자만 응답합니다.
@@ -1151,6 +1153,28 @@ class ChatRoom extends EventEmitter {
       // 누락된 선언은 실제 BLOCKED와 구분해 사용자 개입으로 돌립니다.
       builderStatus = ambiguous ? "AMBIGUOUS" : value || "MISSING";
     }
+    // V1.5 Stage 5 — 전문 역할 출력의 제어 행동 추출. 응답 꼬리의 연속 제어
+    // 블록만 인식한다(end-anchor). 여기서는 추출·기록만 하고 실행하지 않는다
+    // — 모델은 요청하고 Runtime(소비 지점)이 결정한다(INV-6). 요청 사실은
+    // 소비 여부와 무관하게 Journal에 남긴다.
+    let controlRequest = null;
+    if (context.specialist?.stage) {
+      const parsed = parseControlOutput(rawText);
+      if (parsed) {
+        controlRequest = parsed;
+        rawText = stripControlOutput(rawText);
+        if (parsed.action === "HANDOFF") {
+          this.recordJournalEvent?.({
+            type: "HANDOFF_REQUESTED",
+            role: parsed.targetRole || null,
+            purpose: parsed.purpose || null,
+            status: parsed.ambiguous ? "AMBIGUOUS" : null,
+            professionalRunId: this.professionalRun?.professionalRunId || null,
+            frozenRunId: this.professionalRun?.frozenRunId || null,
+          });
+        }
+      }
+    }
 
     let text = stripEmoticonTags(rawText);
     if (context.discussion) {
@@ -1214,6 +1238,7 @@ class ChatRoom extends EventEmitter {
       specialistSignal,
       plannerStatus,
       builderStatus,
+      controlRequest,
       messageId: appended?.id || null,
       text,
       runId,

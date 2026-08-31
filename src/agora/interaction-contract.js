@@ -333,6 +333,24 @@ function maskCodeFences(text) {
     .replace(/`[^`\r\n]*`/g, (match) => " ".repeat(match.length));
 }
 
+// 표시용 텍스트에서 꼬리 제어 블록을 제거한다 — [[CODEPET_*]] 앵커를 화면
+// 텍스트에서 벗겨내는 것과 같은 규율이다. parseControlOutput이 인식하는
+// 블록과 정확히 같은 범위를 지운다(마스킹은 줄 구조를 보존하므로 masked
+// 기준으로 계산한 줄 번호를 원문에 그대로 쓸 수 있다).
+function stripControlOutput(text) {
+  const raw = String(text || "");
+  const maskedLines = maskCodeFences(raw).split(/\r?\n/);
+  const lines = raw.split(/\r?\n/);
+  let end = maskedLines.length - 1;
+  while (end >= 0 && maskedLines[end].trim() === "") end -= 1;
+  let start = end;
+  while (start >= 0 && maskedLines[start].trim() !== "" && isControlLine(maskedLines[start])) {
+    start -= 1;
+  }
+  if (start === end) return raw;
+  return lines.slice(0, start + 1).join("\n").trimEnd();
+}
+
 function handoffTargetForToken(token) {
   const lowered = String(token || "").toLowerCase();
   for (const [role, aliases] of Object.entries(HANDOFF_TARGET_ALIASES)) {
@@ -425,4 +443,5 @@ module.exports = {
   consumeHandoff,
   settleHandoff,
   parseControlOutput,
+  stripControlOutput,
 };
