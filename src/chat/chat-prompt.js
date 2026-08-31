@@ -29,8 +29,10 @@ function boundedText(value, limit, label) {
   const budget = Math.max(0, limit - notice.length);
   const head = Math.ceil(budget * 0.25);
   const tail = budget - head;
+  // tail===0이면 slice(-0)===slice(0)이라 원문 전체를 반환해 상한을 우회한다.
+  const tailText = tail > 0 ? text.slice(text.length - tail) : "";
   return {
-    text: `${text.slice(0, head)}${notice}${text.slice(-tail)}`,
+    text: `${text.slice(0, head)}${notice}${tailText}`,
     truncated: true,
     omitted: text.length - budget,
   };
