@@ -1923,7 +1923,9 @@ function roomMeta(meta) {
               // 자동으로 진행되고 EXECUTE 직전 READY 승인 게이트에서 멈춘다.
               // 채팅 문장은 EXECUTE 사전 승인(autoContinueReady)을 만들 수
               // 없다(§9.4) — 전체 실행 사전 승인은 버튼 경로뿐이다. 승인 후의
-              // 구현·검수·기록은 Role-to-Role Handoff loop로 자율 진행된다.
+              // 구현·검수·기록은 기존 Professional FSM이 진행하며, 각 역할의
+              // HANDOFF 요청은 조합 검증·원장 소비·Journal로 기록되는
+              // overlay다(호출 순서의 authority는 아직 FSM — §8 최종 범위).
               if (parseTeamRunDirective(text)) {
                 const meta = store.readMeta(sessionId);
                 const workspace = canonicalWorkspaceForMeta(meta);

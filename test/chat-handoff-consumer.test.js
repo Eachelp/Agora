@@ -120,6 +120,14 @@ test("전체 실행에서 역할들의 HANDOFF 요청이 소비·기록되고 Ar
   assert.equal(persistedRun.handoffState.used, 4);
   assert.equal(persistedRun.handoffState.lastTargetRole, "recorder");
   assert.ok(persistedRun.handoffState.rootMessageId, "root 사용자 발화가 기록돼야 합니다");
+  // 마지막 고리(recorder를 향한 invocation)도 Archivist 종료 시점에 settle된다
+  // — 남으면 재시작 recovery가 정상 완료를 INTERRUPTED로 기록한다.
+  assert.equal(persistedRun.handoffState.activeInvocationId, null);
+
+  // Archivist는 계약이 허용하는 canonical 자료(Frozen Task·최종 변경·
+  // Journal)를 실제로 받는다 — 사건 이력만으로는 변경 내용을 요약할 수 없다.
+  assert.match(calls[4].prompt, /실행 계약 \(Frozen Task\)/);
+  assert.match(calls[4].prompt, /최종 변경 요약/);
 
   // Archivist 실행 사실도 Journal에 남는다.
   const archivistEvents = journal.filter((event) => event.purpose === "archivist");
@@ -207,6 +215,66 @@ test("BLOCKED + HANDOFF: @planner는 수용하되 재기획 선택은 사용자�
     )
   );
   assert.equal(room.specialistState().blocked, true);
+});
+
+// incoming lifecycle 회귀: 수용된 invocation은 대상 역할 실행이 끝나면
+// settle된다 — 다음 outgoing control이 있어야 해제되는 구조가 아니다.
+async function runBuilderHandoffTo(reviewText, t) {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-handoff-settle-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const journal = [];
+  let persistedRun = null;
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    persistProfessionalRun: (run) => {
+      persistedRun = run;
+      return true;
+    },
+    appendProfessionalEvent: (event) => {
+      journal.push(event);
+      return true;
+    },
+    runAgent: fakeRunner({
+      claude: [
+        { ok: true, text: makePlanContract("settle 회귀") },
+        { ok: true, text: "구현 완료\nSTATUS: DONE\n\nHANDOFF: @reviewer" },
+      ],
+      codex: [
+        { ok: true, text: "기획 검수 통과\nVERDICT: PASS" },
+        { ok: true, text: reviewText },
+      ],
+    }),
+  });
+  room.sendUserMessage({ text: "작업해줘", recordOnly: true });
+  const result = await room.startSpecialist({ action: "full", stages: fullStages(room) });
+  return { result, journal, persistedRun, room };
+}
+
+test("Reviewer가 control 없이 PASS로 끝나도 builder→reviewer invocation은 settle된다", async (t) => {
+  const { result, journal, persistedRun } = await runBuilderHandoffTo(
+    "구현 검수 통과\nVERDICT: PASS",
+    t
+  );
+  assert.equal(result.ok, true);
+  const accepted = journal.filter((event) => event.type === "HANDOFF_ACCEPTED");
+  assert.deepEqual(accepted.map((event) => event.role), ["reviewer"]);
+  assert.equal(persistedRun?.handoffState?.used, 1);
+  // 검토자 실행이 끝난 시점(검토 결정 지점)에 settle — control 유무와 무관하다.
+  assert.equal(persistedRun.handoffState.activeInvocationId, null);
+});
+
+test("Reviewer가 PASS + COMPLETE로 끝나도 builder→reviewer invocation은 settle된다", async (t) => {
+  const { result, journal, persistedRun } = await runBuilderHandoffTo(
+    "구현 검수 통과\nVERDICT: PASS\n\nCOMPLETE",
+    t
+  );
+  assert.equal(result.ok, true);
+  // COMPLETE는 합법 조합으로 수용되고(거부 journal 없음), 원장은 소비하지 않는다.
+  assert.equal(journal.some((event) => event.type === "HANDOFF_REJECTED"), false);
+  assert.equal(persistedRun?.handoffState?.used, 1);
+  assert.equal(persistedRun.handoffState.activeInvocationId, null);
 });
 
 // --- 소비 seam 단위 동작 ---

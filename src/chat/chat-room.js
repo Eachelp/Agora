@@ -1165,8 +1165,11 @@ class ChatRoom extends EventEmitter {
     // 블록만 인식한다(end-anchor). 여기서는 추출·기록만 하고 실행하지 않는다
     // — 모델은 요청하고 Runtime(소비 지점)이 결정한다(INV-6). 요청 사실은
     // 소비 여부와 무관하게 Journal에 남긴다.
+    // 소비자가 붙은 턴(controlOutputs:true — auto/full 결정 지점)에서만
+    // 추출한다. step mode처럼 소비자가 없는 specialist 턴에서 parse/strip을
+    // 하면 화면에서 지워지고 HANDOFF_REQUESTED만 남는 ghost 요청이 생긴다.
     let controlRequest = null;
-    if (context.specialist?.stage) {
+    if (context.specialist?.controlOutputs === true) {
       const parsed = parseControlOutput(rawText);
       if (parsed) {
         controlRequest = parsed;

@@ -536,16 +536,31 @@ Builder가 `STATUS: DONE` + `HANDOFF: @reviewer`를 함께 내면 둘 다 유효
                                    COMPLETE → 검수 통과 여부
 ```
 
-### 최종 범위 (확정)
+### 최종 범위 (확정 — 검수 #6 반영)
 
-이번 개편은 **Role-to-Role Handoff 자동 loop + `@팀` 자율실행까지** 완성하고
-종료한다. Orchestrator(중앙 상황 분석·역할 선택)는 구현하지 않고 후속
-확장안으로 남긴다 — 역할들이 서로 넘겨가며 완료까지 가는 구조는 중앙
-Orchestrator 없는 분산형 orchestration이며, 실사용에서 중앙 판단이 실제로
-필요한지 본 뒤에 결정한다. 사용자 개입(`@기획자 조건 반영해`)은 자동 loop
-중에도 가능하고, 새 사용자 지시는 rootMessageId 기준 새 Handoff budget
-epoch를 연다. Frozen Task·Checkpoint·Permission cap·Evidence·Journal·
-ledger·crash recovery·stale 차단의 안전 계층은 전부 유지한다.
+이번 개편(V1.5)은 여기서 종료한다. 완성된 것을 정확히 부르면
+**Handoff-aware Professional FSM**이다:
+
+- 기존 Professional FSM을 유지하면서 역할별 Handoff 요청(2축 계약),
+  안전한 routing 조합 검증, Handoff Journal/ledger/fail-closed 영속/crash
+  recovery, `@팀 실행` 인터페이스를 추가했다. 즉 **Orchestrator에 필요한
+  Handoff primitive를 구축한 상태**다.
+- **Handoff는 아직 호출 순서의 authority가 아니다.** 다음 역할이 호출되는
+  이유는 Handoff consumer가 invoke해서가 아니라 기존 FSM의 기본 다음
+  단계이기 때문이며, FSM과 다른 routing(예: Reviewer FIX_REQUIRED →
+  `HANDOFF: @planner`)은 수용·기록 후 자동 진행을 멈추고 사용자에게
+  돌린다(INV-5). 제어가 없어도 기본 FSM은 계속 간다.
+- 진짜 Role-driven routing — `invokeProfessionalRole(targetRole, context)`
+  같은 generic Role Invocation primitive를 만들고, HANDOFF 수용 →
+  executionContractFor → 전제조건 검증 → invoke → 결과 → control의
+  루프가 호출 순서를 결정하게 하는 것 — 은 **Professional V2**로 넘긴다.
+  실사용에서 FSM 교체가 실제로 필요한지 본 뒤 결정한다. Orchestrator는
+  그 위에서 invokeProfessionalRole을 대신 호출하는 상위 controller다.
+
+사용자 개입은 자동 진행 중에도 가능하고, 새 사용자 지시는 rootMessageId
+기준 새 Handoff budget epoch를 연다. Frozen Task·Checkpoint·Permission
+cap·Evidence·Journal·ledger·crash recovery·stale 차단의 안전 계층은 전부
+유지한다.
 
 순서 (**Archivist 준비가 Handoff consumer보다 먼저다**):
 
@@ -626,8 +641,32 @@ plan_review 판정, builder 첫 라운드, review 판정, 보완 라운드 build
 **step 모드(`resumeStepPhaseInner`)는 이번 증분에서 제어 소비를 배선하지
 않았다** — step은 단계마다 사용자에게 돌아오는 모드라 routing 요청의 실행
 가치가 낮고, 소비자 seam은 공유되므로 후속에서 호출 한 줄로 붙일 수 있다.
+소비자가 없는 턴에서 parse/strip만 하면 화면에서 지워지고
+HANDOFF_REQUESTED만 남는 ghost 요청이 생기므로, **제어 추출 자체를
+`controlOutputs: true`(소비자가 붙은 auto/full 결정 지점) 턴으로
+한정한다** — step 모드의 제어 줄은 본문 그대로 남고 Journal에도 남지
+않는다.
+
+**incoming Handoff lifecycle은 outgoing control과 분리된 축이다**(검수 #6):
+수용된 invocation은 "다음 control이 나와서"가 아니라 **대상 역할의 실행이
+실제로 끝났을 때** settle된다. `settleIncomingHandoff()`가 (a) 모든 결정
+지점 진입 시(consumeControlRequest 첫 줄 — control 유무·종류와 무관),
+(b) Archivist 종료 지점(다음 결정 지점이 없는 마지막 고리)에서 active
+슬롯을 해제하고 영속한다. 이전 구조(다음 HANDOFF가 있을 때만 settle)는
+control 없는 정상 완료·PASS+COMPLETE·Archivist 종료에서 슬롯을 남겨,
+재시작 recovery가 정상 완료를 INTERRUPTED로 기록했다. settle의 영속
+실패는 흐름을 막지 않는다(소비가 아닌 정리 — 다음 영속 기회에 함께
+저장). 회귀 3종: control 없는 PASS / PASS+COMPLETE / HANDOFF @recorder →
+Archivist 완료, 모두 `activeInvocationId === null`.
+
+완료 후 Archivist 호출은 계약이 허용하는 canonical 자료를 실제로 받는다:
+System Journal(최근 40건)에 **frozenTask·reviewDiff(최종 변경)·evidence·
+finalVerdict**를 함께 전달한다 — 사건 이력만으로는 "무엇이 바뀌었는지"를
+요약할 수 없다.
+
 회귀 테스트: `test/chat-handoff-consumer.test.js`(수용·거부·rollback·crash
-복원·epoch), `test/interaction-contract.test.js`(조합표 전수).
+복원·epoch·개입·settle lifecycle), `test/chat-control-output.test.js`
+(추출·ghost 차단), `test/interaction-contract.test.js`(조합표 전수).
 
 ## 9. Stage V1.5-6 — @모두 Planner-first 팀 실행 (일부 구현 + 후속 설계)
 
@@ -649,15 +688,18 @@ plan_review 판정, builder 첫 라운드, review 판정, 보완 라운드 build
   planAutoRevisions: 1, implementationAutoRevisions: 1 })`로 시작한다.
   기획 → 기획 검수가 자동 진행되고 **EXECUTE 직전 READY 승인 게이트에서
   멈춘다** — 채팅 문장은 `autoContinueReady`(EXECUTE 사전 승인)를 만들 수
-  없다(§9.4). 사용자가 기존 승인 액션으로 승인하면 구현·검수·기록이
-  Role-to-Role Handoff loop로 자율 진행된다. 워크스페이스 없는 세션은
+  없다(§9.4). 사용자가 기존 승인 액션으로 승인하면 구현·검수·기록은
+  **기존 Professional FSM이 자동 진행**하며, 각 역할의 HANDOFF 요청은
+  조합 검증·원장 소비·Journal로 기록되는 overlay다(§8 최종 범위 —
+  호출 순서의 authority는 아직 FSM). 워크스페이스 없는 세션은
   실행을 시작하지 않고 이유를 채팅에 남긴다. 회귀:
   `test/chat-team-run.test.js`.
-- 이 트리거가 들어가는 실행 루프 자체는 Stage 5의 것이다: Planner가
-  시작해 각 역할이 제어 출력(HANDOFF/COMPLETE/ASK_USER)으로 다음 역할을
-  요청하고 Runtime이 구조 검증 + 조합 검증 + 실행 전제조건 검증으로
-  수용을 판정한다. 승인 Gate(READY 정지, `전체 실행` 사전 승인)는 실행
-  전제조건 검증 층에서 그대로 산다 — 자연어로 우회 불가(§9.4).
+- 역할의 제어 출력(HANDOFF/COMPLETE/ASK_USER)은 Runtime이 구조 검증 +
+  조합 검증 + 실행 전제조건 검증으로 수용을 판정한다. 승인 Gate(READY
+  정지, `전체 실행` 사전 승인)는 실행 전제조건 검증 층에서 그대로 산다 —
+  자연어로 우회 불가(§9.4). Handoff가 실제 호출 순서를 결정하는
+  Role-driven routing은 Professional V2(generic
+  `invokeProfessionalRole`)의 것이다.
 - 그 위의 Orchestrator는 같은 Role Invocation/Handoff API를 사용하는 상위
   controller다. `HANDOFF_TARGETS`에 orchestrator를 추가하지 않는다 —
   Specialist가 아니라 primitive의 사용자이기 때문이다.

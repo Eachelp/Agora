@@ -303,9 +303,29 @@ class SpecialistMixin {
     return false;
   }
 
+  // incoming Handoff lifecycle 정리. 수용된 invocation은 "다음 control이
+  // 나와서"가 아니라 대상 역할의 실행이 실제로 끝났을 때 settle된다 —
+  // outgoing control과는 독립 축이다. 결정 지점 도달(=직전 역할의 결과
+  // 확정)과 Archivist 종료 지점에서 호출한다. settle은 budget 소비가 아닌
+  // 슬롯 해제라 영속 실패가 흐름을 막지 않으며, in-memory 원장을 되돌리지
+  // 않고 다음 영속 기회에 함께 저장되게 둔다(persistHandoffState(null)).
+  // (재시작으로 죽은 슬롯은 ensureHandoffLedger의 recovery가 처리한다.)
+  settleIncomingHandoff() {
+    const ledger = this.handoffLedger;
+    if (!ledger?.activeInvocationId) return false;
+    if (!settleHandoff(ledger, ledger.activeInvocationId)) return false;
+    this.persistHandoffState(null);
+    return true;
+  }
+
   // 결과 축 × routing 축 소비. control이 없으면 requested:false — 기본
   // FSM 흐름이 그대로 진행된다(하위 호환). 거부는 조용히 넘기지 않는다.
   consumeControlRequest({ contract, result, outcome }) {
+    // 결정 지점 도달 = 이 역할의 결과가 확정됐다는 뜻. 이 역할을 향해
+    // 수용됐던 invocation을 control 유무·종류와 무관하게 먼저 settle한다.
+    // (control이 없거나 COMPLETE/ASK_USER로 끝나는 정상 완료가 슬롯을
+    // 남기면, 재시작 recovery가 정상 완료를 INTERRUPTED로 기록하게 된다.)
+    this.settleIncomingHandoff();
     const control = outcome?.controlRequest || null;
     if (!control) return { requested: false, accepted: false, control: null };
     const professionalRunId = this.professionalRun?.professionalRunId || null;
@@ -333,12 +353,6 @@ class SpecialistMixin {
     }
     const ledger = this.ensureHandoffLedger();
     if (!ledger) return reject("HANDOFF_ROOT_REQUIRED");
-    // 블록 실행은 순차적이다 — 새 결정 지점에 도달했다는 것은 직전에
-    // 수용된 invocation의 턴이 끝났다는 뜻이므로 active 슬롯을 해제한다.
-    // (크래시로 남은 슬롯은 ensureHandoffLedger의 recovery가 처리한다.)
-    if (ledger.activeInvocationId) {
-      settleHandoff(ledger, ledger.activeInvocationId);
-    }
     const previousSerialized = serializeHandoffLedger(ledger);
     // identity는 Runtime이 주입한다 — 모델 출력에서 받는 것은 targetRole·
     // purpose·reason뿐이다.
@@ -4310,6 +4324,12 @@ class SpecialistMixin {
           stage: "archivist",
           journal: journalEntries,
           finalVerdict: "PASS",
+          // Archivist 계약이 허용하는 canonical 자료를 실제로 전달한다
+          // (frozenTask/finalDiff/evidence — 정책과 입력이 어긋나면 Journal
+          // 사건 이력만으로 "무엇이 바뀌었는지"를 요약할 수 없다).
+          frozenTask: frozenTaskMeta(),
+          reviewDiff: builderChanges,
+          evidence: reviewEvidence?.payload || null,
         },
         agentConfig: recorder.agentConfig,
       });
@@ -4325,6 +4345,11 @@ class SpecialistMixin {
         this.appendSystem("기록 정리(Archivist)가 실패했습니다. 실행 완료 상태에는 영향이 없습니다.");
       }
     }
+    // 검토자의 HANDOFF: @recorder로 수용된 invocation은 다음 결정 지점이
+    // 없는 마지막 고리다. Archivist 실행(또는 실행하지 않기로 한 판정)이
+    // 끝난 여기서 settle하지 않으면, 정상 완료가 재시작 recovery에서
+    // INTERRUPTED로 기록된다.
+    this.settleIncomingHandoff();
     return {
       ok: true,
       completedIterations: round,

@@ -78,7 +78,7 @@ test("전문 역할 턴의 제어 출력이 추출·기록되고 표시 텍스�
   });
 
   const outcome = await room.scheduleResponse(room.agents[0], {
-    specialist: { stage: "planner" },
+    specialist: { stage: "planner", controlOutputs: true },
   });
   await settle(room);
 
@@ -103,6 +103,44 @@ test("전문 역할 턴의 제어 출력이 추출·기록되고 표시 텍스�
   assert.equal(requested.role, "reviewer");
   assert.equal(requested.purpose, "plan_review");
   assert.equal(requested.professionalRunId, "pr-test");
+});
+
+test("소비자 없는 specialist 턴(step mode)에서는 제어를 추출·기록·strip하지 않는다", async () => {
+  const journal = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({
+      claude: [
+        {
+          ok: true,
+          text: ["기획 초안입니다.", "STATUS: PLAN_READY", "", "HANDOFF: @reviewer"].join("\n"),
+        },
+      ],
+    }),
+    appendProfessionalEvent: (event) => {
+      journal.push(event);
+      return true;
+    },
+  });
+  room.professionalRun = createProfessionalRun({
+    node: "PLANNING",
+    status: "RUNNING",
+    professionalRunId: "pr-step",
+  });
+
+  // controlOutputs 플래그가 없는 specialist 턴 — step mode처럼 소비자가
+  // 붙지 않은 경로다. 여기서 parse/strip하면 화면에서만 지워지고
+  // HANDOFF_REQUESTED만 남는 ghost 요청이 생긴다.
+  const outcome = await room.scheduleResponse(room.agents[0], {
+    specialist: { stage: "planner" },
+  });
+  await settle(room);
+
+  assert.equal(outcome.ok, true);
+  assert.equal(outcome.controlRequest, null);
+  const message = room.messages.find((entry) => entry.authorType === "agent");
+  assert.match(message.text, /HANDOFF: @reviewer/);
+  assert.equal(journal.some((event) => event.type === "HANDOFF_REQUESTED"), false);
 });
 
 test("일반 채팅 턴의 제어 마커는 추출되지 않는다", async () => {
