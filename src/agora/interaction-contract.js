@@ -107,6 +107,82 @@ function executionContractFor(targetRole, { sourceRole, hasFrozenArtifacts } = {
   }
 }
 
+// 실행 계약 → 표면 역할 역매핑. Handoff의 sourceRole은 Runtime이 현재
+// invocation의 실행 계약에서 주입한다 — 모델 출력에서 받지 않는다.
+const SURFACE_ROLE_FOR_CONTRACT = Object.freeze({
+  planner: "planner",
+  plan_review: "reviewer",
+  implementation: "builder",
+  review: "reviewer",
+  archivist: "recorder",
+});
+
+function surfaceRoleForContract(contract) {
+  return SURFACE_ROLE_FOR_CONTRACT[String(contract || "")] || null;
+}
+
+// 결과 축(STATUS/VERDICT)과 routing 축(HANDOFF/COMPLETE/ASK_USER)의 조합
+// 판정표. 두 축은 우선순위 관계가 아니라 독립 계약이다 — Builder가
+// `STATUS: DONE` + `HANDOFF: @reviewer`를 함께 내면 둘 다 유효하다.
+// 이 표는 역할 간 고정 순서가 아니라 "이 결과가 이 routing을 정당화하는가"
+// (예: FIX_REQUIRED인데 COMPLETE 선언 금지)라는 정합성 계약이다.
+// 키는 실행 계약(executionContractFor 결과), 값은 결과별 허용 routing.
+const RESULT_CONTROL_ROUTES = Object.freeze({
+  planner: Object.freeze({
+    PLAN_READY: Object.freeze({ HANDOFF: Object.freeze(["reviewer"]) }),
+    NEEDS_DECISION: Object.freeze({ ASK_USER: true }),
+  }),
+  plan_review: Object.freeze({
+    // PASS + HANDOFF builder의 실제 실행은 사용자 승인/autoContinueReady
+    // 라는 실행 전제조건 검증(런타임 층)을 따로 통과해야 한다.
+    PASS: Object.freeze({ HANDOFF: Object.freeze(["builder"]) }),
+    FIX_REQUIRED: Object.freeze({ HANDOFF: Object.freeze(["planner"]) }),
+    UNKNOWN: Object.freeze({ ASK_USER: true }),
+  }),
+  implementation: Object.freeze({
+    DONE: Object.freeze({ HANDOFF: Object.freeze(["reviewer"]) }),
+    BLOCKED: Object.freeze({ ASK_USER: true, HANDOFF: Object.freeze(["planner"]) }),
+  }),
+  review: Object.freeze({
+    PASS: Object.freeze({ COMPLETE: true, HANDOFF: Object.freeze(["recorder"]) }),
+    FIX_REQUIRED: Object.freeze({ HANDOFF: Object.freeze(["builder", "planner"]) }),
+    UNKNOWN: Object.freeze({ ASK_USER: true }),
+  }),
+  archivist: Object.freeze({
+    DONE: Object.freeze({ COMPLETE: true }),
+  }),
+});
+
+// 조합 검증 — 세 층 판정(구조 → 조합 → 실행 전제조건)의 가운데 층이다.
+// control이 없으면 기존 FSM 기본 흐름이 그대로 진행되므로 ok다(하위 호환).
+// 결과 자체가 미해결(AMBIGUOUS/MISSING 등 표에 없는 값)이면 제어를 실행하지
+// 않는다 — 기존 안전 정지 경로가 우선한다.
+function validateResultControl({ contract, result, control } = {}) {
+  if (!control) return { ok: true, reason: null };
+  if (control.ambiguous) return { ok: false, reason: "CONTROL_AMBIGUOUS" };
+  const routes = RESULT_CONTROL_ROUTES[String(contract || "")];
+  if (!routes) return { ok: false, reason: "CONTROL_UNKNOWN_CONTRACT" };
+  const allowed = routes[String(result || "")];
+  if (!allowed) return { ok: false, reason: "RESULT_UNRESOLVED" };
+  if (control.action === "ASK_USER") {
+    return allowed.ASK_USER === true
+      ? { ok: true, reason: null }
+      : { ok: false, reason: "CONTROL_NOT_ALLOWED" };
+  }
+  if (control.action === "COMPLETE") {
+    return allowed.COMPLETE === true
+      ? { ok: true, reason: null }
+      : { ok: false, reason: "CONTROL_NOT_ALLOWED" };
+  }
+  if (control.action === "HANDOFF") {
+    const targets = Array.isArray(allowed.HANDOFF) ? allowed.HANDOFF : [];
+    return control.targetRole && targets.includes(control.targetRole)
+      ? { ok: true, reason: null }
+      : { ok: false, reason: "CONTROL_NOT_ALLOWED" };
+  }
+  return { ok: false, reason: "CONTROL_NOT_ALLOWED" };
+}
+
 const DEFAULT_HANDOFF_BUDGET = 8;
 
 // 사용자 발화 1회에서 파생되는 AI Handoff의 소비 원장(제안서 §8.3, §8.4).
@@ -433,6 +509,9 @@ module.exports = {
   isHandoffTarget,
   resolveReviewerContract,
   executionContractFor,
+  surfaceRoleForContract,
+  RESULT_CONTROL_ROUTES,
+  validateResultControl,
   DEFAULT_HANDOFF_BUDGET,
   createHandoffLedger,
   serializeHandoffLedger,

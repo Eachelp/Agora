@@ -577,6 +577,37 @@ function buildAgentPrompt({
       lines.push("- 새로운 사실·결정·판정을 만들지 마세요. 기록에 없는 내용은 '기록에 없음'이라고 밝히세요.");
       lines.push("- 이 정리는 파생 요약(derivedSummary)입니다. canonical verdict나 승인 상태를 바꾸지 않습니다.");
     }
+    // V1.5 Stage 5 — routing 축(제어 출력) 안내. STATUS/VERDICT(결과 축)와
+    // 독립 계약이라 함께 적는다. Runtime이 조합 합법성을 검증하며, 요청일 뿐
+    // 실행 승인이 아니다. 소비자가 있는 자동 실행 경로에서만 안내한다.
+    if (specialist.controlOutputs) {
+      const controlGuides = {
+        planner: [
+          "- 계획이 준비됐으면(STATUS: PLAN_READY와 함께) `HANDOFF: @reviewer` 한 줄을, 사용자 결정이 필요하면(STATUS: NEEDS_DECISION과 함께) `ASK_USER: <질문 한 줄>`을 붙일 수 있습니다.",
+        ],
+        plan_review: [
+          "- FIX_REQUIRED면 `HANDOFF: @planner`, UNKNOWN이면 `ASK_USER: <질문 한 줄>`, PASS면 `HANDOFF: @builder`를 붙일 수 있습니다(실행은 사용자 승인 게이트를 그대로 지납니다).",
+        ],
+        implementation: [
+          "- DONE이면 `HANDOFF: @reviewer`를, BLOCKED이면 `ASK_USER: <질문 한 줄>` 또는 계획 자체가 문제면 `HANDOFF: @planner`(재기획 요청)를 붙일 수 있습니다.",
+        ],
+        review: [
+          "- PASS면 `COMPLETE` 또는 사람용 정리가 필요하면 `HANDOFF: @recorder`를, FIX_REQUIRED면 `HANDOFF: @builder`(범위 내 보완) 또는 `HANDOFF: @planner`(계획 문제)를 붙일 수 있습니다.",
+        ],
+      };
+      const guide = controlGuides[specialist.stage];
+      if (guide) {
+        lines.push("");
+        lines.push("=== 다음 역할 요청 (선택) ===");
+        lines.push(
+          "- 필요하면 응답 **맨 끝**에 제어 블록을 붙여 다음 진행을 요청할 수 있습니다. 제어 줄은 응답 마지막의 연속된 줄이어야 하며(뒤에 다른 문장 금지), `REASON: <이유 한 줄>`을 함께 적을 수 있습니다."
+        );
+        lines.push(...guide);
+        lines.push(
+          "- 이것은 요청이지 실행이 아닙니다. Runtime이 결과와 요청의 조합을 검증해 수용 여부를 결정하며, 제어 블록이 없으면 기본 흐름으로 진행됩니다."
+        );
+      }
+    }
     lines.push("=== 전문 모드 끝 ===");
   }
   if (handoff && !isBuilder) {

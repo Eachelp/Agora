@@ -178,7 +178,15 @@ class ChatRoom extends EventEmitter {
     this.appendProfessionalEvent = typeof options.appendProfessionalEvent === "function"
       ? options.appendProfessionalEvent
       : null;
+    // Journal reader — Archivist가 실행 사실 기록을 읽을 때 쓴다(읽기 전용).
+    this.readProfessionalEvents = typeof options.readProfessionalEvents === "function"
+      ? options.readProfessionalEvents
+      : null;
     this.journalWriteFailureNotified = false;
+    // V1.5 Stage 5 — 살아 있는 Handoff 원장(현재 root 발화의 budget epoch).
+    // 영속 authority는 professionalRun.handoffState이고, 복원은
+    // ensureHandoffLedger가 recoverHandoffLedgerForRoot로만 수행한다.
+    this.handoffLedger = null;
     const initialProfessionalRun = options.initialProfessionalRun || options.meta?.professionalRun || null;
     this.professionalRun = initialProfessionalRun ? createProfessionalRun(initialProfessionalRun) : null;
     if (this.professionalRun?.status === "RUNNING") {

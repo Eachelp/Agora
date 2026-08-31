@@ -489,14 +489,63 @@ Stage 0 재설계판이 파서(`parseControlOutput`)·구조 검증(`validateHan
 런타임 연결이며, **초판 문서의 "전이표 검증" 접근은 폐기한다** — 그대로
 구현하면 새 이름의 고정 Professional FSM으로 돌아간다.
 
-원칙: Handoff 요청의 수용 여부는 두 층으로 갈라 판정한다.
+### 결과 축과 routing 축은 독립 계약이다 (확정 결정)
+
+STATUS/VERDICT와 제어 출력은 우선순위 관계가 아니라 **서로 다른 축**이다.
+
+```text
+STATUS / VERDICT              = 현재 역할이 무엇을 해냈는가 (결과 계약 — 기존 보존)
+HANDOFF / COMPLETE / ASK_USER = 그 결과 다음에 어디로 갈 것을 요청하는가 (routing 계약 — 추가)
+```
+
+Builder가 `STATUS: DONE` + `HANDOFF: @reviewer`를 함께 내면 둘 다 유효하다.
+제어를 "기존 신호가 없을 때만" 쓰게 하면 역할들은 항상 STATUS/VERDICT를
+내므로 Handoff가 장식이 되고 기존 FSM이 다시 흐름을 정한다. Runtime 판정
+순서: ① 결과 축 판정(STATUS/VERDICT — 기존 파싱 그대로) → ② 제어 축 파싱
+→ ③ **조합 합법성 검증** → ④ 합법이면 제어 실행.
+
+조합 판정표(`validateResultControl` — 결과와 routing의 정합성이지 역할 간
+고정 순서가 아니다):
+
+| 계약 | 결과 | 허용 routing |
+|---|---|---|
+| planner | PLAN_READY | HANDOFF reviewer |
+| planner | NEEDS_DECISION | ASK_USER |
+| plan_review | PASS | HANDOFF builder (실행 전제조건: 사용자 승인/autoContinueReady) |
+| plan_review | FIX_REQUIRED | HANDOFF planner |
+| plan_review | UNKNOWN | ASK_USER |
+| implementation | DONE | HANDOFF reviewer |
+| implementation | BLOCKED | ASK_USER, HANDOFF planner(재기획) |
+| review | PASS | COMPLETE(완료 전제조건 검증), HANDOFF recorder(Archivist 선택 호출) |
+| review | FIX_REQUIRED | HANDOFF builder, HANDOFF planner |
+| review | UNKNOWN | ASK_USER |
+| archivist | (정리 완료) | COMPLETE |
+
+거부 예: Builder BLOCKED + COMPLETE, Reviewer FIX_REQUIRED + COMPLETE.
+결과 자체가 미해결(AMBIGUOUS/MISSING)이면 제어를 실행하지 않는다 — 기존
+안전 정지 경로가 우선한다. 제어가 없으면 기존 FSM 기본 흐름이 그대로
+진행된다(하위 호환).
+
+원칙: Handoff 요청의 수용 여부는 세 층으로 갈라 판정한다.
 
 ```text
 구조 검증 (interaction-contract)   어휘·loop·stale·budget·동시성
+조합 검증 (validateResultControl)  결과 축과 routing 축의 정합성
 실행 전제조건 검증 (런타임)         Builder → READY Task·Frozen hash·checkpoint
                                    Reviewer → 판정할 artifact 존재
                                    COMPLETE → 검수 통과 여부
 ```
+
+### 최종 범위 (확정)
+
+이번 개편은 **Role-to-Role Handoff 자동 loop + `@팀` 자율실행까지** 완성하고
+종료한다. Orchestrator(중앙 상황 분석·역할 선택)는 구현하지 않고 후속
+확장안으로 남긴다 — 역할들이 서로 넘겨가며 완료까지 가는 구조는 중앙
+Orchestrator 없는 분산형 orchestration이며, 실사용에서 중앙 판단이 실제로
+필요한지 본 뒤에 결정한다. 사용자 개입(`@기획자 조건 반영해`)은 자동 loop
+중에도 가능하고, 새 사용자 지시는 rootMessageId 기준 새 Handoff budget
+epoch를 연다. Frozen Task·Checkpoint·Permission cap·Evidence·Journal·
+ledger·crash recovery·stale 차단의 안전 계층은 전부 유지한다.
 
 순서 (**Archivist 준비가 Handoff consumer보다 먼저다**):
 
@@ -543,6 +592,42 @@ Stage 0 재설계판이 파서(`parseControlOutput`)·구조 검증(`validateHan
    stage로 연결하면 "기록 역할을 맡은 AI" 대신 finalizer가 불린다.
    deterministic System Journal/finalizer는 Runtime 기능이지 Handoff 대상이
    아니다.
+
+### 구현 기록 (Stage 5 본체)
+
+위 0~8이 구현되었다. 소비 지점은 SpecialistMixin의 seam 세 개로 모인다:
+
+- `ensureHandoffLedger()` — 최근 사용자 발화를 root로 원장 확보. 같은 root의
+  살아 있는 in-memory 원장은 재사용, root가 바뀌면 새 budget epoch, 저장된
+  `professionalRun.handoffState`가 같은 root면 `recoverHandoffLedgerForRoot`
+  복원(죽은 active invocation은 INTERRUPTED 폐기 + Journal `crash_recovery`).
+- `persistHandoffState()` — `professionalRun.handoffState`에 직렬화해
+  `persistProfessionalRun`(fail-closed)으로 저장. 실패 시 이전 직렬화본으로
+  in-memory 원장을 원복하고 소비를 거부한다(`HANDOFF_STATE_WRITE_FAILED`).
+- `consumeControlRequest({contract, result, outcome})` — 단일 소비자.
+  `validateResultControl` 조합 검증 → 거부는 `HANDOFF_REJECTED` Journal +
+  사용자 안내 후 기존 기본 흐름 유지. ASK_USER/COMPLETE는 원장을 소비하지
+  않고 수용만 기록, HANDOFF는 Runtime identity 주입 → `consumeHandoff` →
+  영속 성공 후 `HANDOFF_ACCEPTED`.
+
+auto/full 경로의 결정 지점 여섯 곳(planner NEEDS_DECISION·PLAN_READY,
+plan_review 판정, builder 첫 라운드, review 판정, 보완 라운드 builder)이 이
+소비자를 호출한다. 수용된 제어의 실행 의미:
+
+- Reviewer `PASS + HANDOFF: @recorder` → 완료 확정 후 Archivist(LLM, 기록
+  정리) 추가 호출. 완료를 막지 않는 부가 정리이며 실패해도 COMPLETED 유지.
+- Builder `BLOCKED + HANDOFF: @planner`, Reviewer `FIX_REQUIRED + HANDOFF:
+  @planner` → 자동 보완을 멈추고 재기획을 사용자에게 안내(재기획 시작은
+  기존 명시 액션 — INV-5 사용자 개입 지점 유지).
+- 나머지 수용 조합(DONE→reviewer, PLAN_READY→reviewer, PASS→builder 등)은
+  기존 FSM의 기본 다음 단계와 일치하므로 원장 소비·Journal 기록 후 같은
+  흐름으로 진행한다.
+
+**step 모드(`resumeStepPhaseInner`)는 이번 증분에서 제어 소비를 배선하지
+않았다** — step은 단계마다 사용자에게 돌아오는 모드라 routing 요청의 실행
+가치가 낮고, 소비자 seam은 공유되므로 후속에서 호출 한 줄로 붙일 수 있다.
+회귀 테스트: `test/chat-handoff-consumer.test.js`(수용·거부·rollback·crash
+복원·epoch), `test/interaction-contract.test.js`(조합표 전수).
 
 ## 9. Stage V1.5-6 — @모두 Planner-first 팀 실행 (일부 구현 + 후속 설계)
 

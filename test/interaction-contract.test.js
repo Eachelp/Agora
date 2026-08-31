@@ -13,6 +13,7 @@ const {
   isHandoffTarget,
   resolveReviewerContract,
   executionContractFor,
+  validateResultControl,
   DEFAULT_HANDOFF_BUDGET,
   createHandoffLedger,
   serializeHandoffLedger,
@@ -309,6 +310,119 @@ test("consumeHandoff: 검증 실패 시 원장을 건드리지 않는다", () =>
   assert.equal(ledger.used, 0);
   assert.equal(ledger.activeInvocationId, null);
   assert.equal(ledger.consumedInvocationIds.size, 0);
+});
+
+// --- 결과 축 × routing 축 조합 검증 ---
+
+test("validateResultControl: 결과와 routing은 독립 축으로 함께 유효할 수 있다", () => {
+  // Builder: STATUS: DONE + HANDOFF: @reviewer — 둘 다 유효.
+  assert.deepEqual(
+    validateResultControl({
+      contract: "implementation",
+      result: "DONE",
+      control: { action: "HANDOFF", targetRole: "reviewer", ambiguous: false },
+    }),
+    { ok: true, reason: null },
+  );
+  // Reviewer: VERDICT: FIX_REQUIRED + HANDOFF: @builder.
+  assert.equal(
+    validateResultControl({
+      contract: "review",
+      result: "FIX_REQUIRED",
+      control: { action: "HANDOFF", targetRole: "builder", ambiguous: false },
+    }).ok,
+    true,
+  );
+});
+
+test("validateResultControl: 판정표의 허용 조합 전수", () => {
+  const allowed = [
+    ["planner", "PLAN_READY", { action: "HANDOFF", targetRole: "reviewer" }],
+    ["planner", "NEEDS_DECISION", { action: "ASK_USER", question: "범위는?" }],
+    ["plan_review", "PASS", { action: "HANDOFF", targetRole: "builder" }],
+    ["plan_review", "FIX_REQUIRED", { action: "HANDOFF", targetRole: "planner" }],
+    ["plan_review", "UNKNOWN", { action: "ASK_USER", question: "근거 부족" }],
+    ["implementation", "DONE", { action: "HANDOFF", targetRole: "reviewer" }],
+    ["implementation", "BLOCKED", { action: "ASK_USER", question: "권한 필요" }],
+    ["implementation", "BLOCKED", { action: "HANDOFF", targetRole: "planner" }],
+    ["review", "PASS", { action: "COMPLETE" }],
+    ["review", "PASS", { action: "HANDOFF", targetRole: "recorder" }],
+    ["review", "FIX_REQUIRED", { action: "HANDOFF", targetRole: "planner" }],
+    ["review", "UNKNOWN", { action: "ASK_USER", question: "재현 불가" }],
+    ["archivist", "DONE", { action: "COMPLETE" }],
+  ];
+  for (const [contract, result, control] of allowed) {
+    const verdict = validateResultControl({
+      contract,
+      result,
+      control: { ambiguous: false, ...control },
+    });
+    assert.equal(verdict.ok, true, `${contract}/${result}/${control.action}`);
+  }
+});
+
+test("validateResultControl: 결과와 어긋나는 routing을 거부한다", () => {
+  // 막힌 Builder가 완료를 선언할 수 없다.
+  assert.equal(
+    validateResultControl({
+      contract: "implementation",
+      result: "BLOCKED",
+      control: { action: "COMPLETE", ambiguous: false },
+    }).reason,
+    "CONTROL_NOT_ALLOWED",
+  );
+  // 수정을 요구한 Reviewer가 완료를 선언할 수 없다.
+  assert.equal(
+    validateResultControl({
+      contract: "review",
+      result: "FIX_REQUIRED",
+      control: { action: "COMPLETE", ambiguous: false },
+    }).reason,
+    "CONTROL_NOT_ALLOWED",
+  );
+  // PLAN_READY에서 Builder로 직행할 수 없다(검수·승인 우회 금지).
+  assert.equal(
+    validateResultControl({
+      contract: "planner",
+      result: "PLAN_READY",
+      control: { action: "HANDOFF", targetRole: "builder", ambiguous: false },
+    }).reason,
+    "CONTROL_NOT_ALLOWED",
+  );
+});
+
+test("validateResultControl: 미해결 결과·모호한 제어·미지 계약을 거부한다", () => {
+  assert.equal(
+    validateResultControl({
+      contract: "implementation",
+      result: "AMBIGUOUS",
+      control: { action: "HANDOFF", targetRole: "reviewer", ambiguous: false },
+    }).reason,
+    "RESULT_UNRESOLVED",
+  );
+  assert.equal(
+    validateResultControl({
+      contract: "review",
+      result: "PASS",
+      control: { action: null, ambiguous: true },
+    }).reason,
+    "CONTROL_AMBIGUOUS",
+  );
+  assert.equal(
+    validateResultControl({
+      contract: "orchestrator",
+      result: "DONE",
+      control: { action: "COMPLETE", ambiguous: false },
+    }).reason,
+    "CONTROL_UNKNOWN_CONTRACT",
+  );
+});
+
+test("validateResultControl: 제어가 없으면 기존 FSM 기본 흐름이 그대로다", () => {
+  assert.deepEqual(
+    validateResultControl({ contract: "planner", result: "PLAN_READY", control: null }),
+    { ok: true, reason: null },
+  );
 });
 
 test("recoverHandoffLedger: 죽은 active invocation은 INTERRUPTED로 폐기된다", () => {
