@@ -1513,6 +1513,7 @@ class ChatRoom extends EventEmitter {
 
     const generation = this.generation;
     let completed = 0;
+    let successfulSteps = 0;
     let settled = 0;
     let concluded = false;
     let failures = 0;
@@ -1542,7 +1543,8 @@ class ChatRoom extends EventEmitter {
             : { turn, maxTurns: budget },
         });
         completed += 1;
-        if (!outcome?.ok) failures += 1;
+        if (outcome?.ok) successfulSteps += 1;
+        else failures += 1;
         const signal = outcome?.discussionSignal || "CONTINUE";
         if (protocol) {
           // 구조화 토론의 각 단계는 다음 단계의 입력 계약이다. 한 단계가
@@ -1615,7 +1617,9 @@ class ChatRoom extends EventEmitter {
                   presetName: protocol.presetName,
                   cycleBudget: protocol.cycleBudget,
                   stepCount: protocol.stepCount,
-                  cyclesCompleted: Math.floor(completed / protocol.stepCount),
+                  // 실행 시도가 아니라 성공한 step 기준이다. completed로
+                  // 세면 마지막 step(종합)이 실패한 cycle도 완료로 기록된다.
+                  cyclesCompleted: Math.floor(successfulSteps / protocol.stepCount),
                   // slot 순서 그대로의 역할 배정. 과거 토론을 다시 열 때
                   // "이 답변은 당시 무슨 역할이었나"를 재현할 근거다.
                   roleAssignments: [...protocol.participantIds],

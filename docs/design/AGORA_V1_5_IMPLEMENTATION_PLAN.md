@@ -305,8 +305,9 @@ Runtime은 업무 의미 순서("planner 다음엔 반드시 plan_review")를 �
     인덱스(발안/수정은 같은 참가자). 참가자·역할 매핑은 시작 시 사용자가 정하고
     이후 cycle 순서는 모델이 바꿀 수 없다(INV-1).
   - `resolveProtocol({presetId, participantIds, cycleBudget})` →
-    `{steps, cycleBudget, totalTurns}` 검증 포함 (cycleBudget 1~5 clamp,
-    참가자 수 부족 시 오류).
+    `{steps, cycleBudget, totalTurns}` 검증 포함 (cycle clamp는
+    `maxCycleBudget(stepCount) = floor(hard ceiling 50 / stepCount)` —
+    4-step preset이면 12, 별도 magic number 없음. 참가자 수 부족 시 오류).
   - `speakerForTurn(protocol, turn)` → `{agentId, role, cycle, step}` — 순수
     함수. round-robin 한 줄을 대체하는 유일한 선택기.
 
@@ -314,16 +315,24 @@ Runtime은 업무 의미 순서("planner 다음엔 반드시 plan_review")를 �
 
 | 파일 | 변경 |
 |---|---|
-| `src/chat/chat-room.js` | `startDiscussion(options)`에 `options.protocol` 추가. protocol이 있으면 budget = `totalTurns`(= steps × cycles), 발언자는 `speakerForTurn`으로 선택, per-turn context `discussion`에 `{role: {name, charter}, cycle, cycleBudget, step, stepCount}` 추가. **조기 종료 재정의**: protocol 토론에서는 `settled >= pool.length` 규칙을 쓰지 않고(§1.1 위험 — 같은 참가자가 여러 slot을 가지면 의미가 깨짐), 마지막 step(종합/판정 slot)의 CONCLUDE만 조기 종료로 인정한다. cycle 경계에서만 종료를 평가한다 |
-| `src/chat/chat-prompt.js` | discussion 블록(281-287)에 임시 역할 페르소나 렌더링: 역할명·charter·“이 역할은 이번 토론에서만 유효합니다” 문구. protocol 토론에서는 CONTINUE/AGREE/PASS 태그 안내 대신 “마지막 순서(종합)만 CONCLUDE 가능” 계약을 안내 |
-| `src/chat/chat-ipc.js` | `chat:discussion:start`에 `{presetId, cycleBudget, roleAssignments}` 검증 추가. preset id는 `DISCUSSION_PRESETS` 키만 허용 |
-| `src/chat.js` | 토론 팝오버: 방식(자유/구조화) 라디오 → 구조화 선택 시 preset select + cycle select(1~5) + slot별 참가자 select 표시. 자유토론에서는 cycle UI 숨김(제안서 §11.1) |
+| `src/chat/chat-room.js` | `startDiscussion(options)`에 `options.protocol` 추가. protocol이 있으면 budget = `totalTurns`(= steps × cycles), 발언자는 `speakerForTurn`으로 선택, per-turn context `discussion`에 `{presetId, role: {name, charter}, cycle, cycleBudget, step, stepCount, finalStep}` 추가. **조기 종료 재정의**: protocol 토론에서는 `settled >= pool.length` 규칙을 쓰지 않고(§1.1 위험 — 같은 참가자가 여러 slot을 가지면 의미가 깨짐), 마지막 step(종합/판정 slot)의 CONCLUDE만 조기 종료로 인정한다. **step transport 실패는 즉시 중단**한다 — 각 단계는 다음 단계의 입력 계약이다(§2 추가 결정). 빈 PASS는 "(덧붙일 내용 없음)"으로 기록을 남긴다 |
+| `src/chat/chat-prompt.js` | discussion 블록에 임시 역할 페르소나 렌더링: 역할명·charter·“이 역할은 이번 토론에서만 유효합니다” 문구. protocol 토론에서는 CONTINUE/AGREE/PASS 태그 안내 대신 “마지막 순서(종합)만 CONCLUDE 가능” 계약을 안내 |
+| `src/chat/chat-ipc.js` | `chat:discussion:start`에 `{presetId, cycleBudget, roleAssignments}` 검증 추가. preset id는 `DISCUSSION_PRESETS` 키만 허용. fullState의 `discussionPresets`에 preset별 `maxCycles` 포함 |
+| `src/chat.js` | 토론 팝오버: 방식(자유/구조화) 선택 → 구조화 선택 시 preset select + cycle select(preset별 maxCycles로 재구성) + slot별 참가자 select 표시. 자유토론에서는 cycle UI 숨김(제안서 §11.1) |
 
-### discussionMeta 확장 (additive)
+### 저장 확장 (additive)
 
 ```json
-{ "protocol": { "presetId": "shaping", "cycleBudget": 3, "cyclesCompleted": 2, "stepCount": 4 } }
+{ "protocol": { "presetId": "shaping", "cycleBudget": 3, "cyclesCompleted": 2,
+  "stepCount": 4, "roleAssignments": ["claude","codex","agy"],
+  "failedStep": { "cycle": 1, "step": 2, "roleName": "비평가" } } }
 ```
+
+- `cyclesCompleted`는 실행 시도(completed)가 아니라 **성공한 step** 기준이다 —
+  마지막 step(종합)이 실패한 cycle을 완료로 세지 않는다.
+- `failedStep`은 step 실패 중단 시에만 존재한다.
+- 각 구조화 토론 메시지에는 `discussionTurnMeta{presetId, cycle, step,
+  roleName}`가 붙는다(발화의 역사적 metadata — §2 추가 결정).
 
 기존 소비자(summarizeDiscussion, 렌더러 결론 종합 버튼)는 미지 필드를 무시하므로
 호환된다.
@@ -375,8 +384,15 @@ Runtime은 업무 의미 순서("planner 다음엔 반드시 plan_review")를 �
     INTERRUPT/INVALIDATE → RUN_INTERRUPTED
     REPLAN_RESET → RUN_INTERRUPTED(purpose: replan)
     ```
-    frozenRunId는 nextRun에 있을 때만 싣는다(계획 단계 이벤트에 RUN-xxx를
-    연결하지 않는다 — 제안서 §10.2, P1 방어).
+    frozenRunId는 전이 전/후 상태 중 하나에 있을 때만 싣는다 — 계획 단계
+    이벤트에는 양쪽 다 null이라 RUN-xxx가 연결되지 않고(제안서 §10.2, P1
+    방어), REPLAN_RESET처럼 전이가 frozenRunId를 지우는 경우에는 prev 값을
+    남겨 폐기되는 Run의 provenance를 보존한다. sessionId는 mixin이 직접
+    싣는다(appender 배선에 기대지 않는 스키마 완결).
+    발행 seam은 `recordJournalEntries`/`recordJournalEvent`로 추출되어
+    FSM 전이 밖의 사건(Role Invocation·Handoff)도 같은 경로로 기록한다 —
+    첫 소비자로 CONSULT가 ROLE_STARTED/ROLE_FINISHED(purpose: consult)를
+    남긴다.
 
 ### 변경 지점
 
@@ -419,19 +435,20 @@ Runtime은 업무 의미 순서("planner 다음엔 반드시 plan_review")를 �
 |---|---|
 | `src/chat/chat-mention.js` | `ROLE_ALIASES` 테이블 + `parseRoleMentions(text)` 추가 — 기존 `parseMentions`와 같은 마스킹·토큰화 재사용, **기존 함수 시그니처 불변** |
 | `src/chat/chat-ipc.js` | `chat:send` handler: agent/group 멘션이 없고 역할 멘션이 있으면 `specialistStageFor`로 담당자 해석 후 `room.consultRole(...)` 호출. 담당자 미지정·활성 run·토론 중이면 시스템 메시지로 사유 안내(조용한 무시 금지). 실행 전제조건이 없는 상태에서 오는 EXECUTE성 요청도 CONSULT로만 응답 |
-| `src/chat/chat-room.js` | `consultRole({roleId, stage, agent, agentConfig, text})` — `withProfessionalAuthorization("workspace-read")`로 감싸 `scheduleResponse(agent, {specialist:{stage, consult:true}, agentConfig, ...})` 1턴 스케줄. runResponseTurn에서 `consult:true`면 permission을 `min(stage cap, workspace-read)`로 강등(Builder CONSULT → workspace-read, Recorder CONSULT → chat), STATUS/VERDICT 마커 파싱은 건너뜀 |
-| `src/chat/chat-argv.js` | cap 변경 없음 — consult는 기존 stage id를 쓰고 강등은 room 계층에서 수행 |
-| `src/chat/professional-role-context.js` | consult가 기존 stage id를 재사용하므로 역할별 context 경계 그대로 적용 (planner consult는 transcript를 보고, builder consult는 frozenTask가 없으니 workspace만) — 단 builder consult는 frozenTask 없이 동작해야 하므로 프롬프트 분기에서 frozenTask 요구를 생략 |
-| `src/chat/chat-prompt.js` | specialist 분기에 `consult` 하위 계약 추가: “질문에 답하는 읽기 전용 단일 응답. 파일을 수정하지 않는다. Task/Run을 만들지 않는다. STATUS 마커 불필요.” 각 역할 페르소나는 기존 계약 서두 재사용 |
+| `src/chat/chat-room.js` | `consultRole({roleId, stage, agent, agentConfig, roleLabel, attachments})` — **전문 stage 턴이 아니라 일반 턴 + `context.consult`다**(§2 추가 결정: harness가 role 실린 컨텍스트에 professionalRunId를 요구하므로 stage 턴으로 위장하면 fail-closed로 죽는다). runResponseTurn의 consult 분기가 permission을 `min(세션 권한, workspace-read, 역할 cap)`으로 강등(Builder CONSULT → workspace-read, Recorder CONSULT → chat), STATUS/VERDICT 마커 파싱 없음, 멘션 연쇄 없음, workspace mutation lease 미참여. ROLE_STARTED/ROLE_FINISHED를 Journal에 남긴다 |
+| `src/chat/chat-argv.js` | `SPECIALIST_STAGE_CAPS`에 `archivist: "chat"` 추가(§8 Recorder/Archivist 분리) — consult의 강등 계산은 room 계층에서 기존 cap을 조회만 한다 |
+| `src/chat/chat-prompt.js` | 최상위 `consult` 블록 추가(specialist 분기와 별개): “질문에 답하는 읽기 전용 단일 응답. 파일을 수정하지 않는다. Task/Run을 만들지 않는다. STATUS 마커 불필요.” + 역할별 관점 한 줄 + NEEDS_PLAN 안내. consult는 일반 턴이라 ROLE_CONTEXT_POLICY가 아니라 일반 채팅 context 규칙을 따른다(transcript로 질문을 읽는다) |
 | `src/chat.js` | `mentionTargets()`에 역할 항목 4개 추가(`기획자/구현자/검토자/기록자`, project 역할 설정에서 담당자 없으면 unavailable 표시). 하드코딩 `"모두"` 항목은 유지 |
 
 ### 안전 경계 (제안서 §16 P1 방어 이행)
 
 - metadata 없는 역할 멘션은 **항상 CONSULT** — 실행 경로는 기존 버튼뿐.
-- CONSULT 턴은 `scheduleMentionReplies` 제외(연쇄 금지), dedupeKey에 role을
-  포함해 같은 agent가 다른 역할로 연속 호출될 때 충돌하지 않게 한다.
-- backend가 최종 authority: renderer가 어떤 문자열을 보내든 IPC에서
-  workspace-read 상한으로 강등된다.
+- CONSULT 턴은 `scheduleMentionReplies` 제외(연쇄 금지)이고, turnRootId를
+  갖지 않아 dedupe 대상이 아니다 — 같은 agent가 다른 역할로 연속 호출돼도
+  충돌하지 않는다.
+- backend가 최종 authority: renderer가 어떤 문자열·플래그를 보내든 강등은
+  room+IPC 계층에서 다시 계산된다. 라우팅 판단도 renderer의 professionalDraft
+  플래그가 아니라 방의 실제 상태(실행·토론 진행 중 여부)로 한다.
 - `NEEDS_PLAN`: READY Task 없이 Builder에게 실행을 요구하는 텍스트에는 CONSULT
   응답 후 “실행은 PLAN → 실행 버튼으로” 안내를 프롬프트 계약에 포함.
 
@@ -476,8 +493,25 @@ Stage 0 재설계판이 파서(`parseControlOutput`)·구조 검증(`validateHan
    합친다.
 4. Journal에 `HANDOFF_REQUESTED / ACCEPTED / REJECTED` 기록 —
    `recordJournalEvent` seam이 이미 있다.
-5. stale 차단: 요청에 `invocationId`+`professionalRunId`를 싣고 ledger로 소비
-   기록(재시작 중복 방지 — 제안서 §8.4).
+5. **Ledger의 authoritative 영속화**: Handoff 원장(`used /
+   consumedInvocationIds / activeInvocationId / lastTargetRole`)은
+   `serializeHandoffLedger` 결과를 `professionalRun.handoffState`에 싣고
+   기존 `persistProfessionalRun`(fail-closed) 경로로 저장한다. 재시작 시
+   `createHandoffLedger(handoffState)`로 복원한다 — used를 복원하지 않으면
+   재시작이 곧 예산 리셋이다. **Journal에 의존하지 않는다** — Journal은
+   실패해도 실행이 계속되는 비권위 감사 기록이다(§10.4).
+6. **identity는 Runtime이 주입한다**: `sourceRole`·`professionalRunId`·
+   `generation`·`invocationId`는 모델 출력에서 읽지 않고, 소비 지점이 현재
+   invocation의 실제 값으로 채운다. 모델 출력에서 오는 것은 targetRole·
+   purpose·reason뿐이며 그것도 end-anchor 제어 블록에서만 읽는다.
+7. **Recorder/Archivist 분리**: `executionContractFor("recorder")`는
+   `"archivist"`(사람이 읽는 정리를 만드는 LLM 계약, cap chat)를 돌려준다.
+   기존 professional `recorder` stage는 deterministic finalizer가 가로채
+   LLM을 호출하지 않으므로, Handoff의 @기록자를 그 stage로 연결하면
+   "기록 역할을 맡은 AI" 대신 finalizer가 불린다. Stage 5 배선은 archivist
+   계약의 프롬프트 분기(chat-prompt)와 context 정책을 새로 붙인다.
+   deterministic System Journal/finalizer는 Runtime 기능이지 Handoff 대상이
+   아니다.
 
 ## 9. Stage V1.5-6 — @모두 Planner-first 팀 실행 (일부 구현 + 후속 설계)
 
@@ -489,11 +523,19 @@ Stage 0 재설계판이 파서(`parseControlOutput`)·구조 검증(`validateHan
   Run 생성 없음, Freeze 없음, write 없음, Recorder 자동 호출 없음(제안서
   §9.2). 뒤 순서는 앞 상담 답변을 대화 기록으로 읽는다. 중간 실패·사용자
   중지(generation bump)에서 멈춘다.
-- 팀 계획(PLAN): 기존 `chat:specialist:start {action:"plan"}` 재사용.
-- 팀 실행(EXECUTE): READY 있으면 `{action:"implementation"}`, 없으면
-  `{action:"plan"}` 후 정지. `전체 실행` 사전 승인 시에만 `{action:"full"}` —
-  전부 기존 승인 Gate 재사용, 자연어로 우회 불가(§9.4).
-- 셔플 경로(chat-room.js:458)와의 분기점은 sendUserMessage 이전(IPC)이다.
+- **미래의 자율 팀 실행은 Role-to-Role Handoff 기반이다** (Stage 5 완성 후):
+  기존 `chat:specialist:start` action들을 재조합하는 방식이 아니라, Planner가
+  시작해 각 역할이 제어 출력(HANDOFF/COMPLETE/ASK_USER)으로 다음 역할을
+  요청하고 Runtime이 구조 검증 + 실행 전제조건 검증으로 수용을 판정하는
+  루프다. 승인 Gate(READY 정지, `전체 실행` 사전 승인)는 실행 전제조건
+  검증 층에서 그대로 산다 — 자연어로 우회 불가(§9.4). 현재의 `@팀`(Team
+  Consult)을 이 자율 실행으로 확장할지, 별도 트리거로 둘지는 그때 결정한다
+  (§2 추가 결정).
+- 그 위의 Orchestrator는 같은 Role Invocation/Handoff API를 사용하는 상위
+  controller다. `HANDOFF_TARGETS`에 orchestrator를 추가하지 않는다 —
+  Specialist가 아니라 primitive의 사용자이기 때문이다.
+- 셔플 경로(chat-room.js sendUserMessage의 브로드캐스트)와의 분기점은
+  IPC(chat:send 라우팅)다.
 
 ---
 

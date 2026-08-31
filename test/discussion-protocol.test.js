@@ -294,6 +294,45 @@ test("구조화 토론은 step 실패 시 즉시 중단하고 이유를 표시�
   assert.equal(result.ok, true);
 });
 
+test("마지막 step(종합)이 실패한 cycle은 완료로 세지 않는다", async () => {
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner(
+      {
+        // 첫 답변은 토론 전 브로드캐스트가 소비. 종합자(4번째 순서)가 실패한다.
+        agy: [
+          { ok: true, text: "확인" },
+          { ok: false, error: "API 오류" },
+        ],
+      },
+      calls
+    ),
+  });
+  room.sendUserMessage("주제입니다");
+  await settle(room);
+  calls.length = 0;
+
+  await room.startDiscussion({
+    protocol: {
+      presetId: "shaping",
+      participantIds: ["claude", "codex", "agy"],
+      cycleBudget: 2,
+    },
+  });
+  await settle(room);
+
+  const conclusion = room.messages.findLast((message) => message.discussionMeta);
+  // 실행 시도(completed=4)가 아니라 성공한 step(3) 기준이어야 한다 —
+  // completed로 세면 floor(4/4)=1로 실패한 cycle이 완료로 기록된다.
+  assert.equal(conclusion.discussionMeta.protocol.cyclesCompleted, 0);
+  assert.deepEqual(conclusion.discussionMeta.protocol.failedStep, {
+    cycle: 1,
+    step: 4,
+    roleName: "종합자",
+  });
+});
+
 test("구조화 토론 메시지에는 당시 역할 metadata가 남는다", async () => {
   const calls = [];
   const room = new ChatRoom({ agents: makeAgents(), runAgent: fakeRunner({}, calls) });

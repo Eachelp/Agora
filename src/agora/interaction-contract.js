@@ -95,9 +95,13 @@ function executionContractFor(targetRole, { sourceRole, hasFrozenArtifacts } = {
     case "reviewer":
       return resolveReviewerContract({ sourceRole, hasFrozenArtifacts });
     case "recorder":
-      // 사람이 읽기 좋은 정리(archivist 책임)를 수행하는 recorder 계약.
-      // deterministic System Journal은 Runtime 기능이라 여기 없다.
-      return "recorder";
+      // Handoff/CONSULT로 부르는 @기록자는 항상 사람이 읽기 좋은 정리를
+      // 만드는 LLM 계약(archivist)이다. 기존 professional "recorder" stage는
+      // deterministic finalizer가 가로채 LLM을 호출하지 않으므로, 그 stage id를
+      // 여기서 돌려주면 "기록 역할을 맡은 AI" 대신 finalizer가 호출된다.
+      // deterministic System Journal/finalizer는 Runtime 기능이지 Handoff
+      // 대상의 실행 계약이 아니다 — 계약 어휘에서부터 갈라 둔다.
+      return "archivist";
     default:
       return null;
   }
@@ -110,18 +114,40 @@ const DEFAULT_HANDOFF_BUDGET = 8;
 // - 한 시점 active invocation 1개
 // - 같은 invocationId 재소비 금지 (취소 뒤 늦게 도착한 요청, 재시작 중복 방어)
 // - 동일 역할 연속 호출 금지
+//
+// 이 객체는 in-memory 실행 상태다. 영속화의 authority는 Journal이 아니라
+// (Journal은 실패해도 실행이 계속되는 비권위 감사 기록이다) fail-closed로
+// 저장되는 professionalRun 쪽 상태여야 한다 — Stage 5는 serializeHandoffLedger
+// 결과를 professionalRun.handoffState에 싣고, 재시작 시 그 값을 이 함수로
+// 복원한다. sourceRole·professionalRunId·generation·invocationId는 모델
+// 출력에서 받지 않고 Runtime이 현재 invocation에서 주입한다.
 function createHandoffLedger(options = {}) {
   const budget = Number.isInteger(options.budget) && options.budget > 0
     ? options.budget
     : DEFAULT_HANDOFF_BUDGET;
   return {
     budget,
-    used: 0,
+    // 복원 없이 새로 만들면 0. used를 복원하지 않으면 재시작이 곧 예산
+    // 리셋이 되어 상한이 의미를 잃는다.
+    used: Number.isInteger(options.used) && options.used >= 0 ? options.used : 0,
     consumedInvocationIds: new Set(
       Array.isArray(options.consumedInvocationIds) ? options.consumedInvocationIds : [],
     ),
     lastTargetRole: options.lastTargetRole || null,
     activeInvocationId: options.activeInvocationId || null,
+  };
+}
+
+// 영속 저장용 직렬화. createHandoffLedger(serializeHandoffLedger(ledger))가
+// 동일한 판정을 내리는 원장을 복원한다(roundtrip 계약).
+function serializeHandoffLedger(ledger) {
+  if (!ledger || typeof ledger !== "object") return null;
+  return {
+    budget: ledger.budget,
+    used: ledger.used,
+    consumedInvocationIds: [...(ledger.consumedInvocationIds || [])],
+    lastTargetRole: ledger.lastTargetRole || null,
+    activeInvocationId: ledger.activeInvocationId || null,
   };
 }
 
@@ -214,6 +240,38 @@ const ASK_USER_LINE_PATTERN = /^[ \t]*ASK_USER:[ \t]*([^\r\n]+?)[ \t]*$/gim;
 const PURPOSE_LINE_PATTERN = /^[ \t]*PURPOSE:[ \t]*([^\r\n]+?)[ \t]*$/im;
 const REASON_LINE_PATTERN = /^[ \t]*REASON:[ \t]*([^\r\n]+?)[ \t]*$/im;
 
+// end-anchor 판별용 단일 줄 패턴. 아래 trailingControlBlock이 응답 꼬리의
+// 연속된 제어 줄만 골라내는 데 쓴다.
+const CONTROL_LINE_PATTERNS = Object.freeze([
+  /^[ \t]*HANDOFF:[ \t]*@?[\p{L}\p{N}_-]+[ \t]*$/iu,
+  /^[ \t]*COMPLETE(?::[ \t]*[^\r\n]*?)?[ \t]*$/i,
+  /^[ \t]*ASK_USER:[ \t]*[^\r\n]+?[ \t]*$/i,
+  /^[ \t]*PURPOSE:[ \t]*[^\r\n]+?[ \t]*$/i,
+  /^[ \t]*REASON:[ \t]*[^\r\n]+?[ \t]*$/i,
+]);
+
+function isControlLine(line) {
+  return CONTROL_LINE_PATTERNS.some((pattern) => pattern.test(line));
+}
+
+// 응답 마지막에 붙은 연속 제어 블록만 잘라낸다(end-anchor —
+// [[CODEPET_REVIEW:...]]의 끝줄 앵커 규율과 같은 원칙). 본문 중간의
+// "출력 예시는 다음과 같습니다: HANDOFF: @builder" 뒤에 산문이 이어지면
+// 그 마커는 설명이지 실행 요청이 아니다. 이 제어가 Builder 자동 호출로
+// 이어지는 순간 파싱 오인은 곧 실행 권한 문제가 되기 때문이다.
+function trailingControlBlock(source) {
+  const lines = String(source || "").split(/\r?\n/);
+  let end = lines.length - 1;
+  while (end >= 0 && lines[end].trim() === "") end -= 1;
+  const block = [];
+  for (let index = end; index >= 0; index -= 1) {
+    const line = lines[index];
+    if (line.trim() === "" || !isControlLine(line)) break;
+    block.unshift(line);
+  }
+  return block.join("\n");
+}
+
 function maskCodeFences(text) {
   return String(text || "")
     .replace(/```[\s\S]*?(?:```|$)/g, (match) => " ".repeat(match.length))
@@ -229,12 +287,15 @@ function handoffTargetForToken(token) {
 }
 
 // 역할 출력에서 구조화 제어 행동을 파싱한다(제안서 §8.1의 확장).
-// - 일반 문장 속 @reviewer는 제어가 아니다. 줄 전체가 마커 형태일 때만
-//   인식한다. 코드펜스 안의 예시는 무시한다.
+// - 일반 문장 속 @reviewer는 제어가 아니다. 줄 전체가 마커 형태이고, 그 줄이
+//   응답 마지막의 연속 제어 블록에 속할 때만 인식한다(end-anchor). 본문
+//   중간의 마커는 산문·예시로 취급한다. 코드펜스 안의 예시는 무시한다.
 // - 마커가 없으면 null. 서로 다른 행동이 섞이거나 HANDOFF 대상이 갈리면
 //   ambiguous로 표시하고 확정하지 않는다(findControlMarker의 ambiguity 규율).
 function parseControlOutput(text) {
-  const source = maskCodeFences(text);
+  // 코드펜스 예시를 지운 뒤, 응답 꼬리의 연속 제어 블록만 파싱 대상으로 삼는다.
+  const source = trailingControlBlock(maskCodeFences(text));
+  if (!source) return null;
 
   const handoffTargets = [];
   for (const match of source.matchAll(HANDOFF_LINE_PATTERN)) {
@@ -290,6 +351,7 @@ module.exports = {
   executionContractFor,
   DEFAULT_HANDOFF_BUDGET,
   createHandoffLedger,
+  serializeHandoffLedger,
   newInvocationId,
   validateHandoff,
   consumeHandoff,

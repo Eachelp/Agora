@@ -15,11 +15,13 @@ const {
   executionContractFor,
   DEFAULT_HANDOFF_BUDGET,
   createHandoffLedger,
+  serializeHandoffLedger,
   validateHandoff,
   consumeHandoff,
   settleHandoff,
   parseControlOutput,
 } = require("../src/agora/interaction-contract");
+const { SPECIALIST_STAGE_CAPS } = require("../src/chat/chat-argv");
 
 test("normalizeInteraction: metadata 없는 입력은 CONSULT/SINGLE/NONE 기본값", () => {
   assert.deepEqual(normalizeInteraction(), {
@@ -86,7 +88,6 @@ test("Handoff 대상은 사람 역할뿐이다 — 상태·행동·계약은 그
 test("executionContractFor: 표면 역할을 실행 계약으로 정규화한다", () => {
   assert.equal(executionContractFor("planner"), "planner");
   assert.equal(executionContractFor("builder"), "implementation");
-  assert.equal(executionContractFor("recorder"), "recorder");
   // @reviewer라는 표면 어휘가 검증에서 거부되지 않고, 출처·artifact에 따라
   // 계약이 갈린다 — 표면과 내부 어휘의 어긋남을 여기서 흡수한다.
   assert.equal(executionContractFor("reviewer", { sourceRole: "planner" }), "plan_review");
@@ -96,6 +97,60 @@ test("executionContractFor: 표면 역할을 실행 계약으로 정규화한다
     "review",
   );
   assert.equal(executionContractFor("orchestrator"), null);
+});
+
+test("@recorder의 실행 계약은 deterministic finalizer가 아니라 archivist다", () => {
+  // 기존 professional "recorder" stage는 finalizer가 가로채 LLM을 호출하지
+  // 않는다. Handoff/CONSULT의 @기록자가 그 stage로 이어지면 "기록 역할을
+  // 맡은 AI" 대신 finalizer가 불린다 — 계약 어휘에서부터 갈라 둔다.
+  assert.equal(executionContractFor("recorder"), "archivist");
+  assert.notEqual(executionContractFor("recorder"), "recorder");
+  // archivist 계약의 권한 상한은 recorder와 같은 chat이다.
+  assert.equal(SPECIALIST_STAGE_CAPS.archivist, "chat");
+});
+
+test("handoff ledger는 직렬화-복원 roundtrip으로 같은 판정을 유지한다", () => {
+  const ledger = createHandoffLedger({ budget: 3 });
+  consumeHandoff(
+    { sourceRole: "planner", targetRole: "reviewer", invocationId: "inv-1" },
+    { ledger },
+  );
+  settleHandoff(ledger, "inv-1");
+  consumeHandoff(
+    { sourceRole: "reviewer", targetRole: "builder", invocationId: "inv-2" },
+    { ledger },
+  );
+
+  const restored = createHandoffLedger(serializeHandoffLedger(ledger));
+  // used를 복원하지 않으면 재시작이 곧 예산 리셋이 된다.
+  assert.equal(restored.used, 2);
+  assert.equal(restored.budget, 3);
+  // 소비된 invocation 재사용은 복원 후에도 거부된다(재시작 중복 방지).
+  assert.equal(
+    validateHandoff(
+      { sourceRole: "reviewer", targetRole: "planner", invocationId: "inv-1" },
+      { ledger: restored },
+    ).reason,
+    "HANDOFF_DUPLICATE",
+  );
+  // active invocation(inv-2)도 복원되어 동시성 규칙이 유지된다.
+  assert.equal(
+    validateHandoff(
+      { sourceRole: "builder", targetRole: "planner", invocationId: "inv-3" },
+      { ledger: restored },
+    ).reason,
+    "HANDOFF_BUSY",
+  );
+  assert.equal(settleHandoff(restored, "inv-2"), true);
+  // 연속 호출 금지(lastTargetRole)도 복원된다.
+  assert.equal(
+    validateHandoff(
+      { sourceRole: "reviewer", targetRole: "builder", invocationId: "inv-3" },
+      { ledger: restored },
+    ).reason,
+    "HANDOFF_SELF",
+  );
+  assert.equal(serializeHandoffLedger(null), null);
 });
 
 test("resolveReviewerContract: 문구가 아니라 출처와 artifact로 계약을 고른다", () => {
@@ -307,6 +362,24 @@ test("parseControlOutput: 산문 속 COMPLETE는 제어가 아니다", () => {
 test("parseControlOutput: 일반 문장 속 멘션은 제어가 아니다", () => {
   assert.equal(parseControlOutput("@reviewer 이 부분을 봐 주세요."), null);
   assert.equal(parseControlOutput("다음 단계는 HANDOFF: @reviewer 입니다."), null);
+});
+
+test("parseControlOutput: 본문 중간의 마커는 end-anchor 규칙으로 무시된다", () => {
+  // 코드펜스 없이 예시를 보여 준 뒤 산문이 이어지는 경우 — 실행 요청이 아니다.
+  const midText = ["출력 예시는 다음과 같습니다.", "HANDOFF: @builder", "이렇게 쓰면 됩니다."].join(
+    "\n"
+  );
+  assert.equal(parseControlOutput(midText), null);
+  // 중간 마커 + 끝 제어 블록이면 끝의 블록만 유효하다(last-block-wins).
+  const tail = ["예시: ", "HANDOFF: @builder", "설명이 이어집니다.", "", "COMPLETE: 끝"].join("\n");
+  assert.deepEqual(parseControlOutput(tail), {
+    action: "COMPLETE",
+    summary: "끝",
+    ambiguous: false,
+  });
+  // 끝 블록은 빈 줄 없이 연속이어야 한다.
+  const split = ["HANDOFF: @builder", "", "PURPOSE: implementation"].join("\n");
+  assert.equal(parseControlOutput(split), null, "PURPOSE만 남은 블록은 행동이 아니다");
 });
 
 test("parseControlOutput: 코드펜스 안의 예시는 무시한다", () => {
