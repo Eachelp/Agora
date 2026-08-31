@@ -43,6 +43,14 @@ test("parseTeamRunDirective: 앞선 @팀 뒤에 토큰이 없어도 뒤의 '@팀
   assert.equal(parseTeamRunDirective("@팀. 그리고 @팀 실행 진행"), true);
 });
 
+test("parseTeamRunDirective/parseRoleMentions: NFD(자모 분해) 한글도 인식한다", () => {
+  const { parseRoleMentions } = require("../src/chat/chat-mention");
+  // macOS 붙여넣기 등에서 오는 NFD 입력이 조용히 드롭되면 안 된다.
+  assert.equal(parseTeamRunDirective("@팀 실행 로그인 기능 만들어줘".normalize("NFD")), true);
+  assert.deepEqual(parseRoleMentions("@기획자 이거 봐줘".normalize("NFD")), ["planner"]);
+  assert.deepEqual(parseRoleMentions("@팀 상담 요청".normalize("NFD")), ["team"]);
+});
+
 // --- IPC 라우팅 (chat-team-consult.test.js의 harness 패턴) ---
 
 function fakeRecord(id, name, aliases) {

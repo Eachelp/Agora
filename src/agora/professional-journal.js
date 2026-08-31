@@ -51,6 +51,9 @@ function createJournalEvent(fields = {}) {
     type: fields.type,
     role: fields.role || null,
     purpose: fields.purpose || null,
+    // HANDOFF 요청의 근거. 프롬프트가 REASON을 가르치므로 감사 이력에 남긴다
+    // (없으면 null). purpose(무엇을 위한 계약인가)와는 다른 축이다.
+    reason: fields.reason || null,
     status: fields.status || null,
     // artifact는 본문 복사가 아니라 ID/hash/경로 참조만 싣는다(§10.2).
     artifactRefs: Array.isArray(fields.artifactRefs) ? [...fields.artifactRefs] : [],
@@ -159,7 +162,17 @@ function journalEventsForTransition(prevRun, event, nextRun, options = {}) {
     createdAt: options.createdAt,
   };
   return mapper(base, nextRun)
-    .map((fields) => createJournalEvent({ ...base, ...fields }))
+    .map((fields) => {
+      const event = createJournalEvent({ ...base, ...fields });
+      // 매퍼는 내부 코드다 — 어휘 밖 type을 낸 것은 개발 실수(오타·등록 누락)다.
+      // 운영은 fail-open을 유지하되(감사 실패가 실행을 막지 않는다) 개발/테스트에서는
+      // 드러내, 미래의 오타가 무증상으로 이벤트를 통째로 잃지 않게 한다.
+      if (!event && fields?.type && process.env.NODE_ENV !== "production") {
+        // eslint-disable-next-line no-console
+        console.warn(`[journal] 어휘 밖 이벤트 type이 폐기됐습니다: ${fields.type}`);
+      }
+      return event;
+    })
     .filter(Boolean);
 }
 

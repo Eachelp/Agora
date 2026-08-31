@@ -120,6 +120,43 @@ test("consultTeam은 토론·전문 실행 중에는 시작하지 않는다", as
   assert.equal((await room.consultTeam(teamSteps())).ok, false);
 });
 
+test("팀 상담 진행 중에는 토론 시작이 거부된다(순차 계약 보호)", async () => {
+  let releasePlanner;
+  const gate = new Promise((resolve) => {
+    releasePlanner = resolve;
+  });
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { permissionMode: "workspace-write" },
+    runAgent: ({ agent }) => {
+      // 첫 순서(기획자=claude) 상담을 붙잡아 팀 상담을 진행 중 상태로 유지한다.
+      if (agent.id === "claude") {
+        return { promise: gate.then(() => ({ ok: true, text: "기획자 의견" })), cancel: () => {} };
+      }
+      return { promise: Promise.resolve({ ok: true, text: "…" }), cancel: () => {} };
+    },
+  });
+  const teamPromise = room.consultTeam(teamSteps());
+  // 기획자 상담이 스케줄돼 팀 상담이 진행 중이 될 때까지 대기.
+  const start = Date.now();
+  while (!room.isConsultActive()) {
+    if (Date.now() - start > 3000) throw new Error("상담 활성 대기 시간 초과");
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.equal(room.isConsultActive(), true);
+
+  // 상담 도중 토론 시작은 거부된다 — step 사이에 끼어들어 순차 계약을 깨지 못한다.
+  const disc = await room.startDiscussion({ agentIds: ["claude", "codex"] });
+  assert.equal(disc.ok, false);
+  assert.match(disc.error, /상담/);
+
+  releasePlanner();
+  await teamPromise;
+  await settle(room);
+  // 상담이 끝나면 다시 시작할 수 있다.
+  assert.equal(room.isConsultActive(), false);
+});
+
 // --- IPC 라우팅 ---
 
 function fakeRecord(id, name, aliases) {

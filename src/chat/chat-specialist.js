@@ -367,6 +367,7 @@ class SpecialistMixin {
         type: "HANDOFF_REJECTED",
         role: control.targetRole || null,
         purpose: control.action || null,
+        reason: control.reason || null,
         status: reason,
         professionalRunId,
         frozenRunId,
@@ -418,6 +419,8 @@ class SpecialistMixin {
       type: "HANDOFF_ACCEPTED",
       role: control.targetRole,
       purpose: control.purpose || null,
+      // 프롬프트가 가르치는 것은 REASON이다 — 그 근거를 감사 이력에 남긴다.
+      reason: control.reason || null,
       invocationId: structural.invocationId,
       professionalRunId,
       frozenRunId,
@@ -1899,6 +1902,11 @@ class SpecialistMixin {
     const startBlocked = restartsPlan ? this.isSpecialistBusy() : this.isSpecialistLocked();
     if (this.discussionRequested || this.discussionActive || startBlocked) {
       return { ok: false, error: "이미 다른 전문 작업이나 토론이 진행 중입니다." };
+    }
+    // 역할·팀 상담이 진행 중이면 전문 실행을 시작하지 않는다 — 상담 step
+    // 사이의 await 창에서 전문 실행이 끼어들어 순차 계약이 깨지는 것을 막는다.
+    if (typeof this.isConsultActive === "function" && this.isConsultActive()) {
+      return { ok: false, error: "역할·팀 상담이 진행 중에는 전문 실행을 시작할 수 없습니다." };
     }
     // 일반 응답이 실행·대기 중이면 전문 실행을 큐 뒤에 넣지 않고 즉시 거부합니다.
     // (전문 실행이 일반 응답 뒤에 몰래 대기하지 않도록 합니다.)

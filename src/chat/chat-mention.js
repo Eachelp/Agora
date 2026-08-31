@@ -1,7 +1,13 @@
 const MENTION_PATTERN = /@([\p{L}\p{N}_-]+)/gu;
 
 function maskNonCallingText(text) {
+  // NFC로 정규화한 뒤 마스킹한다. 별칭 리터럴("팀"/"실행"/"기획자" 등)은
+  // NFC 형태라, 입력이 NFD(결합 자모 분해 — macOS 붙여넣기 등)이면 토큰
+  // 비교가 실패해 멘션·실행이 조용히 누락된다. 모든 파서(parseMentions/
+  // parseRoleMentions/parseTeamRunDirective)가 이 함수의 결과를 대상으로
+  // 매칭·slice하므로 여기서 한 번 정규화하면 일관되게 인식된다.
   return String(text || "")
+    .normalize("NFC")
     .replace(/```[\s\S]*?(?:```|$)/g, (match) => " ".repeat(match.length))
     .replace(/`[^`\r\n]*`/g, (match) => " ".repeat(match.length));
 }

@@ -162,6 +162,11 @@ class ChatRoom extends EventEmitter {
     this.discussionActive = false;
     this.discussionRequested = false;
     this.specialistActive = false;
+    // V1.5 역할/팀 상담(CONSULT)이 진행 중임을 나타내는 재진입 카운터.
+    // consultTeam이 consultRole을 중첩 호출하므로 불리언이 아닌 카운터다.
+    // 상담 중에는 토론·전문실행 시작을 막고 일반 턴을 defer해 순차 계약을
+    // 보호한다(discussionActive/specialistActive와 동일한 상호배제).
+    this.consultActiveCount = 0;
     // 전문 실행 중 "기획 승인 후 이어서 진행"할 상태(step/auto에서 PLAN_READY로 멈출 때 저장).
     this.specialistResume = null;
     // 기획 검수를 통과하고 사용자가 승인한 live Task입니다. 구현·검수 블록은
@@ -611,11 +616,14 @@ class ChatRoom extends EventEmitter {
     };
     if (dedupeKey) this.pendingTurns.set(dedupeKey, item);
     this.trackTurnWait(item);
-    // While a discussion or specialist run is active, defer ordinary
-    // (non-discussion, non-specialist) turns so they cannot interject.
-    const deferGeneral = (this.discussionActive || this.specialistActive)
+    // While a discussion, specialist run, or consult is active, defer ordinary
+    // (non-discussion, non-specialist, non-consult) turns so they cannot
+    // interject. 상담 턴 자체(context.consult)는 defer 대상이 아니다 — 그러면
+    // 상담이 자기 자신을 기다리며 멈춘다.
+    const deferGeneral = (this.discussionActive || this.specialistActive || this.isConsultActive())
       && !context.discussion
-      && !context.specialist;
+      && !context.specialist
+      && !context.consult;
     const queue = deferGeneral
       ? this.deferredTurnQueue
       : this.turnQueue;
@@ -1179,6 +1187,7 @@ class ChatRoom extends EventEmitter {
             type: "HANDOFF_REQUESTED",
             role: parsed.targetRole || null,
             purpose: parsed.purpose || null,
+            reason: parsed.reason || null,
             status: parsed.ambiguous ? "AMBIGUOUS" : null,
             professionalRunId: this.professionalRun?.professionalRunId || null,
             frozenRunId: this.professionalRun?.frozenRunId || null,
@@ -1279,6 +1288,21 @@ class ChatRoom extends EventEmitter {
   // 일반 턴으로 실행하고 역할 관점과 읽기 전용 계약만 프롬프트로 덧씌운다.
   // (specialist stage 턴은 harness가 professionalRunId를 요구하므로 run 없는
   // 상담을 stage 턴으로 보내면 fail-closed로 죽는다.)
+  isConsultActive() {
+    return this.consultActiveCount > 0;
+  }
+
+  // 상담 구간이 끝나면 그 사이 defer된 일반 턴을 다시 흘려보낸다.
+  // 토론·전문실행의 finally와 같은 정리다(가장 바깥 상담만 flush한다).
+  releaseConsultDeferred() {
+    if (this.consultActiveCount > 0) return;
+    if (this.deferredTurnQueue.length > 0) {
+      this.turnQueue.push(...this.deferredTurnQueue.splice(0));
+      this.emitTurnState();
+      this.pumpTurnQueue();
+    }
+  }
+
   async consultRole({ roleId, stage, agent, agentConfig, roleLabel, attachments }) {
     if (this.discussionRequested || this.discussionActive) {
       return { ok: false, error: "토론이 진행 중에는 역할을 호출할 수 없습니다." };
@@ -1294,27 +1318,33 @@ class ChatRoom extends EventEmitter {
       return { ok: false, error: "이 역할의 담당 에이전트를 사용할 수 없습니다." };
     }
     const label = roleLabel || roleId;
-    this.appendSystem(`@${target.id}가 ${label} 역할의 관점에서 답합니다. (읽기 전용 상담)`);
-    // Role Invocation도 Journal 대상이다 — FSM 전이만 감시하는 seam으로는
-    // 직접 역할 호출 중심의 전문모드를 감사할 수 없다.
-    this.recordJournalEvent?.({ type: "ROLE_STARTED", role: roleId, purpose: "consult" });
-    const outcome = await this.scheduleResponse(target, {
-      consult: { role: roleId, stage: stage || null, label },
-      agentConfig,
-      // 질문에 딸린 첨부는 상담 턴에도 전달한다 — 기록만 되고 정작 답하는
-      // 에이전트가 파일을 못 받는 공백을 막는다.
-      attachments: Array.isArray(attachments) ? attachments : [],
-    });
-    this.recordJournalEvent?.({
-      type: "ROLE_FINISHED",
-      role: roleId,
-      purpose: "consult",
-      status: !outcome ? "INTERRUPTED" : outcome.ok ? "DONE" : "FAILED",
-    });
-    if (!outcome) return { ok: false, cancelled: true };
-    return outcome.ok
-      ? { ok: true, messageId: outcome.messageId || null }
-      : { ok: false, error: outcome.error || "역할 상담 응답에 실패했습니다." };
+    this.consultActiveCount += 1;
+    try {
+      this.appendSystem(`@${target.id}가 ${label} 역할의 관점에서 답합니다. (읽기 전용 상담)`);
+      // Role Invocation도 Journal 대상이다 — FSM 전이만 감시하는 seam으로는
+      // 직접 역할 호출 중심의 전문모드를 감사할 수 없다.
+      this.recordJournalEvent?.({ type: "ROLE_STARTED", role: roleId, purpose: "consult" });
+      const outcome = await this.scheduleResponse(target, {
+        consult: { role: roleId, stage: stage || null, label },
+        agentConfig,
+        // 질문에 딸린 첨부는 상담 턴에도 전달한다 — 기록만 되고 정작 답하는
+        // 에이전트가 파일을 못 받는 공백을 막는다.
+        attachments: Array.isArray(attachments) ? attachments : [],
+      });
+      this.recordJournalEvent?.({
+        type: "ROLE_FINISHED",
+        role: roleId,
+        purpose: "consult",
+        status: !outcome ? "INTERRUPTED" : outcome.ok ? "DONE" : "FAILED",
+      });
+      if (!outcome) return { ok: false, cancelled: true };
+      return outcome.ok
+        ? { ok: true, messageId: outcome.messageId || null }
+        : { ok: false, error: outcome.error || "역할 상담 응답에 실패했습니다." };
+    } finally {
+      this.consultActiveCount -= 1;
+      this.releaseConsultDeferred();
+    }
   }
 
   // V1.5 팀 상담(제안서 §9.2) — Planner-first 제한 순차 상담. 역할을 병렬
@@ -1334,28 +1364,38 @@ class ChatRoom extends EventEmitter {
     if (!Array.isArray(steps) || steps.length === 0) {
       return { ok: false, error: "팀 상담에 참여할 역할이 없습니다." };
     }
-    const order = steps.map((step) => step.roleLabel || step.roleId).join(" → ");
-    this.appendSystem(`팀 상담 시작 · ${order} 순서로 답합니다. (읽기 전용, 실행 없음)`);
-    const generation = this.generation;
-    for (const step of steps) {
-      if (generation !== this.generation) return { ok: false, cancelled: true };
-      const result = await this.consultRole(step);
-      if (!result.ok) {
-        // 중간 중단을 조용히 넘기지 않는다. IPC는 시작 확인 후 결과를 받지
-        // 않으므로(pending 반환), 남은 순서가 실행되지 않은 이유는 여기서
-        // 채팅에 남겨야 사용자에게 보인다. 사용자 중지(cancelled)는 중지
-        // 경로가 이미 자체 안내를 남기므로 제외한다.
-        if (!result.cancelled) {
-          this.appendSystem(
-            `팀 상담이 중간에 중단되었습니다: ${result.error || "역할 상담 응답에 실패했습니다."}`
-          );
+    // 팀 상담 전체 구간을 상담 활성으로 표시한다. 이렇게 해야 step 사이의
+    // await 창에서 토론·전문실행이 끼어들어 순차 계약이 반쪽으로 무너지거나,
+    // 일반 메시지가 step들 사이에 실행되는 것을 막는다(중첩 consultRole은
+    // 카운터로 흡수된다).
+    this.consultActiveCount += 1;
+    try {
+      const order = steps.map((step) => step.roleLabel || step.roleId).join(" → ");
+      this.appendSystem(`팀 상담 시작 · ${order} 순서로 답합니다. (읽기 전용, 실행 없음)`);
+      const generation = this.generation;
+      for (const step of steps) {
+        if (generation !== this.generation) return { ok: false, cancelled: true };
+        const result = await this.consultRole(step);
+        if (!result.ok) {
+          // 중간 중단을 조용히 넘기지 않는다. IPC는 시작 확인 후 결과를 받지
+          // 않으므로(pending 반환), 남은 순서가 실행되지 않은 이유는 여기서
+          // 채팅에 남겨야 사용자에게 보인다. 사용자 중지(cancelled)는 중지
+          // 경로가 이미 자체 안내를 남기므로 제외한다.
+          if (!result.cancelled) {
+            this.appendSystem(
+              `팀 상담이 중간에 중단되었습니다: ${result.error || "역할 상담 응답에 실패했습니다."}`
+            );
+          }
+          return result;
         }
-        return result;
       }
+      if (generation !== this.generation) return { ok: false, cancelled: true };
+      this.appendSystem("팀 상담을 마쳤습니다. 실행이 필요하면 PLAN 또는 실행 버튼으로 시작해 주세요.");
+      return { ok: true };
+    } finally {
+      this.consultActiveCount -= 1;
+      this.releaseConsultDeferred();
     }
-    if (generation !== this.generation) return { ok: false, cancelled: true };
-    this.appendSystem("팀 상담을 마쳤습니다. 실행이 필요하면 PLAN 또는 실행 버튼으로 시작해 주세요.");
-    return { ok: true };
   }
 
   // 다른 AI가 보낸 특정 메시지를 선택한 에이전트에게 전달해 이어서 답하게 합니다.
@@ -1507,6 +1547,9 @@ class ChatRoom extends EventEmitter {
     }
     if (this.discussionRequested || this.discussionActive || this.isSpecialistLocked()) {
       return { ok: false, error: "이미 토론이 진행 중입니다." };
+    }
+    if (this.isConsultActive()) {
+      return { ok: false, error: "역할·팀 상담이 진행 중에는 토론을 시작할 수 없습니다." };
     }
 
     const requestedGeneration = this.generation;

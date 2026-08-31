@@ -115,6 +115,12 @@ test("전체 실행에서 역할들의 HANDOFF 요청이 소비·기록되고 Ar
   );
   assert.equal(journal.some((event) => event.type === "HANDOFF_REJECTED"), false);
 
+  // 프롬프트가 가르치는 REASON이 감사 이력(HANDOFF_ACCEPTED)에 남는다.
+  // (planner 응답이 'HANDOFF: @reviewer\nREASON: 계획 검증 필요'였다.)
+  assert.equal(accepted[0].reason, "계획 검증 필요");
+  const requested = journal.find((event) => event.type === "HANDOFF_REQUESTED");
+  assert.equal(requested.reason, "계획 검증 필요");
+
   // 원장 소비가 fail-closed 경로(professionalRun.handoffState)에 영속됐다.
   assert.ok(persistedRun?.handoffState);
   assert.equal(persistedRun.handoffState.used, 4);

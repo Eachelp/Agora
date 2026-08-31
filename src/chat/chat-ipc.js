@@ -1945,9 +1945,6 @@ function roomMeta(meta) {
                   room.appendSystem(`팀 자율 실행을 시작하지 못했습니다: ${planned.error}`);
                   return { consult: true, teamRun: false };
                 }
-                room.appendSystem(
-                  "팀 자율 실행을 시작합니다: 기획 → 기획 검수가 자동으로 진행되고, 구현 시작 전 승인 대기에서 멈춥니다."
-                );
                 const started = room.startSpecialist({
                   stages: planned.stages,
                   action: "plan",
@@ -1964,6 +1961,12 @@ function roomMeta(meta) {
                 if (result && result.ok === false && !result.needsUserDecision && !result.cancelled) {
                   throw new Error(result.error || "팀 자율 실행을 시작하지 못했습니다.");
                 }
+                // 시작이 즉시 거부되지 않은(pending/정상) 것을 확인한 뒤에야
+                // 낙관적 안내를 남긴다 — 거부 시 '시작합니다'가 transcript에
+                // 남아 실행된 것처럼 오인되는 것을 막는다.
+                room.appendSystem(
+                  "팀 자율 실행을 시작합니다: 기획 → 기획 검수가 자동으로 진행되고, 구현 시작 전 승인 대기에서 멈춥니다."
+                );
                 return { consult: true, teamRun: true };
               }
               const project = projectForSession(store.readMeta(sessionId));
