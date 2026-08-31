@@ -639,14 +639,25 @@ plan_review 판정, builder 첫 라운드, review 판정, 보완 라운드 build
   Run 생성 없음, Freeze 없음, write 없음, Recorder 자동 호출 없음(제안서
   §9.2). 뒤 순서는 앞 상담 답변을 대화 기록으로 읽는다. 중간 실패·사용자
   중지(generation bump)에서 멈춘다.
-- **미래의 자율 팀 실행은 Role-to-Role Handoff 기반이다** (Stage 5 완성 후):
-  기존 `chat:specialist:start` action들을 재조합하는 방식이 아니라, Planner가
+- **팀 자율 실행(`@팀 실행`) — 구현 완료**: `@팀`(Team Consult)은 그대로
+  두고, 멘션 바로 다음 토큰이 정확히 `실행`(영문 `run`)인 메시지만 자율
+  실행 트리거로 승격한다(`parseTeamRunDirective`, chat-mention.js) — 본문
+  임의 위치의 "실행"으로 상담 질문("이 실행 계획 어때?")이 실행이 되지
+  않는다(INV-2 유지). 라우팅(chat-ipc `chat:send`): 다섯 역할 담당자를
+  전부 해석(`specialistStagesFor(project, room, "full")` — 담당자 공백은
+  시작 전에 fail)한 뒤 `startSpecialist({ action: "plan", mode: "auto",
+  planAutoRevisions: 1, implementationAutoRevisions: 1 })`로 시작한다.
+  기획 → 기획 검수가 자동 진행되고 **EXECUTE 직전 READY 승인 게이트에서
+  멈춘다** — 채팅 문장은 `autoContinueReady`(EXECUTE 사전 승인)를 만들 수
+  없다(§9.4). 사용자가 기존 승인 액션으로 승인하면 구현·검수·기록이
+  Role-to-Role Handoff loop로 자율 진행된다. 워크스페이스 없는 세션은
+  실행을 시작하지 않고 이유를 채팅에 남긴다. 회귀:
+  `test/chat-team-run.test.js`.
+- 이 트리거가 들어가는 실행 루프 자체는 Stage 5의 것이다: Planner가
   시작해 각 역할이 제어 출력(HANDOFF/COMPLETE/ASK_USER)으로 다음 역할을
-  요청하고 Runtime이 구조 검증 + 실행 전제조건 검증으로 수용을 판정하는
-  루프다. 승인 Gate(READY 정지, `전체 실행` 사전 승인)는 실행 전제조건
-  검증 층에서 그대로 산다 — 자연어로 우회 불가(§9.4). 현재의 `@팀`(Team
-  Consult)을 이 자율 실행으로 확장할지, 별도 트리거로 둘지는 그때 결정한다
-  (§2 추가 결정).
+  요청하고 Runtime이 구조 검증 + 조합 검증 + 실행 전제조건 검증으로
+  수용을 판정한다. 승인 Gate(READY 정지, `전체 실행` 사전 승인)는 실행
+  전제조건 검증 층에서 그대로 산다 — 자연어로 우회 불가(§9.4).
 - 그 위의 Orchestrator는 같은 Role Invocation/Handoff API를 사용하는 상위
   controller다. `HANDOFF_TARGETS`에 orchestrator를 추가하지 않는다 —
   Specialist가 아니라 primitive의 사용자이기 때문이다.

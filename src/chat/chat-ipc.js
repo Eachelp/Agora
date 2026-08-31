@@ -27,7 +27,7 @@ const {
 } = require("../providers/provider-capabilities");
 const { toDiagnostics } = require("../providers/provider-diagnostics");
 const { roomAgentsFromCapabilities, GROUP_ALIASES } = require("./chat-agents");
-const { parseMentions, parseRoleMentions } = require("./chat-mention");
+const { parseMentions, parseRoleMentions, parseTeamRunDirective } = require("./chat-mention");
 const {
   ChatRoom,
   DEFAULT_DISCUSSION_RUN_BUDGET,
@@ -1919,6 +1919,51 @@ function roomMeta(meta) {
             // @팀: Planner-first 제한 순차 상담(제안서 §9.2). 개별 역할 멘션과
             // 함께 오면 팀 상담이 우선한다.
             if (roleMentions.includes("team")) {
+              // V1.5 §9 — "@팀 실행"은 팀 자율 실행이다. 기획 → 기획 검수가
+              // 자동으로 진행되고 EXECUTE 직전 READY 승인 게이트에서 멈춘다.
+              // 채팅 문장은 EXECUTE 사전 승인(autoContinueReady)을 만들 수
+              // 없다(§9.4) — 전체 실행 사전 승인은 버튼 경로뿐이다. 승인 후의
+              // 구현·검수·기록은 Role-to-Role Handoff loop로 자율 진행된다.
+              if (parseTeamRunDirective(text)) {
+                const meta = store.readMeta(sessionId);
+                const workspace = canonicalWorkspaceForMeta(meta);
+                if (!workspace) {
+                  room.appendSystem(
+                    "팀 자율 실행을 시작하지 못했습니다: 전문 모드는 워크스페이스가 필요합니다. 프로젝트 워크스페이스 폴더를 먼저 선택해 주세요."
+                  );
+                  return { consult: true, teamRun: false };
+                }
+                const project = projectForSession(meta);
+                // 승인 후 구현·검수·기록까지 이어지므로 다섯 역할 전부를
+                // 지금 해석한다 — 담당자 공백은 시작 전에 알아야 한다.
+                const planned = project
+                  ? specialistStagesFor(project, room, "full")
+                  : { ok: false, error: "프로젝트가 없어 역할 담당자를 확인할 수 없습니다." };
+                if (!planned.ok) {
+                  room.appendSystem(`팀 자율 실행을 시작하지 못했습니다: ${planned.error}`);
+                  return { consult: true, teamRun: false };
+                }
+                room.appendSystem(
+                  "팀 자율 실행을 시작합니다: 기획 → 기획 검수가 자동으로 진행되고, 구현 시작 전 승인 대기에서 멈춥니다."
+                );
+                const started = room.startSpecialist({
+                  stages: planned.stages,
+                  action: "plan",
+                  mode: "auto",
+                  planAutoRevisions: 1,
+                  implementationAutoRevisions: 1,
+                  maxAutoRevisions: 1,
+                });
+                const result = await Promise.race([
+                  started,
+                  new Promise((resolve) => setImmediate(() => resolve({ ok: true, pending: true }))),
+                ]);
+                started.catch(() => {});
+                if (result && result.ok === false && !result.needsUserDecision && !result.cancelled) {
+                  throw new Error(result.error || "팀 자율 실행을 시작하지 못했습니다.");
+                }
+                return { consult: true, teamRun: true };
+              }
               const project = projectForSession(store.readMeta(sessionId));
               const steps = [];
               for (const roleId of ["planner", "reviewer", "builder"]) {

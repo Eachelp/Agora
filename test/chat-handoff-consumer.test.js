@@ -273,6 +273,89 @@ test("ensureHandoffLedger: 같은 root의 crash 복원은 죽은 invocation을 �
   assert.equal(interrupted.invocationId, "inv-crash");
 });
 
+test("사용자 개입은 진행 중 실행을 멈추고 handoff를 소비하지 않으며, 새 발화의 재시작은 새 epoch를 받는다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-handoff-interject-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const journal = [];
+  let persistedRun = null;
+  let releasePlanner = null;
+  const plannerGate = new Promise((resolve) => {
+    releasePlanner = resolve;
+  });
+  // 1차 실행: planner 응답을 인위적으로 지연시켜 그 사이에 사용자가 개입한다.
+  // 2차 실행: 즉시 응답 큐로 정상 완주한다.
+  let phase = "gated";
+  const queues = {
+    claude: [
+      { ok: true, text: `${makePlanContract("재시작 실행")}\n\nHANDOFF: @reviewer` },
+      { ok: true, text: "구현 완료\nSTATUS: DONE" },
+    ],
+    codex: [
+      { ok: true, text: "기획 검수 통과\nVERDICT: PASS" },
+      { ok: true, text: "구현 검수 통과\nVERDICT: PASS" },
+    ],
+  };
+  let plannerStarted = false;
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    persistProfessionalRun: (run) => {
+      persistedRun = run;
+      return true;
+    },
+    appendProfessionalEvent: (event) => {
+      journal.push(event);
+      return true;
+    },
+    runAgent: ({ agent }) => {
+      if (phase === "gated" && agent.id === "claude") {
+        plannerStarted = true;
+        return {
+          promise: plannerGate.then(() => ({
+            ok: true,
+            text: `${makePlanContract("개입 대상")}\n\nHANDOFF: @reviewer`,
+          })),
+          cancel: () => {},
+        };
+      }
+      const queue = queues[agent.id] || [];
+      const next = queue.length > 0 ? queue.shift() : { ok: true, text: "…" };
+      return { promise: Promise.resolve(next), cancel: () => {} };
+    },
+  });
+  const firstRoot = room.sendUserMessage({ text: "작업해줘", recordOnly: true });
+
+  const started = room.startSpecialist({ action: "full", stages: fullStages(room) });
+  const waitStart = Date.now();
+  while (!plannerStarted) {
+    if (Date.now() - waitStart > 3000) throw new Error("planner 시작 대기 시간 초과");
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  const interjection = room.interject();
+  assert.equal(interjection.interrupted, true);
+  releasePlanner();
+  const firstResult = await started;
+  // 개입으로 끝난 실행은 성공이 아니고, 늦게 도착한 PLAN_READY+HANDOFF는
+  // 세대 가드에 걸려 소비되지 않는다.
+  assert.notEqual(firstResult?.ok, true);
+  assert.equal(journal.some((event) => event.type === "HANDOFF_ACCEPTED"), false);
+  assert.ok(!persistedRun?.handoffState || persistedRun.handoffState.used === 0);
+
+  // 새 사용자 발화 후 재시작 — 새 root로 새 budget epoch를 받는다.
+  const secondRoot = room.sendUserMessage({ text: "다시 진행해줘", recordOnly: true });
+  phase = "normal";
+  const second = await room.startSpecialist({ action: "full", stages: fullStages(room) });
+  assert.equal(second.ok, true);
+  assert.equal(room.specialistState().node, "COMPLETED");
+  const accepted = journal.filter((event) => event.type === "HANDOFF_ACCEPTED");
+  assert.deepEqual(accepted.map((event) => event.role), ["reviewer"]);
+  assert.equal(persistedRun?.handoffState?.used, 1);
+  assert.equal(persistedRun.handoffState.rootMessageId, secondRoot.id);
+  assert.notEqual(persistedRun.handoffState.rootMessageId, firstRoot.id);
+});
+
 test("ensureHandoffLedger: 새 사용자 발화는 새 budget epoch를 연다", () => {
   const previous = createHandoffLedger({ rootMessageId: "msg-old", budget: 8, used: 6 });
   const room = makeConsumerRoom();

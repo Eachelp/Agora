@@ -90,10 +90,35 @@ function parseRoleMentions(text) {
   return mentioned;
 }
 
+// V1.5 §9 — "@팀 실행"만 팀 자율 실행 트리거다. 그 밖의 @팀 메시지는 전부
+// 읽기 전용 팀 상담(CONSULT)으로 남는다(INV-2). 판정은 멘션 바로 다음
+// 토큰이 정확히 "실행"(또는 영문 별칭 "run")인지로만 한다 — 본문 임의
+// 위치의 "실행"으로 오발동하면 상담 질문("이 실행 계획 어때?")이 실제
+// 실행으로 승격되기 때문이다.
+function parseTeamRunDirective(text) {
+  const source = maskNonCallingText(text);
+  for (const match of source.matchAll(MENTION_PATTERN)) {
+    const previous = match.index > 0 ? source[match.index - 1] : "";
+    if (previous && /[\p{L}\p{N}_@-]/u.test(previous)) continue;
+    const token = match[1];
+    const isTeam = ROLE_ALIASES.team.some(
+      (alias) => alias.toLowerCase() === token.toLowerCase()
+    );
+    if (!isTeam) continue;
+    const rest = source.slice(match.index + match[0].length);
+    const next = rest.match(/^\s+(\S+)/u);
+    if (!next) return false;
+    const word = next[1].replace(/[:,.!?]+$/u, "");
+    return word === "실행" || word.toLowerCase() === "run";
+  }
+  return false;
+}
+
 module.exports = {
   parseMentions,
   tokenMatchesAlias,
   maskNonCallingText,
   ROLE_ALIASES,
   parseRoleMentions,
+  parseTeamRunDirective,
 };
