@@ -741,3 +741,40 @@ finalVerdict**를 함께 전달한다 — 사건 이력만으로는 "무엇이 �
   읽기 전용 단일 응답이다. (Stage 4)
 - System Journal이 transcript와 분리되어 사건을 기록한다. (Stage 3)
 - 기존 Frozen Task·checkpoint·evidence·Reviewer 경계가 유지된다. (전 Stage)
+
+## 13. 코드 리뷰 결과와 기술 부채 (V1.5 종료 시점)
+
+멀티에이전트 리뷰(10관점 병렬 탐지 → 관점 다양화 적대적 검증, 2라운드)로
+확정된 18건을 수정했다(2 HIGH · 2 MEDIUM · 나머지 LOW). 대표: maskCodeFences
+개행 붕괴로 인한 표시/저장 본문 유실, ASK_USER 질문 소실(NEEDS_DECISION
+게이트 파손), 자동보완 루프의 lastTargetRole 잔존 거짓 거부, Handoff 예산
+소진에 따른 Archivist 유실·거부 스팸, handoff REASON 감사 누락, consult 방
+잠금 부재, NFD 한글 멘션 누락 등. 각 항목에 회귀 테스트를 추가했다.
+
+### 후속 리팩토링 부채 (bug 아님 — 품질/유지보수)
+
+아래 3건은 실재하는 유지보수 부채지만 전부 load-bearing한 프롬프트 텍스트
+또는 auto-revise 루프를 건드리고, 리뷰의 적대적 검증이 (세션 한도로) 이
+항목까지 완료되지 못했다. V1.5 종료를 막지 않으며, 별도 리팩토링 패스에서
+각각 회귀 테스트와 함께 처리한다.
+
+1. **제어 조합 계약의 이중 진실**(chat-prompt.js `controlGuides` ↔
+   interaction-contract.js `RESULT_CONTROL_ROUTES`): 허용 조합이 두 곳에
+   따로 하드코딩돼 있어 한쪽만 바꾸면 어긋난다. `RESULT_CONTROL_ROUTES`를
+   단일 원천으로 삼아 프롬프트 안내 문구를 파생 생성하는 방향.
+2. **recorder/archivist 프롬프트 렌더 중복**(chat-prompt.js): finalVerdict·
+   reviewDiff·evidence 렌더 블록이 두 stage 분기에 거의 동일하게 중복.
+   공통 헬퍼로 추출(단, 한글 문구가 load-bearing이므로 출력 바이트 동일성
+   회귀 확인 필요).
+3. **builder 제어 소비·재기획 안내 중복**(chat-specialist.js 최초 라운드 ↔
+   보완 라운드): 두 결정 지점의 consumeControlRequest + 재기획 안내 로직이
+   통째로 중복. 단일 헬퍼로 합치되 auto-revise 상태 전이 회귀 확인 필요.
+
+### 의도적으로 유지한 것(리뷰가 dead-code로 지목했으나 보존)
+
+`interaction-contract.js`의 `normalizeInteraction` / `executionContractFor` /
+`resolveReviewerContract` / `INTERACTION_*` 상수는 미사용처럼 보이지만,
+이 모듈이 명시적으로 설계한 **재사용 계약 API 표면**(직접 역할 호출·@팀·
+향후 Orchestrator/Professional V2가 같은 API를 쓰기 위한 것)이고 단위
+테스트가 있다. 제거하지 않는다. `RESULT_CONTROL_ROUTES.archivist`도 2축
+조합표를 완결적으로 문서화하므로 유지한다.
