@@ -400,6 +400,8 @@ function isControlLine(line) {
 // 본문 중간의 "출력 예시는 다음과 같습니다: HANDOFF: @builder" 뒤에 산문이
 // 이어지면 그 마커는 설명이지 실행 요청이 아니다. 이 제어가 Builder 자동
 // 호출로 이어지는 순간 파싱 오인은 곧 실행 권한 문제가 되기 때문이다.
+// 제어 블록 뒤에 코드펜스가 이어져도 마찬가지다 — 펜스는 가려지되 빈 줄이
+// 아니므로(MASK_CHAR) 끝줄 앵커를 깨고, 제어는 산문으로 남는다.
 //
 // 반환은 [start, end] 포함 범위다(start > end면 제어 블록 없음). 호출자는
 // "어느 줄이 제어 줄인가"만 masked로 판정하고, 실제 값(질문·요약·REASON)은
@@ -415,13 +417,20 @@ function trailingControlRange(masked) {
   return { start: start + 1, end };
 }
 
+// 가림 문자: 공백이 아니고 제어 패턴의 어휘 문자(\p{L}\p{N}_-)도 아니다.
+// - 공백으로 가리면 꼬리 코드펜스 줄이 전부 "빈 줄"로 보여 trailingControlRange의
+//   꼬리 공백 건너뛰기가 펜스를 통째로 넘어간다 → 펜스 앞 제어가 end-anchored로
+//   오인·수용되고 stripControlOutput이 펜스 본문을 화면·TASK.md에서 삭제한다.
+// - 어휘 문자로 가리면 "HANDOFF: `@x`" 같은 줄이 masked에서 제어 줄로 읽힌다.
+const MASK_CHAR = "·";
+
 function maskCodeFences(text) {
   return String(text || "")
     // 개행은 보존한다 — masked 텍스트와 원문의 줄 수가 어긋나면
     // stripControlOutput이 masked 인덱스로 원문을 잘라 본문을 삭제한다.
-    // (여러 줄 펜스를 공백으로 통째 치환하면 줄 구조가 붕괴한다.)
-    .replace(/```[\s\S]*?(?:```|$)/g, (match) => match.replace(/[^\n]/g, " "))
-    .replace(/`[^`\r\n]*`/g, (match) => " ".repeat(match.length));
+    // (여러 줄 펜스를 통째 치환하면 줄 구조가 붕괴한다.)
+    .replace(/```[\s\S]*?(?:```|$)/g, (match) => match.replace(/[^\r\n]/g, MASK_CHAR))
+    .replace(/`[^`\r\n]*`/g, (match) => MASK_CHAR.repeat(match.length));
 }
 
 // 표시용 텍스트에서 꼬리 제어 블록을 제거한다 — [[CODEPET_*]] 앵커를 화면

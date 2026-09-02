@@ -250,6 +250,17 @@ test("chat:discussion:start가 구조화 토론 preset을 전달하고 미지 pr
   });
   assert.equal(rejected.ok, false);
   assert.match(rejected.error, /알 수 없는 토론 Preset/);
+  // Object.prototype 상속 키는 소유 프로퍼티가 아니므로 같은 빠른 실패를 탄다
+  // (`DISCUSSION_PRESETS[presetId]`만 보면 truthy라 뚫렸다).
+  for (const presetId of ["constructor", "toString", "__proto__"]) {
+    const inherited = await feature.invoke("chat:discussion:start", {
+      sessionId,
+      presetId,
+      roleAssignments: ["claude", "codex", "agy"],
+    });
+    assert.equal(inherited.ok, false, presetId);
+    assert.match(inherited.error, /알 수 없는 토론 Preset/, presetId);
+  }
 
   const started = await feature.invoke("chat:discussion:start", {
     sessionId,
@@ -297,11 +308,42 @@ test("자유토론에서 모든 턴이 실패하면 '예산 도달'이 아니라
   });
   const result = await room.startDiscussion({ agentIds: ["claude", "codex"], turnBudget: 3 });
   await settle(room);
-  assert.equal(result?.ok !== undefined ? true : true, true);
+  // 토론 자체는 예산까지 돌았으므로 실행 결과는 ok이고, 종료 사유가 실패다.
+  assert.equal(result.ok, true);
+  assert.equal(result.completed, 3);
+  assert.equal(result.concluded, false);
   const notices = room.messages.filter((m) => m.authorType === "system").map((m) => m.text);
   // 일시적 실패 1건은 예산 도달로 표기하지만, 전원(모든 턴) 실패는 실패다.
   assert.ok(notices.some((t) => /모든 에이전트 응답이 실패해 토론을 마쳤습니다/.test(t)), notices.join(" | "));
   assert.ok(!notices.some((t) => /예산.*도달/.test(t)));
-  const meta = room.messages.map((m) => m.discussionMeta).find(Boolean);
-  if (meta) assert.equal(meta.reason, "failed");
+  const conclusion = room.messages.findLast((m) => m.discussionMeta);
+  assert.ok(conclusion, "토론 종료 메시지에 discussionMeta가 있어야 합니다");
+  assert.equal(conclusion.discussionMeta.reason, "failed");
+});
+
+test("자유토론에서 일부 턴만 실패하면 계속 진행해 예산 도달로 마치되 실패 포함을 표기한다", async () => {
+  let call = 0;
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { permissionMode: "chat" },
+    runAgent: () => {
+      call += 1;
+      // 첫 턴만 실패하고 나머지는 계속 말한다(결론 신호 없음 → 예산 도달).
+      const next = call === 1
+        ? { ok: false, error: "transport" }
+        : { ok: true, text: `의견 ${call}\n[[CODEPET_DISCUSSION:CONTINUE]]` };
+      return { promise: Promise.resolve(next), cancel: () => {} };
+    },
+  });
+  const result = await room.startDiscussion({ agentIds: ["claude", "codex"], turnBudget: 3 });
+  await settle(room);
+  assert.equal(result.ok, true);
+  // 자유토론은 한 명이 실패해도 나머지가 예산까지 계속 말한다.
+  assert.equal(result.completed, 3);
+  const conclusion = room.messages.findLast((m) => m.discussionMeta);
+  assert.ok(conclusion, "토론 종료 메시지에 discussionMeta가 있어야 합니다");
+  // 종료 사유는 실패가 아니라 예산 도달이고, 실패가 있었음은 문구로 남긴다.
+  assert.equal(conclusion.discussionMeta.reason, "budget");
+  assert.match(conclusion.text, /토론 실행 예산\(3회\)에 도달해 여기서 마쳤습니다\. \(일부 응답 실패 포함\)/);
+  assert.doesNotMatch(conclusion.text, /실패해 토론을 마쳤습니다/);
 });

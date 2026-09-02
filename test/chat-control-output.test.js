@@ -55,6 +55,13 @@ test("stripControlOutput: 꼬리 제어 블록만 표시 텍스트에서 제거�
     stripControlOutput(fenceThenControl),
     ["설명 문단입니다.", "```js", "const a = 1;", "const b = 2;", "```"].join("\n")
   );
+  // 제어 블록 *뒤에* 코드펜스가 이어지면 끝줄 앵커가 아니다 — 제어를 수용하지도,
+  // 펜스를 지우지도 않는다. 펜스를 공백으로 가리던 때는 꼬리 펜스 줄이 전부
+  // '빈 줄'로 보여 앞의 제어가 수용되고 펜스 본문이 화면·TASK.md에서 삭제됐다.
+  const controlThenFence = ["설명", "HANDOFF: @reviewer", "```js", "const a = 1;", "```"].join("\n");
+  assert.equal(stripControlOutput(controlThenFence), controlThenFence);
+  const controlThenOpenFence = ["설명", "COMPLETE", "```", "미완성 펜스"].join("\n");
+  assert.equal(stripControlOutput(controlThenOpenFence), controlThenOpenFence);
 });
 
 test("전문 역할 턴의 제어 출력이 추출·기록되고 표시 텍스트에서 벗겨진다", async () => {
@@ -174,6 +181,12 @@ test("parseControlOutput: 인라인 백틱 안 내용이 질문·요약·REASON 
   );
   // 코드펜스 안의 예시는 여전히 제어가 아니다.
   assert.equal(parseControlOutput("설명\n```\nHANDOFF: @reviewer\n```"), null);
+  // 제어 뒤에 펜스가 이어지면 끝줄 앵커가 깨져 제어가 아니다(strip과 같은 범위).
+  assert.equal(parseControlOutput("설명\nHANDOFF: @reviewer\n```js\nconst a = 1;\n```"), null);
+  // 인라인 백틱으로 감싼 대상은 제어가 아니다 — 가림 문자가 어휘 문자로
+  // 읽혀 masked 범위와 원문 파싱이 어긋나면 안 된다.
+  assert.equal(parseControlOutput("본문\nHANDOFF: `@reviewer`"), null);
+  assert.equal(stripControlOutput("본문\nHANDOFF: `@reviewer`"), "본문\nHANDOFF: `@reviewer`");
 });
 
 test("모호한 제어(질문 2개)는 화면에서 strip하지 않아 질문이 사라지지 않는다", async () => {

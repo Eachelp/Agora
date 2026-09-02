@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { buildAgentPrompt, MAX_SPECIALIST_PROMPT_CHARS } = require("../src/chat/chat-prompt");
+const { buildAgentPrompt, boundedText, MAX_SPECIALIST_PROMPT_CHARS } = require("../src/chat/chat-prompt");
 
 const AGENTS = [
   { id: "claude", name: "Claude", aliases: ["claude"] },
@@ -537,4 +537,100 @@ test("기획 프롬프트는 Deliverable 설명을 대시로 붙이라고 알려
   assert.equal(items[0].description, "신규 사본");
   // 괄호는 분리되지 않는다 — 그래서 프롬프트가 쓰지 말라고 해야 한다.
   assert.equal(items[1].locator, "out/b (신규 사본).json");
+});
+
+test("Archivist 프롬프트는 전용 페르소나를 쓰고 그룹채팅 프레이밍·대화를 제외한다", () => {
+  const base = {
+    agent: AGENTS[1],
+    agents: AGENTS,
+    messages: [message("user", "일반 대화 원문", "user"), message("claude", "Builder 자기보고", "agent")],
+  };
+  const prompt = buildAgentPrompt({
+    ...base,
+    specialist: {
+      stage: "archivist",
+      journal: [{ type: "ROLE_FINISHED", role: "reviewer", status: "DONE" }],
+      finalVerdict: "PASS",
+      frozenTask: { runId: "RUN-001", content: "Frozen Task 본문" },
+      reviewDiff: "diff --git a/a.js b/a.js",
+      evidence: { execution: "OBSERVED" },
+    },
+  });
+  // 정책(ROLE_CONTEXT_POLICY.archivist)이 transcript를 차단하므로, "아래 대화의
+  // 마지막 메시지에 이어 답하라"는 그룹 채팅 페르소나로 떨어지면 지시가 모순된다.
+  assert.match(prompt, /Archivist/);
+  assert.match(prompt, /전문 모드: 기록 정리/);
+  assert.match(prompt, /^현재 단계: 기록 정리$/m);
+  assert.doesNotMatch(prompt, /반복 1\/3/);
+  assert.doesNotMatch(prompt, /그룹 채팅의 참가자/);
+  assert.doesNotMatch(prompt, /마지막 메시지에 이어/);
+  assert.doesNotMatch(prompt, /=== 대화 ===/);
+  assert.doesNotMatch(prompt, /일반 대화 원문/);
+  assert.doesNotMatch(prompt, /Builder 자기보고/);
+  assert.match(prompt, /=== System Journal \(실행 사실 기록\) ===/);
+  assert.match(prompt, /ROLE_FINISHED/);
+  assert.match(prompt, /Frozen Task 본문/);
+  assert.match(prompt, /diff --git/);
+  assert.match(prompt, /최종 검수 판정: PASS/);
+  // 빈 journal([])은 빈 섹션을 그리지 않는다.
+  const empty = buildAgentPrompt({
+    ...base,
+    specialist: { stage: "archivist", journal: [], finalVerdict: "PASS" },
+  });
+  assert.doesNotMatch(empty, /=== System Journal/);
+  assert.match(empty, /Archivist/);
+});
+
+test("검토자 제어 안내는 UNKNOWN이면 ASK_USER를 붙이라고 알려준다", () => {
+  const base = {
+    agent: AGENTS[1],
+    agents: AGENTS,
+    messages: [message("user", "확정된 작업", "user")],
+  };
+  const guided = buildAgentPrompt({
+    ...base,
+    specialist: { stage: "review", round: 1, maxRounds: 3, controlOutputs: true },
+  });
+  assert.match(guided, /다음 역할 요청/);
+  assert.match(guided, /UNKNOWN이면 `ASK_USER: <질문 한 줄>`/);
+  assert.match(guided, /HANDOFF: @recorder/);
+  assert.match(guided, /HANDOFF: @builder/);
+  // 소비자가 없는 경로(step mode)에는 routing 안내가 붙지 않는다.
+  const plain = buildAgentPrompt({
+    ...base,
+    specialist: { stage: "review", round: 1, maxRounds: 3 },
+  });
+  assert.doesNotMatch(plain, /다음 역할 요청/);
+  assert.doesNotMatch(plain, /UNKNOWN이면/);
+});
+
+test("구현자 상담 안내는 세션 권한이 chat이면 파일 읽기를 약속하지 않는다", () => {
+  const base = {
+    agent: AGENTS[0],
+    agents: AGENTS,
+    messages: [message("user", "왜 느려?", "user")],
+    consult: { role: "builder", label: "구현자" },
+  };
+  const chat = buildAgentPrompt({ ...base, permissionMode: "chat" });
+  assert.match(chat, /역할 상담: 구현자/);
+  assert.match(chat, /대화로만 답하세요/);
+  assert.doesNotMatch(chat, /읽기만 할 수 있습니다/);
+  assert.match(chat, /파일을 읽을 수 없으므로/);
+  const read = buildAgentPrompt({ ...base, permissionMode: "workspace-read" });
+  assert.match(read, /읽기만 할 수 있습니다/);
+  assert.doesNotMatch(read, /파일을 읽을 수 없으므로/);
+});
+
+test("boundedText는 상한이 작아 꼬리 예산이 0이어도 원문 전체를 돌려주지 않는다", () => {
+  const text = "가".repeat(400);
+  // tail===0이면 slice(-0)===slice(0)이라 원문 전체가 돌아와 상한을 우회했다.
+  for (let limit = 1; limit <= 80; limit += 1) {
+    const out = boundedText(text, limit, "T");
+    assert.equal(out.truncated, true);
+    assert.ok(out.text.length < text.length, `limit=${limit}: ${out.text.length}`);
+    assert.match(out.text, /일부 생략/);
+  }
+  const intact = boundedText("짧다", 100, "T");
+  assert.equal(intact.truncated, false);
+  assert.equal(intact.text, "짧다");
 });

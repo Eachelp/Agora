@@ -95,6 +95,10 @@ function buildAgentPrompt({
   const isCleanReviewer = specialist?.stage === "review";
   const isPlanReviewer = specialist?.stage === "plan_review";
   const isProfessionalRecorder = specialist?.stage === "recorder" && specialist?.professional === true;
+  // V1.5 Archivist — 정책(ROLE_CONTEXT_POLICY.archivist)이 transcript를 차단하므로
+  // 그룹 채팅 페르소나("아래 대화의 마지막 메시지에 이어 답하라")로 떨어지면
+  // 안 된다. 다른 전문 단계와 같이 전용 페르소나를 쓴다.
+  const isArchivist = specialist?.stage === "archivist";
   const isSpecialist = Boolean(specialist);
   // 역할별 context 경계의 single source는 ROLE_CONTEXT_POLICY다.
   // 아래 조립 분기는 이 판정 함수를 통해서만 context 포함 여부를 정한다.
@@ -168,6 +172,9 @@ function buildAgentPrompt({
   } else if (isProfessionalRecorder) {
     lines.push("당신은 Agora 전문 실행의 Recorder입니다.");
     lines.push("대화 transcript나 다른 에이전트의 자유 설명은 보지 않습니다. Frozen Task, 최종 변경 요약, 검수 판정과 실행 근거만 기록하세요.");
+  } else if (isArchivist) {
+    lines.push("당신은 Agora 전문 실행의 Archivist(기록 정리자)입니다.");
+    lines.push("대화 transcript나 다른 에이전트의 자유 설명은 보지 않습니다. System Journal, Frozen Task, 최종 변경 요약, 검수 판정과 실행 근거만을 근거로 사람이 읽기 좋은 정리를 작성하세요.");
   } else if (isDiscussionSummary) {
     lines.push(
       discussionSummary?.record
@@ -317,7 +324,13 @@ function buildAgentPrompt({
     // 않는다 — 단일 응답으로 끝나는 상담이지 파이프라인 단계가 아니다.
     const consultRoleLines = {
       planner: "기획자 관점: 목표·범위·요구사항·작업 분해를 중심으로 답하되, Task나 실행 계획을 확정하지 마세요.",
-      builder: "구현자 관점: 코드 구조·실현 가능성·원인·비용을 중심으로 설명하세요. 파일은 읽기만 할 수 있습니다.",
+      // 상담 턴의 권한은 세션 권한과 workspace-read 중 낮은 쪽이다. 세션이
+      // chat 권한이면 파일 도구가 없으므로 "읽기만 할 수 있다"는 안내가
+      // permissionRule("대화로만 답하세요")과 모순된다 — 권한에 맞춰 적는다.
+      builder:
+        permissionMode === "chat"
+          ? "구현자 관점: 코드 구조·실현 가능성·원인·비용을 중심으로 설명하세요. 이 턴에서는 파일을 읽을 수 없으므로 대화 내용만을 근거로 답하세요."
+          : "구현자 관점: 코드 구조·실현 가능성·원인·비용을 중심으로 설명하세요. 파일은 읽기만 할 수 있습니다.",
       reviewer: "검토자 관점: 타당한 점·누락·리스크를 근거와 함께 짚으세요. 정식 검수(PASS/FIX_REQUIRED 판정)가 아닙니다.",
       recorder: "기록자 관점: 지금까지의 논의를 정리해 답하되, 새로운 결정이나 판정을 만들지 마세요.",
     };
@@ -346,7 +359,12 @@ function buildAgentPrompt({
     };
     lines.push("");
     lines.push(`=== 전문 모드: ${stageLabels[specialist.stage] || specialist.stage} ===`);
-    lines.push(`현재 단계: ${stageLabels[specialist.stage] || specialist.stage} · 반복 ${specialist.round || 1}/${specialist.maxRounds || 3}`);
+    // Archivist는 완료 뒤 한 번 도는 정리 턴이라 반복 회차가 없다.
+    lines.push(
+      specialist.stage === "archivist"
+        ? `현재 단계: ${stageLabels[specialist.stage]}`
+        : `현재 단계: ${stageLabels[specialist.stage] || specialist.stage} · 반복 ${specialist.round || 1}/${specialist.maxRounds || 3}`
+    );
     const ctxNotice = roleContextNotice(specialist.stage);
     if (ctxNotice) lines.push(`[context 경계] ${ctxNotice}`);
     if (specialist.feedback) {
@@ -688,6 +706,9 @@ function buildAgentPrompt({
 
 module.exports = {
   buildAgentPrompt,
+  // 테스트 seam: 공개 호출 경로(buildAgentPrompt)의 상수 상한으로는 tail===0
+  // 경계에 닿지 않아, 상한 우회 회귀를 직접 고정하기 위해 내보낸다.
+  boundedText,
   DEFAULT_MAX_MESSAGES,
   MAX_SPECIALIST_PROMPT_CHARS,
   MAX_MESSAGE_CHARS,

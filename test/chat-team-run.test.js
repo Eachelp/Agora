@@ -239,3 +239,78 @@ test("워크스페이스 없는 세션의 '@팀 실행'은 실행을 시작하�
     .map((message) => message.text);
   assert.ok(systemTexts.some((text) => /워크스페이스가 필요합니다/.test(text)));
 });
+
+test("'@팀 실행'이 즉시 거부되면 '시작합니다' 안내를 남기지 않는다", async (t) => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-team-run-reject-")));
+  const workspace = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-team-run-reject-ws-")));
+  let releaseDiscussion = null;
+  const gate = new Promise((resolve) => {
+    releaseDiscussion = resolve;
+  });
+  t.after(() => {
+    releaseDiscussion();
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(workspace, { recursive: true, force: true });
+  });
+  const calls = [];
+  let discussionTurns = 0;
+  const feature = makeFeature(root, {
+    capabilities: fakeCapabilities(),
+    runAgent: ({ agent, prompt }) => {
+      calls.push({ agentId: agent.id, prompt });
+      // 토론 턴은 붙잡아 "토론 진행 중" 상태를 유지한다 — 그 사이의 '@팀 실행'은
+      // startSpecialist에서 즉시 거부된다.
+      if (/CODEPET_DISCUSSION/.test(prompt)) {
+        discussionTurns += 1;
+        return {
+          promise: gate.then(() => ({ ok: true, text: "의견\n[[CODEPET_DISCUSSION:CONCLUDE]]" })),
+          cancel: () => {},
+        };
+      }
+      return { promise: Promise.resolve({ ok: true, text: "…" }), cancel: () => {} };
+    },
+  });
+
+  const created = await feature.invoke("chat:projects:create", { name: "팀 실행 거부", workspace });
+  assert.equal(created.ok, true);
+  const sessionId = created.session.meta.id;
+  await feature.invoke("chat:projects:update", {
+    projectId: created.activeProjectId,
+    patch: {
+      defaultRoles: {
+        planning: { agentId: "claude" },
+        review: { agentId: "codex" },
+        implementation: { agentId: "agy" },
+      },
+    },
+  });
+
+  await feature.invoke("chat:send", { sessionId, text: "토론 주제입니다" });
+  await waitFor(() => calls.length >= 3);
+  const discussion = await feature.invoke("chat:discussion:start", {
+    sessionId,
+    agentIds: ["claude", "codex"],
+    turnBudget: 3,
+  });
+  assert.equal(discussion.ok, true);
+  await waitFor(() => discussionTurns >= 1);
+  const before = calls.length;
+
+  const sent = await feature.invoke("chat:send", { sessionId, text: "@팀 실행 로그인 기능 만들어줘" });
+  assert.equal(sent.ok, true);
+  assert.equal(sent.teamRun, false);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  // 실행이 시작되지 않았다(기획자 호출 없음).
+  assert.equal(calls.length, before);
+
+  const state = await feature.invoke("chat:state");
+  const systemTexts = state.session.messages
+    .filter((message) => message.authorType === "system")
+    .map((message) => message.text);
+  assert.ok(systemTexts.some((text) => /팀 자율 실행을 시작하지 못했습니다/.test(text)), systemTexts.join(" | "));
+  // 거부됐는데 '시작합니다'가 남으면 실행된 것처럼 오인된다.
+  assert.ok(!systemTexts.some((text) => /팀 자율 실행을 시작합니다/.test(text)));
+
+  releaseDiscussion();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+});

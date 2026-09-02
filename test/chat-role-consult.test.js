@@ -482,3 +482,62 @@ test("agent 멘션이 함께 있으면 기존 동작이 우선한다", async () 
   assert.deepEqual(calls.map((call) => call.agentId), ["claude"]);
   assert.ok(!/역할 상담/.test(calls[0].prompt));
 });
+
+test("여러 역할을 함께 멘션하면 첫 역할만 답하고 제외 안내를 남긴다", async () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-consult-ipc-multi-")));
+  const calls = [];
+  const feature = makeFeature(root, {
+    capabilities: fakeCapabilities(),
+    runAgent: fakeRunner({}, calls),
+  });
+
+  const state = await feature.invoke("chat:state");
+  const sessionId = state.activeSessionId;
+  await feature.invoke("chat:projects:update", {
+    projectId: state.activeProjectId,
+    patch: { defaultRoles: { planning: { agentId: "claude" }, review: { agentId: "codex" } } },
+  });
+
+  const sent = await feature.invoke("chat:send", {
+    sessionId,
+    text: "@검토자 @기획자 이 설계 어때?",
+  });
+  assert.equal(sent.ok, true);
+  await waitFor(() => calls.length >= 1);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+
+  // 첫 역할(검토자) 담당자만 답한다 — 브로드캐스트도, 두 번째 상담도 아니다.
+  assert.deepEqual(calls.map((call) => call.agentId), ["codex"]);
+  const after = await feature.invoke("chat:state");
+  const notice = after.session.messages.find(
+    (message) => message.authorType === "system" && /한 번에 한 명만/.test(message.text)
+  );
+  assert.ok(notice, "제외된 역할 안내가 채팅에 남아야 합니다");
+  assert.match(notice.text, /검토자만 응답하며/);
+  assert.match(notice.text, /기획자.*이번에 제외/);
+  assert.match(notice.text, /@팀/);
+  // 안내는 상담이 실제로 시작된 뒤에 남는다(시작 실패 안내보다 먼저 오지 않는다).
+  const messages = after.session.messages;
+  const consultReply = messages.findIndex((message) => message.authorType === "agent");
+  const noticeIndex = messages.indexOf(notice);
+  assert.ok(consultReply >= 0);
+  assert.ok(!messages.some((message) => /상담을 시작하지 못했습니다/.test(message.text || "")));
+  assert.ok(noticeIndex >= 0);
+
+  // 첫 역할 시작이 실패하면 제외 안내는 남지 않는다 — "구현자만 응답하며…"
+  // 뒤에 "시작하지 못했습니다"가 이어지는 모순을 막는다.
+  calls.length = 0;
+  const failed = await feature.invoke("chat:send", {
+    sessionId,
+    text: "@구현자 @검토자 이건 왜 느려?",
+  });
+  assert.equal(failed.ok, true);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(calls.length, 0);
+  const afterFailed = await feature.invoke("chat:state");
+  const texts = afterFailed.session.messages
+    .filter((message) => message.authorType === "system")
+    .map((message) => message.text);
+  assert.ok(texts.some((text) => /구현자 상담을 시작하지 못했습니다/.test(text)), texts.join(" | "));
+  assert.equal(texts.filter((text) => /한 번에 한 명만/.test(text)).length, 1);
+});

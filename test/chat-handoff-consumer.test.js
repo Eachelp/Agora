@@ -409,11 +409,13 @@ test("다회차 자동 보완이 예산을 소진하지 않고 최종 Archivist�
         { ok: true, text: "구현 완료 r1\nSTATUS: DONE\n\nHANDOFF: @reviewer" },
         { ok: true, text: "구현 완료 r2\nSTATUS: DONE\n\nHANDOFF: @reviewer" },
         { ok: true, text: "구현 완료 r3\nSTATUS: DONE\n\nHANDOFF: @reviewer" },
+        { ok: true, text: "구현 완료 r4\nSTATUS: DONE\n\nHANDOFF: @reviewer" },
       ],
       codex: [
         { ok: true, text: "기획 검수 통과\nVERDICT: PASS\n\nHANDOFF: @builder" },
         { ok: true, text: "수정 필요 r1\nVERDICT: FIX_REQUIRED\nISSUES:\n1.\nscope: IN\nseverity: BLOCKING\nlocation: a.js\nproblem: 버그1\nevidence: 실패\nimpact: 회귀\n\nHANDOFF: @builder" },
         { ok: true, text: "수정 필요 r2\nVERDICT: FIX_REQUIRED\nISSUES:\n1.\nscope: IN\nseverity: BLOCKING\nlocation: b.js\nproblem: 버그2\nevidence: 실패\nimpact: 회귀\n\nHANDOFF: @builder" },
+        { ok: true, text: "수정 필요 r3\nVERDICT: FIX_REQUIRED\nISSUES:\n1.\nscope: IN\nseverity: BLOCKING\nlocation: c.js\nproblem: 버그3\nevidence: 실패\nimpact: 회귀\n\nHANDOFF: @builder" },
         { ok: true, text: "구현 검수 통과\nVERDICT: PASS\n\nHANDOFF: @recorder" },
         { ok: true, text: "사람용 정리: 완료했습니다." },
       ],
@@ -424,10 +426,13 @@ test("다회차 자동 보완이 예산을 소진하지 않고 최종 Archivist�
   const result = await room.startSpecialist({ action: "full", maxAutoRevisions: 3, stages: fullStages(room) });
 
   assert.equal(result.ok, true);
-  // 예산은 자동 보완 예산(3회)에 맞춰 넓혀진다: 8 + 2*3 = 14. 정상 흐름 8 hop은
-  // 예산 안에 들어 마지막 reviewer→recorder(Archivist) 요청까지 수용된다.
+  // 예산은 자동 보완 예산(3회)에 맞춰 넓혀진다: 8 + 2*3 = 14. 보완 3회를 다 쓰는
+  // 흐름은 10 hop이다: planner→reviewer, reviewer→builder, (builder→reviewer,
+  // reviewer→builder)×3, builder→reviewer, reviewer→recorder. 고정 예산 8이면
+  // 9번째 요청부터 거부돼 마지막 reviewer→recorder(Archivist) 요청이 유실됐다
+  // — 이 시나리오가 그 원래 결함을 재현한다(보완 2회면 8 hop이라 8로도 통과).
   assert.equal(persistedRun.handoffState.budget, 14);
-  assert.ok(persistedRun.handoffState.used <= 14);
+  assert.equal(persistedRun.handoffState.used, 10);
   // 예산 소진 거부가 사용자 화면에 스팸되지 않는다(overlay 내부 사정은 journal-only).
   assert.ok(
     !room.messages.some(
