@@ -149,6 +149,14 @@ test("팀 상담 진행 중에는 토론 시작이 거부된다(순차 계약 �
   const disc = await room.startDiscussion({ agentIds: ["claude", "codex"] });
   assert.equal(disc.ok, false);
   assert.match(disc.error, /상담/);
+  // 상담 도중 두 번째 팀 상담·개별 역할 상담도 거부된다 — 같은 큐에 끼어
+  // step이 교차 실행(interleave)되면 "정해진 순서로 한 명씩" 계약이 깨진다.
+  const secondTeam = await room.consultTeam(teamSteps());
+  assert.equal(secondTeam.ok, false);
+  assert.match(secondTeam.error, /상담이 진행 중/);
+  const secondRole = await room.consultRole({ roleId: "reviewer", stage: "review", roleLabel: "검토자", agent: { id: "codex" } });
+  assert.equal(secondRole.ok, false);
+  assert.match(secondRole.error, /상담이 진행 중/);
 
   releasePlanner();
   await teamPromise;

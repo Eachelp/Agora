@@ -157,6 +157,49 @@ test("소비자 없는 specialist 턴(step mode)에서는 제어를 추출·기�
   assert.equal(journal.some((event) => event.type === "HANDOFF_REQUESTED"), false);
 });
 
+test("parseControlOutput: 인라인 백틱 안 내용이 질문·요약·REASON 값에서 증발하지 않는다", () => {
+  const { parseControlOutput } = require("../src/agora/interaction-contract");
+  // 제어 줄의 *범위*는 masked로 정하되 *값*은 원문에서 읽는다 — masked에서
+  // 뽑으면 백틱 내용이 공백이 되고, 값 전체가 백틱이면 질문이 null이 되어
+  // ASK_USER 재노출이 아예 발동하지 않았다.
+  assert.deepEqual(
+    parseControlOutput("본문\nSTATUS: NEEDS_DECISION\n\nASK_USER: `strict` 모드를 켤까요, 아니면 `loose`로 갈까요?"),
+    { action: "ASK_USER", question: "`strict` 모드를 켤까요, 아니면 `loose`로 갈까요?", ambiguous: false }
+  );
+  assert.equal(parseControlOutput("STATUS: NEEDS_DECISION\n\nASK_USER: `foo`").question, "`foo`");
+  assert.equal(parseControlOutput("VERDICT: PASS\n\nCOMPLETE: `auth` 모듈 검수 통과").summary, "`auth` 모듈 검수 통과");
+  assert.equal(
+    parseControlOutput("STATUS: PLAN_READY\n\nHANDOFF: @reviewer\nREASON: `auth` 모듈 변경 검토 필요").reason,
+    "`auth` 모듈 변경 검토 필요"
+  );
+  // 코드펜스 안의 예시는 여전히 제어가 아니다.
+  assert.equal(parseControlOutput("설명\n```\nHANDOFF: @reviewer\n```"), null);
+});
+
+test("모호한 제어(질문 2개)는 화면에서 strip하지 않아 질문이 사라지지 않는다", async () => {
+  const journal = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({
+      claude: [{ ok: true, text: "본문\nSTATUS: NEEDS_DECISION\n\nASK_USER: 질문1?\nASK_USER: 질문2?" }],
+    }),
+    appendProfessionalEvent: (event) => {
+      journal.push(event);
+      return true;
+    },
+  });
+  room.professionalRun = createProfessionalRun({ node: "PLANNING", status: "RUNNING", professionalRunId: "pr-amb" });
+  const outcome = await room.scheduleResponse(room.agents[0], {
+    specialist: { stage: "planner", controlOutputs: true },
+  });
+  await settle(room);
+  assert.equal(outcome.controlRequest.ambiguous, true);
+  // 모호하면 소비 지점에서 거부되므로, strip해 버리면 두 질문이 모두 사라진다.
+  const message = room.messages.find((entry) => entry.authorType === "agent");
+  assert.match(message.text, /질문1\?/);
+  assert.match(message.text, /질문2\?/);
+});
+
 test("일반 채팅 턴의 제어 마커는 추출되지 않는다", async () => {
   const calls = [];
   const journal = [];

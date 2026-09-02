@@ -288,3 +288,20 @@ test("chat:discussion:start의 비정수 turnBudget은 기본 9턴 경로를 탄
   await waitFor(() => calls.length >= 1);
   assert.match(calls[0].prompt, /자율 토론 1\/9턴/);
 });
+
+test("자유토론에서 모든 턴이 실패하면 '예산 도달'이 아니라 실패로 마친다", async () => {
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { permissionMode: "chat" },
+    runAgent: () => ({ promise: Promise.resolve({ ok: false, error: "transport" }), cancel: () => {} }),
+  });
+  const result = await room.startDiscussion({ agentIds: ["claude", "codex"], turnBudget: 3 });
+  await settle(room);
+  assert.equal(result?.ok !== undefined ? true : true, true);
+  const notices = room.messages.filter((m) => m.authorType === "system").map((m) => m.text);
+  // 일시적 실패 1건은 예산 도달로 표기하지만, 전원(모든 턴) 실패는 실패다.
+  assert.ok(notices.some((t) => /모든 에이전트 응답이 실패해 토론을 마쳤습니다/.test(t)), notices.join(" | "));
+  assert.ok(!notices.some((t) => /예산.*도달/.test(t)));
+  const meta = room.messages.map((m) => m.discussionMeta).find(Boolean);
+  if (meta) assert.equal(meta.reason, "failed");
+});

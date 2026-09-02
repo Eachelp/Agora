@@ -1181,7 +1181,11 @@ class ChatRoom extends EventEmitter {
       const parsed = parseControlOutput(rawText);
       if (parsed) {
         controlRequest = parsed;
-        rawText = stripControlOutput(rawText);
+        // 모호한 제어(질문 2개, ASK_USER+HANDOFF 혼합 등)는 소비 지점에서
+        // CONTROL_AMBIGUOUS로 거부된다. 그때 strip까지 하면 질문 전부가
+        // 화면에서 사라지고 "답하라"는 안내만 남는다 — 모호하면 원문 제어
+        // 줄을 그대로 남겨 사용자가 무엇을 물었는지 잃지 않게 한다.
+        if (!parsed.ambiguous) rawText = stripControlOutput(rawText);
         if (parsed.action === "HANDOFF") {
           this.recordJournalEvent?.({
             type: "HANDOFF_REQUESTED",
@@ -1303,7 +1307,7 @@ class ChatRoom extends EventEmitter {
     }
   }
 
-  async consultRole({ roleId, stage, agent, agentConfig, roleLabel, attachments }) {
+  async consultRole({ roleId, stage, agent, agentConfig, roleLabel, attachments, nested = false }) {
     if (this.discussionRequested || this.discussionActive) {
       return { ok: false, error: "토론이 진행 중에는 역할을 호출할 수 없습니다." };
     }
@@ -1312,6 +1316,12 @@ class ChatRoom extends EventEmitter {
         ok: false,
         error: "전문 실행이 진행 중이거나 결정을 기다리고 있어 역할 상담을 시작할 수 없습니다.",
       };
+    }
+    // 상담이 이미 진행 중이면 새 상담을 같은 큐에 끼워 넣지 않는다 — 팀 상담의
+    // step 사이에 다른 상담이 interleave되면 순차 계약이 깨진다. consultTeam이
+    // 자기 step으로 부르는 중첩 호출(nested)만 통과한다.
+    if (!nested && this.isConsultActive()) {
+      return { ok: false, error: "이미 역할·팀 상담이 진행 중입니다. 끝난 뒤 다시 요청해 주세요." };
     }
     const target = agent && agent.id ? this.findAgent(agent.id) : null;
     if (!target || !target.available || target.enabled === false) {
@@ -1364,6 +1374,9 @@ class ChatRoom extends EventEmitter {
     if (!Array.isArray(steps) || steps.length === 0) {
       return { ok: false, error: "팀 상담에 참여할 역할이 없습니다." };
     }
+    if (this.isConsultActive()) {
+      return { ok: false, error: "이미 역할·팀 상담이 진행 중입니다. 끝난 뒤 다시 요청해 주세요." };
+    }
     // 팀 상담 전체 구간을 상담 활성으로 표시한다. 이렇게 해야 step 사이의
     // await 창에서 토론·전문실행이 끼어들어 순차 계약이 반쪽으로 무너지거나,
     // 일반 메시지가 step들 사이에 실행되는 것을 막는다(중첩 consultRole은
@@ -1375,7 +1388,7 @@ class ChatRoom extends EventEmitter {
       const generation = this.generation;
       for (const step of steps) {
         if (generation !== this.generation) return { ok: false, cancelled: true };
-        const result = await this.consultRole(step);
+        const result = await this.consultRole({ ...step, nested: true });
         if (!result.ok) {
           // 중간 중단을 조용히 넘기지 않는다. IPC는 시작 확인 후 결과를 받지
           // 않으므로(pending 반환), 남은 순서가 실행되지 않은 이유는 여기서
@@ -1658,9 +1671,11 @@ class ChatRoom extends EventEmitter {
       // 나머지가 계속 말하고 예산까지 진행하므로, 도중의 일시적 실패로
       // "실패로 마쳤습니다"로 오표기하지 않는다(실제 종료 사유는 예산 도달).
       const structuredFailure = Boolean(protocolFailedStep);
+      // 자유토론이라도 실행된 턴이 전부 실패했다면 '예산 도달'이 아니라 실패다.
+      const allFailed = !protocol && completed > 0 && failures >= completed && !concluded;
       const reason = wasStopped
         ? "interrupted"
-        : structuredFailure
+        : (structuredFailure || allFailed)
           ? "failed"
           : (!concluded && completed >= budget)
             ? "budget"
@@ -1673,8 +1688,10 @@ class ChatRoom extends EventEmitter {
         ? (this.discussionInterrupted ? "사용자 개입으로 토론을 여기서 마쳤습니다." : "사용자가 중지해 토론을 여기서 마쳤습니다.")
         : structuredFailure
           ? `${protocolFailedStep.role.name} 단계 응답 실패로 구조화 토론을 중단했습니다.`
-          : (!concluded && completed >= budget)
-            ? budgetText
+          : allFailed
+            ? "모든 에이전트 응답이 실패해 토론을 마쳤습니다."
+            : (!concluded && completed >= budget)
+              ? budgetText
             : "참가자들이 합의하거나 결론에 도달해 토론을 마쳤습니다.";
 
       this.appendMessage({

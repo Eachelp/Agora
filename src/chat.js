@@ -179,6 +179,8 @@ const SPECIALIST_STAGE_LABELS = Object.freeze({
   review: "검수",
   reviewer: "검수",
   recorder: "기록",
+  // V1.5 완료 후 사람용 정리(Archivist) 턴 — 라벨이 없으면 역할 배지·'응답 중' 단계가 붙지 않는다.
+  archivist: "기록 정리",
 });
 
 function boundedRevisionLimit(value, fallback = 1) {

@@ -1959,7 +1959,10 @@ function roomMeta(meta) {
                 ]);
                 started.catch(() => {});
                 if (result && result.ok === false && !result.needsUserDecision && !result.cancelled) {
-                  throw new Error(result.error || "팀 자율 실행을 시작하지 못했습니다.");
+                  // 사용자 메시지는 이미 기록됐다. 여기서 throw하면 렌더러가 초안을
+                  // 복원해 재전송·중복이 생기므로, 거부 이유를 채팅에 남기고 정상 반환한다.
+                  room.appendSystem(`팀 자율 실행을 시작하지 못했습니다: ${result.error || "알 수 없는 오류"}`);
+                  return { consult: true, teamRun: false };
                 }
                 // 시작이 즉시 거부되지 않은(pending/정상) 것을 확인한 뒤에야
                 // 낙관적 안내를 남긴다 — 거부 시 '시작합니다'가 transcript에
@@ -1995,22 +1998,16 @@ function roomMeta(meta) {
                 new Promise((resolve) => setImmediate(() => resolve({ ok: true, pending: true }))),
               ]);
               team.catch(() => {});
-              if (result && result.ok === false) throw new Error(result.error);
+              if (result && result.ok === false) {
+                room.appendSystem(`팀 상담을 시작하지 못했습니다: ${result.error || "알 수 없는 오류"}`);
+                return { consult: true };
+              }
               return { consult: true };
             }
             // 개별 역할 상담은 한 번에 한 명만 답한다. 여러 역할을 함께
             // 멘션하면 첫 역할만 응답하므로, 무시된 역할을 조용히 버리지
             // 않고 왜 응답이 없는지 안내한다(위 resolved.ok 실패 안내와 같은
             // 원칙). 여러 역할을 함께 듣고 싶으면 @팀을 쓴다.
-            if (roleMentions.length > 1) {
-              const ignored = roleMentions
-                .slice(1)
-                .map((id) => CONSULT_ROLE_DEFS[id]?.label || id)
-                .join(", ");
-              room.appendSystem(
-                `개별 역할 상담은 한 번에 한 명만 답합니다. ${CONSULT_ROLE_DEFS[roleMentions[0]]?.label || roleMentions[0]}만 응답하며 ${ignored}은(는) 이번에 제외됩니다. 여러 역할을 함께 들으려면 @팀을 사용하세요.`
-              );
-            }
             const roleDef = CONSULT_ROLE_DEFS[roleMentions[0]];
             const project = projectForSession(store.readMeta(sessionId));
             const resolved = project
@@ -2036,7 +2033,22 @@ function roomMeta(meta) {
               new Promise((resolve) => setImmediate(() => resolve({ ok: true, pending: true }))),
             ]);
             consult.catch(() => {});
-            if (result && result.ok === false) throw new Error(result.error);
+            if (result && result.ok === false) {
+              // 메시지는 이미 기록됐으므로 throw 대신 이유를 남긴다(초안 복원·중복 방지).
+              room.appendSystem(`${roleDef.label} 상담을 시작하지 못했습니다: ${result.error || "알 수 없는 오류"}`);
+              return { consult: true };
+            }
+            // 상담이 실제로 시작된 뒤에만 제외 역할을 안내한다 — 시작 실패 뒤에
+            // "기획자만 응답하며…"가 먼저 남아 모순되는 것을 막는다.
+            if (roleMentions.length > 1) {
+              const ignored = roleMentions
+                .slice(1)
+                .map((id) => CONSULT_ROLE_DEFS[id]?.label || id)
+                .join(", ");
+              room.appendSystem(
+                `개별 역할 상담은 한 번에 한 명만 답합니다. ${roleDef.label}만 응답하며 ${ignored}은(는) 이번에 제외됩니다. 여러 역할을 함께 들으려면 @팀을 사용하세요.`
+              );
+            }
             return { consult: true };
           }
         }

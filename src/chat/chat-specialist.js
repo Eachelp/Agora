@@ -263,31 +263,75 @@ class SpecialistMixin {
   // 살아 있는 원장은 그대로 재사용하고(재복원 금지 — active invocation
   // 폐기 방지), root가 바뀌면(새 사용자 지시) 새 budget epoch를 연다.
   // 저장된 handoffState가 같은 root면 crash recovery 규칙과 함께 복원한다.
-  ensureHandoffLedger() {
-    let root = null;
+  // 현재 budget epoch의 root = 가장 최근 사용자 발화 id.
+  currentHandoffRootId() {
     for (let i = this.messages.length - 1; i >= 0; i -= 1) {
-      if (this.messages[i].authorType === "user") {
-        root = this.messages[i].id || null;
-        break;
-      }
+      if (this.messages[i].authorType === "user") return this.messages[i].id || null;
     }
-    if (!root) return null;
-    if (this.handoffLedger && this.handoffLedger.rootMessageId === root) {
-      return this.handoffLedger;
-    }
-    const persisted = this.professionalRun?.handoffState || null;
-    // 새 root의 budget은 자동 보완 예산에 맞춰 넓힌다. auto/full의 정상
-    // 흐름은 라운드마다 builder↔reviewer handoff를 2회 소비하므로(기획 hop
-    // 포함), 기본 8만으로는 다회차 보완에서 예산이 소진돼 마지막
-    // reviewer→recorder(Archivist) 요청까지 거부된다. 이 budget은 FSM 자체를
-    // 막지 못하고 overlay 기록만 좌우하므로, 정상 라운드 수를 담도록 스케일한다.
+    return null;
+  }
+
+  // 현재 실행 정책이 요구하는 budget. auto/full의 정상 흐름은 라운드마다
+  // builder↔reviewer handoff를 2회 소비하므로(기획 hop 포함), 기본 8만으로는
+  // 다회차 보완에서 예산이 소진돼 마지막 reviewer→recorder(Archivist)
+  // 요청까지 거부된다. 이 budget은 FSM 자체를 막지 못하고 overlay 기록만
+  // 좌우하므로, 정상 라운드 수를 담도록 스케일한다.
+  scaledHandoffBudget() {
     const policy = this.professionalRun?.policy || {};
     const revisions =
       (Number.isInteger(policy.planAutoRevisions) ? policy.planAutoRevisions : 0) +
       (Number.isInteger(policy.implementationAutoRevisions) ? policy.implementationAutoRevisions : 0);
-    const restored = recoverHandoffLedgerForRoot(persisted, root, {
-      budget: DEFAULT_HANDOFF_BUDGET + 2 * revisions,
-    });
+    return DEFAULT_HANDOFF_BUDGET + 2 * revisions;
+  }
+
+  // handoff 연쇄가 끊긴 지점(control 없음·거부·재기획)에서 연속-동일-대상
+  // 가드의 기준(lastTargetRole)을 비우고 영속한다. in-memory만 비우면 재시작
+  // 복원이 stale 값을 되살려 정당한 다음 handoff가 HANDOFF_REPEAT로 거짓 거부된다.
+  breakHandoffChain() {
+    const ledger = this.handoffLedger;
+    if (!ledger || !ledger.lastTargetRole) return false;
+    ledger.lastTargetRole = null;
+    this.persistHandoffState(null);
+    return true;
+  }
+
+  // 같은 root(사용자 발화)에서 전문 실행을 다시 시작할 때 in-memory 원장을
+  // 새 run으로 이월한다. 안 하면 새 run의 handoffState(권위)는 null인데
+  // in-memory used는 누적돼 authority와 어긋나고, 재시작 복원도 그 사이를
+  // 잃는다. 재기획은 handoff 연쇄를 끊으므로 active 슬롯과 lastTargetRole은 비운다.
+  carryHandoffStateForFreshRun() {
+    const ledger = this.handoffLedger;
+    if (!ledger || ledger.rootMessageId !== this.currentHandoffRootId()) return null;
+    ledger.activeInvocationId = null;
+    ledger.lastTargetRole = null;
+    return serializeHandoffLedger(ledger);
+  }
+
+  // NEEDS_DECISION 재개 시 기획자가 자기 질문을 볼 수 있게 feedback에 남긴다.
+  // 질문은 제어 줄(ASK_USER)에만 있었고 그 줄은 텍스트에서 strip되므로, 여기서
+  // 붙이지 않으면 재개된 기획자는 "무엇을 물었는지" 모른 채 답만 받는다.
+  withPlannerQuestion(feedback, controlResult) {
+    const question =
+      controlResult?.accepted && controlResult?.control?.action === "ASK_USER"
+        ? controlResult.control.question
+        : null;
+    if (!question) return feedback;
+    return `${feedback || ""}\n\n=== 기획자 질문 ===\n${question}\n=== 기획자 질문 끝 ===`;
+  }
+
+  ensureHandoffLedger() {
+    const root = this.currentHandoffRootId();
+    if (!root) return null;
+    const scaledBudget = this.scaledHandoffBudget();
+    if (this.handoffLedger && this.handoffLedger.rootMessageId === root) {
+      // 같은 root를 재사용할 때도 정책이 커졌으면(기획 후 구현 버튼에서
+      // 자동보완을 올린 경우) budget을 따라 올린다 — 기획 시점 정책으로
+      // 고정되면 구현 단계의 정상 hop이 예산을 넘어 Archivist 요청이 거부된다.
+      if (this.handoffLedger.budget < scaledBudget) this.handoffLedger.budget = scaledBudget;
+      return this.handoffLedger;
+    }
+    const persisted = this.professionalRun?.handoffState || null;
+    const restored = recoverHandoffLedgerForRoot(persisted, root, { budget: scaledBudget });
     if (!restored.ok) return null;
     if (restored.interruptedInvocationId) {
       this.recordJournalEvent?.({
@@ -345,12 +389,9 @@ class SpecialistMixin {
     this.settleIncomingHandoff();
     const control = outcome?.controlRequest || null;
     if (!control) {
-      // control 없이 끝난 결정 지점은 handoff 연쇄를 끊는다. lastTargetRole은
-      // "직전에 넘긴 역할" 감사 값이자 연속-동일-대상 가드의 기준인데,
-      // 사이에 다른 역할이 (handoff 없이) 실행됐는데도 이 값이 남아 있으면
-      // 정당한 재호출이 HANDOFF_REPEAT로 거짓 거부된다(자동 보완 루프에서
-      // 검토자가 handoff 줄을 생략한 경우). 연쇄가 끊겼으니 기준을 비운다.
-      if (this.handoffLedger) this.handoffLedger.lastTargetRole = null;
+      // control 없이 끝난 결정 지점은 handoff 연쇄를 끊는다(자동 보완 루프에서
+      // 검토자가 handoff 줄을 생략한 경우 등) — 비우고 영속한다.
+      this.breakHandoffChain();
       return { requested: false, accepted: false, control: null };
     }
     const professionalRunId = this.professionalRun?.professionalRunId || null;
@@ -377,7 +418,13 @@ class SpecialistMixin {
         professionalRunId,
         frozenRunId,
       });
-      if (!SILENT_REJECT_REASONS.has(reason)) {
+      // 거부된 요청도 연쇄를 끊는다 — 이 역할은 인계하지 못했다.
+      this.breakHandoffChain();
+      // 원장 거부라도 수용 여부가 실제 행동을 바꾸는 대상(재기획 @planner,
+      // Archivist @recorder)이면 사용자에게 알린다 — 무음이면 "검토자가
+      // 재기획을 요청했는데 보완이 계속됨/정리가 조용히 생략됨"이 보이지 않는다.
+      const behaviorAffecting = ["planner", "recorder"].includes(control.targetRole);
+      if (!SILENT_REJECT_REASONS.has(reason) || behaviorAffecting) {
         this.appendSystem(
           `역할의 ${control.action || "제어"} 요청을 수용하지 않았습니다(${reason}). 기본 흐름으로 계속합니다.`
         );
@@ -1507,7 +1554,7 @@ class SpecialistMixin {
         if (plannerResult.plannerStatus === "NEEDS_DECISION" || hasOpenQuestions(plannerResult.text)) {
           // V1.5 — routing 축 소비. NEEDS_DECISION + ASK_USER는 합법 조합이고,
           // 어긋난 요청(예: HANDOFF)은 기록·안내 후 기본 흐름으로 계속한다.
-          this.consumeControlRequest({
+          const decisionControl = this.consumeControlRequest({
             contract: "planner",
             result: "NEEDS_DECISION",
             outcome: plannerResult,
@@ -1524,7 +1571,7 @@ class SpecialistMixin {
             planAutoRevisions: planRevisionLimit,
             implementationAutoRevisions,
             action,
-            feedback: plannerResult.text || nextFeedback,
+            feedback: this.withPlannerQuestion(plannerResult.text || nextFeedback, decisionControl),
             taskInfo: nextTaskInfo,
             phase: "needs_decision",
           };
@@ -2057,6 +2104,8 @@ class SpecialistMixin {
             });
           }
           const transition = this.transitionProfessional({ type: "RECORDER_DONE" });
+          // 기록 재시도로 완료에 도달한 경로에도 마지막 고리(검토자→recorder)를 settle한다.
+          this.settleIncomingHandoff();
           if (!transition.ok) return this.professionalTransitionFailure("recorder", transition);
           if (runInfo && this.taskManager?.writeRunResult && !this.taskManager.writeRunResult(runInfo, {
             status: "COMPLETED",
@@ -2117,6 +2166,8 @@ class SpecialistMixin {
         // 이어받은 경로가 있으면 그 지시서를 갱신하고, 없으면(=끝난 실행이나 새 세션에서
         // 시작하는 진짜 신규 작업) 새 지시서를 만든다.
         taskPath: carriedTaskPath,
+        // 같은 root의 handoff 원장을 새 run의 authority로 이월한다(재기획은 연쇄를 끊는다).
+        handoffState: this.carryHandoffStateForFreshRun(),
         policy: {
           autoContinueReady: action === "full",
           pauseBeforeReview: false,
@@ -2521,6 +2572,18 @@ class SpecialistMixin {
     );
     if (!this.specialistActive && !this.specialistResume && !hasLiveRun) {
       return { ok: false, error: "취소할 전문 실행이 없습니다." };
+    }
+    // 실행이 이미 COMPLETED이고 지금 도는 것이 완료 후 Archivist(부가 정리)뿐이면
+    // 완료된 run을 INTERRUPTED로 뒤집지 않는다. 정리 턴만 멈추고 완료 상태와
+    // 복구 정보(checkpoint 정리 재시도용 등)는 그대로 둔다 — 취소는 "정리를
+    // 그만두기"이지 "완료 취소"가 아니다.
+    if (this.professionalRun?.node === "COMPLETED" && this.professionalRun?.status === "COMPLETED") {
+      this.specialistResume = null;
+      this.specialistActive = false;
+      this.stopAllSilently();
+      this.emitSpecialistState();
+      this.appendSystem(`${origin || "사용자가 "}기록 정리(Archivist)를 중지했습니다. 실행 완료 상태는 그대로 유지됩니다.`);
+      return { ok: true, cancelled: true };
     }
     const professionalAct = Boolean(
       this.professionalRun &&
@@ -3742,7 +3805,7 @@ class SpecialistMixin {
         builderControl.control.targetRole === "planner"
       ) {
         this.appendSystem(
-          "구현자가 재기획(HANDOFF: @planner)을 요청했습니다. 아래에서 작업물 유지/복원을 선택한 뒤 '다시 기획'으로 이어 주세요."
+          "구현자가 재기획(HANDOFF: @planner)을 요청했습니다. 아래에서 작업물을 유지하거나 복원하며 재기획으로 이어 주세요."
         );
       }
       return holdForBlocked(round, builderResult, builderResult.builderStatus);
@@ -4168,7 +4231,7 @@ class SpecialistMixin {
           revisedBuilderControl.control.targetRole === "planner"
         ) {
           this.appendSystem(
-            "구현자가 재기획(HANDOFF: @planner)을 요청했습니다. 아래에서 작업물 유지/복원을 선택한 뒤 '다시 기획'으로 이어 주세요."
+            "구현자가 재기획(HANDOFF: @planner)을 요청했습니다. 아래에서 작업물을 유지하거나 복원하며 재기획으로 이어 주세요."
           );
         }
         return holdForBlocked(round, builderResult, builderResult.builderStatus);

@@ -443,6 +443,96 @@ test("다회차 자동 보완이 예산을 소진하지 않고 최종 Archivist�
   assert.ok(archivistStarted, "최종 Archivist 요청이 예산 소진으로 유실되면 안 됩니다");
 });
 
+test("NEEDS_DECISION 답변으로 재개된 기획자 프롬프트에 자기 질문이 전달된다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-handoff-resume-q-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const calls = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    runAgent: fakeRunner({
+      claude: [
+        { ok: true, text: "## Goal\n로그인\nSTATUS: NEEDS_DECISION\n\nASK_USER: DB는 Postgres와 MySQL 중 무엇으로 할까요?" },
+        { ok: true, text: makePlanContract("재개 후 계획") },
+      ],
+      codex: [{ ok: true, text: "기획 검수 통과\nVERDICT: PASS" }],
+    }, calls),
+  });
+  room.sendUserMessage({ text: "로그인 만들어줘", recordOnly: true });
+  const first = await room.startSpecialist({ action: "plan", stages: fullStages(room) });
+  assert.equal(first.stopReason, "NEEDS_DECISION");
+
+  const resumed = await room.answerPlanQuestion("Postgres로 가죠");
+  assert.equal(resumed.ok, true);
+  // 질문은 제어 줄(ASK_USER)에만 있었고 그 줄은 strip되므로, feedback에 다시
+  // 넣지 않으면 재개된 기획자는 무엇을 물었는지 모른 채 답만 받는다.
+  assert.match(calls[1].prompt, /기획자 질문/);
+  assert.match(calls[1].prompt, /DB는 Postgres와 MySQL 중 무엇으로 할까요/);
+  assert.match(calls[1].prompt, /Postgres로 가죠/);
+});
+
+test("완료 후 Archivist 진행 중 취소는 정리 턴만 멈추고 COMPLETED를 유지한다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-handoff-arch-cancel-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const journal = [];
+  let releaseArchivist = null;
+  const archivistGate = new Promise((resolve) => {
+    releaseArchivist = resolve;
+  });
+  const queues = {
+    claude: [
+      { ok: true, text: `${makePlanContract("취소 회귀")}\n\nHANDOFF: @reviewer` },
+      { ok: true, text: "구현 완료\nSTATUS: DONE\n\nHANDOFF: @reviewer" },
+    ],
+    codex: [
+      { ok: true, text: "기획 검수 통과\nVERDICT: PASS\n\nHANDOFF: @builder" },
+      { ok: true, text: "구현 검수 통과\nVERDICT: PASS\n\nHANDOFF: @recorder" },
+    ],
+  };
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    persistProfessionalRun: () => true,
+    appendProfessionalEvent: (event) => {
+      journal.push(event);
+      return true;
+    },
+    readProfessionalEvents: () => journal.slice(),
+    runAgent: ({ agent, prompt }) => {
+      // Archivist 턴(기록 정리 계약)만 붙잡아 취소 창을 만든다.
+      if (/전문 모드: 기록 정리/.test(prompt)) {
+        return { promise: archivistGate.then(() => ({ ok: true, text: "정리" })), cancel: () => {} };
+      }
+      const queue = queues[agent.id] || [];
+      const next = queue.length > 0 ? queue.shift() : { ok: true, text: "…" };
+      return { promise: Promise.resolve(next), cancel: () => {} };
+    },
+  });
+  room.sendUserMessage({ text: "작업해줘", recordOnly: true });
+  const started = room.startSpecialist({ action: "full", stages: fullStages(room) });
+  const waitStart = Date.now();
+  while (!journal.some((event) => event.type === "ROLE_STARTED" && event.purpose === "archivist")) {
+    if (Date.now() - waitStart > 3000) throw new Error("Archivist 시작 대기 시간 초과");
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.equal(room.professionalRun.node, "COMPLETED");
+
+  // 완료된 run이 INTERRUPTED로 뒤집히면 안 된다 — 취소는 정리를 그만두는 것이다.
+  const cancelled = room.cancelSpecialist();
+  assert.equal(cancelled.ok, true);
+  assert.equal(room.professionalRun.node, "COMPLETED");
+  assert.equal(room.professionalRun.status, "COMPLETED");
+  assert.ok(
+    room.messages.some(
+      (message) => message.authorType === "system" && /기록 정리\(Archivist\)를 중지했습니다/.test(message.text)
+    )
+  );
+  releaseArchivist();
+  await started;
+});
+
 // --- 소비 seam 단위 동작 ---
 
 function makeConsumerRoom(overrides = {}) {
@@ -465,6 +555,83 @@ function makeConsumerRoom(overrides = {}) {
   Object.assign(room, overrides);
   return room;
 }
+
+test("consumeControlRequest: 원장 거부라도 행동을 바꾸는 대상(@planner/@recorder)은 사용자에게 알린다", () => {
+  // 예산 소진 상태(재계산 상한 8과 같아 bump되지 않는다).
+  const behavior = makeConsumerRoom({
+    handoffLedger: createHandoffLedger({ rootMessageId: "msg-root", budget: 8, used: 8 }),
+  });
+  const rec = behavior.consumeControlRequest({
+    contract: "review",
+    result: "PASS",
+    outcome: { controlRequest: { action: "HANDOFF", targetRole: "recorder", ambiguous: false } },
+  });
+  assert.equal(rec.accepted, false);
+  assert.equal(rec.reason, "HANDOFF_BUDGET_REACHED");
+  // Archivist 요청이 조용히 생략되면 안 된다 — 거부 사실을 노출한다.
+  assert.ok(behavior.systemNotices.some((t) => /요청을 수용하지 않았습니다\(HANDOFF_BUDGET_REACHED\)/.test(t)));
+
+  // 같은 거부라도 FSM 기본 다음 hop(@reviewer/@builder)은 행동이 안 바뀌므로 journal-only.
+  const silent = makeConsumerRoom({
+    handoffLedger: createHandoffLedger({ rootMessageId: "msg-root", budget: 8, used: 8 }),
+  });
+  const rev = silent.consumeControlRequest({
+    contract: "implementation",
+    result: "DONE",
+    outcome: { controlRequest: { action: "HANDOFF", targetRole: "reviewer", ambiguous: false } },
+  });
+  assert.equal(rev.accepted, false);
+  assert.equal(silent.systemNotices.length, 0);
+  assert.ok(silent.journalEvents.some((e) => e.type === "HANDOFF_REJECTED" && e.status === "HANDOFF_BUDGET_REACHED"));
+});
+
+test("ensureHandoffLedger: 같은 root 재사용 시 정책이 커지면 budget을 따라 올린다", () => {
+  const room = makeConsumerRoom();
+  room.professionalRun = { ...room.professionalRun, policy: { planAutoRevisions: 0, implementationAutoRevisions: 0 } };
+  const first = room.ensureHandoffLedger();
+  assert.equal(first.budget, 8);
+  // 기획 후 구현 버튼에서 자동보완을 3으로 올림(새 사용자 메시지 없음 → 같은 root).
+  room.professionalRun = { ...room.professionalRun, policy: { planAutoRevisions: 0, implementationAutoRevisions: 3 } };
+  const reused = room.ensureHandoffLedger();
+  assert.equal(reused, first, "같은 root면 원장을 재사용한다");
+  assert.equal(reused.budget, 14, "정책 증가분(2*3)만큼 budget이 올라가야 Archivist 요청이 거부되지 않는다");
+});
+
+test("consumeControlRequest: 거부된 control도 handoff 연쇄를 끊어(lastTargetRole 초기화·영속) 정당한 재handoff가 REPEAT로 거부되지 않는다", () => {
+  const persisted = [];
+  const room = makeConsumerRoom({
+    persistProfessionalRun: (run) => {
+      persisted.push(run);
+      return true;
+    },
+  });
+  // 1) builder→reviewer 수용 → lastTargetRole=reviewer
+  const a = room.consumeControlRequest({
+    contract: "implementation",
+    result: "DONE",
+    outcome: { controlRequest: { action: "HANDOFF", targetRole: "reviewer", ambiguous: false } },
+  });
+  assert.equal(a.accepted, true);
+  assert.equal(room.handoffLedger.lastTargetRole, "reviewer");
+  // 2) 검토자 결정 지점: 위법 조합(PASS + HANDOFF @builder)으로 거부 → 연쇄 단절
+  const b = room.consumeControlRequest({
+    contract: "review",
+    result: "PASS",
+    outcome: { controlRequest: { action: "HANDOFF", targetRole: "builder", ambiguous: false } },
+  });
+  assert.equal(b.accepted, false);
+  assert.equal(b.reason, "CONTROL_NOT_ALLOWED");
+  assert.equal(room.handoffLedger.lastTargetRole, null);
+  // 초기화가 영속돼야 재시작 복원이 stale 값을 되살리지 않는다.
+  assert.equal(persisted[persisted.length - 1].handoffState.lastTargetRole, null);
+  // 3) 다음 정당한 builder→reviewer는 REPEAT 없이 수용된다.
+  const c = room.consumeControlRequest({
+    contract: "implementation",
+    result: "DONE",
+    outcome: { controlRequest: { action: "HANDOFF", targetRole: "reviewer", ambiguous: false } },
+  });
+  assert.equal(c.accepted, true, `reason=${c.reason}`);
+});
 
 test("consumeControlRequest: 영속 실패는 소비를 되돌리고 거부한다", () => {
   const room = makeConsumerRoom({ persistProfessionalRun: () => false });

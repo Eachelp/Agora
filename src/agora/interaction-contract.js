@@ -395,22 +395,24 @@ function isControlLine(line) {
   return CONTROL_LINE_PATTERNS.some((pattern) => pattern.test(line));
 }
 
-// 응답 마지막에 붙은 연속 제어 블록만 잘라낸다(end-anchor —
-// [[CODEPET_REVIEW:...]]의 끝줄 앵커 규율과 같은 원칙). 본문 중간의
-// "출력 예시는 다음과 같습니다: HANDOFF: @builder" 뒤에 산문이 이어지면
-// 그 마커는 설명이지 실행 요청이 아니다. 이 제어가 Builder 자동 호출로
-// 이어지는 순간 파싱 오인은 곧 실행 권한 문제가 되기 때문이다.
-function trailingControlBlock(source) {
-  const lines = String(source || "").split(/\r?\n/);
+// 응답 마지막에 붙은 연속 제어 블록의 줄 범위를 masked 텍스트 기준으로
+// 구한다(end-anchor — [[CODEPET_REVIEW:...]]의 끝줄 앵커 규율과 같은 원칙).
+// 본문 중간의 "출력 예시는 다음과 같습니다: HANDOFF: @builder" 뒤에 산문이
+// 이어지면 그 마커는 설명이지 실행 요청이 아니다. 이 제어가 Builder 자동
+// 호출로 이어지는 순간 파싱 오인은 곧 실행 권한 문제가 되기 때문이다.
+//
+// 반환은 [start, end] 포함 범위다(start > end면 제어 블록 없음). 호출자는
+// "어느 줄이 제어 줄인가"만 masked로 판정하고, 실제 값(질문·요약·REASON)은
+// 같은 범위의 **원문** 줄에서 읽는다 — masked에서 값을 뽑으면 인라인 백틱
+// 안 내용이 공백으로 증발해 `ASK_USER: \`foo\``의 질문이 null이 된다.
+// maskCodeFences가 개행을 보존하므로 두 텍스트의 줄 인덱스는 일치한다.
+function trailingControlRange(masked) {
+  const lines = String(masked || "").split(/\r?\n/);
   let end = lines.length - 1;
   while (end >= 0 && lines[end].trim() === "") end -= 1;
-  const block = [];
-  for (let index = end; index >= 0; index -= 1) {
-    const line = lines[index];
-    if (line.trim() === "" || !isControlLine(line)) break;
-    block.unshift(line);
-  }
-  return block.join("\n");
+  let start = end;
+  while (start >= 0 && lines[start].trim() !== "" && isControlLine(lines[start])) start -= 1;
+  return { start: start + 1, end };
 }
 
 function maskCodeFences(text) {
@@ -428,16 +430,9 @@ function maskCodeFences(text) {
 // 기준으로 계산한 줄 번호를 원문에 그대로 쓸 수 있다).
 function stripControlOutput(text) {
   const raw = String(text || "");
-  const maskedLines = maskCodeFences(raw).split(/\r?\n/);
-  const lines = raw.split(/\r?\n/);
-  let end = maskedLines.length - 1;
-  while (end >= 0 && maskedLines[end].trim() === "") end -= 1;
-  let start = end;
-  while (start >= 0 && maskedLines[start].trim() !== "" && isControlLine(maskedLines[start])) {
-    start -= 1;
-  }
-  if (start === end) return raw;
-  return lines.slice(0, start + 1).join("\n").trimEnd();
+  const { start, end } = trailingControlRange(maskCodeFences(raw));
+  if (start > end) return raw;
+  return raw.split(/\r?\n/).slice(0, start).join("\n").trimEnd();
 }
 
 function handoffTargetForToken(token) {
@@ -455,9 +450,12 @@ function handoffTargetForToken(token) {
 // - 마커가 없으면 null. 서로 다른 행동이 섞이거나 HANDOFF 대상이 갈리면
 //   ambiguous로 표시하고 확정하지 않는다(findControlMarker의 ambiguity 규율).
 function parseControlOutput(text) {
-  // 코드펜스 예시를 지운 뒤, 응답 꼬리의 연속 제어 블록만 파싱 대상으로 삼는다.
-  const source = trailingControlBlock(maskCodeFences(text));
-  if (!source) return null;
+  // 코드펜스 예시를 지운 masked 텍스트로 꼬리 제어 블록의 줄 범위를 정하고,
+  // 값은 같은 범위의 원문 줄에서 읽는다(인라인 백틱 내용 보존).
+  const raw = String(text || "");
+  const { start, end } = trailingControlRange(maskCodeFences(raw));
+  if (start > end) return null;
+  const source = raw.split(/\r?\n/).slice(start, end + 1).join("\n");
 
   const handoffTargets = [];
   for (const match of source.matchAll(HANDOFF_LINE_PATTERN)) {

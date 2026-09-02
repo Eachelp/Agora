@@ -243,8 +243,8 @@ Runtime은 업무 의미 순서("planner 다음엔 반드시 plan_review")를 �
 - `validateHandoff/consumeHandoff/settleHandoff` + `createHandoffLedger` —
   구조적 검증만: 어휘, 자기/연속 호출 금지, budget(기본 8), stale
   (`generation`/`professionalRunId` 불일치), `invocationId` 중복/동시성.
-  거부 사유 enum: `HANDOFF_NOT_ALLOWED`(어휘 밖), `HANDOFF_SELF`,
-  `HANDOFF_STALE`, `HANDOFF_DUPLICATE`, `HANDOFF_BUSY`,
+  거부 사유 enum: `HANDOFF_NOT_ALLOWED`(어휘 밖), `HANDOFF_SELF`(자기 호출),
+  `HANDOFF_REPEAT`(직전 대상 연속 재호출), `HANDOFF_STALE`, `HANDOFF_DUPLICATE`, `HANDOFF_BUSY`,
   `HANDOFF_BUDGET_REACHED`.
 - **Lifecycle 규칙** (Stage 5 소비자가 따라야 하는 계약):
   - `recoverHandoffLedger(state)` — 크래시 복원 시 죽은 active invocation을
