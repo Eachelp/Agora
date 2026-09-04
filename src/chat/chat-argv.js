@@ -17,6 +17,10 @@ const SPECIALIST_STAGE_CAPS = Object.freeze({
   implementation: "workspace-write",
   review: "workspace-read",
   recorder: "chat",
+  // V1.5 — @기록자 Handoff/CONSULT의 실행 계약. 사람이 읽는 정리를 만드는
+  // LLM 호출이며 deterministic recorder finalizer와 다른 계약이다. 권한은
+  // recorder와 같은 chat 상한이다(파일 접근 불필요).
+  archivist: "chat",
 });
 const INLINE_TEXT_LIMIT = 16 * 1024;
 

@@ -91,6 +91,9 @@ const specialistCloseBtn = document.getElementById("specialist-close");
 let providers = [];
 let diagnostics = [];
 let projects = [];
+// V1.5 구조화 토론 Preset 목록. 정의는 main의 discussion-protocol.js가 갖고
+// 렌더러는 fullState로 받은 요약본만 쓴다 — 하드코딩 중복을 두지 않는다.
+let discussionPresets = [];
 let activeProjectId = null;
 let sessions = [];
 // 트리 사이드바용: 프로젝트 id → 그 프로젝트의 세션 목록.
@@ -151,6 +154,19 @@ const PLAN_AUTO_REVISE_KEY = "agora.chat.planAutoRevise";
 const PLAN_AUTO_LIMIT_KEY = "agora.chat.planAutoLimit";
 const IMPLEMENTATION_AUTO_REVISE_KEY = "agora.chat.implementationAutoRevise";
 const IMPLEMENTATION_AUTO_LIMIT_KEY = "agora.chat.implementationAutoLimit";
+const DISCUSSION_LENGTH_KEY = "agora.chat.discussionLength";
+const DISCUSSION_CUSTOM_TURNS_KEY = "agora.chat.discussionCustomTurns";
+const DISCUSSION_MODE_KEY = "agora.chat.discussionMode";
+const DISCUSSION_PRESET_KEY = "agora.chat.discussionPreset";
+const DISCUSSION_CYCLES_KEY = "agora.chat.discussionCycles";
+// V1.5 토론 길이 선택지. "manual"(직접 중단할 때까지)도 무한이 아니라
+// 실행 상한 50턴을 가진다 — Runtime에 무한루프를 만들지 않는다.
+const DISCUSSION_LENGTH_PRESETS = Object.freeze({
+  short: 9,
+  normal: 15,
+  long: 30,
+  manual: 50,
+});
 const SIDEBAR_MIN_WIDTH = 180;
 const SIDEBAR_MAX_WIDTH = 420;
 const SPECIALIST_STAGE_LABELS = Object.freeze({
@@ -163,11 +179,18 @@ const SPECIALIST_STAGE_LABELS = Object.freeze({
   review: "검수",
   reviewer: "검수",
   recorder: "기록",
+  // V1.5 완료 후 사람용 정리(Archivist) 턴 — 라벨이 없으면 역할 배지·'응답 중' 단계가 붙지 않는다.
+  archivist: "기록 정리",
 });
 
 function boundedRevisionLimit(value, fallback = 1) {
   const parsed = Number.parseInt(value, 10);
   return Number.isInteger(parsed) ? Math.min(3, Math.max(1, parsed)) : fallback;
+}
+
+function boundedDiscussionTurns(value, fallback = 15) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) ? Math.min(50, Math.max(3, parsed)) : fallback;
 }
 
 planAutoReviseToggle.checked = localStorage.getItem(PLAN_AUTO_REVISE_KEY) === "true";
@@ -3172,22 +3195,188 @@ discussionButton.addEventListener("click", () => {
     desc.textContent = "한 턴씩 차례로 말하고, 합의·결론·패스가 이어지면 스스로 끝냅니다.";
     root.append(desc);
 
+    // V1.5: 자유토론과 구조화 토론을 한 팝오버에서 고른다. 구조화 토론은
+    // Preset이 임시 역할과 발언 순서를 정하고, 길이는 cycle 수가 정한다.
+    const modeSelect = document.createElement("select");
+    for (const [value, label] of [
+      ["free", "자유토론"],
+      ["structured", "구조화 토론"],
+    ]) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      modeSelect.append(option);
+    }
+    const savedMode = localStorage.getItem(DISCUSSION_MODE_KEY);
+    modeSelect.value =
+      savedMode === "structured" && discussionPresets.length > 0 ? "structured" : "free";
+    if (discussionPresets.length === 0) modeSelect.disabled = true;
+    root.append(makeField("토론 방식", modeSelect));
+
+    const availableAgents = agents.filter((agent) => agent.available && agent.enabled);
+
     const checkboxes = [];
-    for (const agent of agents) {
-      if (!agent.available || !agent.enabled) continue;
+    const checkboxFields = [];
+    for (const agent of availableAgents) {
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
       checkbox.checked = true;
       checkbox.dataset.agentId = agent.id;
       checkboxes.push(checkbox);
-      root.append(makeField(`@${agent.id} (${agent.name})`, checkbox));
+      const field = makeField(`@${agent.id} (${agent.name})`, checkbox);
+      checkboxFields.push(field);
+      root.append(field);
     }
+
+    // --- 구조화 토론 설정 ---
+    const presetSelect = document.createElement("select");
+    for (const preset of discussionPresets) {
+      const option = document.createElement("option");
+      option.value = preset.id;
+      option.textContent = `${preset.name} (${preset.stepNames.join(" → ")})`;
+      presetSelect.append(option);
+    }
+    const savedPreset = localStorage.getItem(DISCUSSION_PRESET_KEY);
+    if (savedPreset && discussionPresets.some((preset) => preset.id === savedPreset)) {
+      presetSelect.value = savedPreset;
+    }
+    const presetField = makeField("Preset", presetSelect);
+
+    // cycle 상한은 preset의 step 수에 따라 다르다(전체 hard ceiling 50턴 공유,
+    // 4-step preset이면 12 cycle). preset을 바꾸면 선택지를 다시 만든다.
+    const cycleSelect = document.createElement("select");
+    const rebuildCycleOptions = () => {
+      const preset = discussionPresets.find((entry) => entry.id === presetSelect.value);
+      const maxCycles = Number.isInteger(preset?.maxCycles) && preset.maxCycles >= 1
+        ? preset.maxCycles
+        : 12;
+      const previous = Number.parseInt(cycleSelect.value, 10);
+      const saved = Number.parseInt(localStorage.getItem(DISCUSSION_CYCLES_KEY), 10);
+      cycleSelect.replaceChildren();
+      for (let cycles = 1; cycles <= maxCycles; cycles += 1) {
+        const option = document.createElement("option");
+        option.value = String(cycles);
+        option.textContent = `${cycles} 사이클`;
+        cycleSelect.append(option);
+      }
+      const wanted = Number.isInteger(previous) ? previous : saved;
+      cycleSelect.value = String(
+        Number.isInteger(wanted) && wanted >= 1 && wanted <= maxCycles
+          ? wanted
+          : Math.min(3, maxCycles)
+      );
+    };
+    rebuildCycleOptions();
+    const cycleField = makeField("반복", cycleSelect);
+
+    const slotWrap = document.createElement("div");
+    let slotSelects = [];
+    const rebuildSlots = () => {
+      slotWrap.replaceChildren();
+      slotSelects = [];
+      const preset = discussionPresets.find((entry) => entry.id === presetSelect.value);
+      if (!preset) return;
+      for (let slot = 0; slot < preset.slotCount; slot += 1) {
+        const select = document.createElement("select");
+        for (const agent of availableAgents) {
+          const option = document.createElement("option");
+          option.value = agent.id;
+          option.textContent = `@${agent.id} (${agent.name})`;
+          select.append(option);
+        }
+        if (availableAgents.length > 0) {
+          select.value = availableAgents[slot % availableAgents.length].id;
+        }
+        slotSelects.push(select);
+        slotWrap.append(makeField(preset.slotLabels[slot] || `역할 ${slot + 1}`, select));
+      }
+    };
+    presetSelect.addEventListener("change", () => {
+      rebuildSlots();
+      rebuildCycleOptions();
+    });
+    rebuildSlots();
+
+    root.append(presetField, cycleField, slotWrap);
+
+    // V1.5: 토론 길이를 고를 수 있다. 저장된 선택이 없으면 기존 기본(9턴)
+    // 그대로다. "직접 중단할 때까지"도 상한 50턴 안에서만 돈다.
+    const lengthSelect = document.createElement("select");
+    for (const [value, label] of [
+      ["short", "짧게 (9턴)"],
+      ["normal", "보통 (15턴)"],
+      ["long", "길게 (30턴)"],
+      ["custom", "직접 설정"],
+      ["manual", "직접 중단할 때까지 (최대 50턴)"],
+    ]) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      lengthSelect.append(option);
+    }
+    const savedLength = localStorage.getItem(DISCUSSION_LENGTH_KEY);
+    lengthSelect.value =
+      savedLength && (savedLength === "custom" || DISCUSSION_LENGTH_PRESETS[savedLength])
+        ? savedLength
+        : "short";
+
+    const customInput = document.createElement("input");
+    customInput.type = "number";
+    customInput.min = "3";
+    customInput.max = "50";
+    customInput.value = String(
+      boundedDiscussionTurns(localStorage.getItem(DISCUSSION_CUSTOM_TURNS_KEY))
+    );
+    const customField = makeField("발언 수 (3~50)", customInput);
+
+    const lengthField = makeField("토론 길이", lengthSelect);
+    root.append(lengthField, customField);
+
+    // 자유토론에는 참가자 체크박스·길이를, 구조화 토론에는 Preset·반복·역할
+    // 배정을 보여 준다(제안서 §11.1: 자유토론에서 cycle UI를 숨긴다).
+    const syncModeFields = () => {
+      const structured = modeSelect.value === "structured";
+      for (const field of checkboxFields) field.hidden = structured;
+      lengthField.hidden = structured;
+      customField.hidden = structured || lengthSelect.value !== "custom";
+      presetField.hidden = !structured;
+      cycleField.hidden = !structured;
+      slotWrap.hidden = !structured;
+    };
+    modeSelect.addEventListener("change", syncModeFields);
+    lengthSelect.addEventListener("change", syncModeFields);
+    syncModeFields();
 
     const startBtn = document.createElement("button");
     startBtn.type = "button";
     startBtn.className = "button button-primary popover-submit";
     startBtn.textContent = "토론 시작";
     startBtn.addEventListener("click", async () => {
+      if (modeSelect.value === "structured") {
+        const preset = discussionPresets.find((entry) => entry.id === presetSelect.value);
+        if (!preset) {
+          flashNotice("구조화 토론 Preset을 선택해야 합니다.");
+          return;
+        }
+        const roleAssignments = slotSelects.map((select) => select.value);
+        if (new Set(roleAssignments).size < 2) {
+          flashNotice("구조화 토론에는 서로 다른 참가자가 두 명 이상 필요합니다.");
+          return;
+        }
+        const cycleBudget = Number.parseInt(cycleSelect.value, 10);
+        localStorage.setItem(DISCUSSION_MODE_KEY, "structured");
+        localStorage.setItem(DISCUSSION_PRESET_KEY, preset.id);
+        localStorage.setItem(DISCUSSION_CYCLES_KEY, String(cycleBudget));
+        closePopover();
+        await call(
+          window.chatApi.discussionStart(activeSessionId, undefined, {
+            presetId: preset.id,
+            cycleBudget,
+            roleAssignments,
+          })
+        );
+        return;
+      }
       const agentIds = checkboxes
         .filter((checkbox) => checkbox.checked)
         .map((checkbox) => checkbox.dataset.agentId);
@@ -3195,8 +3384,18 @@ discussionButton.addEventListener("click", () => {
         flashNotice("토론에는 두 명 이상을 선택해야 합니다.");
         return;
       }
+      const lengthChoice = lengthSelect.value;
+      const turnBudget =
+        lengthChoice === "custom"
+          ? boundedDiscussionTurns(customInput.value)
+          : DISCUSSION_LENGTH_PRESETS[lengthChoice] || DISCUSSION_LENGTH_PRESETS.short;
+      localStorage.setItem(DISCUSSION_MODE_KEY, "free");
+      localStorage.setItem(DISCUSSION_LENGTH_KEY, lengthChoice);
+      if (lengthChoice === "custom") {
+        localStorage.setItem(DISCUSSION_CUSTOM_TURNS_KEY, String(turnBudget));
+      }
       closePopover();
-      await call(window.chatApi.discussionStart(activeSessionId, agentIds));
+      await call(window.chatApi.discussionStart(activeSessionId, agentIds, { turnBudget }));
     });
     root.append(startBtn);
   });
@@ -4099,7 +4298,28 @@ composerBox.addEventListener("drop", async (event) => {
 });
 
 // --- 멘션 자동완성 ---
+// V1.5 역할 멘션 항목. 별칭은 main의 chat-mention ROLE_ALIASES와 같은 완전
+// 단어형이어야 한다 — 어긋나면 자동완성으로 넣은 멘션이 라우팅되지 않는다.
+const ROLE_MENTION_TARGETS = Object.freeze([
+  { alias: "기획자", label: "기획자에게 질문 (읽기 전용)", roleId: "planning" },
+  { alias: "구현자", label: "구현자에게 질문 (읽기 전용)", roleId: "implementation" },
+  { alias: "검토자", label: "검토자에게 질문 (읽기 전용)", roleId: "review" },
+  { alias: "기록자", label: "기록자에게 질문 (읽기 전용)", roleId: "recorder" },
+]);
+
+function roleMentionAvailable(project, roleId) {
+  let config = roleConfigFromProject(project, roleId);
+  // 기록 역할은 비워 두면 검토 담당자를 재사용한다(main의 fallback과 동일).
+  if (!config.agentId && roleId === "recorder") {
+    config = roleConfigFromProject(project, "review");
+  }
+  if (!config.agentId) return false;
+  const agent = agents.find((entry) => entry.id === config.agentId);
+  return Boolean(agent && agent.available && agent.enabled);
+}
+
 function mentionTargets() {
+  const project = activeProjectEntry();
   return [
     ...agents.map((agent) => ({
       alias: agent.aliases[0],
@@ -4112,6 +4332,20 @@ function mentionTargets() {
       label: "모든 에이전트",
       color: "#52525b",
       available: agents.some((agent) => agent.available && agent.enabled),
+    },
+    ...ROLE_MENTION_TARGETS.map((role) => ({
+      alias: role.alias,
+      label: role.label,
+      color: "#7c6f64",
+      available: roleMentionAvailable(project, role.roleId),
+    })),
+    {
+      alias: "팀",
+      label: "팀 상담: 기획자 → 검토자 → 구현자 (읽기 전용)",
+      color: "#7c6f64",
+      available: ["planning", "review", "implementation"].every((roleId) =>
+        roleMentionAvailable(project, roleId)
+      ),
     },
   ];
 }
@@ -4274,7 +4508,9 @@ async function sendCurrentMessage() {
   if (result) {
     pendingAttachments = [];
     renderPendingAttachments();
-    if (professionalModeEnabled) {
+    // 역할 멘션이 상담(CONSULT)으로 라우팅된 전송은 메모가 아니다 — 곧 역할
+    // 담당자의 답이 오므로 "기록했습니다" 안내를 띄우지 않는다.
+    if (professionalModeEnabled && !result.consult) {
       flashNotice("작업 요청을 기록했습니다. PLAN 또는 전체 실행을 선택하세요.", false);
     }
   } else {
@@ -4426,6 +4662,7 @@ window.chatApi.onMaximizedState((isMaximized) => {
 function applyFullState(full) {
   if (full.providers) providers = full.providers;
   if (full.diagnostics) diagnostics = full.diagnostics;
+  if (full.discussionPresets) discussionPresets = full.discussionPresets;
   if (full.projects) projects = full.projects;
   if (full.workflow) workflow = full.workflow;
   if (Object.hasOwn(full, "activeProjectId")) activeProjectId = full.activeProjectId;

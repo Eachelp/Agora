@@ -3,7 +3,11 @@ const path = require("node:path");
 const { GROUP_ALIASES } = require("./chat-agents");
 const { parseMentions } = require("./chat-mention");
 const { buildAgentPrompt } = require("./chat-prompt");
-const { specialistPermissionMode } = require("./chat-argv");
+const {
+  specialistPermissionMode,
+  minPermissionMode,
+  SPECIALIST_STAGE_CAPS,
+} = require("./chat-argv");
 const {
   createProfessionalRun,
   transitionProfessionalRun,
@@ -32,6 +36,14 @@ const {
 const {
   installDeterministicProfessionalRecorder,
 } = require("./chat-professional-recorder");
+const {
+  resolveProtocol,
+  speakerForTurn,
+  isFinalStep,
+  DISCUSSION_HARD_TURN_CEILING,
+} = require("../agora/discussion-protocol");
+// V1.5 Stage 5 — 역할 출력의 구조화 제어 행동(HANDOFF/COMPLETE/ASK_USER).
+const { parseControlOutput, stripControlOutput } = require("../agora/interaction-contract");
 
 // 채팅방 오케스트레이션.
 // - 멘션이 없으면 세션 참가자 전체, 있으면 멘션된 참가자만 응답합니다.
@@ -43,6 +55,17 @@ const {
 // - 에이전트 간 토론은 startDiscussion()으로만, 라운드(1~3)와
 //   총 실행 예산 두 가지 상한 아래에서만 진행됩니다.
 const DEFAULT_DISCUSSION_RUN_BUDGET = 9;
+
+// V1.5: 토론 길이를 사용자가 고를 수 있다(짧게 9 / 보통 15 / 길게 30 / 직접
+// 설정). 렌더러가 어떤 값을 보내든 실행 상한은 이 범위를 넘지 못한다.
+// 상한은 구조화 토론의 cycle 상한과 같은 hard ceiling을 공유한다.
+const DISCUSSION_TURN_BUDGET_MIN = 3;
+const DISCUSSION_TURN_BUDGET_MAX = DISCUSSION_HARD_TURN_CEILING;
+
+function clampDiscussionTurnBudget(value, fallback) {
+  if (!Number.isInteger(value)) return fallback;
+  return Math.max(DISCUSSION_TURN_BUDGET_MIN, Math.min(DISCUSSION_TURN_BUDGET_MAX, value));
+}
 
 // 작업용 채팅에서는 캐릭터 이모티콘 이미지를 더 이상 렌더링하지 않습니다.
 // 다만 예전 습관이나 실수로 에이전트가 [[CODEPET_EMOTE:...]] 표기를 남기면
@@ -139,6 +162,11 @@ class ChatRoom extends EventEmitter {
     this.discussionActive = false;
     this.discussionRequested = false;
     this.specialistActive = false;
+    // V1.5 역할/팀 상담(CONSULT)이 진행 중임을 나타내는 재진입 카운터.
+    // consultTeam이 consultRole을 중첩 호출하므로 불리언이 아닌 카운터다.
+    // 상담 중에는 토론·전문실행 시작을 막고 일반 턴을 defer해 순차 계약을
+    // 보호한다(discussionActive/specialistActive와 동일한 상호배제).
+    this.consultActiveCount = 0;
     // 전문 실행 중 "기획 승인 후 이어서 진행"할 상태(step/auto에서 PLAN_READY로 멈출 때 저장).
     this.specialistResume = null;
     // 기획 검수를 통과하고 사용자가 승인한 live Task입니다. 구현·검수 블록은
@@ -151,6 +179,19 @@ class ChatRoom extends EventEmitter {
     this.persistProfessionalRun = typeof options.persistProfessionalRun === "function"
       ? options.persistProfessionalRun
       : null;
+    // V1.5 System Journal appender. 없으면 기록을 생략한다(테스트·레거시 호환).
+    this.appendProfessionalEvent = typeof options.appendProfessionalEvent === "function"
+      ? options.appendProfessionalEvent
+      : null;
+    // Journal reader — Archivist가 실행 사실 기록을 읽을 때 쓴다(읽기 전용).
+    this.readProfessionalEvents = typeof options.readProfessionalEvents === "function"
+      ? options.readProfessionalEvents
+      : null;
+    this.journalWriteFailureNotified = false;
+    // V1.5 Stage 5 — 살아 있는 Handoff 원장(현재 root 발화의 budget epoch).
+    // 영속 authority는 professionalRun.handoffState이고, 복원은
+    // ensureHandoffLedger가 recoverHandoffLedgerForRoot로만 수행한다.
+    this.handoffLedger = null;
     const initialProfessionalRun = options.initialProfessionalRun || options.meta?.professionalRun || null;
     this.professionalRun = initialProfessionalRun ? createProfessionalRun(initialProfessionalRun) : null;
     if (this.professionalRun?.status === "RUNNING") {
@@ -575,11 +616,14 @@ class ChatRoom extends EventEmitter {
     };
     if (dedupeKey) this.pendingTurns.set(dedupeKey, item);
     this.trackTurnWait(item);
-    // While a discussion or specialist run is active, defer ordinary
-    // (non-discussion, non-specialist) turns so they cannot interject.
-    const deferGeneral = (this.discussionActive || this.specialistActive)
+    // While a discussion, specialist run, or consult is active, defer ordinary
+    // (non-discussion, non-specialist, non-consult) turns so they cannot
+    // interject. 상담 턴 자체(context.consult)는 defer 대상이 아니다 — 그러면
+    // 상담이 자기 자신을 기다리며 멈춘다.
+    const deferGeneral = (this.discussionActive || this.specialistActive || this.isConsultActive())
       && !context.discussion
-      && !context.specialist;
+      && !context.specialist
+      && !context.consult;
     const queue = deferGeneral
       ? this.deferredTurnQueue
       : this.turnQueue;
@@ -873,6 +917,10 @@ class ChatRoom extends EventEmitter {
       !context.specialist &&
       !context.discussionSummary &&
       !context.simplifyMeta &&
+      // V1.5 역할 상담(CONSULT)은 workspace-read 상한으로 강등되는 읽기 전용
+      // 턴이라 mutation 참여자가 아니다. 여기서 lease를 잡으면 다른 방의 실제
+      // 쓰기 실행과 서로를 불필요하게 막는다.
+      !context.consult &&
       this.meta.permissionMode === "workspace-write";
     if (!generalWorkspaceWrite) return this.runResponseTurn(agent, context, generation);
 
@@ -920,6 +968,16 @@ class ChatRoom extends EventEmitter {
     let permissionMode;
     if (context.discussionSummary || context.simplifyMeta) {
       permissionMode = "chat";
+    } else if (context.consult) {
+      // V1.5 역할 상담(CONSULT)은 읽기 전용 단일 응답이다(INV-3). 역할 cap과
+      // 세션 권한, workspace-read 상한의 최솟값으로 강등된다 — Builder에게
+      // 물어봐도 파일을 수정할 수 없고, 세션 권한보다 높은 권한을 얻는
+      // 경로도 아니다(chat 권한 세션이면 chat 그대로).
+      permissionMode = minPermissionMode(
+        this.meta.permissionMode,
+        "workspace-read",
+        SPECIALIST_STAGE_CAPS[context.consult.stage] || "workspace-read"
+      );
     } else if (specialistStage) {
       const auth = this.activeRunAuthorization || "workspace-write";
       permissionMode = specialistPermissionMode(specialistStage, auth);
@@ -952,11 +1010,12 @@ class ChatRoom extends EventEmitter {
         discussionSummary: context.discussionSummary || null,
         simplifyMeta: context.simplifyMeta || null,
         specialist: context.specialist || null,
+        consult: context.consult || null,
         broadcast: context.broadcast || null,
         handoff: context.handoff || null,
         // 전문 모드 실행 중에는 @멘션 호출을 끕니다. 구현·검토·기록이
         // 담당자 밖으로 새어 나가는 것을 막기 위해서입니다.
-        mentionsEnabled: !context.discussion && !context.specialist && !context.discussionSummary && !context.simplifyMeta && mentionDepth < this.mentionChainLimit,
+        mentionsEnabled: !context.discussion && !context.specialist && !context.discussionSummary && !context.simplifyMeta && !context.consult && mentionDepth < this.mentionChainLimit,
       });
     } catch (error) {
       const stopReason = error?.code || "PROMPT_BUILD_FAILED";
@@ -1110,13 +1169,53 @@ class ChatRoom extends EventEmitter {
       // 누락된 선언은 실제 BLOCKED와 구분해 사용자 개입으로 돌립니다.
       builderStatus = ambiguous ? "AMBIGUOUS" : value || "MISSING";
     }
+    // V1.5 Stage 5 — 전문 역할 출력의 제어 행동 추출. 응답 꼬리의 연속 제어
+    // 블록만 인식한다(end-anchor). 여기서는 추출·기록만 하고 실행하지 않는다
+    // — 모델은 요청하고 Runtime(소비 지점)이 결정한다(INV-6). 요청 사실은
+    // 소비 여부와 무관하게 Journal에 남긴다.
+    // 소비자가 붙은 턴(controlOutputs:true — auto/full 결정 지점)에서만
+    // 추출한다. step mode처럼 소비자가 없는 specialist 턴에서 parse/strip을
+    // 하면 화면에서 지워지고 HANDOFF_REQUESTED만 남는 ghost 요청이 생긴다.
+    let controlRequest = null;
+    if (context.specialist?.controlOutputs === true) {
+      const parsed = parseControlOutput(rawText);
+      if (parsed) {
+        controlRequest = parsed;
+        // 모호한 제어(질문 2개, ASK_USER+HANDOFF 혼합 등)는 소비 지점에서
+        // CONTROL_AMBIGUOUS로 거부된다. 그때 strip까지 하면 질문 전부가
+        // 화면에서 사라지고 "답하라"는 안내만 남는다 — 모호하면 원문 제어
+        // 줄을 그대로 남겨 사용자가 무엇을 물었는지 잃지 않게 한다.
+        if (!parsed.ambiguous) rawText = stripControlOutput(rawText);
+        if (parsed.action === "HANDOFF") {
+          this.recordJournalEvent?.({
+            type: "HANDOFF_REQUESTED",
+            role: parsed.targetRole || null,
+            purpose: parsed.purpose || null,
+            reason: parsed.reason || null,
+            status: parsed.ambiguous ? "AMBIGUOUS" : null,
+            professionalRunId: this.professionalRun?.professionalRunId || null,
+            frozenRunId: this.professionalRun?.frozenRunId || null,
+          });
+        }
+      }
+    }
 
     let text = stripEmoticonTags(rawText);
     if (context.discussion) {
       if (discussionSignal === "AGREE" && !text) {
         text = "동의합니다.";
       }
-      if (discussionSignal === "PASS" && !text) return { ok: true, discussionSignal };
+      if (discussionSignal === "PASS" && !text) {
+        if (context.discussion.role) {
+          // 구조화 토론의 단계 발언은 조용히 사라지면 안 된다. 빈 PASS를
+          // 그냥 건너뛰면 다음 단계가 이 단계가 실행된 사실조차 못 보고,
+          // cyclesCompleted는 실행된 것으로 세어진다. "덧붙일 것 없음"도
+          // 단계의 결과이므로 기록으로 남긴다.
+          text = "(이 단계에서 덧붙일 내용이 없습니다.)";
+        } else {
+          return { ok: true, discussionSignal };
+        }
+      }
     }
 
     // WAITING 전이가 "이 발화가 정지를 만들었다"를 기록할 수 있도록 id를 돌려준다.
@@ -1132,10 +1231,23 @@ class ChatRoom extends EventEmitter {
       ...(context.discussionSummary ? { discussionSummary: context.discussionSummary } : {}),
       ...(context.simplifyMeta ? { simplifyMeta: context.simplifyMeta } : {}),
       ...(context.turnRootId ? { turnRootId: context.turnRootId } : {}),
+      // 구조화 토론의 임시 역할은 참가자 identity가 아니라 그 발화의 역사적
+      // metadata다. 나중에 "GPT · 비평가" 배지나 과거 토론 재현에 쓰인다.
+      ...(context.discussion?.role
+        ? {
+            discussionTurnMeta: {
+              presetId: context.discussion.presetId || null,
+              cycle: context.discussion.cycle,
+              step: context.discussion.step,
+              roleName: context.discussion.role.name,
+            },
+          }
+        : {}),
       ...(result.deliveries ? { deliveries: result.deliveries } : {}),
     });
     // 토론 모드는 자체 턴 오케스트레이션이 있으므로 멘션 호출을 만들지 않습니다.
-    if (!context.discussion && !context.specialist && !context.discussionSummary && !context.simplifyMeta) {
+    // 역할 상담(consult)도 단일 응답 계약이라 연쇄를 만들지 않습니다.
+    if (!context.discussion && !context.specialist && !context.discussionSummary && !context.simplifyMeta && !context.consult) {
       this.scheduleMentionReplies(
         agent,
         text,
@@ -1150,6 +1262,7 @@ class ChatRoom extends EventEmitter {
       specialistSignal,
       plannerStatus,
       builderStatus,
+      controlRequest,
       messageId: appended?.id || null,
       text,
       runId,
@@ -1170,6 +1283,131 @@ class ChatRoom extends EventEmitter {
       const target = this.findAgent(agentId);
       if (!target || !target.available || target.enabled === false) continue;
       this.scheduleResponse(target, { mentionDepth: depth + 1, attachments, turnRootId });
+    }
+  }
+
+  // V1.5 직접 역할 호출(CONSULT) — 제안서 §7. 멘션은 Target이지 실행 승인이
+  // 아니므로(INV-2) 읽기 전용 단일 응답만 만든다. Professional Run·Task·
+  // Freeze를 만들지 않고 전문 FSM도 시작하지 않는다 — recordDiscussion처럼
+  // 일반 턴으로 실행하고 역할 관점과 읽기 전용 계약만 프롬프트로 덧씌운다.
+  // (specialist stage 턴은 harness가 professionalRunId를 요구하므로 run 없는
+  // 상담을 stage 턴으로 보내면 fail-closed로 죽는다.)
+  isConsultActive() {
+    return this.consultActiveCount > 0;
+  }
+
+  // 상담 구간이 끝나면 그 사이 defer된 일반 턴을 다시 흘려보낸다.
+  // 토론·전문실행의 finally와 같은 정리다(가장 바깥 상담만 flush한다).
+  releaseConsultDeferred() {
+    if (this.consultActiveCount > 0) return;
+    if (this.deferredTurnQueue.length > 0) {
+      this.turnQueue.push(...this.deferredTurnQueue.splice(0));
+      this.emitTurnState();
+      this.pumpTurnQueue();
+    }
+  }
+
+  async consultRole({ roleId, stage, agent, agentConfig, roleLabel, attachments, nested = false }) {
+    if (this.discussionRequested || this.discussionActive) {
+      return { ok: false, error: "토론이 진행 중에는 역할을 호출할 수 없습니다." };
+    }
+    if (this.isSpecialistLocked()) {
+      return {
+        ok: false,
+        error: "전문 실행이 진행 중이거나 결정을 기다리고 있어 역할 상담을 시작할 수 없습니다.",
+      };
+    }
+    // 상담이 이미 진행 중이면 새 상담을 같은 큐에 끼워 넣지 않는다 — 팀 상담의
+    // step 사이에 다른 상담이 interleave되면 순차 계약이 깨진다. consultTeam이
+    // 자기 step으로 부르는 중첩 호출(nested)만 통과한다.
+    if (!nested && this.isConsultActive()) {
+      return { ok: false, error: "이미 역할·팀 상담이 진행 중입니다. 끝난 뒤 다시 요청해 주세요." };
+    }
+    const target = agent && agent.id ? this.findAgent(agent.id) : null;
+    if (!target || !target.available || target.enabled === false) {
+      return { ok: false, error: "이 역할의 담당 에이전트를 사용할 수 없습니다." };
+    }
+    const label = roleLabel || roleId;
+    this.consultActiveCount += 1;
+    try {
+      this.appendSystem(`@${target.id}가 ${label} 역할의 관점에서 답합니다. (읽기 전용 상담)`);
+      // Role Invocation도 Journal 대상이다 — FSM 전이만 감시하는 seam으로는
+      // 직접 역할 호출 중심의 전문모드를 감사할 수 없다.
+      this.recordJournalEvent?.({ type: "ROLE_STARTED", role: roleId, purpose: "consult" });
+      const outcome = await this.scheduleResponse(target, {
+        consult: { role: roleId, stage: stage || null, label },
+        agentConfig,
+        // 질문에 딸린 첨부는 상담 턴에도 전달한다 — 기록만 되고 정작 답하는
+        // 에이전트가 파일을 못 받는 공백을 막는다.
+        attachments: Array.isArray(attachments) ? attachments : [],
+      });
+      this.recordJournalEvent?.({
+        type: "ROLE_FINISHED",
+        role: roleId,
+        purpose: "consult",
+        status: !outcome ? "INTERRUPTED" : outcome.ok ? "DONE" : "FAILED",
+      });
+      if (!outcome) return { ok: false, cancelled: true };
+      return outcome.ok
+        ? { ok: true, messageId: outcome.messageId || null }
+        : { ok: false, error: outcome.error || "역할 상담 응답에 실패했습니다." };
+    } finally {
+      this.consultActiveCount -= 1;
+      this.releaseConsultDeferred();
+    }
+  }
+
+  // V1.5 팀 상담(제안서 §9.2) — Planner-first 제한 순차 상담. 역할을 병렬
+  // 또는 랜덤 호출하지 않고(INV-1, INV-4) 정해진 순서로 한 명씩 답한다.
+  // Professional Run을 만들지 않고, Task를 Freeze하지 않고, 쓰기 권한을 주지
+  // 않고, Recorder를 자동 호출하지 않는다.
+  async consultTeam(steps = []) {
+    if (this.discussionRequested || this.discussionActive) {
+      return { ok: false, error: "토론이 진행 중에는 팀 상담을 시작할 수 없습니다." };
+    }
+    if (this.isSpecialistLocked()) {
+      return {
+        ok: false,
+        error: "전문 실행이 진행 중이거나 결정을 기다리고 있어 팀 상담을 시작할 수 없습니다.",
+      };
+    }
+    if (!Array.isArray(steps) || steps.length === 0) {
+      return { ok: false, error: "팀 상담에 참여할 역할이 없습니다." };
+    }
+    if (this.isConsultActive()) {
+      return { ok: false, error: "이미 역할·팀 상담이 진행 중입니다. 끝난 뒤 다시 요청해 주세요." };
+    }
+    // 팀 상담 전체 구간을 상담 활성으로 표시한다. 이렇게 해야 step 사이의
+    // await 창에서 토론·전문실행이 끼어들어 순차 계약이 반쪽으로 무너지거나,
+    // 일반 메시지가 step들 사이에 실행되는 것을 막는다(중첩 consultRole은
+    // 카운터로 흡수된다).
+    this.consultActiveCount += 1;
+    try {
+      const order = steps.map((step) => step.roleLabel || step.roleId).join(" → ");
+      this.appendSystem(`팀 상담 시작 · ${order} 순서로 답합니다. (읽기 전용, 실행 없음)`);
+      const generation = this.generation;
+      for (const step of steps) {
+        if (generation !== this.generation) return { ok: false, cancelled: true };
+        const result = await this.consultRole({ ...step, nested: true });
+        if (!result.ok) {
+          // 중간 중단을 조용히 넘기지 않는다. IPC는 시작 확인 후 결과를 받지
+          // 않으므로(pending 반환), 남은 순서가 실행되지 않은 이유는 여기서
+          // 채팅에 남겨야 사용자에게 보인다. 사용자 중지(cancelled)는 중지
+          // 경로가 이미 자체 안내를 남기므로 제외한다.
+          if (!result.cancelled) {
+            this.appendSystem(
+              `팀 상담이 중간에 중단되었습니다: ${result.error || "역할 상담 응답에 실패했습니다."}`
+            );
+          }
+          return result;
+        }
+      }
+      if (generation !== this.generation) return { ok: false, cancelled: true };
+      this.appendSystem("팀 상담을 마쳤습니다. 실행이 필요하면 PLAN 또는 실행 버튼으로 시작해 주세요.");
+      return { ok: true };
+    } finally {
+      this.consultActiveCount -= 1;
+      this.releaseConsultDeferred();
     }
   }
 
@@ -1294,9 +1532,26 @@ class ChatRoom extends EventEmitter {
 
 
   // 자율 토론: 차례대로 말하되 합의/패스/결론 신호에 따라 일찍 끝냅니다.
+  // V1.5: options.protocol이 있으면 구조화 토론이다 — Preset이 정한 임시
+  // 역할·발언 순서·cycle 수를 따르고, 모델 출력은 그 순서를 바꿀 수 없다.
   async startDiscussion(options = {}) {
-    let pool = this.enabledAgents();
-    if (Array.isArray(options.agentIds) && options.agentIds.length > 0) {
+    const enabled = this.enabledAgents();
+    const agentById = new Map(enabled.map((agent) => [agent.id, agent]));
+    let pool = enabled;
+    let protocol = null;
+    if (options.protocol) {
+      const resolved = resolveProtocol(options.protocol);
+      if (!resolved.ok) return { ok: false, error: resolved.error };
+      protocol = resolved.protocol;
+      const missing = protocol.participantIds.filter((id) => !agentById.has(id));
+      if (missing.length > 0) {
+        return {
+          ok: false,
+          error: `구조화 토론에 배정된 참가자를 사용할 수 없습니다: ${missing.join(", ")}`,
+        };
+      }
+      pool = [...new Set(protocol.participantIds)].map((id) => agentById.get(id));
+    } else if (Array.isArray(options.agentIds) && options.agentIds.length > 0) {
       const wanted = new Set(options.agentIds);
       pool = pool.filter((agent) => wanted.has(agent.id));
     }
@@ -1305,6 +1560,9 @@ class ChatRoom extends EventEmitter {
     }
     if (this.discussionRequested || this.discussionActive || this.isSpecialistLocked()) {
       return { ok: false, error: "이미 토론이 진행 중입니다." };
+    }
+    if (this.isConsultActive()) {
+      return { ok: false, error: "역할·팀 상담이 진행 중에는 토론을 시작할 수 없습니다." };
     }
 
     const requestedGeneration = this.generation;
@@ -1329,28 +1587,76 @@ class ChatRoom extends EventEmitter {
     }
     const discussionId = `disc-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
-    const budget = this.discussionRunBudget;
-    this.appendSystem(
-      `자율 토론 시작 · ${pool.map((agent) => `@${agent.id}`).join(", ")} · 최대 ${budget}턴`
-    );
+    // 호출별 turnBudget이 방 기본값보다 우선한다. 방 인스턴스는 세션 수명
+    // 동안 캐시되므로 생성자 옵션만으로는 실행 중 길이 변경이 불가능하다.
+    // 구조화 토론의 길이는 발언 수가 아니라 Protocol cycle 수가 결정한다.
+    const budget = protocol
+      ? protocol.totalTurns
+      : clampDiscussionTurnBudget(options.turnBudget, this.discussionRunBudget);
+    if (protocol) {
+      this.appendSystem(
+        `구조화 토론 시작 · ${protocol.presetName} Preset · ${pool.map((agent) => `@${agent.id}`).join(", ")} · ${protocol.cycleBudget}사이클(최대 ${budget}턴)`
+      );
+    } else {
+      this.appendSystem(
+        `자율 토론 시작 · ${pool.map((agent) => `@${agent.id}`).join(", ")} · 최대 ${budget}턴`
+      );
+    }
 
     const generation = this.generation;
     let completed = 0;
+    let successfulSteps = 0;
     let settled = 0;
     let concluded = false;
     let failures = 0;
     let wasStopped = false;
+    let protocolFailedStep = null;
     try {
       for (let turn = 1; turn <= budget; turn += 1) {
         if (generation !== this.generation) { wasStopped = true; break; }
         if (this.discussionInterrupted) { concluded = true; wasStopped = true; break; }
-        const agent = pool[(turn - 1) % pool.length];
+        const speaker = protocol ? speakerForTurn(protocol, turn) : null;
+        const agent = protocol
+          ? agentById.get(speaker.agentId)
+          : pool[(turn - 1) % pool.length];
         const outcome = await this.scheduleResponse(agent, {
-          discussion: { turn, maxTurns: budget },
+          discussion: protocol
+            ? {
+                turn,
+                maxTurns: budget,
+                presetId: protocol.presetId,
+                role: speaker.role,
+                cycle: speaker.cycle,
+                cycleBudget: protocol.cycleBudget,
+                step: speaker.step,
+                stepCount: protocol.stepCount,
+                finalStep: isFinalStep(protocol, turn),
+              }
+            : { turn, maxTurns: budget },
         });
         completed += 1;
-        if (!outcome?.ok) failures += 1;
+        if (outcome?.ok) successfulSteps += 1;
+        else failures += 1;
         const signal = outcome?.discussionSignal || "CONTINUE";
+        if (protocol) {
+          // 구조화 토론의 각 단계는 다음 단계의 입력 계약이다. 한 단계가
+          // 실패한 채 계속 가면 "비평 없는 비평 반영"처럼 계약이 조용히
+          // 무너지고, cyclesCompleted는 정상 실행으로 세어진다. 자유토론은
+          // 한 명이 빠져도 나머지가 말할 수 있지만 여기서는 즉시 중단한다.
+          if (!outcome?.ok && !wasStopped && generation === this.generation) {
+            protocolFailedStep = speaker;
+            break;
+          }
+          // 구조화 토론의 조기 종료는 cycle 마지막 단계(종합/판정)의 CONCLUDE
+          // 뿐이다. 중간 단계의 신호는 순서를 바꾸지 못한다(INV-1). 연속
+          // AGREE/PASS 규칙도 쓰지 않는다 — 같은 참가자가 여러 slot을 맡으면
+          // "전원이 조용한 한 바퀴"라는 의미가 성립하지 않기 때문이다.
+          if (signal === "CONCLUDE" && isFinalStep(protocol, turn)) {
+            concluded = true;
+            break;
+          }
+          continue;
+        }
         if (signal === "CONCLUDE") { concluded = true; break; }
         if (signal === "AGREE" || signal === "PASS") settled += 1;
         else settled = 0;
@@ -1360,19 +1666,32 @@ class ChatRoom extends EventEmitter {
       if (generation !== this.generation) wasStopped = true;
       const endMessageId = this.messages[this.messages.length - 1]?.id || startMessageId;
       const incomplete = Boolean(wasStopped || (!concluded && completed >= budget) || failures > 0);
+      // "failed"는 구조화 토론의 즉시 중단(단계 실패로 break)에만 쓴다 —
+      // protocolFailedStep이 그 유일한 신호다. 자유토론은 한 명이 실패해도
+      // 나머지가 계속 말하고 예산까지 진행하므로, 도중의 일시적 실패로
+      // "실패로 마쳤습니다"로 오표기하지 않는다(실제 종료 사유는 예산 도달).
+      const structuredFailure = Boolean(protocolFailedStep);
+      // 자유토론이라도 실행된 턴이 전부 실패했다면 '예산 도달'이 아니라 실패다.
+      const allFailed = !protocol && completed > 0 && failures >= completed && !concluded;
       const reason = wasStopped
         ? "interrupted"
-        : failures > 0 && !concluded
+        : (structuredFailure || allFailed)
           ? "failed"
           : (!concluded && completed >= budget)
             ? "budget"
             : "concluded";
+      // 표시 문구도 같은 우선순위(interrupted > failed > budget > concluded).
+      const budgetText = failures > 0
+        ? `토론 실행 예산(${budget}회)에 도달해 여기서 마쳤습니다. (일부 응답 실패 포함)`
+        : `토론 실행 예산(${budget}회)에 도달해 여기서 마쳤습니다.`;
       const conclusionText = wasStopped
         ? (this.discussionInterrupted ? "사용자 개입으로 토론을 여기서 마쳤습니다." : "사용자가 중지해 토론을 여기서 마쳤습니다.")
-        : (!concluded && completed >= budget)
-          ? `토론 실행 예산(${budget}회)에 도달해 여기서 마쳤습니다.`
-          : failures > 0 && !concluded
-            ? "일부 에이전트 응답 실패로 토론을 마쳤습니다."
+        : structuredFailure
+          ? `${protocolFailedStep.role.name} 단계 응답 실패로 구조화 토론을 중단했습니다.`
+          : allFailed
+            ? "모든 에이전트 응답이 실패해 토론을 마쳤습니다."
+            : (!concluded && completed >= budget)
+              ? budgetText
             : "참가자들이 합의하거나 결론에 도달해 토론을 마쳤습니다.";
 
       this.appendMessage({
@@ -1390,6 +1709,32 @@ class ChatRoom extends EventEmitter {
           reason,
           failures,
           participants: pool.map((agent) => agent.id),
+          // 구조화 토론에만 존재하는 additive 필드 — 예전 판은 무시한다.
+          ...(protocol
+            ? {
+                protocol: {
+                  presetId: protocol.presetId,
+                  presetName: protocol.presetName,
+                  cycleBudget: protocol.cycleBudget,
+                  stepCount: protocol.stepCount,
+                  // 실행 시도가 아니라 성공한 step 기준이다. completed로
+                  // 세면 마지막 step(종합)이 실패한 cycle도 완료로 기록된다.
+                  cyclesCompleted: Math.floor(successfulSteps / protocol.stepCount),
+                  // slot 순서 그대로의 역할 배정. 과거 토론을 다시 열 때
+                  // "이 답변은 당시 무슨 역할이었나"를 재현할 근거다.
+                  roleAssignments: [...protocol.participantIds],
+                  ...(protocolFailedStep
+                    ? {
+                        failedStep: {
+                          cycle: protocolFailedStep.cycle,
+                          step: protocolFailedStep.step,
+                          roleName: protocolFailedStep.role.name,
+                        },
+                      }
+                    : {}),
+                },
+              }
+            : {}),
         },
       });
       this.discussionActive = false;
@@ -1459,7 +1804,13 @@ class ChatRoom extends EventEmitter {
   }
 }
 
-module.exports = { ChatRoom, DEFAULT_DISCUSSION_RUN_BUDGET };
+module.exports = {
+  ChatRoom,
+  DEFAULT_DISCUSSION_RUN_BUDGET,
+  DISCUSSION_TURN_BUDGET_MIN,
+  DISCUSSION_TURN_BUDGET_MAX,
+  clampDiscussionTurnBudget,
+};
 
 
 installSpecialistMethods(ChatRoom);

@@ -123,6 +123,14 @@ class ChatStore {
     return path.join(this.sessionDir(id), "transcript.jsonl");
   }
 
+  // V1.5 System Journal(전문 실행 사실 기록). transcript와 별도 파일이다 —
+  // 대화 기록과 실행 감사 기록을 같은 진실로 합치지 않는다(INV-7).
+  // run-logs/ 아래에 두면 오래된 로그 정리(pruneRunLogs)가 지워 버리므로
+  // 반드시 세션 루트에 둔다.
+  professionalEventsPath(id) {
+    return path.join(this.sessionDir(id), "professional-events.jsonl");
+  }
+
   metaPath(id) {
     return path.join(this.sessionDir(id), "meta.json");
   }
@@ -381,6 +389,41 @@ class ChatStore {
 
   readTranscript(id) {
     return readJsonlTolerant(this.transcriptPath(id));
+  }
+
+  // System Journal append. appendEvent와 달리 meta/index를 건드리지 않고
+  // (이벤트마다 meta.json을 다시 쓰지 않는다), 실패를 null로 숨기지 않고
+  // false로 드러낸다 — 이벤트 저장 실패를 성공으로 숨기지 않는다(§10.4).
+  appendProfessionalEvent(id, event) {
+    if (!event || typeof event !== "object") return false;
+    const meta = this.readMeta(id);
+    if (!meta) return false;
+    if (this.readOnly || meta.readOnly) return false;
+    try {
+      fs.appendFileSync(this.professionalEventsPath(id), `${JSON.stringify(event)}\n`, "utf8");
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // append-only 파일이므로 재시도로 같은 eventId가 두 번 적힐 수 있다.
+  // 읽기 계층이 첫 기록만 남기고 중복을 흡수한다. 깨진 line은
+  // readJsonlTolerant가 건너뛴다.
+  readProfessionalEvents(id) {
+    const events = readJsonlTolerant(this.professionalEventsPath(id));
+    const seen = new Set();
+    const result = [];
+    for (const event of events) {
+      if (!event || typeof event !== "object") continue;
+      const eventId = typeof event.eventId === "string" ? event.eventId : null;
+      if (eventId) {
+        if (seen.has(eventId)) continue;
+        seen.add(eventId);
+      }
+      result.push(event);
+    }
+    return result;
   }
 
   readMessages(id) {

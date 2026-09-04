@@ -29,8 +29,10 @@ function boundedText(value, limit, label) {
   const budget = Math.max(0, limit - notice.length);
   const head = Math.ceil(budget * 0.25);
   const tail = budget - head;
+  // tail===0이면 slice(-0)===slice(0)이라 원문 전체를 반환해 상한을 우회한다.
+  const tailText = tail > 0 ? text.slice(text.length - tail) : "";
   return {
-    text: `${text.slice(0, head)}${notice}${text.slice(-tail)}`,
+    text: `${text.slice(0, head)}${notice}${tailText}`,
     truncated: true,
     omitted: text.length - budget,
   };
@@ -76,6 +78,7 @@ function buildAgentPrompt({
   workflowContext = "",
   discussion = null,
   specialist = null,
+  consult = null,
   handoff = null,
   broadcast = null,
   mentionsEnabled = !discussion,
@@ -92,6 +95,10 @@ function buildAgentPrompt({
   const isCleanReviewer = specialist?.stage === "review";
   const isPlanReviewer = specialist?.stage === "plan_review";
   const isProfessionalRecorder = specialist?.stage === "recorder" && specialist?.professional === true;
+  // V1.5 Archivist — 정책(ROLE_CONTEXT_POLICY.archivist)이 transcript를 차단하므로
+  // 그룹 채팅 페르소나("아래 대화의 마지막 메시지에 이어 답하라")로 떨어지면
+  // 안 된다. 다른 전문 단계와 같이 전용 페르소나를 쓴다.
+  const isArchivist = specialist?.stage === "archivist";
   const isSpecialist = Boolean(specialist);
   // 역할별 context 경계의 single source는 ROLE_CONTEXT_POLICY다.
   // 아래 조립 분기는 이 판정 함수를 통해서만 context 포함 여부를 정한다.
@@ -165,6 +172,9 @@ function buildAgentPrompt({
   } else if (isProfessionalRecorder) {
     lines.push("당신은 Agora 전문 실행의 Recorder입니다.");
     lines.push("대화 transcript나 다른 에이전트의 자유 설명은 보지 않습니다. Frozen Task, 최종 변경 요약, 검수 판정과 실행 근거만 기록하세요.");
+  } else if (isArchivist) {
+    lines.push("당신은 Agora 전문 실행의 Archivist(기록 정리자)입니다.");
+    lines.push("대화 transcript나 다른 에이전트의 자유 설명은 보지 않습니다. System Journal, Frozen Task, 최종 변경 요약, 검수 판정과 실행 근거만을 근거로 사람이 읽기 좋은 정리를 작성하세요.");
   } else if (isDiscussionSummary) {
     lines.push(
       discussionSummary?.record
@@ -279,11 +289,62 @@ function buildAgentPrompt({
     );
   }
   if (!isBuilder && discussion) {
+    if (discussion.role) {
+      // V1.5 구조화 토론: 참가자 정체성은 그대로 두고 이번 토론에서만 유효한
+      // 임시 역할을 덧씌운다. 순서는 Preset이 정하며 모델이 바꿀 수 없다.
+      lines.push(
+        `- 지금은 구조화 토론입니다. 사이클 ${discussion.cycle}/${discussion.cycleBudget}, 단계 ${discussion.step}/${discussion.stepCount} (전체 ${discussion.turn}/${discussion.maxTurns}턴).`
+      );
+      lines.push(
+        `- 이번 발언의 임시 역할: ${discussion.role.name} — ${discussion.role.charter}`
+      );
+      lines.push(
+        "- 이 역할은 이번 토론에서만 유효합니다. 발언 순서는 Preset이 정하므로 다른 참가자를 호출하거나 순서 변경을 요청하지 마세요."
+      );
+      if (discussion.finalStep) {
+        lines.push(
+          "- 응답 마지막 줄에 반드시 다음 중 하나만 붙이세요: [[CODEPET_DISCUSSION:CONTINUE]], [[CODEPET_DISCUSSION:CONCLUDE]]. 다음 사이클이 필요하면 CONTINUE, 충분한 결론에 도달했으면 CONCLUDE를 선택하세요."
+        );
+      } else {
+        lines.push(
+          "- 응답 마지막 줄에 반드시 [[CODEPET_DISCUSSION:CONTINUE]]를 붙이세요. 토론 종료 판단은 사이클 마지막 순서만 할 수 있습니다."
+        );
+      }
+    } else {
+      lines.push(
+        `- 지금은 자율 토론 ${discussion.turn}/${discussion.maxTurns}턴입니다. 앞선 답변을 검토해 새 근거가 있을 때만 짧게 기여하세요.`
+      );
+      lines.push("- 응답 마지막 줄에 반드시 다음 중 하나만 붙이세요: [[CODEPET_DISCUSSION:CONTINUE]], [[CODEPET_DISCUSSION:AGREE]], [[CODEPET_DISCUSSION:PASS]], [[CODEPET_DISCUSSION:CONCLUDE]].");
+      lines.push("- 새 기여는 CONTINUE, 새 내용 없이 동의하면 AGREE, 할 말이 없으면 PASS, 충분한 최종 결론을 제시하면 CONCLUDE를 선택하세요.");
+    }
+  }
+  if (consult) {
+    // V1.5 역할 상담(CONSULT) — 제안서 §7. 전문 실행이 아니라 일반 턴이며,
+    // 역할 관점과 읽기 전용 계약만 덧씌운다. STATUS/VERDICT 마커를 요구하지
+    // 않는다 — 단일 응답으로 끝나는 상담이지 파이프라인 단계가 아니다.
+    const consultRoleLines = {
+      planner: "기획자 관점: 목표·범위·요구사항·작업 분해를 중심으로 답하되, Task나 실행 계획을 확정하지 마세요.",
+      // 상담 턴의 권한은 세션 권한과 workspace-read 중 낮은 쪽이다. 세션이
+      // chat 권한이면 파일 도구가 없으므로 "읽기만 할 수 있다"는 안내가
+      // permissionRule("대화로만 답하세요")과 모순된다 — 권한에 맞춰 적는다.
+      builder:
+        permissionMode === "chat"
+          ? "구현자 관점: 코드 구조·실현 가능성·원인·비용을 중심으로 설명하세요. 이 턴에서는 파일을 읽을 수 없으므로 대화 내용만을 근거로 답하세요."
+          : "구현자 관점: 코드 구조·실현 가능성·원인·비용을 중심으로 설명하세요. 파일은 읽기만 할 수 있습니다.",
+      reviewer: "검토자 관점: 타당한 점·누락·리스크를 근거와 함께 짚으세요. 정식 검수(PASS/FIX_REQUIRED 판정)가 아닙니다.",
+      recorder: "기록자 관점: 지금까지의 논의를 정리해 답하되, 새로운 결정이나 판정을 만들지 마세요.",
+    };
+    lines.push("");
+    lines.push(`=== 역할 상담: ${consult.label || consult.role} ===`);
     lines.push(
-      `- 지금은 자율 토론 ${discussion.turn}/${discussion.maxTurns}턴입니다. 앞선 답변을 검토해 새 근거가 있을 때만 짧게 기여하세요.`
+      `- 이번 턴에 한해 전문 역할 "${consult.label || consult.role}"의 관점에서 답합니다. 이 호출은 질문 전달이지 실행 승인이 아닙니다.`
     );
-    lines.push("- 응답 마지막 줄에 반드시 다음 중 하나만 붙이세요: [[CODEPET_DISCUSSION:CONTINUE]], [[CODEPET_DISCUSSION:AGREE]], [[CODEPET_DISCUSSION:PASS]], [[CODEPET_DISCUSSION:CONCLUDE]].");
-    lines.push("- 새 기여는 CONTINUE, 새 내용 없이 동의하면 AGREE, 할 말이 없으면 PASS, 충분한 최종 결론을 제시하면 CONCLUDE를 선택하세요.");
+    lines.push("- 읽기 전용 단일 응답입니다. 파일을 수정하지 말고, Task·Run·검수 판정을 만들지 마세요.");
+    const roleLine = consultRoleLines[consult.role];
+    if (roleLine) lines.push(`- ${roleLine}`);
+    lines.push(
+      "- 구현·수정이 필요한 요청이라면 직접 실행하지 말고, 전문 모드의 PLAN → 실행 경로로 시작하도록 안내하세요."
+    );
   }
   if (specialist) {
     const stageLabels = {
@@ -292,10 +353,18 @@ function buildAgentPrompt({
       implementation: "구현",
       review: "검토",
       recorder: "기록",
+      // V1.5 — 사람이 읽기 좋은 정리를 만드는 LLM 계약. deterministic
+      // recorder finalizer와 다른 실행 계약이다.
+      archivist: "기록 정리",
     };
     lines.push("");
     lines.push(`=== 전문 모드: ${stageLabels[specialist.stage] || specialist.stage} ===`);
-    lines.push(`현재 단계: ${stageLabels[specialist.stage] || specialist.stage} · 반복 ${specialist.round || 1}/${specialist.maxRounds || 3}`);
+    // Archivist는 완료 뒤 한 번 도는 정리 턴이라 반복 회차가 없다.
+    lines.push(
+      specialist.stage === "archivist"
+        ? `현재 단계: ${stageLabels[specialist.stage]}`
+        : `현재 단계: ${stageLabels[specialist.stage] || specialist.stage} · 반복 ${specialist.round || 1}/${specialist.maxRounds || 3}`
+    );
     const ctxNotice = roleContextNotice(specialist.stage);
     if (ctxNotice) lines.push(`[context 경계] ${ctxNotice}`);
     if (specialist.feedback) {
@@ -501,6 +570,63 @@ function buildAgentPrompt({
         lines.push("=== 실행 근거 요약 끝 ===");
       }
       lines.push(...RECORDER_OUTPUT_LINES);
+    } else if (specialist.stage === "archivist") {
+      // V1.5 Archivist(제안서 §7.4) — System Journal과 canonical artifact를
+      // 읽어 사람용 정리를 만든다. 판정·승인 상태를 만들거나 바꾸지 않는다.
+      if (Array.isArray(specialist.journal) ? specialist.journal.length > 0 : specialist.journal) {
+        lines.push("=== System Journal (실행 사실 기록) ===");
+        lines.push(
+          boundedText(JSON.stringify(specialist.journal), MAX_REVIEW_EVIDENCE_CHARS, "Journal").text
+        );
+        lines.push("=== System Journal 끝 ===");
+      }
+      if (specialist.finalVerdict) {
+        lines.push(`최종 검수 판정: ${specialist.finalVerdict}`);
+      }
+      if (Object.prototype.hasOwnProperty.call(specialist, "reviewDiff")) {
+        lines.push("=== 최종 변경 요약 ===");
+        lines.push(boundedText(specialist.reviewDiff, MAX_REVIEW_DIFF_CHARS, "최종 변경").text);
+        lines.push("=== 최종 변경 요약 끝 ===");
+      }
+      if (specialist.evidence) {
+        lines.push("=== 실행 근거 요약 ===");
+        lines.push(boundedText(JSON.stringify(specialist.evidence), MAX_REVIEW_EVIDENCE_CHARS, "Evidence").text);
+        lines.push("=== 실행 근거 요약 끝 ===");
+      }
+      lines.push("- 위 기록과 산출물만을 근거로, 사람이 읽기 좋은 정리를 작성하세요.");
+      lines.push("- 새로운 사실·결정·판정을 만들지 마세요. 기록에 없는 내용은 '기록에 없음'이라고 밝히세요.");
+      lines.push("- 이 정리는 파생 요약(derivedSummary)입니다. canonical verdict나 승인 상태를 바꾸지 않습니다.");
+    }
+    // V1.5 Stage 5 — routing 축(제어 출력) 안내. STATUS/VERDICT(결과 축)와
+    // 독립 계약이라 함께 적는다. Runtime이 조합 합법성을 검증하며, 요청일 뿐
+    // 실행 승인이 아니다. 소비자가 있는 자동 실행 경로에서만 안내한다.
+    if (specialist.controlOutputs) {
+      const controlGuides = {
+        planner: [
+          "- 계획이 준비됐으면(STATUS: PLAN_READY와 함께) `HANDOFF: @reviewer` 한 줄을, 사용자 결정이 필요하면(STATUS: NEEDS_DECISION과 함께) `ASK_USER: <질문 한 줄>`을 붙일 수 있습니다.",
+        ],
+        plan_review: [
+          "- FIX_REQUIRED면 `HANDOFF: @planner`, UNKNOWN이면 `ASK_USER: <질문 한 줄>`, PASS면 `HANDOFF: @builder`를 붙일 수 있습니다(실행은 사용자 승인 게이트를 그대로 지납니다).",
+        ],
+        implementation: [
+          "- DONE이면 `HANDOFF: @reviewer`를, BLOCKED이면 `ASK_USER: <질문 한 줄>` 또는 계획 자체가 문제면 `HANDOFF: @planner`(재기획 요청)를 붙일 수 있습니다.",
+        ],
+        review: [
+          "- PASS면 `COMPLETE` 또는 사람용 정리가 필요하면 `HANDOFF: @recorder`를, FIX_REQUIRED면 `HANDOFF: @builder`(범위 내 보완) 또는 `HANDOFF: @planner`(계획 문제)를, UNKNOWN이면 `ASK_USER: <질문 한 줄>`을 붙일 수 있습니다.",
+        ],
+      };
+      const guide = controlGuides[specialist.stage];
+      if (guide) {
+        lines.push("");
+        lines.push("=== 다음 역할 요청 (선택) ===");
+        lines.push(
+          "- 필요하면 응답 **맨 끝**에 제어 블록을 붙여 다음 진행을 요청할 수 있습니다. 제어 줄은 응답 마지막의 연속된 줄이어야 하며(뒤에 다른 문장 금지), `REASON: <이유 한 줄>`을 함께 적을 수 있습니다."
+        );
+        lines.push(...guide);
+        lines.push(
+          "- 이것은 요청이지 실행이 아닙니다. Runtime이 결과와 요청의 조합을 검증해 수용 여부를 결정하며, 제어 블록이 없으면 기본 흐름으로 진행됩니다."
+        );
+      }
     }
     lines.push("=== 전문 모드 끝 ===");
   }
@@ -580,6 +706,9 @@ function buildAgentPrompt({
 
 module.exports = {
   buildAgentPrompt,
+  // 테스트 seam: 공개 호출 경로(buildAgentPrompt)의 상수 상한으로는 tail===0
+  // 경계에 닿지 않아, 상한 우회 회귀를 직접 고정하기 위해 내보낸다.
+  boundedText,
   DEFAULT_MAX_MESSAGES,
   MAX_SPECIALIST_PROMPT_CHARS,
   MAX_MESSAGE_CHARS,

@@ -16,6 +16,23 @@ const {
 // Stage D — Assurance & Governance. v1 계약은 legacy 모드로 그대로 흐른다.
 const { AssuranceRun, MODES } = require("../agora/assurance/assurance-run");
 const { readLineage: readRunLineage } = require("../agora/assurance/run-lineage");
+// V1.5 System Journal — FSM 전이를 감사 이벤트로 매핑한다.
+const {
+  journalEventsForTransition,
+  createJournalEvent,
+} = require("../agora/professional-journal");
+// V1.5 Stage 5 — Role-to-Role Handoff의 조합 검증·원장·identity 주입.
+const {
+  validateResultControl,
+  consumeHandoff,
+  settleHandoff,
+  recoverHandoffLedgerForRoot,
+  serializeHandoffLedger,
+  createHandoffLedger,
+  newInvocationId,
+  surfaceRoleForContract,
+  DEFAULT_HANDOFF_BUDGET,
+} = require("../agora/interaction-contract");
 
 // checkpoint 실패 taxonomy를 사용자가 이해할 수 있는 한국어 설명으로 바꿉니다.
 // 원인 코드 자체(CHECKPOINT_*)는 evidence/Reviewer 판단에 그대로 쓰이므로
@@ -78,6 +95,11 @@ function safeBlockReason(value) {
 // 다만 예전 습관이나 실수로 에이전트가 [[CODEPET_EMOTE:...]] 표기를 남기면
 // 화면에 제어 태그가 그대로 노출되지 않도록 텍스트에서만 조용히 제거합니다.
 const EMOTICON_TAG_PATTERN = /\[\[CODEPET_EMOTE:[^\]\r\n]+\]\]/g;
+
+// Archivist(사람용 정리)에 넘기는 System Journal 최근 사건 수. 프롬프트
+// 예산을 넘지 않으면서 "무엇을 하기로→무엇이 바뀌었고→어떻게 확인했는지"의
+// 최근 흐름을 담기에 충분한 창이다.
+const ARCHIVIST_JOURNAL_WINDOW = 40;
 
 function stripEmoticonTags(value) {
   return String(value || "")
@@ -180,14 +202,296 @@ class SpecialistMixin {
 
   transitionProfessional(event) {
     if (!this.professionalRun) return { ok: true, state: null };
-    const prevStatus = this.professionalRun.status || null;
+    const prevRun = this.professionalRun;
+    const prevStatus = prevRun.status || null;
     const transition = transitionProfessionalRun(this.professionalRun, event);
     if (!transition.ok) return transition;
     if (!this.setProfessionalRun(transition.state)) {
       return { ok: false, reason: "전문 실행 상태를 저장하지 못했습니다." };
     }
+    this.journalProfessionalTransition(prevRun, event, transition.state);
     this.notifyProfessionalRunBoundary(event, prevStatus, transition.state);
     return transition;
+  }
+
+  // V1.5 System Journal — 이벤트 저장의 공용 seam. FSM 전이뿐 아니라 Role
+  // Invocation·Handoff 같은 FSM 밖의 사건도 이 한 곳을 지나 기록된다(§10).
+  // FSM 저장과 달리 Journal 실패는 실행을 멈추지 않는다: snapshot(meta.json)이
+  // 현재 상태의 기준이고 Journal은 감사 기록이다. 다만 실패를 성공으로 숨기지
+  // 않도록 세션당 한 번 시스템 메시지로 알린다(§10.4).
+  recordJournalEntries(entries) {
+    if (typeof this.appendProfessionalEvent !== "function") return;
+    for (const entry of entries || []) {
+      if (!entry) continue;
+      let saved = false;
+      try {
+        saved = this.appendProfessionalEvent(entry) !== false;
+      } catch {
+        saved = false;
+      }
+      if (!saved && !this.journalWriteFailureNotified) {
+        this.journalWriteFailureNotified = true;
+        this.appendSystem(
+          "전문 실행 기록(System Journal)을 저장하지 못했습니다. 실행은 계속되지만 이 세션의 감사 기록이 불완전할 수 있습니다."
+        );
+      }
+    }
+  }
+
+  // FSM 밖의 단건 사건(예: CONSULT의 ROLE_STARTED/ROLE_FINISHED, 향후
+  // HANDOFF_REQUESTED)을 기록한다. §10.3 어휘 밖의 type은 조용히 버려진다.
+  recordJournalEvent(fields) {
+    if (typeof this.appendProfessionalEvent !== "function") return;
+    let entry = null;
+    try {
+      entry = createJournalEvent({ sessionId: this.sessionId || null, ...fields });
+    } catch {
+      entry = null;
+    }
+    if (entry) this.recordJournalEntries([entry]);
+  }
+
+  // === V1.5 Stage 5 — Role-to-Role Handoff 소비 seam ===
+  //
+  // 결과 축(STATUS/VERDICT)과 routing 축(HANDOFF/COMPLETE/ASK_USER)은
+  // 우선순위 관계가 아니라 독립 계약이다. 모든 결정 지점(기획/기획검수/
+  // 구현/검토)이 consumeControlRequest 한 곳을 지나 조합 검증 → 구조 검증
+  // → 원장 소비 → fail-closed 영속 → Journal 순으로 처리한다. 수용돼도
+  // 실행 전제조건 검증(호출부의 기존 FSM·Freeze·승인 게이트)은 그대로다.
+
+  // 현재 root 사용자 발화 기준의 Handoff 원장을 확보한다. 같은 root의
+  // 살아 있는 원장은 그대로 재사용하고(재복원 금지 — active invocation
+  // 폐기 방지), root가 바뀌면(새 사용자 지시) 새 budget epoch를 연다.
+  // 저장된 handoffState가 같은 root면 crash recovery 규칙과 함께 복원한다.
+  // 현재 budget epoch의 root = 가장 최근 사용자 발화 id.
+  currentHandoffRootId() {
+    for (let i = this.messages.length - 1; i >= 0; i -= 1) {
+      if (this.messages[i].authorType === "user") return this.messages[i].id || null;
+    }
+    return null;
+  }
+
+  // 현재 실행 정책이 요구하는 budget. auto/full의 정상 흐름은 라운드마다
+  // builder↔reviewer handoff를 2회 소비하므로(기획 hop 포함), 기본 8만으로는
+  // 다회차 보완에서 예산이 소진돼 마지막 reviewer→recorder(Archivist)
+  // 요청까지 거부된다. 이 budget은 FSM 자체를 막지 못하고 overlay 기록만
+  // 좌우하므로, 정상 라운드 수를 담도록 스케일한다.
+  scaledHandoffBudget() {
+    const policy = this.professionalRun?.policy || {};
+    const revisions =
+      (Number.isInteger(policy.planAutoRevisions) ? policy.planAutoRevisions : 0) +
+      (Number.isInteger(policy.implementationAutoRevisions) ? policy.implementationAutoRevisions : 0);
+    return DEFAULT_HANDOFF_BUDGET + 2 * revisions;
+  }
+
+  // handoff 연쇄가 끊긴 지점(control 없음·거부·재기획)에서 연속-동일-대상
+  // 가드의 기준(lastTargetRole)을 비우고 영속한다. in-memory만 비우면 재시작
+  // 복원이 stale 값을 되살려 정당한 다음 handoff가 HANDOFF_REPEAT로 거짓 거부된다.
+  breakHandoffChain() {
+    const ledger = this.handoffLedger;
+    if (!ledger || !ledger.lastTargetRole) return false;
+    ledger.lastTargetRole = null;
+    this.persistHandoffState(null);
+    return true;
+  }
+
+  // 같은 root(사용자 발화)에서 전문 실행을 다시 시작할 때 in-memory 원장을
+  // 새 run으로 이월한다. 안 하면 새 run의 handoffState(권위)는 null인데
+  // in-memory used는 누적돼 authority와 어긋나고, 재시작 복원도 그 사이를
+  // 잃는다. 재기획은 handoff 연쇄를 끊으므로 active 슬롯과 lastTargetRole은 비운다.
+  carryHandoffStateForFreshRun() {
+    const ledger = this.handoffLedger;
+    if (!ledger || ledger.rootMessageId !== this.currentHandoffRootId()) return null;
+    ledger.activeInvocationId = null;
+    ledger.lastTargetRole = null;
+    return serializeHandoffLedger(ledger);
+  }
+
+  // NEEDS_DECISION 재개 시 기획자가 자기 질문을 볼 수 있게 feedback에 남긴다.
+  // 질문은 제어 줄(ASK_USER)에만 있었고 그 줄은 텍스트에서 strip되므로, 여기서
+  // 붙이지 않으면 재개된 기획자는 "무엇을 물었는지" 모른 채 답만 받는다.
+  withPlannerQuestion(feedback, controlResult) {
+    const question =
+      controlResult?.accepted && controlResult?.control?.action === "ASK_USER"
+        ? controlResult.control.question
+        : null;
+    if (!question) return feedback;
+    return `${feedback || ""}\n\n=== 기획자 질문 ===\n${question}\n=== 기획자 질문 끝 ===`;
+  }
+
+  ensureHandoffLedger() {
+    const root = this.currentHandoffRootId();
+    if (!root) return null;
+    const scaledBudget = this.scaledHandoffBudget();
+    if (this.handoffLedger && this.handoffLedger.rootMessageId === root) {
+      // 같은 root를 재사용할 때도 정책이 커졌으면(기획 후 구현 버튼에서
+      // 자동보완을 올린 경우) budget을 따라 올린다 — 기획 시점 정책으로
+      // 고정되면 구현 단계의 정상 hop이 예산을 넘어 Archivist 요청이 거부된다.
+      if (this.handoffLedger.budget < scaledBudget) this.handoffLedger.budget = scaledBudget;
+      return this.handoffLedger;
+    }
+    const persisted = this.professionalRun?.handoffState || null;
+    const restored = recoverHandoffLedgerForRoot(persisted, root, { budget: scaledBudget });
+    if (!restored.ok) return null;
+    if (restored.interruptedInvocationId) {
+      this.recordJournalEvent?.({
+        type: "HANDOFF_REJECTED",
+        status: "INTERRUPTED",
+        purpose: "crash_recovery",
+        invocationId: restored.interruptedInvocationId,
+        professionalRunId: this.professionalRun?.professionalRunId || null,
+      });
+    }
+    this.handoffLedger = restored.ledger;
+    return this.handoffLedger;
+  }
+
+  // Handoff 원장의 fail-closed 영속화. Journal이 아니라 이 경로
+  // (professionalRun.handoffState → persistProfessionalRun)가 budget·소비
+  // 기록의 authority다. persist 실패 시 in-memory 원장을 소비 전 상태로
+  // 되돌리고 false를 돌려준다.
+  persistHandoffState(previousSerialized) {
+    if (!this.professionalRun) return true;
+    const next = {
+      ...this.professionalRun,
+      handoffState: serializeHandoffLedger(this.handoffLedger),
+      updatedAt: Date.now(),
+    };
+    if (this.setProfessionalRun(next)) return true;
+    if (previousSerialized) {
+      this.handoffLedger = createHandoffLedger(previousSerialized);
+    }
+    return false;
+  }
+
+  // incoming Handoff lifecycle 정리. 수용된 invocation은 "다음 control이
+  // 나와서"가 아니라 대상 역할의 실행이 실제로 끝났을 때 settle된다 —
+  // outgoing control과는 독립 축이다. 결정 지점 도달(=직전 역할의 결과
+  // 확정)과 Archivist 종료 지점에서 호출한다. settle은 budget 소비가 아닌
+  // 슬롯 해제라 영속 실패가 흐름을 막지 않으며, in-memory 원장을 되돌리지
+  // 않고 다음 영속 기회에 함께 저장되게 둔다(persistHandoffState(null)).
+  // (재시작으로 죽은 슬롯은 ensureHandoffLedger의 recovery가 처리한다.)
+  settleIncomingHandoff() {
+    const ledger = this.handoffLedger;
+    if (!ledger?.activeInvocationId) return false;
+    if (!settleHandoff(ledger, ledger.activeInvocationId)) return false;
+    this.persistHandoffState(null);
+    return true;
+  }
+
+  // 결과 축 × routing 축 소비. control이 없으면 requested:false — 기본
+  // FSM 흐름이 그대로 진행된다(하위 호환). 거부는 조용히 넘기지 않는다.
+  consumeControlRequest({ contract, result, outcome }) {
+    // 결정 지점 도달 = 이 역할의 결과가 확정됐다는 뜻. 이 역할을 향해
+    // 수용됐던 invocation을 control 유무·종류와 무관하게 먼저 settle한다.
+    // (control이 없거나 COMPLETE/ASK_USER로 끝나는 정상 완료가 슬롯을
+    // 남기면, 재시작 recovery가 정상 완료를 INTERRUPTED로 기록하게 된다.)
+    this.settleIncomingHandoff();
+    const control = outcome?.controlRequest || null;
+    if (!control) {
+      // control 없이 끝난 결정 지점은 handoff 연쇄를 끊는다(자동 보완 루프에서
+      // 검토자가 handoff 줄을 생략한 경우 등) — 비우고 영속한다.
+      this.breakHandoffChain();
+      return { requested: false, accepted: false, control: null };
+    }
+    const professionalRunId = this.professionalRun?.professionalRunId || null;
+    const frozenRunId = this.professionalRun?.frozenRunId || null;
+    // 원장/구조 거부(예산·연속·중복·동시성)는 FSM이 흐름의 authority인
+    // V1.5에서 사용자가 조치할 수 없는 overlay 내부 사정이다 — Journal에만
+    // 남기고 사용자 메시지는 억제한다. 결과와 어긋난 조합(CONTROL_NOT_ALLOWED
+    // 등)은 모델이 스스로 모순된 것이므로 안내를 남긴다.
+    const SILENT_REJECT_REASONS = new Set([
+      "HANDOFF_BUDGET_REACHED",
+      "HANDOFF_SELF",
+      "HANDOFF_REPEAT",
+      "HANDOFF_DUPLICATE",
+      "HANDOFF_BUSY",
+      "HANDOFF_STALE",
+    ]);
+    const reject = (reason) => {
+      this.recordJournalEvent?.({
+        type: "HANDOFF_REJECTED",
+        role: control.targetRole || null,
+        purpose: control.action || null,
+        reason: control.reason || null,
+        status: reason,
+        professionalRunId,
+        frozenRunId,
+      });
+      // 거부된 요청도 연쇄를 끊는다 — 이 역할은 인계하지 못했다.
+      this.breakHandoffChain();
+      // 원장 거부라도 수용 여부가 실제 행동을 바꾸는 대상(재기획 @planner,
+      // Archivist @recorder)이면 사용자에게 알린다 — 무음이면 "검토자가
+      // 재기획을 요청했는데 보완이 계속됨/정리가 조용히 생략됨"이 보이지 않는다.
+      const behaviorAffecting = ["planner", "recorder"].includes(control.targetRole);
+      if (!SILENT_REJECT_REASONS.has(reason) || behaviorAffecting) {
+        this.appendSystem(
+          `역할의 ${control.action || "제어"} 요청을 수용하지 않았습니다(${reason}). 기본 흐름으로 계속합니다.`
+        );
+      }
+      return { requested: true, accepted: false, reason, control };
+    };
+    const combo = validateResultControl({ contract, result, control });
+    if (!combo.ok) return reject(combo.reason);
+    if (control.action !== "HANDOFF") {
+      // ASK_USER/COMPLETE는 다음 역할 호출이 아니므로 원장을 소비하지
+      // 않는다. 실제 완료/사용자 반환은 호출부의 기존 경로가 수행한다.
+      // 프롬프트가 질문·요약을 본문이 아니라 제어 줄에 담게 하므로(그리고
+      // 그 줄은 화면에서 strip된다), 여기서 사용자에게 다시 노출하지 않으면
+      // NEEDS_DECISION 질문이 조용히 사라진다.
+      if (control.action === "ASK_USER" && control.question) {
+        this.appendSystem(`역할이 사용자 결정을 요청했습니다: ${control.question}`);
+      } else if (control.action === "COMPLETE" && control.summary) {
+        this.appendSystem(`역할이 완료를 선언했습니다: ${control.summary}`);
+      }
+      return { requested: true, accepted: true, reason: null, control };
+    }
+    const ledger = this.ensureHandoffLedger();
+    if (!ledger) return reject("HANDOFF_ROOT_REQUIRED");
+    const previousSerialized = serializeHandoffLedger(ledger);
+    // identity는 Runtime이 주입한다 — 모델 출력에서 받는 것은 targetRole·
+    // purpose·reason뿐이다.
+    const request = {
+      sourceRole: surfaceRoleForContract(contract),
+      targetRole: control.targetRole,
+      invocationId: newInvocationId(),
+      professionalRunId,
+      generation: this.generation,
+    };
+    const structural = consumeHandoff(request, {
+      ledger,
+      professionalRunId,
+      generation: this.generation,
+    });
+    if (!structural.ok) return reject(structural.reason);
+    if (!this.persistHandoffState(previousSerialized)) {
+      return reject("HANDOFF_STATE_WRITE_FAILED");
+    }
+    this.recordJournalEvent?.({
+      type: "HANDOFF_ACCEPTED",
+      role: control.targetRole,
+      purpose: control.purpose || null,
+      // 프롬프트가 가르치는 것은 REASON이다 — 그 근거를 감사 이력에 남긴다.
+      reason: control.reason || null,
+      invocationId: structural.invocationId,
+      professionalRunId,
+      frozenRunId,
+    });
+    return { requested: true, accepted: true, reason: null, control, invocationId: structural.invocationId };
+  }
+
+  // FSM 전이 이벤트 발행. transitionProfessional 단일 seam에서만 호출된다.
+  journalProfessionalTransition(prevRun, event, nextRun) {
+    if (typeof this.appendProfessionalEvent !== "function") return;
+    let entries = [];
+    try {
+      entries = journalEventsForTransition(prevRun, event, nextRun, {
+        sessionId: this.sessionId || null,
+      });
+    } catch {
+      entries = [];
+    }
+    this.recordJournalEntries(entries);
   }
 
   // Stage C — canonical terminal transition에서만 harness lifecycle에 run 종료를
@@ -1234,6 +1538,7 @@ class SpecialistMixin {
             round: planRound,
             maxRounds: planRevisionLimit + 1,
             feedback: nextFeedback,
+            controlOutputs: true,
           },
           agentConfig: planner.agentConfig,
         });
@@ -1247,6 +1552,13 @@ class SpecialistMixin {
         }
 
         if (plannerResult.plannerStatus === "NEEDS_DECISION" || hasOpenQuestions(plannerResult.text)) {
+          // V1.5 — routing 축 소비. NEEDS_DECISION + ASK_USER는 합법 조합이고,
+          // 어긋난 요청(예: HANDOFF)은 기록·안내 후 기본 흐름으로 계속한다.
+          const decisionControl = this.consumeControlRequest({
+            contract: "planner",
+            result: "NEEDS_DECISION",
+            outcome: plannerResult,
+          });
           const transition = this.transitionProfessional({
             type: "PLANNER_NEEDS_DECISION",
             stopReason: "NEEDS_DECISION",
@@ -1259,7 +1571,7 @@ class SpecialistMixin {
             planAutoRevisions: planRevisionLimit,
             implementationAutoRevisions,
             action,
-            feedback: plannerResult.text || nextFeedback,
+            feedback: this.withPlannerQuestion(plannerResult.text || nextFeedback, decisionControl),
             taskInfo: nextTaskInfo,
             phase: "needs_decision",
           };
@@ -1307,6 +1619,14 @@ class SpecialistMixin {
           };
         }
         contractRepairCount = 0;
+        // V1.5 — PLAN_READY + HANDOFF: @reviewer 조합 소비(원장·Journal).
+        // 계약 검증을 통과한 뒤에만 소비한다 — 보완 루프로 되돌아가는 라운드의
+        // 요청까지 소비하면 원장이 실제 hop보다 부풀기 때문이다.
+        this.consumeControlRequest({
+          contract: "planner",
+          result: "PLAN_READY",
+          outcome: plannerResult,
+        });
 
         const previousTaskInfo = nextTaskInfo;
         if (this.meta.workspace) {
@@ -1370,6 +1690,7 @@ class SpecialistMixin {
             maxRounds: planRevisionLimit + 1,
             feedback: planText,
             previousIssues: previousPlanIssues,
+            controlOutputs: true,
           },
           agentConfig: planReviewAgent.agentConfig,
         });
@@ -1401,6 +1722,11 @@ class SpecialistMixin {
               feedback: planText,
               previousIssues: previousPlanIssues,
               repairKind,
+              // 첫 호출과 동일하게 제어를 추출·strip·소비해야 한다. 빠뜨리면
+              // repaired 응답의 꼬리 HANDOFF 줄이 화면에 raw로 노출되고
+              // (strip은 controlOutputs 턴에서만 동작), 정당한 HANDOFF가
+              // Journal에 남지 않는다.
+              controlOutputs: true,
             },
             agentConfig: planReviewAgent.agentConfig,
           });
@@ -1412,6 +1738,14 @@ class SpecialistMixin {
           }
         }
         previousPlanIssues = structuredIssuesFromReview(planReview.text || "");
+        // V1.5 — 기획 검수의 routing 축 소비. PASS + HANDOFF: @builder가
+        // 수용돼도 실제 Builder 실행은 기존 승인 게이트(READY 정지 /
+        // autoContinueReady)를 그대로 지난다 — 실행 전제조건 층은 별개다.
+        this.consumeControlRequest({
+          contract: "plan_review",
+          result: contract.verdict,
+          outcome: planReview,
+        });
         if (contract.verdict === "PASS") {
           const transition = this.transitionProfessional({
             type: "PLAN_REVIEW_PASS",
@@ -1621,6 +1955,11 @@ class SpecialistMixin {
     if (this.discussionRequested || this.discussionActive || startBlocked) {
       return { ok: false, error: "이미 다른 전문 작업이나 토론이 진행 중입니다." };
     }
+    // 역할·팀 상담이 진행 중이면 전문 실행을 시작하지 않는다 — 상담 step
+    // 사이의 await 창에서 전문 실행이 끼어들어 순차 계약이 깨지는 것을 막는다.
+    if (typeof this.isConsultActive === "function" && this.isConsultActive()) {
+      return { ok: false, error: "역할·팀 상담이 진행 중에는 전문 실행을 시작할 수 없습니다." };
+    }
     // 일반 응답이 실행·대기 중이면 전문 실행을 큐 뒤에 넣지 않고 즉시 거부합니다.
     // (전문 실행이 일반 응답 뒤에 몰래 대기하지 않도록 합니다.)
     if (this.turnActive || this.turnQueue.length > 0 || this.deferredTurnQueue.length > 0) {
@@ -1765,6 +2104,8 @@ class SpecialistMixin {
             });
           }
           const transition = this.transitionProfessional({ type: "RECORDER_DONE" });
+          // 기록 재시도로 완료에 도달한 경로에도 마지막 고리(검토자→recorder)를 settle한다.
+          this.settleIncomingHandoff();
           if (!transition.ok) return this.professionalTransitionFailure("recorder", transition);
           if (runInfo && this.taskManager?.writeRunResult && !this.taskManager.writeRunResult(runInfo, {
             status: "COMPLETED",
@@ -1825,6 +2166,8 @@ class SpecialistMixin {
         // 이어받은 경로가 있으면 그 지시서를 갱신하고, 없으면(=끝난 실행이나 새 세션에서
         // 시작하는 진짜 신규 작업) 새 지시서를 만든다.
         taskPath: carriedTaskPath,
+        // 같은 root의 handoff 원장을 새 run의 authority로 이월한다(재기획은 연쇄를 끊는다).
+        handoffState: this.carryHandoffStateForFreshRun(),
         policy: {
           autoContinueReady: action === "full",
           pauseBeforeReview: false,
@@ -2229,6 +2572,18 @@ class SpecialistMixin {
     );
     if (!this.specialistActive && !this.specialistResume && !hasLiveRun) {
       return { ok: false, error: "취소할 전문 실행이 없습니다." };
+    }
+    // 실행이 이미 COMPLETED이고 지금 도는 것이 완료 후 Archivist(부가 정리)뿐이면
+    // 완료된 run을 INTERRUPTED로 뒤집지 않는다. 정리 턴만 멈추고 완료 상태와
+    // 복구 정보(checkpoint 정리 재시도용 등)는 그대로 둔다 — 취소는 "정리를
+    // 그만두기"이지 "완료 취소"가 아니다.
+    if (this.professionalRun?.node === "COMPLETED" && this.professionalRun?.status === "COMPLETED") {
+      this.specialistResume = null;
+      this.specialistActive = false;
+      this.stopAllSilently();
+      this.emitSpecialistState();
+      this.appendSystem(`${origin || "사용자가 "}기록 정리(Archivist)를 중지했습니다. 실행 완료 상태는 그대로 유지됩니다.`);
+      return { ok: true, cancelled: true };
     }
     const professionalAct = Boolean(
       this.professionalRun &&
@@ -3025,6 +3380,9 @@ class SpecialistMixin {
       (mode === "auto" || mode === "quick") && maxAutoRevisions > 0;
     const maxRounds = canAutoRevise ? maxAutoRevisions + 1 : 1;
     let autoRevisionCount = 0;
+    // V1.5 — 검토 PASS + HANDOFF: @recorder(Archivist 정리 요청) 기억.
+    // 실행 완료 후 사람이 읽기 좋은 정리를 추가 호출한다.
+    let archivistRequested = false;
     let recorderResult = null;
     // TASK-008: Builder가 만든 실제 변경(Diff)을 수집해 Reviewer에게 전달합니다.
     // 각 Builder 실행 직후 갱신되며, 검토자는 이 Diff를 Frozen Task와 함께 받습니다.
@@ -3375,6 +3733,7 @@ class SpecialistMixin {
         stage: "implementation",
         round,
         maxRounds,
+        controlOutputs: true,
         // TASK-007: 최초 Builder의 실행 계약 source는 Frozen Task입니다.
         // (자동 보완에서는 아래에서 Reviewer 피드백도 별도로 전달합니다.)
         feedback: runInfo ? "" : feedback,
@@ -3430,7 +3789,25 @@ class SpecialistMixin {
       return this.specialistFail(implementation, "implementation", round, builderResult);
     }
     builderResult = await this.repairBuilderStatus(implementation, builderResult, requestedGeneration);
+    // V1.5 — 구현자의 routing 축 소비. DONE + HANDOFF: @reviewer는 기본
+    // 흐름과 같고, BLOCKED + HANDOFF: @planner(재기획 요청)는 수용하되
+    // 작업물 keep/restore 선택은 기존대로 사용자 몫이다(INV-5 — BLOCKED
+    // 자동 진행 금지).
+    const builderControl = this.consumeControlRequest({
+      contract: "implementation",
+      result: builderResult.builderStatus,
+      outcome: builderResult,
+    });
     if (builderResult.builderStatus !== "DONE") {
+      if (
+        builderControl.accepted &&
+        builderControl.control?.action === "HANDOFF" &&
+        builderControl.control.targetRole === "planner"
+      ) {
+        this.appendSystem(
+          "구현자가 재기획(HANDOFF: @planner)을 요청했습니다. 아래에서 작업물을 유지하거나 복원하며 재기획으로 이어 주세요."
+        );
+      }
       return holdForBlocked(round, builderResult, builderResult.builderStatus);
     }
     const builderTransition = this.transitionProfessional({ type: "BUILDER_DONE" });
@@ -3514,6 +3891,7 @@ class SpecialistMixin {
           stage: "review",
           round,
           maxRounds,
+          controlOutputs: true,
           // TASK-007: Reviewer는 동일 Run의 Frozen Task + 실제 Diff + Test 기준으로 검수합니다.
           frozenTask: frozenTaskMeta(),
           // TASK-008: Builder가 실제로 만든 변경(Diff)을 주입합니다.
@@ -3560,6 +3938,35 @@ class SpecialistMixin {
       if (frozenAfterReview) return frozenAfterReview;
 
       const contract = this.parseReviewContract(reviewResult.text || "", reviewResult.specialistSignal);
+      // V1.5 — 검토자의 routing 축 소비. PASS + COMPLETE는 완료 전제조건
+      // (assurance 최종 판정 등 아래 기존 경로)을 그대로 지나고,
+      // PASS + HANDOFF: @recorder는 완료 후 Archivist 정리 요청으로 남는다.
+      const reviewControl = this.consumeControlRequest({
+        contract: "review",
+        result: contract.verdict,
+        outcome: reviewResult,
+      });
+      if (
+        reviewControl.accepted &&
+        reviewControl.control?.action === "HANDOFF" &&
+        reviewControl.control.targetRole === "recorder"
+      ) {
+        archivistRequested = true;
+      }
+      if (
+        reviewControl.accepted &&
+        reviewControl.control?.action === "HANDOFF" &&
+        reviewControl.control.targetRole === "planner" &&
+        contract.verdict === "FIX_REQUIRED"
+      ) {
+        // 검토자가 계획 문제로 재기획을 요청했다 — 같은 계약으로 Builder
+        // 보완을 반복하는 것은 요청과 어긋나므로 자동 보완을 멈추고
+        // 사용자에게 돌린다(재기획 시작은 기존 명시 액션·INV-5).
+        contract.canAutoRevise = false;
+        this.appendSystem(
+          "검토자가 재기획(HANDOFF: @planner)을 요청해 자동 보완을 멈춥니다. '다시 기획'으로 이어 주세요."
+        );
+      }
       if (contract.verdict === "PASS") {
         // Stage D §18 — Reviewer의 PASS만으로 Run이 통과하지 않는다.
         // 자동검사 FAIL·미해결 항목·결과물 변경이 남아 있으면 여기서 막힌다.
@@ -3746,6 +4153,7 @@ class SpecialistMixin {
           stage: "implementation",
           round,
           maxRounds,
+          controlOutputs: true,
           // TASK-007: 자동 보완도 같은 Run, 같은 Frozen Task를 사용합니다.
           // Frozen Task는 요구사항 기준이고, feedback은 이번에 고칠 Reviewer 지시입니다.
           feedback,
@@ -3810,7 +4218,22 @@ class SpecialistMixin {
         return this.specialistFail(implementation, "implementation", round, builderResult);
       }
       builderResult = await this.repairBuilderStatus(implementation, builderResult, requestedGeneration);
+      // V1.5 — 보완 라운드의 구현자 routing 축 소비(첫 라운드와 동일 규칙).
+      const revisedBuilderControl = this.consumeControlRequest({
+        contract: "implementation",
+        result: builderResult.builderStatus,
+        outcome: builderResult,
+      });
       if (builderResult.builderStatus !== "DONE") {
+        if (
+          revisedBuilderControl.accepted &&
+          revisedBuilderControl.control?.action === "HANDOFF" &&
+          revisedBuilderControl.control.targetRole === "planner"
+        ) {
+          this.appendSystem(
+            "구현자가 재기획(HANDOFF: @planner)을 요청했습니다. 아래에서 작업물을 유지하거나 복원하며 재기획으로 이어 주세요."
+          );
+        }
         return holdForBlocked(round, builderResult, builderResult.builderStatus);
       }
       const revisedBuilderTransition = this.transitionProfessional({ type: "BUILDER_DONE" });
@@ -3981,6 +4404,7 @@ class SpecialistMixin {
     }
 
     // 성공(구현·검수 + 기록 완료) 후에만 checkpoint 리소스를 정리합니다.
+    let checkpointCleanupFailed = false;
     if (checkpointSupported && this.checkpointEngine) {
       const cleanup = this.checkpointEngine.cleanupCheckpoint(checkpoint);
       if (cleanup?.ok === false) {
@@ -3992,24 +4416,91 @@ class SpecialistMixin {
           blockReason: "CHECKPOINT_CLEANUP_FAILED",
         }));
         this.appendSystem("실행은 완료됐지만 checkpoint 정리를 다음 시작 때 다시 시도합니다.");
-        return {
-          ok: true,
-          completedIterations: round,
-          recorded: Boolean(recorderResult?.ok),
-          recording: recorderResult?.text || "",
-          cleanupError: "CHECKPOINT_CLEANUP_FAILED",
-        };
+        checkpointCleanupFailed = true;
       }
+    }
+    if (checkpointCleanupFailed) {
+      // 실행은 COMPLETED이고 checkpoint 정리만 다음 시작으로 미뤘다. 완료된
+      // 실행이므로 검토자가 요청한 Archivist 정리와 마지막 settle을 여기서도
+      // 반드시 수행한다 — 부가 마무리(정리 실패)가 요청된 산출물을 삼키면 안 된다.
+      await this.finalizeCompletedExecution({
+        recorder, archivistRequested, requestedGeneration,
+        builderChanges, reviewEvidence, frozenTaskMeta,
+      });
+      return {
+        ok: true,
+        completedIterations: round,
+        recorded: Boolean(recorderResult?.ok),
+        recording: recorderResult?.text || "",
+        cleanupError: "CHECKPOINT_CLEANUP_FAILED",
+      };
     }
     this.clearRecoveryState();
 
     this.appendSystem("전문 모드 구현·검토가 통과했습니다.");
+    await this.finalizeCompletedExecution({
+      recorder, archivistRequested, requestedGeneration,
+      builderChanges, reviewEvidence, frozenTaskMeta,
+    });
     return {
       ok: true,
       completedIterations: round,
       recorded: Boolean(recorderResult?.ok),
       recording: recorderResult?.text || "",
     };
+  }
+
+  // 성공적으로 COMPLETED에 도달한 실행의 공통 마무리: 검토자가 요청한
+  // Archivist(사람용 정리)와 마지막 handoff settle. 선형 happy path뿐 아니라
+  // checkpoint 정리 실패 같은 부가 단계 실패 경로에서도 호출해, 무관한
+  // 마무리 실패가 요청된 Archivist를 삼키거나 handoff slot을 남기지 않게 한다.
+  async finalizeCompletedExecution({ recorder, archivistRequested, requestedGeneration, builderChanges, reviewEvidence, frozenTaskMeta }) {
+    // V1.5 — 검토자가 요청한 Archivist 정리(PASS + HANDOFF: @recorder).
+    // 완료를 막지 않는 부가 정리다: 실행은 이미 COMPLETED이고, 정리 실패는
+    // 실패로만 알린다. deterministic recorder와 별개의 LLM 계약(archivist)이다.
+    if (archivistRequested && recorder?.agent && requestedGeneration === this.generation) {
+      this.appendSystem("검토자의 요청으로 기록 정리(Archivist)를 시작합니다.");
+      const journalEntries = typeof this.readProfessionalEvents === "function"
+        ? (this.readProfessionalEvents() || []).slice(-ARCHIVIST_JOURNAL_WINDOW)
+        : [];
+      this.recordJournalEvent?.({
+        type: "ROLE_STARTED",
+        role: "recorder",
+        purpose: "archivist",
+        professionalRunId: this.professionalRun?.professionalRunId || null,
+        frozenRunId: this.professionalRun?.frozenRunId || null,
+      });
+      const archivistResult = await this.scheduleResponse(recorder.agent, {
+        specialist: {
+          stage: "archivist",
+          journal: journalEntries,
+          finalVerdict: "PASS",
+          // Archivist 계약이 허용하는 canonical 자료를 실제로 전달한다
+          // (frozenTask/finalDiff/evidence — 정책과 입력이 어긋나면 Journal
+          // 사건 이력만으로 "무엇이 바뀌었는지"를 요약할 수 없다).
+          frozenTask: frozenTaskMeta(),
+          reviewDiff: builderChanges,
+          evidence: reviewEvidence?.payload || null,
+        },
+        agentConfig: recorder.agentConfig,
+      });
+      this.recordJournalEvent?.({
+        type: "ROLE_FINISHED",
+        role: "recorder",
+        purpose: "archivist",
+        status: !archivistResult ? "INTERRUPTED" : archivistResult.ok ? "DONE" : "FAILED",
+        professionalRunId: this.professionalRun?.professionalRunId || null,
+        frozenRunId: this.professionalRun?.frozenRunId || null,
+      });
+      if (archivistResult && !archivistResult.ok && requestedGeneration === this.generation) {
+        this.appendSystem("기록 정리(Archivist)가 실패했습니다. 실행 완료 상태에는 영향이 없습니다.");
+      }
+    }
+    // 검토자의 HANDOFF: @recorder로 수용된 invocation은 다음 결정 지점이
+    // 없는 마지막 고리다. Archivist 실행(또는 실행하지 않기로 한 판정)이
+    // 끝난 여기서 settle하지 않으면, 정상 완료가 재시작 recovery에서
+    // INTERRUPTED로 기록된다.
+    this.settleIncomingHandoff();
   }
 
   // 검토자 출력 계약을 파싱합니다. 판정(verdict)은 다음 우선순위로 정합니다:

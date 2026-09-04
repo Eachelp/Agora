@@ -39,6 +39,37 @@ test("존재하지 않는 역할은 null을 반환한다", () => {
   assert.equal(roleContextFor("unknown_role"), null);
 });
 
+test("archivist는 Journal·canonical artifact만 보고 대화 전문을 보지 않는다", () => {
+  // V1.5 §8-0 — 정책 없는 역할은 roleSees()가 전체 context를 돌려주므로,
+  // archivist 정책 등록이 프롬프트·소비 연결보다 먼저여야 한다.
+  const policy = roleContextFor("archivist");
+  assert.ok(policy, "archivist 정책이 등록되어 있어야 합니다");
+  assert.ok(policy.sees.includes("systemJournal"));
+  assert.ok(policy.sees.includes("finalVerdict"));
+  assert.equal(roleSees("archivist", "conversationTranscript"), false);
+  assert.equal(includesPromptContext("archivist", "projectContext"), false);
+  assert.equal(includesPromptContext("archivist", "memoryContext"), false);
+});
+
+test("archivist 프롬프트 계약: 사람용 정리, 새 판정 생성 금지", () => {
+  const prompt = buildAgentPrompt({
+    agent: { id: "claude", name: "Claude" },
+    agents: [{ id: "claude", name: "Claude" }],
+    messages: [],
+    specialist: {
+      stage: "archivist",
+      journal: [{ type: "RUN_COMPLETED", professionalRunId: "pr-1" }],
+      finalVerdict: "PASS",
+    },
+  });
+  assert.match(prompt, /전문 모드: 기록 정리/);
+  assert.match(prompt, /System Journal/);
+  assert.match(prompt, /새로운 사실·결정·판정을 만들지 마세요/);
+  assert.match(prompt, /derivedSummary/);
+  // deterministic recorder의 JSON 출력 계약과는 다른 계약이다.
+  assert.doesNotMatch(prompt, /"nextActions"/);
+});
+
 test("roleContextNotice는 sees와 excludes를 한국어 안내 형태로 반환한다", () => {
   const notice = roleContextNotice("planner");
   assert.ok(notice.includes("참고 입력:"));

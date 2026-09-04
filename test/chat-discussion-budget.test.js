@@ -1,0 +1,349 @@
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const {
+  ChatRoom,
+  DEFAULT_DISCUSSION_RUN_BUDGET,
+  DISCUSSION_TURN_BUDGET_MIN,
+  DISCUSSION_TURN_BUDGET_MAX,
+  clampDiscussionTurnBudget,
+} = require("../src/chat/chat-room");
+const { createChatFeature } = require("../src/chat/chat-ipc");
+
+function makeAgents() {
+  return [
+    { id: "claude", name: "Claude", aliases: ["claude"], available: true, enabled: true },
+    { id: "codex", name: "Codex", aliases: ["codex"], available: true, enabled: true },
+  ];
+}
+
+// 즉시 응답하는 페이크 러너: replies[에이전트 id] 배열을 순서대로 소비합니다.
+function fakeRunner(replies, calls = []) {
+  return ({ agent, prompt, attachments, permissionMode }) => {
+    calls.push({ agentId: agent.id, prompt, attachments, permissionMode });
+    const queue = replies[agent.id] || [];
+    const next = queue.length > 0 ? queue.shift() : { ok: true, text: "…" };
+    return { promise: Promise.resolve(next), cancel: () => {} };
+  };
+}
+
+async function settle(room) {
+  await room.waitForIdle();
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
+test("clampDiscussionTurnBudget: 범위 밖 값은 3~50으로 자르고 비정수는 기본값", () => {
+  assert.equal(clampDiscussionTurnBudget(2, 9), DISCUSSION_TURN_BUDGET_MIN);
+  assert.equal(clampDiscussionTurnBudget(100, 9), DISCUSSION_TURN_BUDGET_MAX);
+  assert.equal(clampDiscussionTurnBudget(15, 9), 15);
+  assert.equal(clampDiscussionTurnBudget("15", 9), 9);
+  assert.equal(clampDiscussionTurnBudget(undefined, 9), 9);
+  assert.equal(clampDiscussionTurnBudget(null, 9), 9);
+});
+
+test("토론 turnBudget 옵션이 발언 수 상한을 바꾼다", async () => {
+  const calls = [];
+  const room = new ChatRoom({ agents: makeAgents(), runAgent: fakeRunner({}, calls) });
+  room.sendUserMessage("주제입니다");
+  await settle(room);
+  calls.length = 0;
+
+  const result = await room.startDiscussion({ turnBudget: 4 });
+  await settle(room);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.completed, 4);
+  assert.equal(result.truncated, true);
+  assert.deepEqual(
+    calls.map((call) => call.agentId),
+    ["claude", "codex", "claude", "codex"],
+  );
+  const conclusion = room.messages.findLast((message) => message.discussionMeta);
+  assert.equal(conclusion.discussionMeta.budget, 4);
+  assert.match(conclusion.text, /예산/);
+});
+
+test("토론 프롬프트의 턴 표기는 설정된 budget을 따른다", async () => {
+  const calls = [];
+  const room = new ChatRoom({ agents: makeAgents(), runAgent: fakeRunner({}, calls) });
+  room.sendUserMessage("주제입니다");
+  await settle(room);
+  calls.length = 0;
+
+  await room.startDiscussion({ turnBudget: 4 });
+  await settle(room);
+
+  assert.match(calls[0].prompt, /자율 토론 1\/4턴/);
+});
+
+test("turnBudget 없는 토론은 기존 기본 9턴 그대로다", async () => {
+  const calls = [];
+  const room = new ChatRoom({ agents: makeAgents(), runAgent: fakeRunner({}, calls) });
+  room.sendUserMessage("주제입니다");
+  await settle(room);
+  calls.length = 0;
+
+  const result = await room.startDiscussion({});
+  await settle(room);
+
+  assert.equal(result.completed, DEFAULT_DISCUSSION_RUN_BUDGET);
+  assert.match(calls[0].prompt, /자율 토론 1\/9턴/);
+});
+
+test("turnBudget은 방 계층에서 3~50으로 다시 잘린다", async () => {
+  const calls = [];
+  const room = new ChatRoom({ agents: makeAgents(), runAgent: fakeRunner({}, calls) });
+  room.sendUserMessage("주제입니다");
+  await settle(room);
+  calls.length = 0;
+
+  const result = await room.startDiscussion({ turnBudget: 2 });
+  await settle(room);
+  assert.equal(result.completed, DISCUSSION_TURN_BUDGET_MIN);
+});
+
+test("레거시 rounds 옵션은 계속 무시된다", async () => {
+  const calls = [];
+  const room = new ChatRoom({ agents: makeAgents(), runAgent: fakeRunner({}, calls) });
+  room.sendUserMessage("주제입니다");
+  await settle(room);
+  calls.length = 0;
+
+  const result = await room.startDiscussion({ rounds: 2 });
+  await settle(room);
+  assert.equal(result.completed, DEFAULT_DISCUSSION_RUN_BUDGET);
+});
+
+// --- IPC 경계 ---
+
+function fakeRecord(id) {
+  return {
+    id,
+    name: id,
+    color: "#333333",
+    aliases: [id],
+    status: "cli",
+    reason: "",
+    commandPath: null,
+    needsShell: false,
+    version: "1.0.0",
+    models: ["default"],
+    modelOptions: [{ id: "default", label: "default", efforts: ["medium"] }],
+    efforts: ["medium"],
+    allowCustomModel: false,
+    supportsImages: false,
+    permissions: {
+      chat: { supported: true, enforcement: "tool-policy" },
+      "workspace-read": { supported: true, enforcement: "tool-policy" },
+      "workspace-write": { supported: true, enforcement: "sandbox" },
+    },
+    guiInstalled: false,
+    authStatus: "authenticated",
+    authReason: "",
+    installUrl: null,
+    loginCommand: null,
+  };
+}
+
+function fakeCapabilities() {
+  const records = [fakeRecord("claude"), fakeRecord("codex"), fakeRecord("agy")];
+  return {
+    defs: records.map((record) => ({ id: record.id })),
+    getRecord: (id) => records.find((record) => record.id === id) || null,
+    discover: async () => records,
+  };
+}
+
+function makeFeature(root, extraOptions = {}) {
+  const handlers = new Map();
+  const ipcMain = {
+    handle(channel, handler) {
+      handlers.set(channel, handler);
+    },
+    on() {},
+  };
+  const feature = createChatFeature({
+    electron: {
+      ipcMain,
+      dialog: {
+        async showOpenDialog() {
+          return { canceled: true, filePaths: [] };
+        },
+      },
+      BrowserWindow: class BrowserWindow {},
+      shell: {},
+    },
+    storeRoot: root,
+    ...extraOptions,
+  });
+  feature.registerIpcHandlers();
+  return {
+    async invoke(channel, input = {}) {
+      return handlers.get(channel)({}, input);
+    },
+  };
+}
+
+async function waitFor(condition, timeoutMs = 3000) {
+  const start = Date.now();
+  while (!condition()) {
+    if (Date.now() - start > timeoutMs) throw new Error("조건 대기 시간 초과");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+test("chat:discussion:start가 turnBudget을 실행까지 전달한다", async () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-discussion-ipc-")));
+  const calls = [];
+  const feature = makeFeature(root, {
+    capabilities: fakeCapabilities(),
+    runAgent: fakeRunner({}, calls),
+  });
+
+  const state = await feature.invoke("chat:state");
+  assert.equal(state.ok, true);
+  const sessionId = state.activeSessionId;
+
+  await feature.invoke("chat:send", { sessionId, text: "토론 주제입니다" });
+  await waitFor(() => calls.length >= 3);
+  calls.length = 0;
+
+  const started = await feature.invoke("chat:discussion:start", {
+    sessionId,
+    agentIds: ["claude", "codex"],
+    turnBudget: 4,
+  });
+  assert.equal(started.ok, true);
+
+  await waitFor(() => calls.length >= 4);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(calls.length, 4);
+  assert.match(calls[0].prompt, /자율 토론 1\/4턴/);
+});
+
+test("chat:discussion:start가 구조화 토론 preset을 전달하고 미지 preset을 거부한다", async () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-discussion-ipc-")));
+  const calls = [];
+  const feature = makeFeature(root, {
+    capabilities: fakeCapabilities(),
+    runAgent: fakeRunner({}, calls),
+  });
+
+  const state = await feature.invoke("chat:state");
+  const sessionId = state.activeSessionId;
+  assert.ok(Array.isArray(state.discussionPresets));
+  assert.deepEqual(
+    state.discussionPresets.map((preset) => preset.id),
+    ["shaping", "grill", "redteam"],
+  );
+
+  await feature.invoke("chat:send", { sessionId, text: "토론 주제입니다" });
+  await waitFor(() => calls.length >= 3);
+  calls.length = 0;
+
+  const rejected = await feature.invoke("chat:discussion:start", {
+    sessionId,
+    presetId: "nope",
+    roleAssignments: ["claude", "codex", "agy"],
+  });
+  assert.equal(rejected.ok, false);
+  assert.match(rejected.error, /알 수 없는 토론 Preset/);
+  // Object.prototype 상속 키는 소유 프로퍼티가 아니므로 같은 빠른 실패를 탄다
+  // (`DISCUSSION_PRESETS[presetId]`만 보면 truthy라 뚫렸다).
+  for (const presetId of ["constructor", "toString", "__proto__"]) {
+    const inherited = await feature.invoke("chat:discussion:start", {
+      sessionId,
+      presetId,
+      roleAssignments: ["claude", "codex", "agy"],
+    });
+    assert.equal(inherited.ok, false, presetId);
+    assert.match(inherited.error, /알 수 없는 토론 Preset/, presetId);
+  }
+
+  const started = await feature.invoke("chat:discussion:start", {
+    sessionId,
+    presetId: "shaping",
+    cycleBudget: 1,
+    roleAssignments: ["claude", "codex", "agy"],
+  });
+  assert.equal(started.ok, true);
+  await waitFor(() => calls.length >= 4);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.deepEqual(
+    calls.map((call) => call.agentId),
+    ["claude", "codex", "claude", "agy"],
+  );
+});
+
+test("chat:discussion:start의 비정수 turnBudget은 기본 9턴 경로를 탄다", async () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-discussion-ipc-")));
+  const calls = [];
+  const feature = makeFeature(root, {
+    capabilities: fakeCapabilities(),
+    runAgent: fakeRunner({}, calls),
+  });
+
+  const state = await feature.invoke("chat:state");
+  const sessionId = state.activeSessionId;
+  await feature.invoke("chat:send", { sessionId, text: "토론 주제입니다" });
+  await waitFor(() => calls.length >= 3);
+  calls.length = 0;
+
+  await feature.invoke("chat:discussion:start", {
+    sessionId,
+    agentIds: ["claude", "codex"],
+    turnBudget: "40",
+  });
+  await waitFor(() => calls.length >= 1);
+  assert.match(calls[0].prompt, /자율 토론 1\/9턴/);
+});
+
+test("자유토론에서 모든 턴이 실패하면 '예산 도달'이 아니라 실패로 마친다", async () => {
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { permissionMode: "chat" },
+    runAgent: () => ({ promise: Promise.resolve({ ok: false, error: "transport" }), cancel: () => {} }),
+  });
+  const result = await room.startDiscussion({ agentIds: ["claude", "codex"], turnBudget: 3 });
+  await settle(room);
+  // 토론 자체는 예산까지 돌았으므로 실행 결과는 ok이고, 종료 사유가 실패다.
+  assert.equal(result.ok, true);
+  assert.equal(result.completed, 3);
+  assert.equal(result.concluded, false);
+  const notices = room.messages.filter((m) => m.authorType === "system").map((m) => m.text);
+  // 일시적 실패 1건은 예산 도달로 표기하지만, 전원(모든 턴) 실패는 실패다.
+  assert.ok(notices.some((t) => /모든 에이전트 응답이 실패해 토론을 마쳤습니다/.test(t)), notices.join(" | "));
+  assert.ok(!notices.some((t) => /예산.*도달/.test(t)));
+  const conclusion = room.messages.findLast((m) => m.discussionMeta);
+  assert.ok(conclusion, "토론 종료 메시지에 discussionMeta가 있어야 합니다");
+  assert.equal(conclusion.discussionMeta.reason, "failed");
+});
+
+test("자유토론에서 일부 턴만 실패하면 계속 진행해 예산 도달로 마치되 실패 포함을 표기한다", async () => {
+  let call = 0;
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { permissionMode: "chat" },
+    runAgent: () => {
+      call += 1;
+      // 첫 턴만 실패하고 나머지는 계속 말한다(결론 신호 없음 → 예산 도달).
+      const next = call === 1
+        ? { ok: false, error: "transport" }
+        : { ok: true, text: `의견 ${call}\n[[CODEPET_DISCUSSION:CONTINUE]]` };
+      return { promise: Promise.resolve(next), cancel: () => {} };
+    },
+  });
+  const result = await room.startDiscussion({ agentIds: ["claude", "codex"], turnBudget: 3 });
+  await settle(room);
+  assert.equal(result.ok, true);
+  // 자유토론은 한 명이 실패해도 나머지가 예산까지 계속 말한다.
+  assert.equal(result.completed, 3);
+  const conclusion = room.messages.findLast((m) => m.discussionMeta);
+  assert.ok(conclusion, "토론 종료 메시지에 discussionMeta가 있어야 합니다");
+  // 종료 사유는 실패가 아니라 예산 도달이고, 실패가 있었음은 문구로 남긴다.
+  assert.equal(conclusion.discussionMeta.reason, "budget");
+  assert.match(conclusion.text, /토론 실행 예산\(3회\)에 도달해 여기서 마쳤습니다\. \(일부 응답 실패 포함\)/);
+  assert.doesNotMatch(conclusion.text, /실패해 토론을 마쳤습니다/);
+});

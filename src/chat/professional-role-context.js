@@ -39,6 +39,15 @@ const ROLE_CONTEXT_POLICY = {
     sees: ["frozenTask", "finalDiff", "evidence", "finalVerdict"],
     excludes: ["conversationTranscript", "otherAgentFreeChat"],
   },
+  // V1.5 — @기록자 Handoff/CONSULT의 실행 계약(제안서 §7.4 Archivist).
+  // System Journal과 canonical artifact만 읽어 사람이 읽기 좋은 정리를
+  // 만들고, 새 사실·결정·판정을 만들지 않는다. deterministic recorder
+  // finalizer와 다른 계약이다. 이 정책 등록이 프롬프트·소비 연결보다
+  // 먼저여야 한다 — 정책 없는 역할은 roleSees()가 전체 context를 돌려준다.
+  archivist: {
+    sees: ["systemJournal", "frozenTask", "finalDiff", "evidence", "finalVerdict"],
+    excludes: ["conversationTranscript", "builderSelfReport", "otherAgentFreeChat"],
+  },
 };
 
 // 역할명에 해당하는 context 경계 정책을 반환한다.

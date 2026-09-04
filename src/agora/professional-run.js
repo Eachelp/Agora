@@ -56,6 +56,11 @@ function createProfessionalRun(options = {}) {
       implementationAutoRevisions: Number.isInteger(policy.implementationAutoRevisions) ? Math.max(0, Math.min(3, policy.implementationAutoRevisions)) : 0,
     },
     stages: options.stages || null,
+    // V1.5 Stage 5 — Handoff 원장의 authoritative 영속 상태
+    // (serializeHandoffLedger 결과). Journal이 아니라 이 fail-closed 경로가
+    // budget·소비 기록의 authority다. 재시작 복원은
+    // recoverHandoffLedgerForRoot로만 한다.
+    handoffState: options.handoffState || null,
     checkpointId: options.checkpointId || null,
     carriedFromRunId: options.carriedFromRunId || null,
     // Stage D-C §27 — typed lineage. 옛 Run은 이 필드가 없고

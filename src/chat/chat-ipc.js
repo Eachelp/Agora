@@ -26,8 +26,14 @@ const {
   toPublicProviders,
 } = require("../providers/provider-capabilities");
 const { toDiagnostics } = require("../providers/provider-diagnostics");
-const { roomAgentsFromCapabilities } = require("./chat-agents");
-const { ChatRoom, DEFAULT_DISCUSSION_RUN_BUDGET } = require("./chat-room");
+const { roomAgentsFromCapabilities, GROUP_ALIASES } = require("./chat-agents");
+const { parseMentions, parseRoleMentions, parseTeamRunDirective } = require("./chat-mention");
+const {
+  ChatRoom,
+  DEFAULT_DISCUSSION_RUN_BUDGET,
+  clampDiscussionTurnBudget,
+} = require("./chat-room");
+const { DISCUSSION_PRESETS, maxCycleBudget } = require("../agora/discussion-protocol");
 const { MAX_SPECIALIST_PROMPT_CHARS } = require("./chat-prompt");
 const { isStateAllowed, allowedIpcFor, isActiveProfessionalRun } = require("./professional-ipc-policy");
 const {
@@ -861,6 +867,15 @@ function roomMeta(meta) {
     return lines.join("\n");
   }
 
+  // V1.5 역할 멘션(CONSULT) → 프로젝트 역할·stage 매핑. 멘션 어휘는
+  // chat-mention의 ROLE_ALIASES가, 담당자 해석은 specialistStageFor가 소유한다.
+  const CONSULT_ROLE_DEFS = Object.freeze({
+    planner: Object.freeze({ projectRole: "planning", stage: "planner", label: "기획자" }),
+    builder: Object.freeze({ projectRole: "implementation", stage: "implementation", label: "구현자" }),
+    reviewer: Object.freeze({ projectRole: "review", stage: "review", label: "검토자" }),
+    recorder: Object.freeze({ projectRole: "recorder", stage: "recorder", label: "기록자" }),
+  });
+
   function specialistStageFor(project, room, roleId) {
     const roleLabel = {
       planning: "기획",
@@ -977,6 +992,11 @@ function roomMeta(meta) {
         const updated = store.updateMeta(sessionId, { professionalRun: professionalRun || null });
         return Boolean(updated);
       },
+      // V1.5 System Journal — 전문 실행 사실 기록(append-only). transcript와
+      // 별도 파일이며, 실패는 false로 드러나 room이 사용자에게 알린다.
+      appendProfessionalEvent: (event) =>
+        store.appendProfessionalEvent(sessionId, { ...event, sessionId }),
+      readProfessionalEvents: () => store.readProfessionalEvents(sessionId),
       // 전문 실행 재개(기획 답변·WAITING 복원·재기획) 시 기획·기획검수 담당자를
       // 프로젝트 설정에서 다시 읽는다. 실행 시작 때 저장한 stages 스냅샷에는 사용자가
       // 대기 중에 바꾼 담당자가 아니라 과거 담당자가 남아, 화면 표시와 실제 호출이
@@ -1248,6 +1268,26 @@ function roomMeta(meta) {
     return entry;
   }
 
+  // 렌더러가 구조화 토론 UI를 그릴 때 쓰는 Preset 목록. 정의는
+  // discussion-protocol.js 한 곳에만 있고 렌더러는 이 요약본만 본다.
+  function publicDiscussionPresets() {
+    return Object.values(DISCUSSION_PRESETS).map((preset) => {
+      const slotLabels = [];
+      for (const step of preset.steps) {
+        if (!slotLabels[step.slot]) slotLabels[step.slot] = step.roleName;
+      }
+      return {
+        id: preset.id,
+        name: preset.name,
+        slotCount: preset.slotCount,
+        slotLabels,
+        stepNames: preset.steps.map((step) => step.roleName),
+        // cycle 상한은 토론 전체 hard ceiling(50턴)에서 유도된다.
+        maxCycles: maxCycleBudget(preset.steps.length),
+      };
+    });
+  }
+
   async function fullState({ refreshProviders = false } = {}) {
     ensureStore();
     const service = ensureCapabilityService();
@@ -1264,6 +1304,7 @@ function roomMeta(meta) {
       diagnostics: toDiagnostics(records),
       permissionModes: PERMISSION_MODES,
       discussionMaxTurns: DEFAULT_DISCUSSION_RUN_BUDGET,
+      discussionPresets: publicDiscussionPresets(),
       ...sessionsPayload(),
       activeSessionId,
       session: activeSessionId ? sessionState(activeSessionId) : null,
@@ -1856,6 +1897,161 @@ function roomMeta(meta) {
             pending.delete(id);
           }
         }
+        // V1.5 역할 멘션 → 읽기 전용 상담(CONSULT). @claude/@gpt/@모두 같은
+        // agent/group 멘션이 하나라도 있으면 기존 동작이 우선한다(호환 경계).
+        // 역할 멘션은 그 외의 메시지에서만 해석하며, metadata 없는 멘션은
+        // 항상 CONSULT다 — 실행은 PLAN/실행/전체 실행 버튼 경로뿐이다(INV-2).
+        //
+        // 라우팅 판단은 렌더러의 professionalDraft 플래그만으로 하지 않는다.
+        // 그 플래그는 전문 실행이 한 번 살아난 세션에서 계속 true로 남으므로,
+        // 플래그만 보면 역할 멘션이 설계된 문맥(전문모드 세션)에서 CONSULT가
+        // 영구히 막힌다. 실행·토론이 실제로 진행 중일 때만 메모(recordOnly)
+        // 동작을 보존하고, 방이 놀고 있으면 역할 멘션을 상담으로 보낸다.
+        const preserveProfessionalMemo =
+          Boolean(professionalDraft) &&
+          (room.isSpecialistLocked() || room.discussionRequested || room.discussionActive);
+        if (!preserveProfessionalMemo) {
+          const roleMentions = parseRoleMentions(String(text || ""));
+          const agentMentions = parseMentions(String(text || ""), room.agents, GROUP_ALIASES);
+          if (roleMentions.length > 0 && agentMentions.length === 0) {
+            const entry = room.sendUserMessage({ text, attachments, recordOnly: true });
+            if (!entry) throw new Error("보낼 내용이 없습니다.");
+            // @팀: Planner-first 제한 순차 상담(제안서 §9.2). 개별 역할 멘션과
+            // 함께 오면 팀 상담이 우선한다.
+            if (roleMentions.includes("team")) {
+              // V1.5 §9 — "@팀 실행"은 팀 자율 실행이다. 기획 → 기획 검수가
+              // 자동으로 진행되고 EXECUTE 직전 READY 승인 게이트에서 멈춘다.
+              // 채팅 문장은 EXECUTE 사전 승인(autoContinueReady)을 만들 수
+              // 없다(§9.4) — 전체 실행 사전 승인은 버튼 경로뿐이다. 승인 후의
+              // 구현·검수·기록은 기존 Professional FSM이 진행하며, 각 역할의
+              // HANDOFF 요청은 조합 검증·원장 소비·Journal로 기록되는
+              // overlay다(호출 순서의 authority는 아직 FSM — §8 최종 범위).
+              if (parseTeamRunDirective(text)) {
+                const meta = store.readMeta(sessionId);
+                const workspace = canonicalWorkspaceForMeta(meta);
+                if (!workspace) {
+                  room.appendSystem(
+                    "팀 자율 실행을 시작하지 못했습니다: 전문 모드는 워크스페이스가 필요합니다. 프로젝트 워크스페이스 폴더를 먼저 선택해 주세요."
+                  );
+                  return { consult: true, teamRun: false };
+                }
+                const project = projectForSession(meta);
+                // 승인 후 구현·검수·기록까지 이어지므로 다섯 역할 전부를
+                // 지금 해석한다 — 담당자 공백은 시작 전에 알아야 한다.
+                const planned = project
+                  ? specialistStagesFor(project, room, "full")
+                  : { ok: false, error: "프로젝트가 없어 역할 담당자를 확인할 수 없습니다." };
+                if (!planned.ok) {
+                  room.appendSystem(`팀 자율 실행을 시작하지 못했습니다: ${planned.error}`);
+                  return { consult: true, teamRun: false };
+                }
+                const started = room.startSpecialist({
+                  stages: planned.stages,
+                  action: "plan",
+                  mode: "auto",
+                  planAutoRevisions: 1,
+                  implementationAutoRevisions: 1,
+                  maxAutoRevisions: 1,
+                });
+                const result = await Promise.race([
+                  started,
+                  new Promise((resolve) => setImmediate(() => resolve({ ok: true, pending: true }))),
+                ]);
+                started.catch(() => {});
+                if (result && result.ok === false && !result.needsUserDecision && !result.cancelled) {
+                  // 사용자 메시지는 이미 기록됐다. 여기서 throw하면 렌더러가 초안을
+                  // 복원해 재전송·중복이 생기므로, 거부 이유를 채팅에 남기고 정상 반환한다.
+                  room.appendSystem(`팀 자율 실행을 시작하지 못했습니다: ${result.error || "알 수 없는 오류"}`);
+                  return { consult: true, teamRun: false };
+                }
+                // 시작이 즉시 거부되지 않은(pending/정상) 것을 확인한 뒤에야
+                // 낙관적 안내를 남긴다 — 거부 시 '시작합니다'가 transcript에
+                // 남아 실행된 것처럼 오인되는 것을 막는다.
+                room.appendSystem(
+                  "팀 자율 실행을 시작합니다: 기획 → 기획 검수가 자동으로 진행되고, 구현 시작 전 승인 대기에서 멈춥니다."
+                );
+                return { consult: true, teamRun: true };
+              }
+              const project = projectForSession(store.readMeta(sessionId));
+              const steps = [];
+              for (const roleId of ["planner", "reviewer", "builder"]) {
+                const roleDef = CONSULT_ROLE_DEFS[roleId];
+                const resolved = project
+                  ? specialistStageFor(project, room, roleDef.projectRole)
+                  : { ok: false, error: "프로젝트가 없어 역할 담당자를 확인할 수 없습니다." };
+                if (!resolved.ok) {
+                  room.appendSystem(`팀 상담을 시작하지 못했습니다: ${resolved.error}`);
+                  return { consult: true };
+                }
+                steps.push({
+                  roleId,
+                  stage: roleDef.stage,
+                  roleLabel: roleDef.label,
+                  agent: resolved.agent,
+                  agentConfig: resolved.agentConfig,
+                  attachments,
+                });
+              }
+              const team = room.consultTeam(steps);
+              const result = await Promise.race([
+                team,
+                new Promise((resolve) => setImmediate(() => resolve({ ok: true, pending: true }))),
+              ]);
+              team.catch(() => {});
+              if (result && result.ok === false) {
+                room.appendSystem(`팀 상담을 시작하지 못했습니다: ${result.error || "알 수 없는 오류"}`);
+                return { consult: true };
+              }
+              return { consult: true };
+            }
+            // 개별 역할 상담은 한 번에 한 명만 답한다. 여러 역할을 함께
+            // 멘션하면 첫 역할만 응답하므로, 무시된 역할을 조용히 버리지
+            // 않고 왜 응답이 없는지 안내한다(위 resolved.ok 실패 안내와 같은
+            // 원칙). 여러 역할을 함께 듣고 싶으면 @팀을 쓴다.
+            const roleDef = CONSULT_ROLE_DEFS[roleMentions[0]];
+            const project = projectForSession(store.readMeta(sessionId));
+            const resolved = project
+              ? specialistStageFor(project, room, roleDef.projectRole)
+              : { ok: false, error: "프로젝트가 없어 역할 담당자를 확인할 수 없습니다." };
+            if (!resolved.ok) {
+              // 조용한 무시 금지: 왜 응답이 없는지 채팅에 남긴다.
+              room.appendSystem(`${roleDef.label} 상담을 시작하지 못했습니다: ${resolved.error}`);
+              return { consult: true };
+            }
+            const consult = room.consultRole({
+              roleId: roleMentions[0],
+              stage: roleDef.stage,
+              roleLabel: roleDef.label,
+              agent: resolved.agent,
+              agentConfig: resolved.agentConfig,
+              attachments,
+            });
+            // 상담 응답은 오래 걸릴 수 있으므로 시작 확인만 동기로 반환한다.
+            // 시작 자체가 거부되면(토론 중 등) 그 오류는 여기서 바로 던진다.
+            const result = await Promise.race([
+              consult,
+              new Promise((resolve) => setImmediate(() => resolve({ ok: true, pending: true }))),
+            ]);
+            consult.catch(() => {});
+            if (result && result.ok === false) {
+              // 메시지는 이미 기록됐으므로 throw 대신 이유를 남긴다(초안 복원·중복 방지).
+              room.appendSystem(`${roleDef.label} 상담을 시작하지 못했습니다: ${result.error || "알 수 없는 오류"}`);
+              return { consult: true };
+            }
+            // 상담이 실제로 시작된 뒤에만 제외 역할을 안내한다 — 시작 실패 뒤에
+            // "기획자만 응답하며…"가 먼저 남아 모순되는 것을 막는다.
+            if (roleMentions.length > 1) {
+              const ignored = roleMentions
+                .slice(1)
+                .map((id) => CONSULT_ROLE_DEFS[id]?.label || id)
+                .join(", ");
+              room.appendSystem(
+                `개별 역할 상담은 한 번에 한 명만 답합니다. ${roleDef.label}만 응답하며 ${ignored}은(는) 이번에 제외됩니다. 여러 역할을 함께 들으려면 @팀을 사용하세요.`
+              );
+            }
+            return { consult: true };
+          }
+        }
         const entry = room.sendUserMessage({
           text,
           attachments,
@@ -1899,15 +2095,43 @@ function roomMeta(meta) {
 
     ipcMain.handle(
       "chat:discussion:start",
-      wrap(async ({ sessionId, agentIds }) => {
+      wrap(async ({ sessionId, agentIds, turnBudget, presetId, cycleBudget, roleAssignments }) => {
         requireSession(sessionId);
         const room = getRoom(sessionId);
         enforceProfessionalPolicy(room, "discussion");
         const cleanIds = Array.isArray(agentIds)
           ? agentIds.filter((id) => typeof id === "string")
           : undefined;
+        // V1.5: 토론 길이는 호출별 옵션이다. 정수가 아니면 넘기지 않아 방
+        // 기본값(9) 경로를 그대로 탄다. 범위는 방 계층에서 한 번 더 clamp된다.
+        const cleanTurnBudget = Number.isInteger(turnBudget)
+          ? clampDiscussionTurnBudget(turnBudget, undefined)
+          : undefined;
+        // 구조화 토론: preset id는 정의된 것만 통과시키고, 세부 검증(역할
+        // 배정 수·cycle clamp)은 resolveProtocol 한 곳에서 한다.
+        let protocol;
+        if (typeof presetId === "string" && presetId) {
+          // 소유 프로퍼티만 인정한다. presetId가 'constructor'/'toString' 같은
+          // 상속 키면 DISCUSSION_PRESETS[presetId]가 Object.prototype 멤버라
+          // truthy가 되어, IPC의 빠른 실패가 뚫리고 resolveProtocol이
+          // 'Object Preset...' 같은 혼란스러운 에러를 던진다.
+          if (!Object.prototype.hasOwnProperty.call(DISCUSSION_PRESETS, presetId)) {
+            throw new Error(`알 수 없는 토론 Preset입니다: ${presetId}`);
+          }
+          protocol = {
+            presetId,
+            participantIds: Array.isArray(roleAssignments)
+              ? roleAssignments.filter((id) => typeof id === "string")
+              : [],
+            cycleBudget: Number.isInteger(cycleBudget) ? cycleBudget : undefined,
+          };
+        }
         // 토론은 오래 걸리므로 시작 확인만 동기로 반환하고, 진행은 이벤트로 전달됩니다.
-        const started = room.startDiscussion({ agentIds: cleanIds });
+        const started = room.startDiscussion({
+          agentIds: cleanIds,
+          turnBudget: cleanTurnBudget,
+          protocol,
+        });
         const result = await Promise.race([
           started,
           new Promise((resolve) => setImmediate(() => resolve({ ok: true, pending: true }))),
