@@ -136,6 +136,27 @@ function summarize(diff) {
   return parts.length ? parts.join(" · ") : "작업공간 변경 없음";
 }
 
+// git diff --name-status -z 출력 파싱. 토큰 나열은 "상태, 경로" 쌍(또는
+// rename/copy의 "상태, 이전경로, 새경로" 3쌍)이고 null로 구분된다. 마지막
+// 토큰 뒤에는 null이 오므로 filter(Boolean)이 안전하다.
+function parseNameStatusPaths(raw) {
+  const tokens = String(raw || "").split("\0").filter(Boolean);
+  const paths = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const status = tokens[index];
+    if (!/^(?:[ADMTUXB]|[MRC]\d{1,3})$/.test(status)) return null;
+    const first = tokens[++index];
+    if (first == null) return null;
+    paths.push(first);
+    if (status[0] === "R" || status[0] === "C") {
+      const second = tokens[++index];
+      if (second == null) return null;
+      paths.push(second);
+    }
+  }
+  return paths.map(safeRelative);
+}
+
 // 반환 status는 CHANGED/NO_CHANGES/UNSUPPORTED/FAILED로 고정합니다.
 async function collectBuilderDiff(workspaceRoot, options = {}) {
   const repo = resolveWorkspace(workspaceRoot);
@@ -144,6 +165,7 @@ async function collectBuilderDiff(workspaceRoot, options = {}) {
       status: "UNSUPPORTED",
       supported: false,
       trackedDiff: "",
+      changedPaths: [],
       untracked: [],
       untrackedFiles: [],
       hasChanges: false,
@@ -161,6 +183,13 @@ async function collectBuilderDiff(workspaceRoot, options = {}) {
     const baseline = checkpointBaseline(options.checkpoint);
     const baselineSha = options.checkpoint?.baselineSha || baseline?.baselineSha || "HEAD";
     const trackedDiff = await git(repo, ["diff", "--binary", baselineSha]);
+    // 변경된 tracked 경로 목록. captureSubject에서 diff.changedPaths를 사용하므로
+    // 수집 실패는 결과 전체를 FAILED로 만든다(부분 정보 전달 금지).
+    const nameStatusOut = await git(repo, ["diff", "--name-status", "-z", baselineSha]);
+    const parsedTrackedPaths = parseNameStatusPaths(nameStatusOut);
+    if (!parsedTrackedPaths || parsedTrackedPaths.some((entry) => !entry)) {
+      throw new Error("변경 경로 수집에 실패했습니다.");
+    }
     const untrackedOut = await git(repo, ["ls-files", "--others", "--exclude-standard", "-z"]);
     const currentPaths = String(untrackedOut || "").split("\0").filter(Boolean).map(safeRelative);
     if (currentPaths.some((entry) => !entry)) throw new Error("현재 untracked 경로가 올바르지 않습니다.");
@@ -185,10 +214,18 @@ async function collectBuilderDiff(workspaceRoot, options = {}) {
       });
     }
     const hasChanges = trackedDiff.trim().length > 0 || untrackedFiles.length > 0;
+    const seenPaths = new Set(untrackedFiles.map((entry) => entry.path));
+    const changedPaths = [];
+    for (const rel of parsedTrackedPaths) {
+      if (excludes.has(rel) || seenPaths.has(rel)) continue;
+      seenPaths.add(rel);
+      changedPaths.push(rel);
+    }
     const result = {
       status: hasChanges ? "CHANGED" : "NO_CHANGES",
       supported: true,
       baselineSha,
+      changedPaths,
       trackedDiff,
       untracked: untrackedFiles.map((entry) => entry.path),
       untrackedFiles,
@@ -202,6 +239,7 @@ async function collectBuilderDiff(workspaceRoot, options = {}) {
       status: "FAILED",
       supported: false,
       trackedDiff: "",
+      changedPaths: [],
       untracked: [],
       untrackedFiles: [],
       hasChanges: false,

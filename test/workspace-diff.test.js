@@ -50,6 +50,53 @@ test("변경이 없으면 hasChanges가 false다", async (t) => {
   const dir = makeTempRepo(t);
   const result = await collectBuilderDiff(dir);
   assert.equal(result.hasChanges, false);
+  assert.deepEqual(result.changedPaths, []);
+});
+
+test("tracked 변경 경로를 changedPaths로 수집한다", async (t) => {
+  const dir = makeTempRepo(t);
+  fs.writeFileSync(path.join(dir, "a.txt"), "hello2\n", "utf8");
+  fs.writeFileSync(path.join(dir, "new.txt"), "new\n", "utf8");
+
+  const result = await collectBuilderDiff(dir);
+  assert.equal(result.supported, true);
+  // tracked 수정만 changedPaths에 들어간다. untracked는 untracked 목록이
+  // 담당하고(captureSubject가 양쪽을 함께 읽는다), 중복은 dedupe한다.
+  assert.deepEqual(result.changedPaths, ["a.txt"]);
+  assert.ok(result.untracked.includes("new.txt"));
+});
+
+test("삭제된 tracked 파일도 changedPaths에 포함된다", async (t) => {
+  const dir = makeTempRepo(t);
+  fs.rmSync(path.join(dir, "a.txt"));
+
+  const result = await collectBuilderDiff(dir);
+  assert.equal(result.supported, true);
+  assert.deepEqual(result.changedPaths, ["a.txt"]);
+});
+
+test("R100 이름 변경은 이전 경로와 새 경로를 모두 수집한다", async (t) => {
+  const dir = makeTempRepo(t);
+  git(dir, ["config", "diff.renames", "true"]);
+  git(dir, ["mv", "a.txt", "이름 변경.txt"]);
+  assert.match(git(dir, ["diff", "--name-status", "-z", "HEAD"]), /^R100\0/);
+
+  const result = await collectBuilderDiff(dir);
+  assert.equal(result.status, "CHANGED");
+  assert.deepEqual(result.changedPaths, ["a.txt", "이름 변경.txt"]);
+});
+
+test("C100 복사는 원본 경로와 복사 경로를 중복 없이 수집한다", async (t) => {
+  const dir = makeTempRepo(t);
+  git(dir, ["config", "diff.renames", "copies"]);
+  fs.copyFileSync(path.join(dir, "a.txt"), path.join(dir, "copy.txt"));
+  fs.writeFileSync(path.join(dir, "a.txt"), "changed source\n", "utf8");
+  git(dir, ["add", "a.txt", "copy.txt"]);
+  assert.match(git(dir, ["diff", "--name-status", "-z", "HEAD"]), /C100\0/);
+
+  const result = await collectBuilderDiff(dir);
+  assert.equal(result.status, "CHANGED");
+  assert.deepEqual(result.changedPaths.sort(), ["a.txt", "copy.txt"]);
 });
 
 test("git이 아닌 폴더는 supported=false, 빈 결과를 반환한다", async (t) => {
