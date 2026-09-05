@@ -763,6 +763,9 @@ tail 관점)에서 추가로 확정된 것: Archivist 페르소나 누락(그룹
 "시작합니다" 미출력·빈 Journal 미렌더·UNKNOWN→ASK_USER 안내·boundedText
 상한 우회에 회귀 테스트를 추가했다.
 
+실제 Electron 앱과 실제 CLI 에이전트로 돌려 볼 시나리오는
+`AGORA_V1_5_LOCAL_SMOKE_CHECKLIST.md`에 정리했다(변경점 ↔ 시나리오 대응표 포함).
+
 ### 후속 리팩토링 부채 (bug 아님 — 품질/유지보수)
 
 아래 3건은 실재하는 유지보수 부채지만 전부 load-bearing한 프롬프트 텍스트
