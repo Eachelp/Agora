@@ -9,6 +9,8 @@ const {
 const { TaskManager, hashText } = require("../agora/task-manager");
 const { validateTaskContract } = require("../agora/task-contract-validator");
 const { describeWorkspaceChanges } = require("../agora/workspace-diff");
+// repairBuilderStatus가 직전 응답 본문을 상한 내에서 담아 보낼 때 사용.
+const { boundedText } = require("./chat-prompt");
 const {
   executionAxes: professionalExecutionAxes,
   buildProfessionalEvidencePayload,
@@ -307,14 +309,20 @@ class SpecialistMixin {
     return serializeHandoffLedger(ledger);
   }
 
+  // NEEDS_DECISION 제어 응답에서 기획자 질문 본문을 추출한다. FSM 전이
+  // (PLANNER_NEEDS_DECISION)에 pendingQuestion으로 실어 영속하고, 재시작
+  // 뒤 resumeForWaitingPlan이 이 값을 되찾는 데도 쓴다.
+  plannerQuestionFrom(controlResult) {
+    return controlResult?.accepted && controlResult?.control?.action === "ASK_USER"
+      ? controlResult.control.question
+      : null;
+  }
+
   // NEEDS_DECISION 재개 시 기획자가 자기 질문을 볼 수 있게 feedback에 남긴다.
   // 질문은 제어 줄(ASK_USER)에만 있었고 그 줄은 텍스트에서 strip되므로, 여기서
   // 붙이지 않으면 재개된 기획자는 "무엇을 물었는지" 모른 채 답만 받는다.
   withPlannerQuestion(feedback, controlResult) {
-    const question =
-      controlResult?.accepted && controlResult?.control?.action === "ASK_USER"
-        ? controlResult.control.question
-        : null;
+    const question = this.plannerQuestionFrom(controlResult);
     if (!question) return feedback;
     return `${feedback || ""}\n\n=== 기획자 질문 ===\n${question}\n=== 기획자 질문 끝 ===`;
   }
@@ -926,7 +934,16 @@ class SpecialistMixin {
 
     const isPlanning = run.node === "PLANNING";
     const changedAfterReview = run.stopReason === "TASK_CHANGED_AFTER_REVIEW";
-    const feedback = this.waitingPlanFeedback({ run, isPlanning, changedAfterReview, taskContent });
+    let feedback = this.waitingPlanFeedback({ run, isPlanning, changedAfterReview, taskContent });
+    // 재시작 복원: NEEDS_DECISION의 질문 본문은 제어 줄이 strip되어
+    // messages로 남지 않으므로 run.pendingQuestion으로 되찾는다. 이 필드가
+    // 없던 옛 세션(null)은 기존 fallback 그대로 둔다.
+    if (isPlanning && run.pendingQuestion) {
+      feedback = this.withPlannerQuestion(feedback, {
+        accepted: true,
+        control: { action: "ASK_USER", question: run.pendingQuestion },
+      });
+    }
     return {
       stages: this.refreshPlanStages(run.stages || this.specialistStages || {}),
       mode,
@@ -1563,6 +1580,7 @@ class SpecialistMixin {
             type: "PLANNER_NEEDS_DECISION",
             stopReason: "NEEDS_DECISION",
             feedbackMessageId: plannerResult?.messageId || null,
+            pendingQuestion: this.plannerQuestionFrom(decisionControl),
           });
           if (!transition.ok) return this.professionalTransitionFailure("planner", transition);
           this.specialistResume = {
@@ -2932,7 +2950,7 @@ class SpecialistMixin {
         }
         if (!builderResult?.ok) return this.specialistFail(implementation, "implementation", 1, builderResult);
         // 선언 누락·모순은 사용자 결정이 아니라 출력 계약 실패다. 읽기 전용으로 한 번 다시 청한다.
-        builderResult = await this.repairBuilderStatus(implementation, builderResult, requestedGeneration);
+        builderResult = await this.repairBuilderStatus(implementation, builderResult, requestedGeneration, frozenTaskMeta());
         if (builderResult.builderStatus !== "DONE") return holdForBlocked(1, builderResult, builderResult.builderStatus);
         // 구현 완료 → 사용자 확인 대기.
         const changeSnapshot = await describeWorkspaceChanges(workspace, {
@@ -3181,7 +3199,7 @@ class SpecialistMixin {
           return this.specialistFail(implementation, "implementation", 2, builderResult);
         }
         // 선언 누락·모순은 사용자 결정이 아니라 출력 계약 실패다. 읽기 전용으로 한 번 다시 청한다.
-        builderResult = await this.repairBuilderStatus(implementation, builderResult, requestedGeneration);
+        builderResult = await this.repairBuilderStatus(implementation, builderResult, requestedGeneration, frozenTaskMeta());
         if (builderResult.builderStatus !== "DONE") return holdForBlocked(2, builderResult, builderResult.builderStatus);
         const changeSnapshot = await describeWorkspaceChanges(workspace, {
           checkpoint,
@@ -3788,7 +3806,7 @@ class SpecialistMixin {
       await restoreCheckpoint();
       return this.specialistFail(implementation, "implementation", round, builderResult);
     }
-    builderResult = await this.repairBuilderStatus(implementation, builderResult, requestedGeneration);
+    builderResult = await this.repairBuilderStatus(implementation, builderResult, requestedGeneration, frozenTaskMeta());
     // V1.5 — 구현자의 routing 축 소비. DONE + HANDOFF: @reviewer는 기본
     // 흐름과 같고, BLOCKED + HANDOFF: @planner(재기획 요청)는 수용하되
     // 작업물 keep/restore 선택은 기존대로 사용자 몫이다(INV-5 — BLOCKED
@@ -4217,7 +4235,7 @@ class SpecialistMixin {
         await restoreCheckpoint();
         return this.specialistFail(implementation, "implementation", round, builderResult);
       }
-      builderResult = await this.repairBuilderStatus(implementation, builderResult, requestedGeneration);
+      builderResult = await this.repairBuilderStatus(implementation, builderResult, requestedGeneration, frozenTaskMeta());
       // V1.5 — 보완 라운드의 구현자 routing 축 소비(첫 라운드와 동일 규칙).
       const revisedBuilderControl = this.consumeControlRequest({
         contract: "implementation",
@@ -4623,7 +4641,7 @@ class SpecialistMixin {
   //
   // 한 builder 응답당 한 번만 시도한다(호출자가 결과 하나에 대해 한 번 부른다).
   // 라운드·자동 보완 예산·checkpoint 어느 것도 소비하지 않는다.
-  async repairBuilderStatus(builderStage, builderResult, requestedGeneration) {
+  async repairBuilderStatus(builderStage, builderResult, requestedGeneration, frozenTask) {
     const declaration = builderResult?.builderStatus;
     if (declaration !== "MISSING" && declaration !== "AMBIGUOUS") return builderResult;
     if (!builderStage?.agent) return builderResult;
@@ -4635,7 +4653,17 @@ class SpecialistMixin {
     );
     const repaired = await this.withProfessionalAuthorization("workspace-read", () =>
       this.scheduleResponse(builderStage.agent, {
-        specialist: { stage: "implementation", repairKind: "builder_status" },
+        specialist: {
+          stage: "implementation",
+          repairKind: "builder_status",
+          frozenTask: frozenTask || null,
+          // 직전 응답 본문. 선언 확정은 "실제로 한 작업"의 근거 위에서
+          // 이뤄져야 하므로 근거를 함께 전달한다. 상한은 프롬프트 예산
+          // 안전선(16KB)이고, 초과분은 head/tail을 남긴다.
+          repairContext: {
+            priorResponse: boundedText(builderResult?.text, 16 * 1024, "직전 응답").text,
+          },
+        },
         agentConfig: builderStage.agentConfig,
       })
     );

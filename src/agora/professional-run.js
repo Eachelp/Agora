@@ -72,6 +72,10 @@ function createProfessionalRun(options = {}) {
     planRevisionCount: Number.isInteger(options.planRevisionCount) ? Math.max(0, options.planRevisionCount) : 0,
     implementationRevisionCount: Number.isInteger(options.implementationRevisionCount) ? Math.max(0, options.implementationRevisionCount) : 0,
     feedbackMessageId: options.feedbackMessageId || null,
+    // NEEDS_DECISION으로 WAITING에 빠졌을 때 기획자가 던진 질문 본문.
+    // ProfessionalRun은 세션 meta(JSON)로 영속되므로 재시작 뒤에도
+    // 이 필드로 "무엇을 물었는지"를 복원할 수 있다.
+    pendingQuestion: typeof options.pendingQuestion === "string" ? options.pendingQuestion : null,
     lastVerdict: options.lastVerdict || null,
     // checkpoint 무보호 실행 여부를 evidence/Reviewer/UI까지 end-to-end로 전달한다.
     // enum: "protected" | "unavailable_non_git" | "unavailable_checkpoint_failed" | "unavailable_user_approved"
@@ -119,6 +123,9 @@ function transitionProfessionalRun(current, event = {}) {
       // 이 정지를 만든 발화를 기억해 둔다. 재시작 뒤 Planner에게 무엇을
       // 되돌려줘야 하는지는 Task 내용이 아니라 이 발화다.
       next.feedbackMessageId = event.feedbackMessageId || null;
+      // 기획자 질문을 같은 전이 안에서 원자적으로 영속한다. 발화 id만 남기면
+      // 재시작 뒤 "질문 본문"이 사라지고 답변만 떠 있게 된다.
+      next.pendingQuestion = typeof event.pendingQuestion === "string" ? event.pendingQuestion : null;
       break;
     }
     case "PLAN_REVIEW_PASS": {
@@ -130,6 +137,7 @@ function transitionProfessionalRun(current, event = {}) {
       next.missingSections = null;
       // WAITING을 벗어났다. stale id가 남으면 다음 정지에서 엉뚱한 발화를 되살린다.
       next.feedbackMessageId = null;
+      next.pendingQuestion = null;
       if (event.approvedTaskHash) next.approvedTaskHash = event.approvedTaskHash;
       if (event.taskPath) next.taskPath = event.taskPath;
       break;
@@ -173,6 +181,8 @@ function transitionProfessionalRun(current, event = {}) {
       next.missingSections = null;
       // 사용자가 답했으므로 그 정지는 소비됐다.
       next.feedbackMessageId = null;
+      // 대기 중인 질문도 함께 소비된다.
+      next.pendingQuestion = null;
       // READY에서 기획 수정으로 복귀하면 승인된 기획 해시를 리셋한다.
       if (current.node === "READY") {
         next.approvedTaskHash = null;
