@@ -160,6 +160,7 @@ function buildAgentPrompt({
   if (isStatusRepair) {
     lines.push("당신은 Agora 전문 실행의 Builder이고, 직전 응답에 완료 선언이 빠졌거나 서로 모순되었습니다.");
     lines.push("이번 호출은 **선언을 확정하는 것만**이 목적입니다. 구현을 다시 하거나 파일을 고치지 마세요.");
+    lines.push("판정은 아래 \"직전 구현 응답\" 블록과 실행 계약(Frozen Task)을 근거로만 하세요.");
   } else if (isBuilder) {
     lines.push("당신은 Agora 전문 실행의 Builder입니다. 이 호출에서 실제 구현을 수행하세요.");
     lines.push("아래 실행 계약과 현재 단계 지침만 따르세요. 다른 에이전트에게 구현을 위임하거나 호출하지 마세요.");
@@ -464,6 +465,15 @@ function buildAgentPrompt({
       lines.push("- 직전 응답에서 실제로 무엇을 했는지 돌아보고, 작업이 끝났으면 `STATUS: DONE`, 막혀서 진행하지 못했으면 `STATUS: BLOCKED`를 응답에 정확히 하나만 넣으세요.");
       lines.push("- 두 선언을 함께 쓰지 마세요. 어느 쪽인지 판단이 서지 않으면 `STATUS: BLOCKED`와 그 이유를 적으세요.");
       lines.push("- 구현 내용을 다시 설명할 필요는 없습니다. 선언과 한두 문장의 근거면 충분합니다.");
+      // 근거 없는 DONE 강제 금지. 재요청은 "선언을 얻는" 목적이지
+      // "DONE을 얻는" 목적이 아니다.
+      lines.push("- 완료 근거를 찾지 못하면 DONE으로 확정하지 마세요. 실제로 진행된 작업이 없거나 완료 근거를 확인할 수 없으면 `STATUS: BLOCKED`와 이유를 적으세요.");
+      if (specialist.repairContext?.priorResponse) {
+        lines.push("");
+        lines.push("=== 직전 구현 응답 ===");
+        lines.push(String(specialist.repairContext.priorResponse));
+        lines.push("=== 직전 구현 응답 끝 ===");
+      }
     } else if (specialist.stage === "implementation") {
       lines.push("- 현재 결정과 작업 범위 안에서 실제 구현을 진행하세요.");
       lines.push("- 작업을 끝낸 뒤 변경 내용과 검증 결과를 짧게 정리하세요.");
