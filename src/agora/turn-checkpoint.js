@@ -10,7 +10,10 @@ const crypto = require("node:crypto");
 const { sha256FileSync } = require("./assurance/file-digest");
 
 const execFileAsync = promisify(execFile);
-const CHECKPOINT_SCHEMA_VERSION = 2;
+const CHECKPOINT_SCHEMA_VERSION = 3;
+// v2 백업은 index(staged) 상태를 기록하지 않는다. 검증(읽기)은 호환하되,
+// index를 복원할 근거가 없으므로 restore은 파일을 건드리기 전에 거부한다.
+const LEGACY_CHECKPOINT_SCHEMA_VERSION = 2;
 const CHECKPOINT_ID_PATTERN = /^cp-[a-z0-9-]{8,80}$/;
 
 function sha256Buffer(buf) {
@@ -221,7 +224,12 @@ function resolveCheckpoint(checkpoint, options = {}) {
     return { ok: false, reason: "checkpoint-outside-root" };
   }
   const manifest = readManifest(dir);
-  if (!manifest || manifest.schemaVersion !== CHECKPOINT_SCHEMA_VERSION || manifest.checkpointId !== id) {
+  if (
+    !manifest ||
+    (manifest.schemaVersion !== CHECKPOINT_SCHEMA_VERSION &&
+      manifest.schemaVersion !== LEGACY_CHECKPOINT_SCHEMA_VERSION) ||
+    manifest.checkpointId !== id
+  ) {
     return { ok: false, reason: "manifest-invalid" };
   }
   if (checkpoint.sessionId != null && manifest.sessionId !== checkpoint.sessionId) {
@@ -243,6 +251,23 @@ function resolveCheckpoint(checkpoint, options = {}) {
   const patchMeta = sha256File(patchPath);
   if (!patchMeta || patchMeta.bytes !== artifacts.trackedPatch?.bytes || patchMeta.sha256 !== artifacts.trackedPatch?.sha256) {
     return { ok: false, reason: "tracked-patch-corrupt" };
+  }
+
+  // v2(legacy)는 index 복원 근거가 없다. resolve는 ok이되 restore에서
+  // staged-state-unrecorded로 파일 변경 전에 중단된다.
+  if (manifest.schemaVersion !== LEGACY_CHECKPOINT_SCHEMA_VERSION) {
+    if (!/^[0-9a-f]{40,64}$/.test(String(manifest.headSha || ""))) {
+      return { ok: false, reason: "head-sha-invalid" };
+    }
+    const stagedPatchPath = path.join(dir, "staged.patch");
+    const stagedMeta = sha256File(stagedPatchPath);
+    if (
+      !stagedMeta ||
+      stagedMeta.bytes !== artifacts.stagedPatch?.bytes ||
+      stagedMeta.sha256 !== artifacts.stagedPatch?.sha256
+    ) {
+      return { ok: false, reason: "staged-patch-corrupt" };
+    }
   }
 
   const listPath = path.join(dir, "untracked-list.txt");
@@ -300,10 +325,23 @@ async function createCheckpoint(workspaceRoot, options = {}) {
       );
       baselineSha = String(headOut).trim();
     }
+    // index 복원의 기준 커밋. baselineSha(stash)가 아니라 복원 시점의 HEAD를
+    // 저장한다 — restore은 파일·index를 이 커밋으로 초기화한 뒤 패치를 다시
+    // 적용하며, 브랜치 포인터는 절대 움직이지 않는다.
+    const headOut = await guardAsync("CHECKPOINT_GIT_FAILED", "git rev-parse HEAD에 실패했습니다.", () =>
+      git(repo, ["rev-parse", "HEAD"])
+    );
+    const headSha = String(headOut).trim();
     // diff는 크기가 예측되지 않으므로(바이너리 삭제 하나로 수백 MB가 된다)
     // 버퍼에 받지 않고 tracked.patch로 곧장 흘려보낸다.
     await guardAsync("CHECKPOINT_GIT_FAILED", "git diff 수집에 실패했습니다.", () =>
       gitToFile(repo, ["diff", "--binary", "HEAD"], path.join(dir, "tracked.patch"))
+    );
+    // index(staged) 상태는 tracked.patch(작업파일 기준)에 없다. 실행 전에 사용자가
+    // git add해 둔 변경을 복원하려면 별도 패치로 보관해야 한다. 변경이 없으면
+    // 빈 파일로 기록해 "기록했음"을 균일하게 만든다.
+    await guardAsync("CHECKPOINT_GIT_FAILED", "git diff --cached 수집에 실패했습니다.", () =>
+      gitToFile(repo, ["diff", "--binary", "--cached"], path.join(dir, "staged.patch"))
     );
 
     const untrackedOut = await guardAsync("CHECKPOINT_GIT_FAILED", "untracked 목록 수집에 실패했습니다.", () =>
@@ -360,6 +398,10 @@ async function createCheckpoint(workspaceRoot, options = {}) {
     if (!trackedPatchMeta) {
       throw checkpointError("CHECKPOINT_STORAGE_FAILED", "tracked.patch를 저장 후 검증할 수 없습니다.");
     }
+    const stagedPatchMeta = sha256File(path.join(dir, "staged.patch"));
+    if (!stagedPatchMeta) {
+      throw checkpointError("CHECKPOINT_STORAGE_FAILED", "staged.patch를 저장 후 검증할 수 없습니다.");
+    }
     const listPath = path.join(dir, "untracked-list.txt");
     guard("CHECKPOINT_STORAGE_FAILED", "untracked 목록 저장에 실패했습니다.", () =>
       fs.writeFileSync(listPath, safePaths.join("\n"), "utf8")
@@ -376,12 +418,18 @@ async function createCheckpoint(workspaceRoot, options = {}) {
       runId: options.runId || null,
       workspace: repo,
       baselineSha,
+      headSha,
       createdAt: Number.isFinite(options.createdAt) ? options.createdAt : Date.now(),
       artifacts: {
         trackedPatch: {
           path: "tracked.patch",
           bytes: trackedPatchMeta.bytes,
           sha256: trackedPatchMeta.sha256,
+        },
+        stagedPatch: {
+          path: "staged.patch",
+          bytes: stagedPatchMeta.bytes,
+          sha256: stagedPatchMeta.sha256,
         },
         untrackedList: {
           path: "untracked-list.txt",
@@ -443,7 +491,7 @@ function inspectCheckpoint(checkpoint, options = {}) {
 }
 
 // 실패 결과의 mutated 필드는 "workspace 변경(rewind)이 시작되었을 가능성"을 뜻한다.
-// 첫 git 변경 명령(git checkout) 이전에 명확히 끝난 실패만 mutated:false이며, 그 외
+// 첫 git 변경 명령(read-tree) 이전에 명확히 끝난 실패만 mutated:false이며, 그 외
 // (부분 적용/원인 불명 실패)는 모두 mutated:true로 보수적으로 보고한다. 상위
 // lifecycle 소비자는 이 fact로 "무변경 실패 → 세션 유지"와 "ambiguous/partial →
 // conservative invalidate"를 구분한다. 이 모듈은 lifecycle 결정을 하지 않는다.
@@ -452,21 +500,64 @@ async function restoreCheckpoint(workspaceRoot, checkpoint, options = {}) {
   if (!resolved.ok) return { ok: false, reason: resolved.reason, mutated: false };
   const repo = resolveWorkspace(workspaceRoot);
   if (!repo || repo !== resolved.manifest.workspace) return { ok: false, reason: "workspace-mismatch", mutated: false };
+  let mutated = false;
+  let preserveDir = null;
+  const preservedFiles = [];
   try {
     const listPath = path.join(resolved.dir, "untracked-list.txt");
     const checkpointList = parseRelativeList(fs.existsSync(listPath) ? fs.readFileSync(listPath, "utf8") : "");
     if (!checkpointList) return { ok: false, reason: "untracked-list-invalid", mutated: false };
     const checkpointSet = new Set(checkpointList.map(pathKey));
-    const preserveSet = new Set(
-      (Array.isArray(options.preservePaths) ? options.preservePaths : [])
-        .map(safeRelativePath)
-        .filter(Boolean)
-        .map(pathKey)
-    );
-    await git(repo, ["checkout", "--", "."]);
+    const preservePaths = (Array.isArray(options.preservePaths) ? options.preservePaths : [])
+      .map(safeRelativePath)
+      .filter(Boolean);
+    const preserveSet = new Set(preservePaths.map(pathKey));
     const patchPath = path.join(resolved.dir, "tracked.patch");
-    if (fs.existsSync(patchPath) && fs.readFileSync(patchPath, "utf8").trim()) {
+    const patchMeta = sha256File(patchPath);
+    const trackedArtifact = resolved.manifest.artifacts?.trackedPatch || null;
+    // 예전(v2) 백업에는 index 복원 근거가 없다. 파일을 건드리기 전에 중단한다 —
+    // 이어서 복원하면 git add돼 있던 사용자 변경을 못 살리면서 성공으로 보고하게
+    // 된다(실제 결함). 상위 lifecycle은 이 실패를 보수적으로 처리한다.
+    const headSha = resolved.manifest.headSha;
+    const stagedArtifact = resolved.manifest.artifacts?.stagedPatch || null;
+    if (!headSha || !stagedArtifact || !trackedArtifact || !patchMeta) {
+      return { ok: false, reason: "staged-state-unrecorded", mutated: false };
+    }
+    const stagedPatchPath = path.join(resolved.dir, "staged.patch");
+    const stagedPatchMeta = sha256File(stagedPatchPath);
+    if (
+      !stagedPatchMeta ||
+      stagedPatchMeta.bytes !== stagedArtifact.bytes ||
+      stagedPatchMeta.sha256 !== stagedArtifact.sha256
+    ) {
+      return { ok: false, reason: "staged-patch-corrupt", mutated: false };
+    }
+
+    // read-tree는 staged 파일도 지우므로 보존 목록은 Git 변경 전에 확보한다.
+    // 큰 파일도 메모리에 담지 않으며, 복사 실패 시 workspace는 건드리지 않는다.
+    for (const safe of preservePaths) {
+      const target = path.resolve(repo, safe);
+      if (!isWithin(repo, target)) return { ok: false, reason: "preserve-path-invalid", mutated: false };
+      if (!fs.existsSync(target)) continue;
+      if (!fs.lstatSync(target).isFile() || !isWithin(repo, fs.realpathSync(target))) {
+        return { ok: false, reason: "preserve-path-invalid", mutated: false };
+      }
+      if (!preserveDir) preserveDir = fs.mkdtempSync(path.join(resolved.dir, "preserve-"));
+      const backup = path.join(preserveDir, String(preservedFiles.length));
+      fs.copyFileSync(target, backup);
+      preservedFiles.push({ target, backup });
+    }
+
+    // 브랜치를 움직이지 않고 파일·index를 백업 시점 HEAD로 초기화한다.
+    // git reset --hard와 다르게 HEAD/브랜치는 그대로다. 이 자리에서 옛 코드의
+    // "checkout -- ."이 놓친 index(staged) 상태를 이후 단계에서 되살린다.
+    mutated = true;
+    await git(repo, ["read-tree", "--reset", "-u", headSha]);
+    if (patchMeta.bytes > 0) {
       await git(repo, ["apply", "--binary", patchPath]);
+    }
+    if (stagedPatchMeta.bytes > 0) {
+      await git(repo, ["apply", "--cached", "--binary", stagedPatchPath]);
     }
 
     const currentOut = await git(repo, ["ls-files", "--others", "--exclude-standard", "-z"]);
@@ -493,10 +584,53 @@ async function restoreCheckpoint(workspaceRoot, checkpoint, options = {}) {
         fs.copyFileSync(src, dest);
       }
     }
+
+    // 복원이 실제로 백업과 일치했는지 확인한다. 같은 범위(백업 시점 HEAD)로 diff를
+    // 다시 만들어 저장된 patch 해시와 대조한다. 일치하지 않으면 내용을 잃었거나
+    // 정규화가 어긋난 것이므로 성공으로 보고하지 않는다(보수적으로 mutated).
+    const verifyTrackedPath = path.join(resolved.dir, "verify-tracked.patch");
+    const verifyStagedPath = path.join(resolved.dir, "verify-staged.patch");
+    try {
+      await gitToFile(repo, ["diff", "--binary", headSha], verifyTrackedPath);
+      await gitToFile(repo, ["diff", "--binary", "--cached", headSha], verifyStagedPath);
+      const regeneratedTracked = sha256File(verifyTrackedPath);
+      const regeneratedStaged = sha256File(verifyStagedPath);
+      if (
+        !regeneratedTracked ||
+        regeneratedTracked.sha256 !== trackedArtifact.sha256 ||
+        !regeneratedStaged ||
+        regeneratedStaged.sha256 !== stagedPatchMeta.sha256
+      ) {
+        return { ok: false, reason: "restore-verification-failed", mutated: true };
+      }
+    } finally {
+      try { fs.rmSync(verifyTrackedPath, { force: true }); } catch {}
+      try { fs.rmSync(verifyStagedPath, { force: true }); } catch {}
+    }
     return { ok: true };
   } catch {
-    // git checkout/apply 도중의 실패는 부분 적용 여부를 알 수 없다 → 보수적으로 mutated.
-    return { ok: false, reason: "restore-failed", mutated: true };
+    return { ok: false, reason: "restore-failed", mutated };
+  } finally {
+    // 패치 적용/검증이 실패해도 최신 실행 기록은 되돌린다. 검증 후 복사하므로
+    // 의도적으로 보존한 내용이 checkpoint diff 검증을 실패시키지 않는다.
+    let preserveFailed = false;
+    if (mutated) {
+      for (const { target, backup } of preservedFiles) {
+        try {
+          fs.mkdirSync(path.dirname(target), { recursive: true });
+          fs.copyFileSync(backup, target);
+        } catch {
+          preserveFailed = true;
+        }
+      }
+    }
+    if (preserveFailed) {
+      // 재복사가 실패하면 원본 사본을 남겨 수동 복구할 수 있게 한다.
+      return { ok: false, reason: "preserve-restore-failed", mutated: true, backupPath: preserveDir };
+    }
+    if (preserveDir) {
+      try { fs.rmSync(preserveDir, { recursive: true, force: true }); } catch {}
+    }
   }
 }
 

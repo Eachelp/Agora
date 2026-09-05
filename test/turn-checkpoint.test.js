@@ -137,6 +137,73 @@ test("Builder가 새로 만든 파일만 제거하고 checkpoint 시점 untracke
   cleanupCheckpoint(checkpoint);
 });
 
+test("checkpoint schema v3: index(staged) 상태도 함께 복원한다", async (t) => {
+  const repo = makeTempRepo(t);
+  const stagedFile = path.join(repo, "staged.txt");
+  const dirtyFile = path.join(repo, "dirty.txt");
+  fs.writeFileSync(stagedFile, "v1\n", "utf8");
+  fs.writeFileSync(dirtyFile, "v1\n", "utf8");
+  git(repo, ["add", "."]);
+  git(repo, ["commit", "-qm", "baseline"]);
+
+  // 사용자 사전 변경: staged 1건 + 작업 트리만 수정한 1건.
+  fs.writeFileSync(stagedFile, "user staged v2\n", "utf8");
+  git(repo, ["add", "staged.txt"]);
+  fs.writeFileSync(dirtyFile, "user dirty v2\n", "utf8");
+
+  const checkpoint = await createCheckpoint(repo);
+  assert.equal(checkpoint.supported, true);
+
+  // Builder가 두 파일을 모두 덮어쓰고 새 파일을 만든다.
+  fs.writeFileSync(stagedFile, "builder wreck\n", "utf8");
+  fs.writeFileSync(dirtyFile, "builder wreck\n", "utf8");
+  const builderFile = path.join(repo, "builder-junk.txt");
+  fs.writeFileSync(builderFile, "junk\n", "utf8");
+
+  const result = await restoreCheckpoint(repo, checkpoint);
+  assert.equal(result.ok, true);
+
+  // 작업 트리: staged/dirty 모두 checkpoint 시점 내용으로 복원, Builder
+  // 파일은 제거.
+  assert.equal(fs.readFileSync(stagedFile, "utf8").replace(/\r\n/g, "\n"), "user staged v2\n");
+  assert.equal(fs.readFileSync(dirtyFile, "utf8").replace(/\r\n/g, "\n"), "user dirty v2\n");
+  assert.equal(fs.existsSync(builderFile), false);
+  // index 상태: staged.txt만 index에 반영되고, dirty.txt는 작업 트리에만
+  // 남는다(v2 백업이 놓치던 경계).
+  const status = git(repo, ["status", "--porcelain"]);
+  assert.match(status, /^M  staged\.txt$/m);
+  assert.match(status, /^ M dirty\.txt$/m);
+  cleanupCheckpoint(checkpoint);
+});
+
+test("복원 전에 staged된 실행 기록도 최신 내용으로 보존한다", async (t) => {
+  const repo = makeTempRepo(t);
+  fs.writeFileSync(path.join(repo, "app.txt"), "baseline\n", "utf8");
+  git(repo, ["add", "app.txt"]);
+  git(repo, ["commit", "-qm", "baseline"]);
+  const evidence = path.join(repo, "evidence.json");
+  const resultFile = path.join(repo, "result.json");
+  fs.writeFileSync(evidence, '{"round":1}\n', "utf8");
+  const checkpoint = await createCheckpoint(repo);
+  assert.equal(checkpoint.supported, true);
+
+  // 이전부터 있던 기록과 백업 이후 생성된 기록 모두 git add된 상황.
+  fs.writeFileSync(evidence, '{"round":2}\n', "utf8");
+  fs.writeFileSync(resultFile, '{"status":"BLOCKED"}\n', "utf8");
+  fs.writeFileSync(path.join(repo, "app.txt"), "builder\n", "utf8");
+  git(repo, ["add", "app.txt", "evidence.json", "result.json"]);
+  const restored = await restoreCheckpoint(repo, checkpoint, {
+    preservePaths: ["evidence.json", "result.json"],
+  });
+
+  assert.equal(restored.ok, true);
+  assert.equal(fs.readFileSync(evidence, "utf8"), '{"round":2}\n');
+  assert.equal(fs.readFileSync(resultFile, "utf8"), '{"status":"BLOCKED"}\n');
+  assert.equal(fs.readFileSync(path.join(repo, "app.txt"), "utf8").replace(/\r\n/g, "\n"), "baseline\n");
+  assert.equal(git(repo, ["diff", "--cached", "--name-only"]), "");
+  cleanupCheckpoint(checkpoint);
+});
+
 test("checkpoint schema v2: 손상된 tracked.patch나 파일 사본은 검증에서 거부되고 복원을 시도하지 않는다", async (t) => {
   const repo = makeTempRepo(t);
   const trackedFile = path.join(repo, "src", "index.js");

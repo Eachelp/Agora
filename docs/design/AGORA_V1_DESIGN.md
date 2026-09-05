@@ -453,7 +453,7 @@ Retry 또는 Restore 시:
 
 - workspace가 **git 저장소일 때만** 동작한다. git이 아니거나 경로가 없으면 안전하게 건너뛴다(`supported: false`).
 - checkpoint 생성: Builder 실행 직전에 세션 저장소 `.agora/sessions/<sessionId>/checkpoints/<checkpointId>/`에 manifest, `git stash create` baseline SHA, `tracked.patch`, untracked 파일 목록·내용을 원자적으로 보존한다. checkpoint ID는 내부 생성 opaque ID이며 절대 경로를 저널에 저장하지 않는다.
-- 복원: tracked 파일을 `git checkout -- .`로 HEAD에 되돌린 뒤 checkpoint 시점 diff를 재적용해 **사용자 사전 변경은 보존**한다. Builder가 새로 만든 untracked 파일만 제거하고, 실행 전부터 있던 untracked 파일은 checkpoint 내용으로 되살린다. Run의 `task.md`, `task-hash`, `evidence.json`, `invalid.json`은 복원 시 보존한다.
+- 복원: `git read-tree --reset -u <checkpoint 시점 HEAD>`로 작업 트리와 index를 되돌린 뒤(브랜치 포인터는 움직이지 않음) checkpoint 시점 diff를 작업 트리·staged 각각 재적용해 **사용자 사전 변경(git add한 것 포함)은 보존**한다. 복원 후 diff를 다시 생성해 백업 해시와 대조하며, 불일치면 성공으로 보고하지 않는다. index 기록이 없는 옛(v2) 백업은 파일을 건드리기 전에 복원을 거부한다. Builder가 새로 만든 untracked 파일만 제거하고, 실행 전부터 있던 untracked 파일은 checkpoint 내용으로 되살린다. Run의 `task.md`, `task-hash`, `evidence.json`, `invalid.json`은 복원 시 보존한다.
 - 전체 reset(작업 영역 전체를 HEAD로 되돌리기)은 사용하지 않는다.
 - restore와 cleanup은 동일한 안전 경로 해석기를 사용하며 manifest/session/run/workspace 일치와 `..` 탈출을 검증한다. 세션 meta v3의 `professionalRun`이 실행 상태의 기준이며, 기존 `pendingRecovery`는 checkpoint 호환·복구 저널로만 유지한다. 앱 재시작 후 Provider를 자동 호출하지 않는다.
 - git 저장소 판별은 `.git` 항목 존재 여부로 동기 확인하여, 일반(비-git) workspace에서는 git 프로세스를 실행하지 않는다. non-Git 검수는 현재 파일을 읽을 수 있지만 PASS를 자동 완료하지 않고 `DIFF_UNAVAILABLE` 사용자 확인으로 보낸다.
