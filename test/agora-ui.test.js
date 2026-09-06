@@ -296,6 +296,10 @@ test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있
   // 옛 모달 시작 화면(3방식 선택)은 제거되어 renderer에 남지 않는다.
   assert.doesNotMatch(renderer, /function buildStartDialog/);
   assert.doesNotMatch(renderer, /async function runSpecialist\(/);
+  // 백그라운드 모델 목록 갱신은 main이 밀어 주고 renderer가 받아 새로 그린다.
+  assert.match(preload, /onProviders: \(handler\) => subscribe\("chat:providers", handler\)/);
+  assert.match(renderer, /window\.chatApi\.onProviders\?\.\(\(payload\) => \{[\s\S]*?providers = payload\.providers;[\s\S]*?renderHeader\(\);/);
+  assert.match(renderer, /payload\.modelsChanged[\s\S]*?flashNotice\("모델 목록을 새로 불러왔습니다/);
   assert.match(preload, /projectsCreate: \(name, workspace\)/);
   assert.match(preload, /projectsSelect: \(projectId\)/);
   assert.match(preload, /projectsUpdate: \(projectId, patch\)/);

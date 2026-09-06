@@ -26,6 +26,8 @@ function truncateLabel(text, limit = 80) {
 
 const COMMAND_TAIL_CHARS = 2 * 1024;
 const TOOL_TARGET_CHARS = 512;
+// CLI가 보고한 모델 id만 통과시킵니다(argv 안전 문자와 같은 범위).
+const SAFE_MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,63}$/;
 
 function tailOutput(value, limit = COMMAND_TAIL_CHARS) {
   if (value == null) return { text: "", truncated: false };
@@ -164,6 +166,14 @@ function parseClaudeLine(line) {
         exitCode: result.exit_code,
       });
     }
+  }
+
+  // stream-json의 첫 줄(system/init)은 --model 별칭(fable)이 실제로 어떤 모델로
+  // 풀렸는지(model) 알려준다. 응답 헤더에 "fable · claude-fable-5-1"처럼 보여 주기
+  // 위한 정보라 본문에는 영향이 없다.
+  if (event.type === "system" && event.subtype === "init") {
+    const model = typeof event.model === "string" ? event.model.trim() : "";
+    return model && SAFE_MODEL_ID.test(model) ? { kind: "session-info", model } : null;
   }
 
   return null;

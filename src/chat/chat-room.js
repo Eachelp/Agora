@@ -1082,6 +1082,10 @@ class ChatRoom extends EventEmitter {
         });
         this.cancels.add(run.cancel);
         result = await run.promise;
+        // 별칭(fable)으로 실행했더라도 CLI가 보고한 실제 모델을 응답 헤더에 남깁니다.
+        if (typeof result?.resolvedModel === "string" && result.resolvedModel) {
+          responseAgentMeta.resolvedModel = result.resolvedModel;
+        }
       } catch (error) {
         const detail = error?.message || (error == null ? "" : String(error));
         result = { ok: false, error: detail || "에이전트 실행 중 내부 오류가 발생했습니다." };

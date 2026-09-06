@@ -55,6 +55,36 @@ test("outputFile이 있으면 stdout보다 우선한다", async () => {
   assert.equal(fs.existsSync(outputFile), false);
 });
 
+test("session-info 이벤트의 model은 결과의 resolvedModel로 전달된다", async () => {
+  const script = [
+    "console.log(JSON.stringify({kind:'session-info',model:'claude-fable-5-1'}))",
+    "console.log(JSON.stringify({kind:'final',text:'답'}))",
+  ].join(";");
+  const parseLine = (line) => {
+    try {
+      return JSON.parse(line);
+    } catch {
+      return null;
+    }
+  };
+  const result = await runNode(script, { parseLine }).promise;
+  assert.equal(result.ok, true);
+  assert.equal(result.text, "답");
+  assert.equal(result.resolvedModel, "claude-fable-5-1");
+
+  // 실패로 끝나도 실제 모델은 남는다(오류 헤더도 실제 모델을 보여 준다).
+  const failed = await runNode(
+    "console.log(JSON.stringify({kind:'session-info',model:'claude-fable-5-1'}));process.exit(2)",
+    { parseLine }
+  ).promise;
+  assert.equal(failed.ok, false);
+  assert.equal(failed.resolvedModel, "claude-fable-5-1");
+
+  // 보고가 없으면 필드도 없다.
+  const plain = await runNode("console.log(JSON.stringify({kind:'final',text:'답'}))", { parseLine }).promise;
+  assert.equal(Object.hasOwn(plain, "resolvedModel"), false);
+});
+
 test("parseLine이 delta/status/final 이벤트를 발생시키고 final을 답변으로 쓴다", async () => {
   const events = [];
   const script = [

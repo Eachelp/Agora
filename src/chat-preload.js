@@ -200,6 +200,7 @@ contextBridge.exposeInMainWorld("chatApi", {
   onSessionsChanged: (handler) => subscribe("chat:sessions-changed", handler),
   onWorkflowChanged: (handler) => subscribe("chat:workflow-changed", handler),
   onAgents: (handler) => subscribe("chat:agents", handler),
+  onProviders: (handler) => subscribe("chat:providers", handler),
   onApprovalRequest: (handler) => subscribe("chat:approval-request", handler),
   onApprovalResolved: (handler) => subscribe("chat:approval-resolved", handler),
   onSystemNotice: (handler) => subscribe("chat:system-notice", handler),

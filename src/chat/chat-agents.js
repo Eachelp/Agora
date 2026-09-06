@@ -12,18 +12,15 @@ function concreteModelOptions(record) {
 
 function resolvedModel(record, configured) {
   const options = concreteModelOptions(record);
-  if (configured && configured !== "default") {
-    if (record.id === "claude" && configured === "fable") {
-      const fable = options.find((option) => /^claude-fable-/i.test(option.id))
-        || options.find((option) => option.id === "fable");
-      if (fable) return fable.id;
-    }
-    if (options.some((option) => option.id === configured)) return configured;
+  if (configured && configured !== "default" && options.some((option) => option.id === configured)) {
+    return configured;
   }
   if (record.id === "claude") {
-    return options.find((option) => /^claude-fable-/i.test(option.id))?.id
-      || options.find((option) => option.id === "fable")?.id
-      || options[0]?.id;
+    // 별칭(fable)은 설치된 CLI가 아는 최신 Fable을 가리키므로 그대로 넘긴다.
+    // 예전에는 별칭을 목록의 전체 이름(claude-fable-5 — --help 예시에서 온 옛 고정
+    // 버전)으로 바꿔 넘겨, "최신"을 고른 사용자가 조용히 옛 버전을 쓰게 됐다.
+    // 목록에 없는 저장값(예: 예전 목록의 claude-fable-5)도 같은 이유로 별칭으로 돌아간다.
+    return options.find((option) => option.id === "fable")?.id || options[0]?.id || "default";
   }
   // 모델 옵션을 조회하지 못하면 "unknown"을 넘겨 호출을 실패시키는 대신
   // 기본 모델(모델 옵션 생략)로 실행하게 한다.

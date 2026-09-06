@@ -3797,12 +3797,17 @@ function renderMessage(message) {
       meta.append(roleBadge);
     }
 
-    // 2. 모델 배지
+    // 2. 모델 배지 — 별칭(fable)으로 실행했으면 CLI가 보고한 실제 모델을 함께 적어
+    //    "최신"이 지금 어떤 버전인지 보이게 합니다.
     const shownModel = agentMeta.model && agentMeta.model !== "default" ? agentMeta.model : agent?.model;
     if (shownModel) {
       const modelBadge = document.createElement("span");
       modelBadge.className = "meta-pill model-pill";
-      modelBadge.textContent = shownModel;
+      const resolved = agentMeta.resolvedModel && agentMeta.resolvedModel !== shownModel
+        ? agentMeta.resolvedModel
+        : "";
+      modelBadge.textContent = resolved ? `${shownModel} · ${resolved}` : shownModel;
+      if (resolved) modelBadge.title = `${shownModel} 별칭이 실제로 실행한 모델: ${resolved}`;
       meta.append(modelBadge);
     }
 
@@ -4770,6 +4775,18 @@ window.chatApi.onAgents(({ sessionId, agents: nextAgents }) => {
   agents = nextAgents || [];
   renderAgents();
   renderHeader();
+});
+// 시작 뒤 백그라운드로 CLI 버전·모델 목록이 갱신되면 main이 새 목록을 밀어 줍니다.
+// 열려 있는 모델 선택(팝오버·프로젝트 설정)은 다시 열어야 새 목록을 봅니다.
+window.chatApi.onProviders?.((payload) => {
+  if (!payload) return;
+  if (Array.isArray(payload.providers)) providers = payload.providers;
+  if (Array.isArray(payload.diagnostics)) diagnostics = payload.diagnostics;
+  renderHeader();
+  if (!doctorBackdrop.hidden) renderDoctor();
+  if (payload.modelsChanged) {
+    flashNotice("모델 목록을 새로 불러왔습니다. 모델 선택을 다시 열면 반영됩니다.", false);
+  }
 });
 window.chatApi.onSpecialistResumeState(({ sessionId, ...state }) => {
   if (sessionId !== activeSessionId) return;

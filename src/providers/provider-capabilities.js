@@ -11,6 +11,11 @@ const { selectCommandPath, commandNeedsShell } = require("../command-resolution"
 
 const PROBE_TIMEOUT_MS = 5000;
 const MODEL_PROBE_TIMEOUT_MS = 15000;
+// 모델 카탈로그는 CLI 버전이 같아도 서버 쪽에서 바뀔 수 있습니다(Codex model/list는
+// 계정에 열린 모델을 보고합니다). 이 시간이 지나면 캐시로 먼저 응답하고 뒤에서 다시
+// 조회해 갱신합니다.
+const MODEL_CATALOG_TTL_MS = 6 * 60 * 60 * 1000;
+const SAFE_MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{1,63}$/;
 
 function probeCodexModelCatalog(commandPath, needsShell, timeoutMs = 8000, deps = {}) {
   return new Promise((resolve) => {
@@ -222,6 +227,35 @@ function modelOptionsFor(def, models) {
   return def.id === "agy" ? collapseEffortVariants(mapped) : mapped;
 }
 
+const CLAUDE_EFFORTS = Object.freeze(["default", "low", "medium", "high", "xhigh", "max"]);
+// Claude는 모델을 별칭(fable/opus/sonnet)으로 고릅니다. 별칭은 설치된 CLI가 아는
+// 그 계열의 최신 모델을 가리키므로 목록에서도 "최신"으로 적어, 같은 계열의 전체
+// 이름(claude-fable-5 같은 고정 버전)과 헷갈리지 않게 합니다. 실제로 어떤 모델로
+// 풀렸는지는 실행 뒤 응답 헤더(stream-json init의 model)가 보여 줍니다.
+const CLAUDE_MODEL_OPTIONS = Object.freeze([
+  Object.freeze({ id: "default", label: "Claude 기본값 (CLI 설정 따름)", efforts: CLAUDE_EFFORTS }),
+  Object.freeze({ id: "fable", label: "Fable (최신)", efforts: CLAUDE_EFFORTS }),
+  Object.freeze({ id: "opus", label: "Opus (최신)", efforts: CLAUDE_EFFORTS }),
+  Object.freeze({ id: "sonnet", label: "Sonnet (최신)", efforts: CLAUDE_EFFORTS }),
+  Object.freeze({ id: "haiku", label: "Haiku (최신)", efforts: CLAUDE_EFFORTS }),
+]);
+
+// `claude --help`의 --model 설명에서 모델 별칭을 뽑습니다. 도움말은
+//   "alias for the latest model (e.g. 'fable', 'opus', or 'sonnet') or a model's
+//    full name (e.g. 'claude-fable-5')"
+// 처럼 별칭 목록과 전체 이름 **예시 하나**를 함께 적습니다. 별칭은 열거된 목록이라
+// 그대로 쓰고, 전체 이름은 예시일 뿐 목록이 아니며(도움말이 갱신되지 않아 옛 버전을
+// 가리키기도 합니다) 별칭과 같은 계열이 두 줄로 보여 헷갈리므로 올리지 않습니다.
+function parseClaudeHelpModels(helpText) {
+  const modelSection = String(helpText || "")
+    .match(/--model[\s\S]{0,500}?(?=\n\s{2}--|\n\s{2}-[a-z])/i)?.[0] || "";
+  const aliasSection = modelSection.split(/full\s+name/i)[0];
+  const aliases = [...aliasSection.matchAll(/'([A-Za-z0-9][A-Za-z0-9._:/-]{1,63})'/g)]
+    .map((match) => match[1])
+    .filter((id) => !/^claude-/i.test(id));
+  return aliases.length > 0 ? ["default", ...new Set(aliases)] : null;
+}
+
 // 모델/노력 옵션은 설치된 CLI --help에서 검증된 플래그에만 연결됩니다.
 // (claude 2.1.x: --model fable|opus|sonnet, --effort low..max /
 //  codex 0.146: -m/--model, -c model_reasoning_effort=...)
@@ -236,9 +270,11 @@ const PROVIDER_DEFS = Object.freeze([
     installUrl: "https://claude.com/claude-code",
     authProbeArgs: Object.freeze(["auth", "status"]),
     loginCommand: "claude auth login",
+    // 별칭 목록은 발견 시 `claude --help`로 갱신되며, 아래는 그 폴백입니다.
     models: Object.freeze(["default", "fable", "opus", "sonnet"]),
+    modelOptions: CLAUDE_MODEL_OPTIONS,
     modelsFromHelp: true,
-    efforts: Object.freeze(["default", "low", "medium", "high", "xhigh", "max"]),
+    efforts: CLAUDE_EFFORTS,
     allowCustomModel: false,
     supportsImages: "workspace-read-required",
     permissions: Object.freeze({
@@ -389,9 +425,12 @@ function createCapabilityService(options = {}) {
     (options.runCommand ? null : probeAgyModelCatalog);
   // cache: { get(): object|null, set(object): void } — 저장 위치는 호출자가 결정합니다.
   const cache = options.cache || { get: () => null, set: () => {} };
+  const now = typeof options.now === "function" ? options.now : () => Date.now();
 
   let records = null;
   let discovering = null;
+  let refreshing = null;
+  const listeners = new Set();
 
   function statSafe(file) {
     try {
@@ -466,10 +505,7 @@ function createCapabilityService(options = {}) {
         shell: needsShell,
       });
       if (!result.ok) return null;
-      const modelSection = String(result.stdout || "").match(/--model[\s\S]{0,500}?(?=\n\s{2}--|\n\s{2}-[a-z])/i)?.[0] || "";
-      const models = [...modelSection.matchAll(/'([A-Za-z0-9][A-Za-z0-9._:/-]{1,63})'/g)]
-        .map((match) => match[1]);
-      return models.length > 0 ? ["default", ...new Set(models)] : null;
+      return parseClaudeHelpModels(result.stdout);
     }
     if (!def.modelsProbeArgs) return null;
     const result = await runCommand(commandPath, [...def.modelsProbeArgs], {
@@ -488,7 +524,7 @@ function createCapabilityService(options = {}) {
     return models.length > 0 ? ["default", ...models] : null;
   }
 
-  async function discoverOne(def, persistedCache) {
+  async function discoverOne(def, persistedCache, { force = false } = {}) {
     const record = {
       id: def.id,
       name: def.name,
@@ -532,30 +568,12 @@ function createCapabilityService(options = {}) {
     const stat = statSafe(commandPath);
     const cacheKey = `${def.id}:${commandPath}`;
     const cached = persistedCache?.[cacheKey];
-    if (
-      cached &&
-      stat &&
-      cached.mtimeMs === stat.mtimeMs &&
-      cached.size === stat.size &&
-      cached.version &&
-      (def.modelCatalogProbe !== "codex-app-server" || Array.isArray(cached.modelOptions)) &&
-      (!def.modelsProbeArgs || Array.isArray(cached.modelOptions)) &&
-      (!def.modelsFromHelp || Array.isArray(cached.modelOptions)) &&
-      (def.id !== "agy" || cached.modelOptionsVersion === AGY_MODEL_OPTIONS_VERSION)
-    ) {
-      record.version = cached.version;
-      record.status = "cli";
-      record.reason = "";
-      if (Array.isArray(cached.models) && cached.models.length > 0) {
-        record.models = cached.models;
-      }
-      if (Array.isArray(cached.modelOptions) && cached.modelOptions.length > 0) {
-        record.modelOptions = cached.modelOptions;
-      }
-      Object.assign(record, await probeAuth(def, commandPath, record.needsShell));
-      return record;
-    }
 
+    // 버전은 캐시하지 않고 매번 확인합니다. 예전에는 실행 파일의 크기·수정시각이
+    // 같으면 버전 확인까지 건너뛰었는데, Windows의 npm .cmd 셸(codex.cmd)이나
+    // 런처 실행 파일은 CLI가 업데이트돼도 그대로라 새 버전을 영영 알아채지
+    // 못했고, 그 결과 모델 목록도 갱신되지 않았습니다. --version 한 번은 로그인
+    // 확인과 비슷한 비용이라 시작마다 감당할 만합니다.
     const version = await probeVersion(commandPath, record.needsShell);
     if (!version) {
       record.status = "error";
@@ -566,70 +584,142 @@ function createCapabilityService(options = {}) {
     record.status = "cli";
     record.reason = "";
     Object.assign(record, await probeAuth(def, commandPath, record.needsShell));
-    const probedModels = def.id === "agy" && agyModelProbe
-      ? await agyModelProbe(commandPath, record.needsShell)
-      : await probeModels(def, commandPath, record.needsShell);
-    if (probedModels) record.models = probedModels;
-    if (def.modelCatalogProbe === "codex-app-server" && codexModelProbe) {
-      const catalog = await codexModelProbe(commandPath, record.needsShell);
-      if (catalog?.length) {
-        const defaultCatalogModel = catalog.find((option) => option.isDefault);
-        record.modelOptions = [
-          {
-            id: "default",
-            label: "기본값 (Codex 설정 따름)",
-            efforts: defaultCatalogModel?.efforts?.length
-              ? [...defaultCatalogModel.efforts]
-              : [...def.efforts],
-          },
-          ...catalog,
-        ];
-        record.models = record.modelOptions.map((option) => option.id);
-      }
-    } else if (probedModels) {
-      record.modelOptions = modelOptionsFor(def, probedModels);
-      if (def.id === "agy") record.models = record.modelOptions.map((option) => option.id);
+
+    const cachedCatalog = catalogFromCache(def, cached);
+    if (!force && cachedCatalog && catalogIsFresh(cached, stat, version)) {
+      applyCatalog(record, cachedCatalog);
+      return record;
     }
+    if (!force && cachedCatalog) {
+      // CLI 버전이 바뀌었거나 카탈로그가 오래됐습니다. 시작을 막지 않도록 지금은
+      // 마지막 목록으로 응답하고, refreshStaleCatalogs()가 뒤에서 다시 조회해
+      // 갱신합니다(호출자는 갱신 알림을 구독해 화면을 새로 그립니다).
+      applyCatalog(record, cachedCatalog);
+      record.modelCatalogStale = true;
+      return record;
+    }
+    // 캐시가 없는 첫 실행이거나 강제 새로고침이면 지금 조회합니다. 강제 새로고침이
+    // 실패해도 마지막 목록이 있으면 그것을 유지합니다.
+    await refreshCatalog(def, record, { stat, cacheKey, fallbackCatalog: cachedCatalog });
+    return record;
+  }
+
+  // 저장된 카탈로그가 쓸 만한 모양이면 돌려줍니다(모델 옵션이 비어 있으면 없는 것).
+  function catalogFromCache(def, cached) {
+    if (!cached || !Array.isArray(cached.modelOptions) || cached.modelOptions.length === 0) return null;
+    if (def.id === "agy" && cached.modelOptionsVersion !== AGY_MODEL_OPTIONS_VERSION) return null;
+    const models = Array.isArray(cached.models) && cached.models.length > 0
+      ? cached.models
+      : cached.modelOptions.map((option) => option.id);
+    return { models, modelOptions: cached.modelOptions };
+  }
+
+  // 같은 CLI(버전·실행 파일)에서 TTL 안에 조회한 카탈로그만 그대로 신뢰합니다.
+  function catalogIsFresh(cached, stat, version) {
+    if (!cached || !stat || cached.version !== version) return false;
+    if (cached.mtimeMs !== stat.mtimeMs || cached.size !== stat.size) return false;
+    if (!Number.isFinite(cached.probedAt)) return false;
+    return Math.abs(now() - cached.probedAt) < MODEL_CATALOG_TTL_MS;
+  }
+
+  function applyCatalog(record, catalog) {
+    record.models = [...catalog.models];
+    record.modelOptions = catalog.modelOptions.map((option) => ({ ...option }));
+  }
+
+  // CLI에 실제 모델 목록을 물어봅니다. 실패하면 null(호출자가 이전 목록을 유지).
+  async function probeCatalog(def, commandPath, needsShell) {
+    if (def.modelCatalogProbe === "codex-app-server") {
+      if (!codexModelProbe) return null;
+      const catalog = await codexModelProbe(commandPath, needsShell);
+      if (!catalog?.length) return null;
+      const defaultCatalogModel = catalog.find((option) => option.isDefault);
+      const modelOptions = [
+        {
+          id: "default",
+          label: "기본값 (Codex 설정 따름)",
+          efforts: defaultCatalogModel?.efforts?.length
+            ? [...defaultCatalogModel.efforts]
+            : [...def.efforts],
+        },
+        ...catalog,
+      ];
+      return { models: modelOptions.map((option) => option.id), modelOptions };
+    }
+    const probedModels = def.id === "agy" && agyModelProbe
+      ? await agyModelProbe(commandPath, needsShell)
+      : await probeModels(def, commandPath, needsShell);
+    if (!probedModels) return null;
+    const modelOptions = modelOptionsFor(def, probedModels);
+    return {
+      // AGY는 노력 변형을 접어 보여주므로 models 목록도 접힌 id와 맞춥니다.
+      models: def.id === "agy" ? modelOptions.map((option) => option.id) : probedModels,
+      modelOptions,
+    };
+  }
+
+  // 카탈로그를 다시 조회해 record와 캐시 patch에 반영합니다. 조회에 실패하면
+  // 이전 목록(fallbackCatalog)을 유지하고 캐시도 건드리지 않아, 일시적 실패가
+  // "기본값만 있는 목록"으로 굳어 다음 시작 때까지 남는 일이 없게 합니다.
+  async function refreshCatalog(def, record, { stat, cacheKey, fallbackCatalog }) {
+    const probed = await probeCatalog(def, record.commandPath, record.needsShell);
+    if (!probed) {
+      if (fallbackCatalog) applyCatalog(record, fallbackCatalog);
+      return false;
+    }
+    applyCatalog(record, probed);
+    delete record.modelCatalogStale;
     if (stat) {
       record.cachePatch = {
         [cacheKey]: {
           mtimeMs: stat.mtimeMs,
           size: stat.size,
-          version,
-          ...(probedModels ? { models: probedModels } : {}),
-          models: record.models,
-          modelOptions: record.modelOptions,
+          version: record.version,
+          models: probed.models,
+          modelOptions: probed.modelOptions,
+          probedAt: now(),
           ...(def.id === "agy" ? { modelOptionsVersion: AGY_MODEL_OPTIONS_VERSION } : {}),
         },
       };
     }
-    return record;
+    return true;
   }
 
-  async function discover({ force = false } = {}) {
-    if (records && !force) return records;
+  function persistPatches(results) {
+    const patches = {};
+    for (const record of results) {
+      if (record.cachePatch) {
+        Object.assign(patches, record.cachePatch);
+        delete record.cachePatch;
+      }
+    }
+    if (Object.keys(patches).length > 0) {
+      try {
+        cache.set({ ...(cache.get() || {}), ...patches });
+      } catch {}
+    }
+  }
+
+  // force: 캐시의 유효성을 무시하고 전부 지금 조회(사용자의 "CLI 다시 탐지"). 조회에
+  //        실패한 항목은 캐시된 마지막 목록으로 돌아갑니다.
+  // recheck: 이미 탐지한 뒤라도 버전·로그인을 다시 확인(주기적 재확인). 캐시는 그대로
+  //          존중하므로 바뀐 것이 없으면 카탈로그 조회는 생기지 않습니다.
+  async function discover({ force = false, recheck = false } = {}) {
+    if (records && !force && !recheck) return records;
     if (discovering && !force) return discovering;
     discovering = (async () => {
-      const persistedCache = force ? null : cache.get() || null;
+      let persistedCache = null;
+      try {
+        persistedCache = cache.get() || null;
+      } catch {}
       // Windows에서는 여러 CLI를 동시에 프로브하면 .cmd 실행이 간헐적으로
       // EPERM을 내는 환경이 있어 순차 탐지합니다. 시작 시 한 번뿐이라 체감
       // 지연보다 안정성이 중요합니다.
       const results = [];
       for (const def of PROVIDER_DEFS) {
-        results.push(await discoverOne(def, persistedCache));
+        results.push(await discoverOne(def, persistedCache, { force }));
       }
-      const patches = {};
-      for (const record of results) {
-        if (record.cachePatch) {
-          Object.assign(patches, record.cachePatch);
-          delete record.cachePatch;
-        }
-      }
-      if (Object.keys(patches).length > 0) {
-        try {
-          cache.set({ ...(cache.get() || {}), ...patches });
-        } catch {}
-      }
+      persistPatches(results);
       records = results;
       return records;
     })();
@@ -640,11 +730,75 @@ function createCapabilityService(options = {}) {
     }
   }
 
+  function hasStaleCatalogs() {
+    return (records || []).some((record) => record.modelCatalogStale);
+  }
+
+  // discover()가 캐시로 응답해 둔 오래된 카탈로그를 뒤에서 다시 조회합니다.
+  // 목록이 실제로 바뀐 경우에만 구독자에게 알립니다. 동시에 여러 번 불려도
+  // 조회는 한 번만 돕니다.
+  async function refreshStaleCatalogs() {
+    if (refreshing) return refreshing;
+    refreshing = (async () => {
+      if (discovering) await discovering;
+      const current = records || [];
+      const stale = current.filter((record) => record.modelCatalogStale && record.commandPath);
+      let changed = false;
+      for (const record of stale) {
+        const def = PROVIDER_DEFS.find((entry) => entry.id === record.id);
+        if (!def) continue;
+        const before = catalogSignature(record);
+        const refreshed = await refreshCatalog(def, record, {
+          stat: statSafe(record.commandPath),
+          cacheKey: `${def.id}:${record.commandPath}`,
+          fallbackCatalog: { models: record.models, modelOptions: record.modelOptions },
+        });
+        // 조회 중에 다시 탐지돼 record가 교체됐으면 이 결과는 버립니다.
+        if (records !== current) {
+          delete record.cachePatch;
+          continue;
+        }
+        if (refreshed && catalogSignature(record) !== before) changed = true;
+      }
+      if (records === current) persistPatches(stale);
+      if (changed) {
+        for (const listener of listeners) {
+          try {
+            listener(records);
+          } catch {}
+        }
+      }
+      return { changed, records };
+    })();
+    try {
+      return await refreshing;
+    } finally {
+      refreshing = null;
+    }
+  }
+
+  function catalogSignature(record) {
+    return JSON.stringify((record.modelOptions || []).map((option) => [
+      option.id,
+      option.label || "",
+      option.isDefault ? 1 : 0,
+      option.efforts || [],
+      option.effortModels || null,
+    ]));
+  }
+
+  // 백그라운드 카탈로그 갱신으로 모델 목록이 바뀌면 호출됩니다. 해제 함수를 돌려줍니다.
+  function subscribe(listener) {
+    if (typeof listener !== "function") return () => {};
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  }
+
   function getRecord(id) {
     return (records || []).find((record) => record.id === id) || null;
   }
 
-  return { discover, getRecord, defs: PROVIDER_DEFS };
+  return { discover, refreshStaleCatalogs, hasStaleCatalogs, subscribe, getRecord, defs: PROVIDER_DEFS };
 }
 
 // renderer로 보내는 안전한 뷰: 실행 경로/셸/환경 정보는 제외합니다.
@@ -680,8 +834,10 @@ module.exports = {
   PROVIDER_DEFS,
   PROBE_TIMEOUT_MS,
   MODEL_PROBE_TIMEOUT_MS,
+  MODEL_CATALOG_TTL_MS,
   collapseEffortVariants,
   resolveEffortVariant,
+  parseClaudeHelpModels,
   probeCodexModelCatalog,
   probeAgyModelCatalog,
   cliCandidates,

@@ -73,6 +73,39 @@ test("멘션된 에이전트만 응답한다", async () => {
   assert.equal(agentMessages[0].text, "네!");
 });
 
+test("러너가 보고한 실제 모델(resolvedModel)은 응답의 agentMeta에 남는다", async () => {
+  const agents = makeAgents().map((agent) =>
+    agent.id === "claude" ? { ...agent, model: "fable", effort: "medium" } : agent
+  );
+  const room = new ChatRoom({
+    agents,
+    runAgent: fakeRunner({
+      claude: [
+        { ok: true, text: "첫 답", resolvedModel: "claude-fable-5-1" },
+        { ok: false, error: "실패", resolvedModel: "claude-fable-5-1" },
+        { ok: true, text: "보고 없음" },
+      ],
+    }),
+  });
+  room.sendUserMessage("@claude 하나");
+  await settle(room);
+  room.sendUserMessage("@claude 둘");
+  await settle(room);
+  room.sendUserMessage("@claude 셋");
+  await settle(room);
+
+  const replies = room.messages.filter((message) => message.authorType === "agent");
+  assert.equal(replies.length, 3);
+  // 별칭(fable)은 그대로 두고, 실제로 풀린 모델을 따로 적는다.
+  assert.equal(replies[0].agentMeta.model, "fable");
+  assert.equal(replies[0].agentMeta.resolvedModel, "claude-fable-5-1");
+  // 실패 응답의 헤더도 실제 모델을 안다.
+  assert.equal(replies[1].error, true);
+  assert.equal(replies[1].agentMeta.resolvedModel, "claude-fable-5-1");
+  // 보고가 없으면 이전 실행의 값이 새지 않고, 설정한 모델(별칭)만 남는다.
+  assert.equal(replies[2].agentMeta.resolvedModel, "fable");
+});
+
 test("[[CODEPET_EMOTE:...]] 표기는 화면에 노출되지 않도록 조용히 제거된다", async () => {
   const room = new ChatRoom({
     agents: makeAgents(),
