@@ -221,6 +221,9 @@ function runAgentProcess({
   };
 
   const promise = new Promise((resolve) => {
+    // CLI가 세션 시작 줄에서 보고한 실제 모델 id(별칭 fable → claude-fable-5-1 등).
+    // 성공·실패와 무관하게 결과에 실어 응답 헤더가 실제 모델을 보여 줄 수 있게 합니다.
+    let resolvedModel = null;
     const finish = (result) => {
       if (settled) return;
       settled = true;
@@ -246,7 +249,11 @@ function runAgentProcess({
             ...(telemetry?.exploration ? { exploration: telemetry.exploration } : {}),
           }
         : null;
-      const baseResult = evidence ? { ...result, evidence } : result;
+      const baseResult = {
+        ...result,
+        ...(evidence ? { evidence } : {}),
+        ...(resolvedModel ? { resolvedModel } : {}),
+      };
       const runMetrics = buildRunMetrics({
         startedAt: runStartedAt,
         finishedAt: Date.now(),
@@ -351,6 +358,9 @@ function runAgentProcess({
       // turn.failed 원인이 사용자에게 더 유용하므로 최신 오류를 보존합니다.
       if (event.kind === "error") parsedError = event.message;
       if (event.kind === "approval-required" && !parsedApproval) parsedApproval = event;
+      if (event.kind === "session-info" && typeof event.model === "string" && event.model) {
+        resolvedModel = event.model;
+      }
       if (event.kind === "command-started") {
         pendingCommands.push(event);
         commandEvents.push(event);

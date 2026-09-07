@@ -129,6 +129,24 @@ test("claude: 알 수 없는 이벤트/비JSON은 무시", () => {
   assert.equal(parseClaudeLine('{"broken json'), null);
 });
 
+test("claude: system/init의 model은 별칭이 실제로 풀린 모델로 보고된다", () => {
+  const init = JSON.stringify({
+    type: "system",
+    subtype: "init",
+    session_id: "sess-1",
+    model: "claude-fable-5-1",
+    tools: ["Read"],
+  });
+  assert.deepEqual(parseClaudeLine(init), { kind: "session-info", model: "claude-fable-5-1" });
+  // argv 안전 문자 밖의 값이나 빈 값은 무시한다.
+  assert.equal(parseClaudeLine(JSON.stringify({ type: "system", subtype: "init", model: "bad model;rm" })), null);
+  assert.equal(parseClaudeLine(JSON.stringify({ type: "system", subtype: "init", model: "" })), null);
+  assert.equal(parseClaudeLine(JSON.stringify({ type: "system", subtype: "compact_boundary", model: "x" })), null);
+  // 세션 id 추출 파서를 거쳐도 그대로 전달된다.
+  const parser = createLineParser("claude", { onSessionId: () => {} });
+  assert.deepEqual(parser(init), { kind: "session-info", model: "claude-fable-5-1" });
+});
+
 test("codex: 신형 item.completed agent_message는 final", () => {
   const line = JSON.stringify({
     type: "item.completed",

@@ -341,4 +341,13 @@ test("B5: 승인 경로가 IPC와 preload에 실제로 노출된다", () => {
   const preload = fs.readFileSync(path.join(__dirname, "..", "src", "chat-preload.js"), "utf8");
   assert.match(preload, /specialistPendingApprovals/);
   assert.match(preload, /specialistResolveApproval/);
+
+  // IPC와 preload까지만 확인하면 "배선은 있는데 화면에 버튼이 없는" 상태를 그대로
+  // 통과시킨다. 실제로 그랬다 — 렌더러에 호출부가 하나도 없어서, 승인 대기에 들어간
+  // 실행은 입력창이 잠긴 채 사용자가 풀 방법이 없었다.
+  const renderer = fs.readFileSync(path.join(__dirname, "..", "src", "chat.js"), "utf8");
+  const html = fs.readFileSync(path.join(__dirname, "..", "src", "chat.html"), "utf8");
+  assert.match(renderer, /chatApi\.specialistPendingApprovals\(/, "렌더러가 승인 항목을 조회해야 합니다");
+  assert.match(renderer, /chatApi\.specialistResolveApproval\(/, "렌더러가 승인·거부를 보낼 수 있어야 합니다");
+  assert.match(html, /id="specialist-approvals"/, "승인 항목을 보여 줄 자리가 있어야 합니다");
 });

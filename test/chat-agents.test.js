@@ -13,14 +13,37 @@ function record(id, modelOptions, efforts = ["default", "low", "medium", "high"]
   };
 }
 
-test("default 설정을 실제 Claude Fable 모델과 중간 추론으로 해석한다", () => {
-  const agent = roomAgentFromCapability(record("claude", [
+test("default 설정을 Claude 최신 별칭(fable)과 중간 추론으로 해석한다", () => {
+  const options = [
     { id: "default", efforts: ["default", "low", "medium", "high"] },
     { id: "fable", efforts: ["default", "low", "medium", "high"] },
-    { id: "claude-fable-5", efforts: ["default", "low", "medium", "high"] },
-  ]), { model: "default", effort: "default" });
-  assert.equal(agent.model, "claude-fable-5");
+    { id: "opus", efforts: ["default", "low", "medium", "high"] },
+  ];
+  const agent = roomAgentFromCapability(record("claude", options), { model: "default", effort: "default" });
+  assert.equal(agent.model, "fable");
   assert.equal(agent.effort, "medium");
+  // 사용자가 고른 별칭은 그대로 CLI에 넘긴다(다른 이름으로 바꾸지 않는다).
+  assert.equal(roomAgentFromCapability(record("claude", options), { model: "opus" }).model, "opus");
+});
+
+test("Claude 별칭(fable)을 목록의 고정 전체 이름으로 바꿔 넘기지 않는다", () => {
+  // 예전에는 --help 예시에서 온 claude-fable-5(옛 고정 버전)가 목록에 있으면
+  // "fable"을 고른 사용자도 그 옛 버전으로 실행됐다. 별칭은 최신을 뜻하므로 그대로 둔다.
+  const options = [
+    { id: "default", efforts: ["default", "low"] },
+    { id: "fable", efforts: ["default", "low"] },
+    { id: "claude-fable-5", efforts: ["default", "low"] },
+  ];
+  assert.equal(roomAgentFromCapability(record("claude", options), { model: "fable" }).model, "fable");
+  assert.equal(roomAgentFromCapability(record("claude", options), { model: "default" }).model, "fable");
+  // 목록에 있는 전체 이름을 직접 고른 경우는 존중한다.
+  assert.equal(roomAgentFromCapability(record("claude", options), { model: "claude-fable-5" }).model, "claude-fable-5");
+  // 예전 목록에서 저장된 전체 이름이 지금 목록에 없으면 최신 별칭으로 돌아간다.
+  const current = [
+    { id: "default", efforts: ["default", "low"] },
+    { id: "fable", efforts: ["default", "low"] },
+  ];
+  assert.equal(roomAgentFromCapability(record("claude", current), { model: "claude-fable-5" }).model, "fable");
 });
 
 test("Codex 카탈로그의 실제 기본 모델을 선택하고 default 문자열을 남기지 않는다", () => {

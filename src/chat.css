@@ -2114,12 +2114,18 @@ textarea:focus-visible {
   flex: none;
 }
 
+/* 전문 실행 줄: 1행은 실행 조작과 자동 보완 설정, 2행은 진행 상태와 안내.
+   예전에는 같은 선택자를 서너 번 덮어써서(레이아웃 → 시각 보정 → 좁은 창 보정)
+   최종값을 읽으려면 파일 전체를 훑어야 했다. 한 블록으로 합친다. */
 .professional-actions {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    "actions"
+    "progress";
   align-items: center;
-  flex-wrap: wrap;
-  gap: 5px;
-  padding: 7px 28px;
+  gap: 4px;
+  padding: 7px 12px 8px;
   border-bottom: 1px solid var(--line);
   background: var(--surface-muted);
 }
@@ -2128,33 +2134,42 @@ textarea:focus-visible {
   display: none;
 }
 
+.professional-action-row {
+  grid-area: actions;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
 .professional-actions .chip-button {
-  font-size: 11px;
+  order: 1;
+  min-width: 58px;
+  min-height: 28px;
+  padding: 4px 10px;
+  justify-content: center;
+  font-size: 10px;
   white-space: nowrap;
 }
 
-.professional-actions-label {
-  margin-right: 4px;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 700;
-}
-
 .professional-auto-options {
+  order: 2;
   display: flex;
   align-items: center;
-  gap: 5px;
-  margin-right: 5px;
-  padding-right: 10px;
-  border-right: 1px solid var(--line);
+  gap: 7px;
+  flex: none;
+  margin: 0 0 0 2px;
+  padding: 0 0 0 2px;
 }
 
 .auto-revise-option {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 3px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 9.5px;
   white-space: nowrap;
   cursor: pointer;
 }
@@ -2207,13 +2222,13 @@ textarea:focus-visible {
 }
 
 .professional-auto-options select {
-  min-height: 25px;
+  min-height: 24px;
   border: 1px solid var(--line);
   border-radius: 7px;
   background: var(--surface);
   color: var(--ink-soft);
-  padding: 2px 5px;
-  font-size: 11px;
+  padding: 2px 3px;
+  font-size: 9.5px;
 }
 
 .professional-auto-options select:disabled {
@@ -2227,37 +2242,157 @@ textarea:focus-visible {
   font-weight: 700;
 }
 
+/* chip 규칙과 같은 특정도라 순서로 이긴다(!important 없이 폭만 넓힌다). */
+.professional-actions .professional-full-button {
+  min-width: 78px;
+}
+
 .professional-plan-view {
   margin-left: 6px;
 }
 
 .professional-progress {
+  grid-area: progress;
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  margin-left: auto;
+  justify-content: flex-start;
+  flex: none;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  gap: 4px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 10.5px;
   white-space: nowrap;
 }
 
+.professional-progress > span[aria-hidden="true"] {
+  color: var(--line-strong);
+}
+
 .professional-progress [data-professional-step] {
-  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 68px;
+  min-height: 24px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--muted);
+  font-weight: 700;
 }
 
+/* 끝난 단계 */
 .professional-progress [data-professional-step].is-complete {
-  color: var(--ink-soft);
+  border-color: #b7e3cf;
+  background: #effaf4;
+  color: #18794e;
 }
 
+/* 지금 실행 중인 단계 */
 .professional-progress [data-professional-step].is-current {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #ffffff;
+}
+
+/* 사용자를 기다리는 단계. 실행 중과 같은 모양이면 "돌고 있는 중"으로 읽힌다. */
+.professional-progress [data-professional-step].is-waiting {
+  border-color: var(--accent);
+  background: var(--accent-soft, #eef4ff);
   color: var(--accent);
 }
 
+/* 막히거나 중단된 단계 */
+.professional-progress [data-professional-step].is-stopped {
+  border-color: #e6b8b8;
+  background: #fdf1f1;
+  color: #a13a3a;
+}
+
+/* 현재 상태 한 줄 + 다음 행동 한 줄 + 접어 둔 기술 정보. */
 .professional-status-detail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
   margin-top: 4px;
   font-size: 12px;
   color: var(--ink-soft);
   min-height: 16px;
+}
+
+.professional-status-headline {
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.professional-status-detail[data-tone="blocked"] .professional-status-headline,
+.professional-status-detail[data-tone="stopped"] .professional-status-headline {
+  color: #a13a3a;
+}
+
+.professional-status-detail[data-tone="done"] .professional-status-headline {
+  color: #18794e;
+}
+
+.professional-status-next {
+  color: var(--muted);
+}
+
+.professional-status-facts {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.professional-status-facts summary {
+  cursor: pointer;
+}
+
+/* 완료 전 사용자 확인 항목. 승인/거부 경로가 여기 없으면 실행이 대기에 갇힌다. */
+.specialist-approvals {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line));
+  border-radius: 10px;
+  background: var(--surface-muted);
+}
+
+.specialist-approvals[hidden] {
+  display: none;
+}
+
+.specialist-approvals-head {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--ink);
+}
+
+.specialist-approval-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.specialist-approval-text {
+  font-size: 12.5px;
+  color: var(--ink);
+  word-break: break-word;
+}
+
+.specialist-approval-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .specialist-block-changes {
@@ -2277,30 +2412,11 @@ textarea:focus-visible {
   word-break: break-word;
 }
 
-/* 전문 실행 버튼 앞의 단계 번호(①②③) 뱃지. */
-.professional-actions .step-num {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 15px;
-  height: 15px;
-  margin-right: 5px;
-  border-radius: 50%;
-  background: var(--line);
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 1;
-}
-
-/* 지금 바로 실행할 수 있는 다음 단계 버튼을 강조합니다. */
+/* 지금 바로 실행할 수 있는 다음 단계 버튼을 강조합니다.
+   (버튼 앞 단계 번호 뱃지 .step-num은 만드는 코드가 없어 규칙을 지웠습니다.) */
 .professional-actions .chip-button.is-next-step:not(:disabled) {
   border-color: var(--accent);
   color: var(--accent);
-}
-.professional-actions .chip-button.is-next-step:not(:disabled) .step-num {
-  background: var(--accent);
-  color: var(--surface);
 }
 
 /* 기획안 미리보기 팝오버: 길어지면 내부 스크롤로 처리합니다. */
@@ -3199,99 +3315,6 @@ textarea:focus-visible {
   border-radius: 7px;
 }
 
-.professional-actions {
-  align-items: center;
-  gap: 6px;
-  padding: 8px 28px 9px;
-  background: var(--surface-muted);
-  border-bottom-color: var(--line);
-}
-
-/* 진행 상태와 액션을 두 행으로 분리합니다. */
-.professional-actions-label {
-  display: none;
-}
-
-.professional-action-row {
-  grid-area: actions;
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 4px;
-  min-width: 0;
-  flex-wrap: wrap;
-}
-
-.professional-auto-options {
-  order: 2;
-  flex: none;
-  margin: 0 0 0 2px;
-  padding: 0 0 0 2px;
-  border-right: 0;
-  border-top: 0;
-}
-
-.professional-actions .chip-button {
-  order: 1;
-  min-width: 74px;
-  justify-content: center;
-}
-
-.professional-full-button {
-  min-width: 92px !important;
-}
-
-.professional-progress {
-  grid-area: progress;
-  flex: none;
-  min-width: 0;
-  justify-content: flex-start;
-  margin-left: 0;
-  padding-left: 0;
-}
-
-/* 1행은 실행 버튼과 자동 보완, 2행은 진행 상태로 고정합니다. */
-.professional-actions {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-areas:
-    "actions"
-    "progress";
-  gap: 4px;
-  padding: 7px 12px 8px;
-}
-
-.professional-progress {
-  gap: 2px;
-  font-size: 9.5px;
-}
-
-.professional-actions .chip-button {
-  min-width: 58px;
-  padding-left: 6px;
-  padding-right: 6px;
-  font-size: 10px;
-}
-
-.professional-full-button {
-  min-width: 78px !important;
-}
-
-.professional-auto-options {
-  gap: 3px;
-}
-
-.auto-revise-option {
-  gap: 3px;
-  font-size: 9.5px;
-}
-
-.professional-auto-options select {
-  min-height: 24px;
-  padding-left: 3px;
-  padding-right: 3px;
-  font-size: 9.5px;
-}
 
 .chat-scroll {
   background: var(--surface);
@@ -3319,67 +3342,16 @@ textarea:focus-visible {
   background: var(--surface);
 }
 
-/* --- Professional mode visual pass --- */
-.professional-actions-label {
-  min-width: 72px;
-  margin-right: 2px;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: -0.01em;
-}
 
-.professional-progress {
-  gap: 4px;
-  font-size: 10.5px;
-}
-
-.professional-progress [data-professional-step] {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 68px;
-  min-height: 24px;
-  padding: 3px 8px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--surface);
-  color: var(--muted);
-  font-weight: 700;
-}
-
-.professional-progress [data-professional-step].is-complete {
-  border-color: #b7e3cf;
-  background: #effaf4;
-  color: #18794e;
-}
-
-.professional-progress [data-professional-step].is-current {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: #ffffff;
-}
-
-.professional-progress > span[aria-hidden="true"] {
-  color: var(--line-strong);
-}
-
-.professional-actions .chip-button {
-  min-height: 28px;
-  padding: 4px 10px;
-}
-
-.professional-auto-options {
-  gap: 7px;
-}
-
+/* 좁은 창: 진행 표시는 이미 두 번째 행을 차지하므로 가로 스크롤만 열어 준다.
+   (버튼 줄은 flex-wrap으로 접힌다 — 잘리거나 겹치지 않는다.) */
 @media (max-width: 900px) {
   .professional-progress {
-    order: 9;
-    flex: 0 0 100%;
-    margin-left: 0;
-    padding: 2px 0 0;
     overflow-x: auto;
+  }
+  .professional-actions {
+    padding-left: 10px;
+    padding-right: 10px;
   }
 }
 

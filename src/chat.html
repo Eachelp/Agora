@@ -136,7 +136,6 @@
         </header>
 
         <div class="professional-actions" id="professional-actions" hidden aria-label="전문 실행">
-          <span class="professional-actions-label">PLAN → ACT</span>
           <div class="professional-action-row">
             <div class="professional-auto-options" aria-label="자동 보완 설정">
               <label class="auto-revise-option" title="기획 검수에서 범위 안의 수정이 필요하면 기획자에게 자동으로 돌려보냅니다">
@@ -173,6 +172,8 @@
             <span data-professional-step="review">구현검수</span><span aria-hidden="true">─</span>
             <span data-professional-step="record">기록</span>
           </div>
+          <!-- 현재 상태 한 줄 + 다음 행동 한 줄. 내부 코드·Run id 같은 기술 정보는
+               아래 "자세히"를 펼쳤을 때만 보여 준다(사용자 언어 우선). -->
           <div class="professional-status-detail" id="professional-status-detail" aria-live="polite"></div>
         </div>
 
@@ -191,6 +192,9 @@
             <button class="mode-chip is-active" id="btn-mode-sequential" type="button" title="이어 발언: 앞선 AI의 답변을 순차적으로 전달하여 참고합니다">이어 발언</button>
             <button class="mode-chip" id="btn-mode-independent" type="button" title="독립 발언: 같은 턴의 다른 AI 답변을 서로 전달하지 않고 독립 응답을 받습니다">독립 발언</button>
           </div>
+          <!-- 완료 전에 사용자가 직접 확인해야 하는 항목(HUMAN_APPROVAL). 검수자가
+               대신 해소할 수 없으므로 이 목록이 없으면 실행이 영영 대기에 남는다. -->
+          <div class="specialist-approvals" id="specialist-approvals" hidden aria-live="polite"></div>
           <!-- checkpoint 실패 등 사용자가 골라야 진행되는 지점. 여기 버튼이 없으면
                composer가 "선택 대기"로 잠긴 채 고를 방법이 없어진다. -->
           <div class="response-mode-bar" id="specialist-choice-bar" hidden></div>

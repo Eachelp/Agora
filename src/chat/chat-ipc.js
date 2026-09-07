@@ -62,6 +62,9 @@ const { createChatWindow } = require("./chat-window");
 // 세션별로 남겨두는 실행 원본 로그 개수. 진단에는 최근 실행만 필요하므로
 // 무한히 쌓이지 않게 오래된 파일부터 지웁니다.
 const MAX_RUN_LOG_FILES = 20;
+// 앱을 켜 둔 동안 CLI 버전·로그인·모델 목록을 다시 확인하는 간격입니다.
+// (버전 확인은 가볍고, 모델 카탈로그는 캐시 TTL이 지났을 때만 다시 조회합니다.)
+const PROVIDER_RECHECK_INTERVAL_MS = 60 * 60 * 1000;
 const MAX_TASK_READ_BYTES = 5 * 1024 * 1024;
 // Stage D-0 workspace mutation provenance journal의 상한(process 수명 기준).
 const MAX_WORKSPACE_MUTATION_EVENTS = 2000;
@@ -285,6 +288,7 @@ function createChatFeature(options) {
   let memoryStore = null;
   let memoryStoreError = null;
   let capabilityService = null;
+  let providerRecheckTimer = null;
   let chatWindow = null;
   let shuttingDown = false;
   const rooms = new Map();
@@ -387,6 +391,55 @@ function createChatFeature(options) {
       },
     });
     return capabilityService;
+  }
+
+  function providersPayload(records) {
+    return { providers: toPublicProviders(records), diagnostics: toDiagnostics(records) };
+  }
+
+  // 모델 목록이 바뀌면 방 참가자의 모델 해석(fable → 실제 옵션 등)도 다시 계산하고
+  // 화면에 새 목록을 밀어 넣습니다. 열려 있는 모델 선택은 다시 열어야 반영됩니다.
+  function publishProviders(records, { modelsChanged = false } = {}) {
+    for (const sessionId of rooms.keys()) refreshRoomAgents(sessionId);
+    broadcast("chat:providers", { ...providersPayload(records), modelsChanged });
+  }
+
+  // discover()가 캐시로 응답해 둔 오래된 모델 카탈로그를 뒤에서 다시 조회합니다.
+  // 시작(chat:state)을 막지 않으려고 기다리지 않고, 실제로 바뀌었을 때만 알립니다.
+  async function refreshStaleModelCatalogs(service) {
+    if (typeof service?.refreshStaleCatalogs !== "function") return;
+    if (typeof service.hasStaleCatalogs === "function" && !service.hasStaleCatalogs()) return;
+    try {
+      const result = await service.refreshStaleCatalogs();
+      if (result?.changed && !shuttingDown) publishProviders(result.records, { modelsChanged: true });
+    } catch (error) {
+      console.warn("[agora] 모델 목록 갱신 실패:", error?.message || error);
+    }
+  }
+
+  // 앱을 켜 둔 채 CLI를 업데이트하거나 로그인이 바뀐 경우를 잡기 위해 주기적으로
+  // 버전·로그인을 다시 확인합니다. 캐시가 유효하면 카탈로그 조회는 생기지 않습니다.
+  async function recheckProviders() {
+    if (shuttingDown) return;
+    const service = ensureCapabilityService();
+    if (typeof service?.discover !== "function") return;
+    try {
+      const before = JSON.stringify(providersPayload(await service.discover()));
+      const records = await service.discover({ recheck: true });
+      if (shuttingDown) return;
+      if (JSON.stringify(providersPayload(records)) !== before) publishProviders(records);
+      await refreshStaleModelCatalogs(service);
+    } catch (error) {
+      console.warn("[agora] CLI 재확인 실패:", error?.message || error);
+    }
+  }
+
+  function startProviderRecheck() {
+    if (providerRecheckTimer || !Number.isFinite(PROVIDER_RECHECK_INTERVAL_MS)) return;
+    providerRecheckTimer = setInterval(() => {
+      recheckProviders();
+    }, PROVIDER_RECHECK_INTERVAL_MS);
+    if (typeof providerRecheckTimer.unref === "function") providerRecheckTimer.unref();
   }
 
   function broadcast(channel, payload) {
@@ -1292,6 +1345,10 @@ function roomMeta(meta) {
     ensureStore();
     const service = ensureCapabilityService();
     const records = await service.discover({ force: refreshProviders });
+    // 오래된 모델 목록은 캐시로 먼저 응답했으니 뒤에서 갱신하고, 이후에는 주기적으로
+    // CLI 업데이트를 다시 확인합니다.
+    if (!refreshProviders) void refreshStaleModelCatalogs(service);
+    startProviderRecheck();
 
     if (store && !store.readOnly && store.listSessions().length === 0) {
       store.createSession(sessionDefaultsFromProject(ensureProjectStore()?.getProject(getActiveProjectId())));
@@ -1395,7 +1452,7 @@ function roomMeta(meta) {
       wrap(async () => {
         const records = await ensureCapabilityService().discover({ force: true });
         for (const sessionId of rooms.keys()) refreshRoomAgents(sessionId);
-        return { providers: toPublicProviders(records), diagnostics: toDiagnostics(records) };
+        return providersPayload(records);
       })
     );
 
@@ -2671,6 +2728,10 @@ function roomMeta(meta) {
   // 앱 종료: 진행 중이던 세션은 interrupted로 남겨 다음 시작 때 안내합니다.
   function shutdown() {
     shuttingDown = true;
+    if (providerRecheckTimer) {
+      clearInterval(providerRecheckTimer);
+      providerRecheckTimer = null;
+    }
     // Stage C-3: managed harness runtime의 long-lived child(App Server 등)를 정리한다.
     try { if (typeof harnessRuntime.close === "function") harnessRuntime.close(); } catch {}
     for (const [sessionId, room] of rooms) {
