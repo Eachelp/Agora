@@ -153,6 +153,10 @@ class ChatRoom extends EventEmitter {
     this.lostTurnNotified = new Set();
     this.turnStartedAt = new Map();
     this.turnActive = false;
+    // 지금 실행 중인 턴들. 독립 발언 묶음에서는 여러 개가 동시에 들어간다.
+    this.runningTurns = new Set();
+    // 팬아웃 중에는 펌프를 미룬다(0이면 평소처럼 즉시 실행).
+    this.pumpSuspended = 0;
     this.currentTurn = null;
     // 사용자가 "잠깐"으로 개입하면 다음 사용자 발화 전까지 에이전트발
     // 멘션 호출을 만들지 않습니다. (현재 발언자의 답변 속 @도 포함)
@@ -497,16 +501,27 @@ class ChatRoom extends EventEmitter {
 
     if (respondents.length > 0) {
       const order = respondents.length > 1 ? this.shuffle(respondents) : respondents;
-      order.forEach((agent, index) => {
-        this.scheduleResponse(agent, {
-          attachments,
-          turnRootId: entry.id,
-          independent,
-          ...(order.length > 1 && !independent
-            ? { broadcast: { position: index + 1, total: order.length } }
-            : {}),
+      // 독립 발언은 서로의 답을 보지 않는다 = 앞 사람을 기다릴 이유가 없다.
+      // 한 그룹으로 묶어 동시에 실행한다(이어 발언은 앞 답을 입력으로 쓰므로 순차).
+      const parallelGroupId = independent && order.length > 1 ? `pg-${entry.id}` : null;
+      // 전원을 큐에 올린 뒤에 한 번만 펌프를 돌린다(묶음이 쪼개지지 않게).
+      this.pumpSuspended += 1;
+      try {
+        order.forEach((agent, index) => {
+          this.scheduleResponse(agent, {
+            attachments,
+            turnRootId: entry.id,
+            independent,
+            ...(parallelGroupId ? { parallelGroupId } : {}),
+            ...(order.length > 1 && !independent
+              ? { broadcast: { position: index + 1, total: order.length } }
+              : {}),
+          });
         });
-      });
+      } finally {
+        this.pumpSuspended -= 1;
+      }
+      this.pumpTurnQueue();
     }
     return entry;
   }
@@ -594,8 +609,10 @@ class ChatRoom extends EventEmitter {
       if (this.pendingTurns.has(dedupeKey)) {
         return this.pendingTurns.get(dedupeKey).promise;
       }
-      if (this.currentTurn && this.currentTurn.dedupeKey === dedupeKey) {
-        return this.currentTurn.promise;
+      // 실행 중인 턴 전체를 본다. 병렬 묶음에서는 currentTurn 하나만 보면
+      // 같은 대상에게 같은 요청이 두 번 예약될 수 있다.
+      for (const running of this.runningTurns) {
+        if (running.dedupeKey === dedupeKey) return running.promise;
       }
     }
 
@@ -629,7 +646,10 @@ class ChatRoom extends EventEmitter {
       : this.turnQueue;
     queue.push(item);
     this.emitTurnState();
-    this.pumpTurnQueue();
+    // 한 발화가 여러 명에게 팬아웃되는 동안에는 펌프를 미룬다. 첫 턴을 넣자마자
+    // 돌리면 나머지가 큐에 들어오기 전에 실행이 시작돼, 같이 돌아야 할 독립
+    // 발언 묶음이 한 명씩으로 쪼개진다.
+    if (this.pumpSuspended === 0) this.pumpTurnQueue();
     return promise;
   }
 
@@ -642,6 +662,8 @@ class ChatRoom extends EventEmitter {
     });
     return {
       current: this.currentTurn ? this.currentTurn.agent.id : null,
+      // 동시에 도는 턴이 여럿일 수 있다(독립 발언). current는 그중 첫 번째다.
+      running: [...this.runningTurns].map((item) => item.agent.id),
       queue: this.turnQueue.map(view),
       deferred: this.deferredTurnQueue.map(view),
     };
@@ -693,38 +715,93 @@ class ChatRoom extends EventEmitter {
     this.turnActive = true;
     try {
       while (this.turnQueue.length > 0) {
-        const item = this.turnQueue.shift();
-        if (item.dedupeKey && this.pendingTurns.get(item.dedupeKey) === item) {
-          this.pendingTurns.delete(item.dedupeKey);
-        }
-        if (item.generation !== this.generation) {
-          item.resolve(undefined);
-          this.notifyLostTurn(item);
-          this.emitTurnState();
+        // 같은 독립 발언 그룹은 한 묶음으로 동시에 돌린다. 그 외에는 예전처럼
+        // 한 번에 하나씩 — 이어 발언은 앞 사람의 답이 다음 사람의 입력이다.
+        const groupId = this.turnQueue[0].context?.parallelGroupId || null;
+        if (!groupId) {
+          await this.runQueuedTurn(this.turnQueue.shift());
           continue;
         }
-        this.currentTurn = item;
-        this.turnStartedAt.delete(item.turnId);
-        this.emitTurnState();
-        let outcome;
-        try {
-          outcome = await this.respond(
-            item.agent,
-            { ...item.context, promptLimit: item.promptLimit },
-            item.generation
-          );
-        } catch {
-          outcome = undefined;
+        const batch = [];
+        while (this.turnQueue.length > 0 && this.turnQueue[0].context?.parallelGroupId === groupId) {
+          batch.push(this.turnQueue.shift());
         }
-        this.currentTurn = null;
-        this.emitTurnState();
-        item.resolve(outcome);
+        await this.runParallelTurns(batch);
       }
     } finally {
       this.turnActive = false;
       this.resolveIdleWaiters();
       // finally 직전에 새 턴이 들어온 극히 짧은 경합도 놓치지 않습니다.
       if (this.turnQueue.length > 0) this.pumpTurnQueue();
+    }
+  }
+
+  // 지금 실행 중인 턴들. 순차 실행에서는 언제나 0개 또는 1개다.
+  syncCurrentTurn() {
+    this.currentTurn = this.runningTurns.size > 0 ? [...this.runningTurns][0] : null;
+  }
+
+  async runQueuedTurn(item, { parentToken = null } = {}) {
+    if (item.dedupeKey && this.pendingTurns.get(item.dedupeKey) === item) {
+      this.pendingTurns.delete(item.dedupeKey);
+    }
+    if (item.generation !== this.generation) {
+      item.resolve(undefined);
+      this.notifyLostTurn(item);
+      this.emitTurnState();
+      return;
+    }
+    this.runningTurns.add(item);
+    this.syncCurrentTurn();
+    this.turnStartedAt.delete(item.turnId);
+    this.emitTurnState();
+    let outcome;
+    try {
+      outcome = await this.respond(
+        item.agent,
+        {
+          ...item.context,
+          promptLimit: item.promptLimit,
+          ...(parentToken ? { workspaceLeaseParentToken: parentToken } : {}),
+        },
+        item.generation
+      );
+    } catch {
+      outcome = undefined;
+    }
+    this.runningTurns.delete(item);
+    this.syncCurrentTurn();
+    this.emitTurnState();
+    item.resolve(outcome);
+  }
+
+  // 독립 발언 묶음을 동시에 실행한다.
+  //
+  // 쓰기 권한에서는 턴마다 workspace 소유권을 잡는데, 그대로 두면 두 번째 턴이
+  // 곧바로 "이미 작업 폴더를 변경하고 있습니다"로 튕긴다. 그래서 그룹이 소유권을
+  // 한 번 잡고 각 턴은 그 안에서 중첩(re-entrant)으로 들어간다. 다른 대화가
+  // 같은 폴더를 만지는 것은 예전처럼 그대로 막힌다.
+  //
+  // 같은 파일을 두 담당자가 함께 고치면 나중 쓰기가 이깁니다 — 사용자가 각자
+  // 따로 만들라고 지시한 경우를 위한 실행 방식이며, 파일 단위 충돌은 막지 않습니다.
+  async runParallelTurns(batch) {
+    const needsLease = batch.some((item) => this.needsWorkspaceLease(item.context));
+    let lease = { ok: true, token: null };
+    if (needsLease) {
+      lease = this.acquireWorkspaceMutation({ purpose: "chat-turn-group" });
+      if (!lease.ok) {
+        this.appendSystem(lease.error);
+        for (const item of batch) {
+          item.resolve({ ok: false, stopReason: "WORKSPACE_BUSY", error: lease.error });
+        }
+        this.emitTurnState();
+        return;
+      }
+    }
+    try {
+      await Promise.all(batch.map((item) => this.runQueuedTurn(item, { parentToken: lease.token })));
+    } finally {
+      this.releaseWorkspaceMutation(lease.token);
     }
   }
 
@@ -760,6 +837,16 @@ class ChatRoom extends EventEmitter {
     const item = this.turnQueue.find((item) => item.turnId === turnId)
       || this.deferredTurnQueue.find((item) => item.turnId === turnId);
     this.lostTurnNotified.add(turnId);
+    // 앞 순서가 돌고 있으면 유실이 아니라 정상 대기다. 예전에는 둘을 구분하지
+    // 않고 "유실됐을 수 있으니 다시 보내 주세요"라고만 안내해, 멀쩡히 기다리는
+    // 턴을 사용자가 다시 보내게 만들었다.
+    if (this.runningTurns.size > 0) {
+      const running = [...this.runningTurns].map((entry) => `@${entry.agent.id}`).join(", ");
+      this.appendSystem(
+        "@" + item.agent.id + " 응답은 아직 차례를 기다리고 있습니다 (" + running + " 실행 중). 그대로 기다리면 이어서 실행됩니다."
+      );
+      return;
+    }
     this.appendSystem("@" + item.agent.id + " 응답이 " + LOST_TURN_STALL_SECONDS + "초 넘게 시작되지 않고 있습니다. 응답이 유실됐을 수 있으니 기다리지 말고 다시 보내 주세요.");
   }
 
@@ -912,19 +999,28 @@ class ChatRoom extends EventEmitter {
   // Stage D-0 — workspace-write 일반 채팅 turn은 mutation 참여자다.
   // 전문 실행은 turn 단위가 아니라 실행 블록 전체(mutation~판정 구간)에서 소유권을
   // 쥐므로 여기서 다시 잡지 않는다(같은 room이라 재진입으로 통과하기도 한다).
-  async respond(agent, context = {}, generation = this.generation) {
-    const generalWorkspaceWrite =
+  // 이 턴이 workspace 변경 소유권을 필요로 하는가.
+  // V1.5 역할 상담(CONSULT)은 workspace-read 상한으로 강등되는 읽기 전용 턴이라
+  // mutation 참여자가 아니다. 여기서 lease를 잡으면 다른 방의 실제 쓰기 실행과
+  // 서로를 불필요하게 막는다.
+  needsWorkspaceLease(context = {}) {
+    return Boolean(
       !context.specialist &&
       !context.discussionSummary &&
       !context.simplifyMeta &&
-      // V1.5 역할 상담(CONSULT)은 workspace-read 상한으로 강등되는 읽기 전용
-      // 턴이라 mutation 참여자가 아니다. 여기서 lease를 잡으면 다른 방의 실제
-      // 쓰기 실행과 서로를 불필요하게 막는다.
       !context.consult &&
-      this.meta.permissionMode === "workspace-write";
-    if (!generalWorkspaceWrite) return this.runResponseTurn(agent, context, generation);
+      this.meta.permissionMode === "workspace-write"
+    );
+  }
 
-    const lease = this.acquireWorkspaceMutation({ purpose: "chat-turn" });
+  async respond(agent, context = {}, generation = this.generation) {
+    if (!this.needsWorkspaceLease(context)) return this.runResponseTurn(agent, context, generation);
+
+    // 병렬 그룹 안의 턴은 그룹이 이미 잡아 둔 소유권 안으로 중첩해 들어간다.
+    const lease = this.acquireWorkspaceMutation({
+      purpose: "chat-turn",
+      parentToken: context.workspaceLeaseParentToken || null,
+    });
     if (!lease.ok) {
       this.appendSystem(lease.error);
       return { ok: false, stopReason: "WORKSPACE_BUSY", error: lease.error };

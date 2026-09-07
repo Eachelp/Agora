@@ -4002,3 +4002,98 @@ test("승인 요청으로 끝난 실행도 사유와 원문을 남긴다", async
   // CLI가 준 원문도 함께 남겨 무엇이 막혔는지 알 수 있게 한다.
   assert.match(reply.text, /is not a valid artifact path/);
 });
+
+// 독립 발언은 서로의 답을 입력으로 쓰지 않는다 = 앞 사람을 기다릴 이유가 없다.
+// 예전에는 pumpTurnQueue가 무조건 한 명씩 돌려서, 세 명에게 각자 시안을 시키면
+// 뒤 두 명이 큐에서 120초를 넘겨 "응답이 유실됐을 수 있다"는 안내까지 떴다.
+function gatedRunner() {
+  const started = [];
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  return {
+    started,
+    release: () => release(),
+    runAgent: ({ agent }) => {
+      started.push(agent.id);
+      return { promise: gate.then(() => ({ ok: true, text: `${agent.id} 답` })), cancel: () => {} };
+    },
+  };
+}
+
+const tick = () => new Promise((resolve) => setTimeout(resolve, 40));
+
+test("독립 발언은 서로를 기다리지 않고 동시에 시작한다", async () => {
+  const runner = gatedRunner();
+  const room = new ChatRoom({ agents: makeAgents(), runAgent: runner.runAgent });
+  room.sendUserMessage({ text: "@claude @codex 각자 시안 만들어줘", independent: true });
+  await tick();
+
+  assert.deepEqual([...runner.started].sort(), ["claude", "codex"], "둘 다 시작해야 합니다");
+  // 실행 중인 턴이 여럿임을 상태에도 드러낸다.
+  assert.deepEqual([...room.turnState().running].sort(), ["claude", "codex"]);
+  assert.equal(room.turnState().queue.length, 0, "뒤 사람이 큐에서 기다리면 안 됩니다");
+
+  runner.release();
+  await settle(room);
+  const replies = room.messages.filter((message) => message.authorType === "agent");
+  assert.deepEqual(replies.map((message) => message.author).sort(), ["claude", "codex"]);
+});
+
+test("이어 발언은 앞 답이 다음 입력이라 예전처럼 한 명씩 돈다", async () => {
+  const runner = gatedRunner();
+  const room = new ChatRoom({ agents: makeAgents(), runAgent: runner.runAgent });
+  room.sendUserMessage({ text: "@claude @codex 이어서 얘기해줘", independent: false });
+  await tick();
+
+  assert.equal(runner.started.length, 1, "이어 발언은 동시에 시작하면 안 됩니다");
+  assert.equal(room.turnState().queue.length, 1);
+  runner.release();
+  await settle(room);
+});
+
+// 쓰기 권한에서는 턴마다 workspace 소유권을 잡는다. 그룹이 한 번 잡고 각 턴이
+// 그 안으로 중첩해 들어가지 않으면, 두 번째 턴이 "이미 변경하고 있습니다"로 튕긴다.
+test("쓰기 권한에서도 독립 발언은 서로를 폴더 잠금으로 막지 않는다", async () => {
+  const { WorkspaceMutationLease } = require("../src/agora/workspace-mutation-lease");
+  const runner = gatedRunner();
+  const room = new ChatRoom({
+    // lease는 소유자(대화)를 세션 id로 식별한다.
+    sessionId: "parallel-write-room",
+    agents: makeAgents(),
+    meta: { permissionMode: "workspace-write", workspace: os.tmpdir() },
+    mutationLease: new WorkspaceMutationLease(),
+    runAgent: runner.runAgent,
+  });
+  room.sendUserMessage({ text: "@claude @codex 각자 폴더에 만들어줘", independent: true });
+  await tick();
+
+  assert.deepEqual([...runner.started].sort(), ["claude", "codex"], "둘 다 실행돼야 합니다");
+  // 폴더가 잠겨 튕긴 경우 남는 안내가 없어야 한다.
+  const busy = room.messages.filter(
+    (message) => message.authorType === "system" && /작업 폴더/.test(message.text || "")
+  );
+  assert.equal(busy.length, 0, `폴더 잠금으로 막히면 안 됩니다: ${busy.map((m) => m.text).join(" / ")}`);
+
+  runner.release();
+  await settle(room);
+  assert.equal(room.messages.filter((message) => message.authorType === "agent").length, 2);
+});
+
+test("큐에서 차례를 기다리는 턴을 '유실'로 안내하지 않는다", async () => {
+  const runner = gatedRunner();
+  const room = new ChatRoom({ agents: makeAgents(), runAgent: runner.runAgent });
+  room.sendUserMessage({ text: "@claude @codex 이어서 얘기해줘", independent: false });
+  await tick();
+
+  const waiting = room.turnState().queue[0];
+  assert.ok(waiting, "대기 중인 턴이 있어야 합니다");
+  // 실행 중인 턴이 있는 동안의 안내는 "기다리는 중"이어야 한다.
+  room.turnStartedAt.set(waiting.turnId, Date.now() - 999_000);
+  room.checkTurnStall(waiting.turnId);
+  const notice = room.messages.filter((message) => message.authorType === "system").at(-1);
+  assert.match(notice.text, /차례를 기다리고 있습니다/);
+  assert.ok(!/유실/.test(notice.text), "정상 대기를 유실로 안내하면 안 됩니다");
+
+  runner.release();
+  await settle(room);
+});
