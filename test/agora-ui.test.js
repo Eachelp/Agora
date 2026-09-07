@@ -633,6 +633,7 @@ function loadSpecialistView(state = {}) {
     specialistStopReason: null,
     specialistMissingSections: null,
     specialistBlockedAvailable: false,
+    specialistNeedsInput: false,
     specialistResumePhase: null,
     specialistPendingApprovals: [],
     ...state,
@@ -867,4 +868,46 @@ test("승인 항목을 못 받아도 화면이 사라지지 않고 다시 불러
   assert.ok(!/완료되었습니다|완료했습니다/.test(body), "승인 화면이 완료를 단정하면 안 됩니다");
   // 대기 상태를 벗어나면 조회 상태도 초기화한다(옛 오류 문구가 남지 않게).
   assert.match(renderer, /specialistApprovalsFetch = "idle";\s*\n\s*renderSpecialistApprovals\(\);/);
+});
+
+test("READY라도 사용자가 답해야 하는 대기가 있으면 그쪽을 안내한다", () => {
+  // READY + WAITING인데 stopReason이 CHECKPOINT_FAILED·TASK_CONTRACT_INCOMPLETE인
+  // 상태가 실제로 있다. node만 보고 "실행을 기다립니다"라고 하면, 그 순간
+  // '실행 ▶'은 비활성이고 입력창은 다른 것을 요구하고 있어 화면이 서로 어긋난다.
+  for (const [stopReason, expected] of [
+    ["CHECKPOINT_FAILED", /백업을 만들지 못했습니다/],
+    ["TASK_CONTRACT_INCOMPLETE", /빠진 항목/],
+  ]) {
+    const { status } = loadSpecialistView({
+      specialistNode: "READY",
+      specialistStatus: "WAITING",
+      specialistStopReason: stopReason,
+      specialistNeedsInput: true,
+    });
+    assert.match(status.headline, expected, `${stopReason}가 READY 문구에 가려지면 안 됩니다`);
+  }
+
+  // 대기가 없으면 예전처럼 실행 안내다.
+  const ready = loadSpecialistView({ specialistNode: "READY", specialistStatus: "WAITING" });
+  assert.match(ready.status.headline, /기획 검수를 통과했습니다/);
+});
+
+test("막힘 처리를 끝낸 상태를 '확인이 필요한 상태'로 보여 주지 않는다", () => {
+  const { status } = loadSpecialistView({
+    specialistNode: "IMPLEMENTING",
+    specialistStatus: "WAITING",
+    specialistStopReason: "BLOCK_RESOLVED",
+  });
+  assert.match(status.headline, /정리했습니다/);
+  assert.ok(!/확인이 필요한 상태/.test(status.headline), "성공한 정리를 미상 코드로 보여 주면 안 됩니다");
+});
+
+test("동시에 도는 턴 목록이 화면 상태까지 전달된다", () => {
+  const renderer = read("src/chat.js");
+  // 방이 running을 실어 보내는데 렌더러가 버리면 그 필드는 죽은 값이 된다.
+  assert.match(renderer, /running: Array\.isArray\(state\.running\) \? state\.running : \[\]/);
+  assert.match(renderer, /roomTurnState = \{ current: null, running: \[\]/);
+  // "일반 응답 진행 중" 판정도 동시 실행을 봐야 한다.
+  const busy = renderer.slice(renderer.indexOf("const ordinaryTurnBusy"));
+  assert.match(busy.slice(0, 400), /roomTurnState\.running \|\| \[\]/);
 });

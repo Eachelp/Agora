@@ -291,9 +291,16 @@ function parseCodexLine(line) {
 // 잘못됐다는 내부 오류 표식이 있으면 승인으로 보지 않는다.
 const AGY_INTERNAL_TOOL_ERROR = /invalid tool call|invalid_args|invalid artifact|not a valid|model output error|parameter is incorrect/i;
 
-function isAgyApprovalError(message) {
-  const text = String(message || "");
-  if (!text) return false;
+// AGY의 실제 거부 문구는 사용자의 명령을 그대로 되풀이한다:
+//   "User denied permission to run command:\n<명령어>"
+// 그래서 명령어 안에 우연히 내부 오류 표식(not a valid, invalid_args 등)이 들어
+// 있으면 **진짜 권한 거부가 내부 오류로 오분류돼** 승인 카드가 뜨지 않는다.
+// 판정 전에 되풀이된 명령을 지우고, 남은 설명 문구만 본다.
+function isAgyApprovalError(message, commandLine = "") {
+  const raw = String(message || "");
+  if (!raw) return false;
+  const echoed = String(commandLine || "").trim();
+  const text = echoed ? raw.split(echoed).join(" ") : raw;
   if (AGY_INTERNAL_TOOL_ERROR.test(text)) return false;
   return /permission|approval|권한|승인/i.test(text)
     && /denied|denies|require|request|ask|prompt|not allowed|거부|필요|요청/i.test(text);
@@ -317,7 +324,7 @@ function parseAgyLine(line) {
     // tool steps carry step_index instead of an id.
     const toolUseId = step.id || step.step_id || (step.step_index != null ? String(step.step_index) : null);
     const command = step.command || step.tool_info?.parameters?.CommandLine || tool;
-    if (step.state === "ERROR" && isAgyApprovalError(error)) {
+    if (step.state === "ERROR" && isAgyApprovalError(error, step.tool_info?.parameters?.CommandLine)) {
       return {
         kind: "approval-required",
         summary: tool ? `도구 권한: ${tool}` : "도구 실행 권한",

@@ -4127,3 +4127,63 @@ test("큐에서 차례를 기다리는 턴을 '유실'로 안내하지 않는다
   runner.release();
   await settle(room);
 });
+
+test("대기 안내는 유실 안내 표시를 태우지 않는다", async () => {
+  const runner = gatedRunner();
+  const room = new ChatRoom({ agents: makeAgents(), runAgent: runner.runAgent });
+  room.sendUserMessage({ text: "@claude @codex 이어서 얘기해줘", independent: false });
+  await tick();
+
+  const waiting = room.turnState().queue[0];
+  room.turnStartedAt.set(waiting.turnId, Date.now() - 999_000);
+  room.checkTurnStall(waiting.turnId);
+  assert.match(room.messages.at(-1).text, /차례를 기다리고 있습니다/);
+
+  // 그 뒤 중지로 실제 버려지면 그 사실을 알려야 한다. 대기 안내가
+  // lostTurnNotified를 소비하면 이 안내가 조용히 사라진다.
+  room.stopAllSilently();
+  const notices = room.messages.filter((m) => m.authorType === "system").map((m) => m.text);
+  assert.ok(
+    notices.some((text) => /중지로 @codex 응답 대기가 취소/.test(text) || /중지로 @claude 응답 대기가 취소/.test(text)),
+    `중지 안내가 있어야 합니다: ${notices.join(" / ")}`
+  );
+  runner.release();
+});
+
+test("중지하면 실행 중이던 턴도 상태에서 즉시 사라진다", async () => {
+  const runner = gatedRunner();
+  const room = new ChatRoom({ agents: makeAgents(), runAgent: runner.runAgent });
+  room.sendUserMessage({ text: "@claude @codex 각자 만들어줘", independent: true });
+  await tick();
+  assert.equal(room.turnState().running.length, 2);
+
+  room.stopAllSilently();
+  assert.deepEqual(room.turnState().running, [], "중지한 턴을 계속 실행 중으로 알리면 안 됩니다");
+  assert.equal(room.turnState().current, null);
+  runner.release();
+  await settle(room);
+});
+
+test("그룹 폴더 잠금이 거부돼도 같은 요청을 다시 보낼 수 있다", async () => {
+  const { WorkspaceMutationLease } = require("../src/agora/workspace-mutation-lease");
+  const lease = new WorkspaceMutationLease();
+  const workspace = os.tmpdir();
+  // 다른 대화가 먼저 이 폴더를 잡고 있는 상황.
+  const held = lease.acquire({ resourceKind: "workspace", resourceId: workspace, holderId: "other-room" });
+  assert.equal(held.ok, true);
+
+  const room = new ChatRoom({
+    sessionId: "denied-room",
+    agents: makeAgents(),
+    meta: { permissionMode: "workspace-write", workspace },
+    mutationLease: lease,
+    runAgent: () => ({ promise: Promise.resolve({ ok: true, text: "답" }), cancel: () => {} }),
+  });
+  room.sendUserMessage({ text: "@claude @codex 각자 만들어줘", independent: true });
+  await settle(room);
+
+  assert.match(room.messages.at(-1).text, /작업 폴더/);
+  // dedupe 키가 남으면 같은 요청이 영영 다시 예약되지 않는다.
+  assert.equal(room.pendingTurns.size, 0, "거부된 턴의 예약 기록은 남으면 안 됩니다");
+  lease.release(held.token);
+});

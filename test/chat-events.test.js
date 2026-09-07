@@ -252,3 +252,51 @@ test("agy: 도구 호출 자체가 잘못된 내부 오류는 승인 요청이 �
   assert.equal(approval.kind, "approval-required");
   assert.match(approval.summary, /write_to_file/);
 });
+
+// AGY의 진짜 거부 문구는 사용자의 명령을 그대로 되풀이한다:
+//   "User denied permission to run command:\n<명령어>"
+// 내부 오류 표식을 메시지 전체에 대고 검사하면, 명령어 안에 우연히 그 표식이
+// 들어 있을 때 **진짜 권한 거부가 삼켜져** 승인 카드가 뜨지 않는다.
+test("agy: 거부 메시지에 되풀이된 명령어 때문에 승인 판정이 뒤집히지 않는다", () => {
+  const denial = (commandLine) => JSON.stringify({
+    event: "step_update",
+    step_update: {
+      state: "ERROR",
+      step_type: "tool",
+      tool_name: "run_command",
+      tool_info: {
+        name: "run_command",
+        parameters: { CommandLine: commandLine },
+        error: { type: "TOOL_ERROR", message: "User denied permission to run command:\n" + commandLine },
+      },
+    },
+  });
+
+  for (const command of [
+    "ls -al",
+    'echo "not a valid path"',
+    'python -c "raise ValueError(invalid_args)"',
+    "check --parameter is incorrect",
+  ]) {
+    assert.equal(
+      parseAgyLine(denial(command)).kind,
+      "approval-required",
+      `명령어 내용이 승인 판정을 바꾸면 안 됩니다: ${command}`
+    );
+  }
+
+  // 진짜 내부 오류는 여전히 승인이 아니다.
+  const internal = JSON.stringify({
+    event: "step_update",
+    step_update: {
+      state: "ERROR",
+      step_type: "tool",
+      tool_name: "write_to_file",
+      tool_info: {
+        name: "write_to_file",
+        error: { message: "declaring permissions: cortex tool write_to_file: model output error: invalid tool call error (invalid_args) x is not a valid artifact path" },
+      },
+    },
+  });
+  assert.equal(parseAgyLine(internal).kind, "tool-finished");
+});

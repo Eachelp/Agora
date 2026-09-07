@@ -792,6 +792,13 @@ class ChatRoom extends EventEmitter {
       if (!lease.ok) {
         this.appendSystem(lease.error);
         for (const item of batch) {
+          // 단일 턴 경로(runQueuedTurn)가 시작할 때 하는 정리를 여기서도 한다.
+          // 빠뜨리면 dedupe 키가 남아 같은 요청을 다시 보낼 수 없고, 대기 타이머도
+          // 살아 있어 이미 끝난 턴에 "유실됐을 수 있다" 안내가 뜬다.
+          if (item.dedupeKey && this.pendingTurns.get(item.dedupeKey) === item) {
+            this.pendingTurns.delete(item.dedupeKey);
+          }
+          this.turnStartedAt.delete(item.turnId);
           item.resolve({ ok: false, stopReason: "WORKSPACE_BUSY", error: lease.error });
         }
         this.emitTurnState();
@@ -836,10 +843,13 @@ class ChatRoom extends EventEmitter {
     if (!queued) return;
     const item = this.turnQueue.find((item) => item.turnId === turnId)
       || this.deferredTurnQueue.find((item) => item.turnId === turnId);
-    this.lostTurnNotified.add(turnId);
     // 앞 순서가 돌고 있으면 유실이 아니라 정상 대기다. 예전에는 둘을 구분하지
     // 않고 "유실됐을 수 있으니 다시 보내 주세요"라고만 안내해, 멀쩡히 기다리는
     // 턴을 사용자가 다시 보내게 만들었다.
+    //
+    // 이때 lostTurnNotified를 소비하면 안 된다. 그 집합은 "이 턴의 유실을 이미
+    // 알렸다"는 표시이고, notifyLostTurn이 그걸 보고 건너뛴다. 대기 안내로
+    // 태워 버리면 나중에 이 턴이 중지로 실제 버려질 때 아무 안내도 남지 않는다.
     if (this.runningTurns.size > 0) {
       const running = [...this.runningTurns].map((entry) => `@${entry.agent.id}`).join(", ");
       this.appendSystem(
@@ -847,6 +857,7 @@ class ChatRoom extends EventEmitter {
       );
       return;
     }
+    this.lostTurnNotified.add(turnId);
     this.appendSystem("@" + item.agent.id + " 응답이 " + LOST_TURN_STALL_SECONDS + "초 넘게 시작되지 않고 있습니다. 응답이 유실됐을 수 있으니 기다리지 말고 다시 보내 주세요.");
   }
 
@@ -1887,6 +1898,10 @@ class ChatRoom extends EventEmitter {
     this.deferredTurnQueue = [];
     this.pendingTurns.clear();
     this.turnStartedAt.clear();
+    // 실행 중이던 턴도 방금 취소했다. 여기서 비우지 않으면 바로 아래
+    // emitTurnState가 이미 중지된 턴을 "실행 중"으로 계속 알린다.
+    this.runningTurns.clear();
+    this.syncCurrentTurn();
     this.mentionsMuted = false;
     this.emitTurnState();
     // Stop/interject/reset로 turn을 중지하면 화면에 보이는 모든 승인 카드는 stale하다.

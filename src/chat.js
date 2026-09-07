@@ -117,7 +117,7 @@ let pendingAttachments = [];
 const approvalQueue = [];
 let activeApproval = null;
 const typingAgents = new Set();
-let roomTurnState = { current: null, queue: [], deferred: [] };
+let roomTurnState = { current: null, running: [], queue: [], deferred: [] };
 const liveRuns = new Map(); // runId → { item, textEl, statusEl, text }
 let mentionState = null;
 let noticeTimer = null;
@@ -564,7 +564,12 @@ async function refreshPendingApprovals() {
     specialistApprovalsFetch = "loading";
   }
   const result = await call(window.chatApi.specialistPendingApprovals(sessionId));
-  if (sessionId !== activeSessionId) return;
+  if (sessionId !== activeSessionId) {
+    // 세션이 바뀌었다고 loading에 둔 채 나가면, 위 가드에 막혀 다시 조회하지
+    // 못하고 패널이 "불러오는 중"으로 굳는다(재시도·취소 버튼도 안 그려진다).
+    specialistApprovalsFetch = "idle";
+    return;
+  }
   if (!result) {
     // 조회 실패. 목록을 비운 채 화면을 감추면 사용자가 길을 잃으므로,
     // 다시 불러올 수 있는 자리를 남긴다(오류 내용은 call이 이미 알렸다).
@@ -1759,6 +1764,8 @@ function renderHeader() {
   responseModeBar.hidden = professionalModeEnabled || !discussable;
   const ordinaryTurnBusy = Boolean(
     roomTurnState.current ||
+      // 독립 발언은 여러 턴이 동시에 돈다(current는 그중 첫 번째일 뿐).
+      (roomTurnState.running || []).length > 0 ||
       (roomTurnState.queue || []).length > 0 ||
       (roomTurnState.deferred || []).length > 0
   );
@@ -1924,6 +1931,9 @@ const SPECIALIST_STOP_INFO = Object.freeze({
   BUILDER_DONE: { text: "구현이 끝났습니다.", next: "이어서 검수를 진행할 수 있습니다." },
   REVIEW_PASS: { text: "구현 검수를 통과했습니다.", next: "이어서 기록 단계를 진행할 수 있습니다." },
   BLOCKED: { text: "구현이 막혀 안전하게 멈췄습니다.", next: "아래 ‘다음 처리 선택’에서 변경 유지·복원·재기획 중 하나를 고르세요." },
+  // 막힘 처리를 끝낸 뒤의 정상 종료다. 표에 없으면 "확인이 필요한 상태로
+  // 멈췄습니다"라는 미상 코드 문구가 떠서, 성공했는데 실패처럼 보인다.
+  BLOCK_RESOLVED: { text: "막힌 실행을 정리했습니다.", next: "PLAN 또는 전체 실행으로 새로 시작할 수 있습니다." },
   EXECUTION_BLOCKED: { text: "구현이 막혀 안전하게 멈췄습니다.", next: "아래 ‘다음 처리 선택’에서 처리 방법을 고르세요." },
   USER_INTERRUPTED: { text: "사용자가 실행을 중지했습니다.", next: "PLAN 또는 전체 실행으로 다시 시작할 수 있습니다." },
   EXECUTION_INTERRUPTED: { text: "실행이 중단되었습니다.", next: "PLAN 또는 전체 실행으로 다시 시작할 수 있습니다." },
@@ -2009,7 +2019,10 @@ function specialistStatusView() {
       tone: "running",
     };
   }
-  if (specialistNode === "READY") {
+  // READY라도 사용자가 먼저 답해야 하는 대기(백업 실패 선택, 기획안 보완)가
+  // 걸려 있으면 그쪽이 우선이다. 예전에는 node만 보고 "실행을 기다립니다"라고
+  // 안내했는데, 그 순간 '실행 ▶'은 비활성이고 입력창은 다른 것을 요구하고 있었다.
+  if (specialistNode === "READY" && !specialistNeedsInput) {
     return {
       headline: "기획 검수를 통과했습니다. 실행을 기다리고 있습니다.",
       next: "‘기획안 보기’로 확인한 뒤 ‘실행 ▶’을 누르면 구현을 시작합니다. 입력칸에 쓰면 기획을 수정합니다.",
@@ -5169,6 +5182,9 @@ window.chatApi.onTurnState(({ sessionId, ...state }) => {
   if (sessionId !== activeSessionId) return;
   roomTurnState = {
     current: state.current || null,
+    // 독립 발언은 여러 담당자가 동시에 돈다. current 하나만 받으면 나머지가
+    // 화면 판단에서 사라진다.
+    running: Array.isArray(state.running) ? state.running : [],
     queue: Array.isArray(state.queue) ? state.queue : [],
     deferred: Array.isArray(state.deferred) ? state.deferred : [],
   };
@@ -5179,7 +5195,7 @@ window.chatApi.onReset(({ sessionId }) => {
   renderAllMessages([]);
   chatMessages = [];
   typingAgents.clear();
-  roomTurnState = { current: null, queue: [], deferred: [] };
+  roomTurnState = { current: null, running: [], queue: [], deferred: [] };
   // Stage C — 방 reset(중지/초기화) 시 남은 승인 카드를 모두 제거한다(late accept 방지 UX).
   approvalQueue.length = 0;
   activeApproval = null;
