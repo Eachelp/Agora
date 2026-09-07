@@ -276,6 +276,29 @@ function parseCodexLine(line) {
   return null;
 }
 
+// AGY 도구 오류가 "사용자 승인이 필요하다"는 뜻인지 판별한다.
+//
+// 예전에는 문구에 permission/approval/권한/승인 중 하나만 있으면 승인 요청으로
+// 봤다. 그런데 Antigravity는 내부 오류에도 그 단어를 쓴다 — 실제로 관측된 것:
+//   "declaring permissions: cortex tool write_to_file: convert tool call for
+//    permissions: model output error: invalid tool call error (invalid_args)
+//    ... is not a valid artifact path"
+// 이건 잘못된 인자로 도구 호출이 거절된 것이지 사용자에게 물어볼 일이 아니다.
+// 그런 오류를 승인 요청으로 읽으면 그 턴은 승인 대기로 끊기고, 뒤이어 도착한
+// 정상 응답까지 버려진다.
+//
+// 그래서 (권한 낱말) + (거부·요청 낱말)을 함께 요구하고, 도구 호출 자체가
+// 잘못됐다는 내부 오류 표식이 있으면 승인으로 보지 않는다.
+const AGY_INTERNAL_TOOL_ERROR = /invalid tool call|invalid_args|invalid artifact|not a valid|model output error|parameter is incorrect/i;
+
+function isAgyApprovalError(message) {
+  const text = String(message || "");
+  if (!text) return false;
+  if (AGY_INTERNAL_TOOL_ERROR.test(text)) return false;
+  return /permission|approval|권한|승인/i.test(text)
+    && /denied|denies|require|request|ask|prompt|not allowed|거부|필요|요청/i.test(text);
+}
+
 function parseAgyLine(line) {
   const event = parseJsonLine(line);
   if (!event || typeof event !== "object") return null;
@@ -294,7 +317,7 @@ function parseAgyLine(line) {
     // tool steps carry step_index instead of an id.
     const toolUseId = step.id || step.step_id || (step.step_index != null ? String(step.step_index) : null);
     const command = step.command || step.tool_info?.parameters?.CommandLine || tool;
-    if (step.state === "ERROR" && /permission|approval|권한|승인/i.test(error)) {
+    if (step.state === "ERROR" && isAgyApprovalError(error)) {
       return {
         kind: "approval-required",
         summary: tool ? `도구 권한: ${tool}` : "도구 실행 권한",

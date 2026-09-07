@@ -3972,3 +3972,33 @@ test("전문 실행 취소 메시지는 어디서 왔는지 밝힌다", () => {
     fs.rmSync(workspace, { recursive: true, force: true });
   }
 });
+
+// 자동 승인이 켜진 방에서는 승인 요청 결과가 그대로 실패로 그려진다. 그때 사유가
+// 비어 있으면 화면에 "알 수 없는 오류"만 남아 무엇이 막혔는지 알 수 없었다.
+test("승인 요청으로 끝난 실행도 사유와 원문을 남긴다", async () => {
+  const agents = makeAgents().map((agent) =>
+    agent.id === "claude" ? { ...agent, autoApprove: true } : agent
+  );
+  const room = new ChatRoom({
+    agents,
+    runAgent: () => ({
+      promise: Promise.resolve({
+        ok: false,
+        approvalRequired: true,
+        error: "도구 권한: write_to_file",
+        approval: { summary: "도구 권한: write_to_file", detail: "is not a valid artifact path" },
+        output: { stdoutBytes: 58163, captureTruncated: false },
+      }),
+      cancel: () => {},
+    }),
+  });
+  room.sendUserMessage("@claude 파일 만들어줘");
+  await settle(room);
+
+  const reply = room.messages.filter((message) => message.authorType === "agent").at(-1);
+  assert.equal(reply.error, true);
+  assert.ok(!reply.text.includes("알 수 없는 오류"), "사유 없이 끝내면 안 됩니다");
+  assert.match(reply.text, /도구 권한: write_to_file/);
+  // CLI가 준 원문도 함께 남겨 무엇이 막혔는지 알 수 있게 한다.
+  assert.match(reply.text, /is not a valid artifact path/);
+});

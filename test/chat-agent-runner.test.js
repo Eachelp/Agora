@@ -527,3 +527,32 @@ test("전문 프롬프트라도 명시적 final 이벤트가 있으면 정상 �
   assert.equal(result.ok, true);
   assert.equal(result.text, "완료");
 });
+// 승인 요청은 "답을 못 내고 멈췄다"는 신호다. 확정된 최종 답변이 이미 왔다면
+// 그 실행은 끝난 것이므로 버리면 안 된다(AGY 내부 오류를 승인으로 오인해 166초
+// 짜리 성공 실행이 통째로 사라진 사고의 재발 방지).
+test("승인 이벤트가 있어도 최종 답변이 도착했으면 성공으로 끝난다", async () => {
+  const parseLine = (line) => {
+    try {
+      return JSON.parse(line);
+    } catch {
+      return null;
+    }
+  };
+  const withFinal = [
+    "console.log(JSON.stringify({kind:'approval-required',summary:'도구 권한: write_to_file',detail:'내부 오류'}))",
+    "console.log(JSON.stringify({kind:'final',text:'완성했습니다'}))",
+  ].join(";");
+  const ok = await runNode(withFinal, { parseLine }).promise;
+  assert.equal(ok.ok, true);
+  assert.equal(ok.text, "완성했습니다");
+  assert.equal(ok.approvalRequired, undefined, "완료된 실행을 승인 대기로 만들면 안 됩니다");
+
+  // 최종 답변이 없으면 예전처럼 승인 요청으로 멈추되, 사유 없이 끝내지 않는다.
+  const onlyApproval = "console.log(JSON.stringify({kind:'approval-required',summary:'도구 권한: run_command',detail:'승인 필요'}))";
+  const blocked = await runNode(onlyApproval, { parseLine }).promise;
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.approvalRequired, true);
+  assert.equal(blocked.approval.summary, "도구 권한: run_command");
+  // error가 비면 화면에 "알 수 없는 오류"만 남는다.
+  assert.ok(blocked.error && blocked.error.length > 0, "승인 결과에도 읽을 수 있는 사유가 있어야 합니다");
+});

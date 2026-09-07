@@ -530,9 +530,23 @@ function runAgentProcess({
           detail: permissionText.trim().slice(-2000),
         };
       }
-      // parser가 명시적으로 보낸 approval-required 이벤트는 항상 신뢰합니다.
-      if (parsedApproval) {
-        finish({ ok: false, approvalRequired: true, approval: parsedApproval, output: outputInfo });
+      // 승인 요청은 "답을 못 내고 멈췄다"는 신호다. 확정된 최종 답변이 이미
+      // 도착했다면 그 실행은 끝난 것이므로 승인 이벤트로 버리지 않는다.
+      //
+      // 실제로 이것 때문에 성공한 실행이 통째로 사라졌다: AGY의 내부 오류 문구
+      // ("declaring permissions: ... invalid tool call error")를 파서가 승인
+      // 요청으로 읽었고, 그 뒤에 정상 final이 도착했는데도 여기서 먼저 끊겼다.
+      // 게다가 이 결과에는 사유가 없어 화면에는 "알 수 없는 오류"만 남았다.
+      if (parsedApproval && !trustedText) {
+        finish({
+          ok: false,
+          approvalRequired: true,
+          approval: parsedApproval,
+          // 자동 승인이 켜진 방은 이 결과를 그대로 실패로 그린다. 사유가 없으면
+          // "알 수 없는 오류"가 되므로 어떤 경우에도 읽을 수 있는 이유를 싣는다.
+          error: parsedApproval.summary || "도구 실행 권한이 필요합니다.",
+          output: outputInfo,
+        });
         return;
       }
 

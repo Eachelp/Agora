@@ -1118,10 +1118,17 @@ class ChatRoom extends EventEmitter {
         : result?.timedOut
           ? "timeout"
           : "error";
+      // 승인 요청으로 끝났는데 자동 승인이 켜져 있으면 이 결과가 그대로 실패로
+      // 그려진다. 그때 사유만 적으면 "무슨 권한인지"를 알 수 없으므로 CLI가 준
+      // 원문을 함께 남긴다(길면 잘라서).
+      const approvalDetail = result?.approvalRequired ? String(result.approval?.detail || "").trim() : "";
+      const failureText = result?.error
+        ? (approvalDetail ? `${result.error}\n\n${approvalDetail.slice(-1000)}` : result.error)
+        : "알 수 없는 오류 (원본 로그를 확인해 주세요)";
       this.appendMessage({
         authorType: "agent",
         author: agent.id,
-        text: result?.error || "알 수 없는 오류",
+        text: failureText,
         error: true,
         failureKind,
         ...(result?.partialText ? { partialText: result.partialText } : {}),

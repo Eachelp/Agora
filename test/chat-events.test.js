@@ -226,3 +226,29 @@ test("agy의 비-command 도구는 tool-started/tool-finished로 정규화", () 
   assert.equal(finished.tool, "read_file");
   assert.equal(finished.outputBytes, 3);
 });
+
+// AGY는 내부 오류 문구에도 permission을 쓴다. 그걸 승인 요청으로 읽으면 그 턴이
+// 승인 대기로 끊기고, 뒤이어 도착한 정상 응답까지 버려진다(실제로 관측된 사고).
+test("agy: 도구 호출 자체가 잘못된 내부 오류는 승인 요청이 아니다", () => {
+  const step = (message) => JSON.stringify({
+    event: "step_update",
+    step_update: {
+      step_index: 56,
+      state: "ERROR",
+      step_type: "tool",
+      tool_name: "write_to_file",
+      tool_info: { name: "write_to_file", error: { type: "TOOL_ERROR", message } },
+    },
+  });
+
+  // 실제 로그에서 관측된 두 문구.
+  const internal = "declaring permissions: cortex tool write_to_file: convert tool call for permissions: "
+    + "model output error: invalid tool call error (invalid_args) G:\\x is not a valid artifact path";
+  assert.equal(parseAgyLine(step(internal)).kind, "tool-finished");
+  assert.equal(parseAgyLine(step("granting access to G:\\x: The parameter is incorrect.")).kind, "tool-finished");
+
+  // 진짜 승인 요청은 그대로 승인으로 읽는다.
+  const approval = parseAgyLine(step("permission denied: user approval required to run this command"));
+  assert.equal(approval.kind, "approval-required");
+  assert.match(approval.summary, /write_to_file/);
+});
