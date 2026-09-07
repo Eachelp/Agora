@@ -844,3 +844,27 @@ test("승인 대기는 남은 항목 수와 할 일을 함께 알려 준다", ()
   assert.match(status.headline, /2건/);
   assert.match(status.next, /승인하거나 거부/);
 });
+
+// 승인 대기인데 목록을 못 받으면 화면이 감춰지고 입력창만 "확인 대기"로 잠겨
+// 다시 막다른 길이 된다. 목록이 비어도 자리를 유지하고 길을 남겨야 한다.
+test("승인 항목을 못 받아도 화면이 사라지지 않고 다시 불러올 수 있다", () => {
+  const renderer = read("src/chat.js");
+  const fn = renderer.slice(renderer.indexOf("function renderSpecialistApprovals"));
+  const body = fn.slice(0, fn.indexOf("\nfunction "));
+  // 표시 여부는 "대기 중인가"로만 정한다. 항목 수로 감추지 않는다.
+  assert.match(body, /hidden = !awaitingHumanApproval\(\)/);
+  assert.ok(
+    !/length > 0[\s\S]{0,80}hidden/.test(body),
+    "항목이 없다고 화면을 감추면 안 됩니다"
+  );
+  // 조회 실패·빈 목록 모두 다시 불러올 수 있어야 한다.
+  assert.match(body, /확인 항목을 불러오지 못했습니다/);
+  assert.match(body, /다시 불러오기/);
+  // 거부로 대기에서 못 빠져나오는 경우의 탈출구.
+  assert.match(body, /chatApi\.specialistCancel\(sessionId\)/);
+  // 남은 항목이 없다고 완료라고 말하지 않는다.
+  assert.match(body, /완료로 처리되지 않습니다/);
+  assert.ok(!/완료되었습니다|완료했습니다/.test(body), "승인 화면이 완료를 단정하면 안 됩니다");
+  // 대기 상태를 벗어나면 조회 상태도 초기화한다(옛 오류 문구가 남지 않게).
+  assert.match(renderer, /specialistApprovalsFetch = "idle";\s*\n\s*renderSpecialistApprovals\(\);/);
+});

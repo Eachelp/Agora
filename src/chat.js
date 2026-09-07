@@ -146,6 +146,10 @@ let specialistFrozenRunId = null;
 let specialistPendingApprovals = [];
 // 처리 중인 항목(중복 제출 방지) — criterionId 집합.
 const specialistApprovalsInFlight = new Set();
+// 승인 항목 조회 상태: idle | loading | ready | error.
+// 조회에 실패했는데 목록이 비었다는 이유로 화면을 감추면, 입력창은 "확인 대기"로
+// 잠긴 채 확인할 것도 다시 불러올 길도 없는 막다른 상태가 된다.
+let specialistApprovalsFetch = "idle";
 let professionalModeEnabled = false;
 // 직전 상태에서 전문 실행이 살아 있었는지. "살아나는 순간"에만 전문 모드를 켜기
 // 위한 것이며, 매 이벤트마다 켜서 사용자의 토글을 덮어쓰지 않기 위해 둔다.
@@ -443,9 +447,10 @@ function setSpecialistState(state = {}) {
   // 승인 대기로 들어오면 항목을 받아 오고, 벗어나면 즉시 비운다. 화면이 이미
   // 처리된 항목을 계속 보여 주면 "승인했는데 그대로"로 보인다.
   if (awaitingHumanApproval()) refreshPendingApprovals();
-  else if (specialistPendingApprovals.length > 0) {
+  else if (specialistPendingApprovals.length > 0 || specialistApprovalsFetch !== "idle") {
     specialistPendingApprovals = [];
     specialistApprovalsInFlight.clear();
+    specialistApprovalsFetch = "idle";
     renderSpecialistApprovals();
   }
   // 전문 실행이 **새로 살아날 때** 그 조작 버튼을 한 번 드러낸다.
@@ -551,10 +556,24 @@ function awaitingHumanApproval() {
 async function refreshPendingApprovals() {
   const sessionId = activeSessionId;
   if (!sessionId) return;
+  if (specialistApprovalsFetch === "loading") return;
+  if (specialistApprovalsFetch === "idle") {
+    specialistApprovalsFetch = "loading";
+    renderSpecialistApprovals();
+  } else {
+    specialistApprovalsFetch = "loading";
+  }
   const result = await call(window.chatApi.specialistPendingApprovals(sessionId));
   if (sessionId !== activeSessionId) return;
-  if (!result) return;
+  if (!result) {
+    // 조회 실패. 목록을 비운 채 화면을 감추면 사용자가 길을 잃으므로,
+    // 다시 불러올 수 있는 자리를 남긴다(오류 내용은 call이 이미 알렸다).
+    specialistApprovalsFetch = "error";
+    renderSpecialistApprovals();
+    return;
+  }
   specialistPendingApprovals = Array.isArray(result.pending) ? result.pending : [];
+  specialistApprovalsFetch = "ready";
   renderSpecialistApprovals();
 }
 
@@ -601,19 +620,69 @@ async function resolveApproval(criterionId, approved) {
 function renderSpecialistApprovals() {
   if (!specialistApprovalsBar) return;
   specialistApprovalsBar.replaceChildren();
-  const show = awaitingHumanApproval() && specialistPendingApprovals.length > 0;
-  specialistApprovalsBar.hidden = !show;
-  if (!show) return;
+  // 승인 대기인 동안에는 목록이 비어 있어도 자리를 유지한다. 감추면 입력창이
+  // "확인 대기"로 잠긴 채 아무 길도 없는 상태가 된다.
+  specialistApprovalsBar.hidden = !awaitingHumanApproval();
+  if (specialistApprovalsBar.hidden) return;
 
   const head = document.createElement("div");
   head.className = "specialist-approvals-head";
-  head.textContent = `완료 전에 확인할 항목 ${specialistPendingApprovals.length}건`;
+  head.textContent = specialistPendingApprovals.length > 0
+    ? `완료 전에 확인할 항목 ${specialistPendingApprovals.length}건`
+    : "완료 전에 확인할 항목";
   specialistApprovalsBar.append(head);
 
   const hint = document.createElement("p");
   hint.className = "popover-hint";
   hint.textContent = "검수자가 대신 확인할 수 없는 항목입니다. 승인하면 기록 단계로 이어지고, 거부하면 완료로 처리하지 않습니다.";
   specialistApprovalsBar.append(hint);
+
+  // 보여 줄 항목이 없을 때. 감추지 않고 왜 비었는지와 다음 길을 남긴다.
+  if (specialistPendingApprovals.length === 0) {
+    const status = document.createElement("p");
+    status.className = "popover-status";
+    status.textContent = specialistApprovalsFetch === "loading"
+      ? "확인 항목을 불러오는 중입니다…"
+      : specialistApprovalsFetch === "error"
+        ? "확인 항목을 불러오지 못했습니다. 다시 불러와 주세요."
+        // 거부한 항목이 있으면 남은 대기 항목은 없지만 실행은 완료되지 않는다.
+        // 백엔드가 이 실행을 완료로 올리지 않으므로 화면도 완료라고 말하지 않는다.
+        : "남은 확인 항목이 없습니다. 거부한 항목이 있으면 이 실행은 완료로 처리되지 않습니다.";
+    specialistApprovalsBar.append(status);
+    if (specialistApprovalsFetch !== "loading") {
+      const actions = document.createElement("div");
+      actions.className = "specialist-approval-actions";
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "button";
+      retry.textContent = "다시 불러오기";
+      retry.addEventListener("click", () => {
+        specialistApprovalsFetch = "idle";
+        refreshPendingApprovals();
+      });
+      actions.append(retry);
+      // 승인으로 풀 수 없게 된 실행에서 빠져나갈 길. 새 기획은 PLAN 버튼이 맡는다.
+      if (specialistApprovalsFetch === "ready") {
+        const cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.className = "button";
+        cancel.textContent = "실행 취소";
+        cancel.title = "이 전문 실행을 중단합니다. 파일 변경은 그대로 남습니다";
+        cancel.addEventListener("click", async () => {
+          if (!window.confirm("이 전문 실행을 취소할까요? 구현자가 만든 파일 변경은 그대로 남습니다.")) return;
+          const sessionId = activeSessionId;
+          const result = await call(window.chatApi.specialistCancel(sessionId));
+          if (sessionId !== activeSessionId) return;
+          if (result?.specialist) setSpecialistState(result.specialist);
+          syncComposerLock();
+          renderHeader();
+        });
+        actions.append(cancel);
+      }
+      specialistApprovalsBar.append(actions);
+    }
+    return;
+  }
 
   for (const item of specialistPendingApprovals) {
     const row = document.createElement("div");
