@@ -634,3 +634,29 @@ test("boundedText는 상한이 작아 꼬리 예산이 0이어도 원문 전체�
   assert.equal(intact.truncated, false);
   assert.equal(intact.text, "짧다");
 });
+
+// 독립 발언은 여럿이 같은 폴더에서 동시에 돈다. 파일 단위 충돌은 프로그램이
+// 막지 않으므로(같은 파일을 둘이 고치면 나중 쓰기가 이긴다), 쓰기 권한일 때만
+// "각자 자기 폴더에서만" 계약을 준다. 읽기는 겹쳐도 안전하다.
+test("동시 실행 + 쓰기 권한일 때만 담당자별 폴더 규칙을 준다", () => {
+  const agents = [
+    { id: "claude", name: "Claude" },
+    { id: "codex", name: "GPT" },
+    { id: "agy", name: "Gemini" },
+  ];
+  const messages = [{ id: "m1", authorType: "user", author: "user", text: "각자 시안 만들어줘" }];
+  const build = (permissionMode, parallel) =>
+    buildAgentPrompt({ agent: agents[0], agents, messages, permissionMode, parallel });
+
+  const write = build("workspace-write", { folder: "claude", total: 3 });
+  assert.match(write, /참가자 3명이 같은 작업 폴더에서 동시에 실행/);
+  assert.match(write, /`claude\/` 하위에만/);
+  assert.match(write, /읽기는 자유입니다/);
+  // 폴더 전체에 영향을 주는 명령은 병렬에서 서로 섞인다.
+  assert.match(write, /git·패키지 설치·빌드/);
+
+  // 읽기 전용이면 덮어쓸 것이 없으므로 규칙을 붙이지 않는다.
+  assert.ok(!build("workspace-read", { folder: "claude", total: 3 }).includes("동시에 실행되고"));
+  // 혼자 도는 턴에도 붙이지 않는다.
+  assert.ok(!build("workspace-write", null).includes("동시에 실행되고"));
+});

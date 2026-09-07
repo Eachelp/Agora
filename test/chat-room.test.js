@@ -4079,6 +4079,36 @@ test("쓰기 권한에서도 독립 발언은 서로를 폴더 잠금으로 막�
   assert.equal(room.messages.filter((message) => message.authorType === "agent").length, 2);
 });
 
+test("동시 실행 시 담당자별 폴더 계약이 실제 프롬프트에 실린다", async () => {
+  const { WorkspaceMutationLease } = require("../src/agora/workspace-mutation-lease");
+  const prompts = [];
+  const room = new ChatRoom({
+    sessionId: "parallel-prompt-room",
+    agents: makeAgents(),
+    meta: { permissionMode: "workspace-write", workspace: os.tmpdir() },
+    mutationLease: new WorkspaceMutationLease(),
+    runAgent: ({ agent, prompt }) => {
+      prompts.push({ agentId: agent.id, prompt });
+      return { promise: Promise.resolve({ ok: true, text: `${agent.id} 답` }), cancel: () => {} };
+    },
+  });
+  room.sendUserMessage({ text: "@claude @codex 각자 시안 만들어줘", independent: true });
+  await settle(room);
+
+  assert.equal(prompts.length, 2);
+  for (const { agentId, prompt } of prompts) {
+    // 폴더 이름은 담당자 id다 — 누가 만들었는지 결과에 그대로 남는다.
+    assert.match(prompt, new RegExp("`" + agentId + "/` 하위에만"));
+    assert.match(prompt, /동시에 실행되고 있습니다/);
+  }
+
+  // 이어 발언(순차)에는 붙이지 않는다. 덮어쓸 동시 실행이 없다.
+  prompts.length = 0;
+  room.sendUserMessage({ text: "@claude @codex 이어서 얘기해줘", independent: false });
+  await settle(room);
+  assert.ok(prompts.every(({ prompt }) => !prompt.includes("동시에 실행되고 있습니다")));
+});
+
 test("큐에서 차례를 기다리는 턴을 '유실'로 안내하지 않는다", async () => {
   const runner = gatedRunner();
   const room = new ChatRoom({ agents: makeAgents(), runAgent: runner.runAgent });

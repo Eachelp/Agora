@@ -512,7 +512,7 @@ class ChatRoom extends EventEmitter {
             attachments,
             turnRootId: entry.id,
             independent,
-            ...(parallelGroupId ? { parallelGroupId } : {}),
+            ...(parallelGroupId ? { parallelGroupId, parallelTotal: order.length } : {}),
             ...(order.length > 1 && !independent
               ? { broadcast: { position: index + 1, total: order.length } }
               : {}),
@@ -1108,6 +1108,11 @@ class ChatRoom extends EventEmitter {
         specialist: context.specialist || null,
         consult: context.consult || null,
         broadcast: context.broadcast || null,
+        // 독립 발언 묶음으로 동시에 도는 턴이면, 각자 자기 폴더에서만 쓰도록
+        // 계약을 준다(폴더 이름은 담당자 id — 누가 만들었는지 그대로 남는다).
+        parallel: context.parallelGroupId
+          ? { folder: agent.id, total: context.parallelTotal || 0 }
+          : null,
         handoff: context.handoff || null,
         // 전문 모드 실행 중에는 @멘션 호출을 끕니다. 구현·검토·기록이
         // 담당자 밖으로 새어 나가는 것을 막기 위해서입니다.

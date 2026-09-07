@@ -81,6 +81,7 @@ function buildAgentPrompt({
   consult = null,
   handoff = null,
   broadcast = null,
+  parallel = null,
   mentionsEnabled = !discussion,
   discussionSummary = null,
   simplifyMeta = null,
@@ -287,6 +288,21 @@ function buildAgentPrompt({
   if (!isBuilder && broadcast && broadcast.position > 1) {
     lines.push(
       `- 사용자 메시지에 참가자 ${broadcast.total}명이 차례로 답하는 중이고, 당신은 ${broadcast.position}번째입니다. 앞선 참가자의 답변을 읽고, 겹치는 내용은 반복하지 말고 보완하거나 다른 관점만 더하세요.`
+    );
+  }
+  // 독립 발언은 여럿이 같은 폴더에서 **동시에** 실행된다. 파일 단위 충돌은
+  // 프로그램이 막지 않으므로(같은 파일을 둘이 고치면 나중 쓰기가 이긴다),
+  // 쓰기 권한일 때는 각자 자기 폴더에서만 작업하도록 계약을 준다.
+  // 읽기는 겹쳐도 안전하므로 제한하지 않는다.
+  if (!isBuilder && parallel && permissionMode === "workspace-write") {
+    lines.push(
+      `- 지금 참가자 ${parallel.total}명이 같은 작업 폴더에서 동시에 실행되고 있습니다. 서로의 결과를 덮어쓰지 않도록 다음을 지키세요.`
+    );
+    lines.push(
+      `  · 새로 만들거나 고치는 파일은 작업 폴더 아래 \`${parallel.folder}/\` 하위에만 두세요. 그 밖의 기존 파일은 고치지 마세요(읽기는 자유입니다).`
+    );
+    lines.push(
+      "  · git·패키지 설치·빌드처럼 작업 폴더 전체에 영향을 주는 명령은 실행하지 마세요. 다른 참가자의 작업과 섞입니다."
     );
   }
   if (!isBuilder && discussion) {
