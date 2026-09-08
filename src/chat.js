@@ -2009,7 +2009,12 @@ function specialistStatusView() {
       tone: "done",
     };
   }
-  if (specialistStatus === "INTERRUPTED") {
+  // 중단됐더라도 READY로 돌아와 승인된 기획을 그대로 들고 있으면 '실행 ▶'을 바로
+  // 누를 수 있다(백엔드는 status가 아니라 승인된 기획만 본다). 그때 중단 안내만
+  // 내보내면 화면은 PLAN·전체 실행만 말하는데 정작 강조된 버튼은 '실행 ▶'이라,
+  // 눌러도 되는 것인지 알 수 없게 된다. 스테퍼도 이미 '대기'로 그려진다.
+  const interruptedButRunnable = specialistNode === "READY" && specialistImplementationReady;
+  if (specialistStatus === "INTERRUPTED" && !interruptedButRunnable) {
     return {
       headline: stop?.text || "실행이 중단되었습니다.",
       next: stop?.next || "PLAN 또는 전체 실행으로 다시 시작할 수 있습니다.",
@@ -2039,7 +2044,11 @@ function specialistStatusView() {
       };
     }
     return {
-      headline: "기획 검수를 통과했습니다. 실행을 기다리고 있습니다.",
+      // 중단됐다는 사실은 지우지 않는다 — 다만 "그래서 지금 무엇을 할 수 있는지"를
+      // 함께 말한다.
+      headline: specialistStatus === "INTERRUPTED"
+        ? "이전 실행은 중단됐지만 승인된 기획은 그대로 남아 있습니다."
+        : "기획 검수를 통과했습니다. 실행을 기다리고 있습니다.",
       next: "‘기획안 보기’로 확인한 뒤 ‘실행 ▶’을 누르면 구현을 시작합니다. 입력칸에 쓰면 기획을 수정합니다.",
       tone: "waiting",
     };
@@ -5312,6 +5321,14 @@ function lockComposer(locked) {
       composerInput.disabled = false;
       sendButton.textContent = "답변 보내기";
     }
+  } else if (specialistBlockedAvailable) {
+    // 막힘은 "실행이 도는 중"이 아니라 "사용자를 기다리는 중"이다. 여기서
+    // "실행이 끝난 뒤"라고 안내하면 아무것도 끝나지 않는데 기다리게 된다
+    // (승인 대기에서 이미 같은 문제를 고쳤다).
+    composerInput.disabled = true;
+    sendButton.disabled = true;
+    composerInput.placeholder = "아래 ‘다음 처리 선택’에서 변경 유지·복원·재기획 중 하나를 골라 주세요";
+    sendButton.textContent = "선택 대기";
   } else if (specialistNode === "READY" && !specialistActive) {
     composerInput.disabled = false;
     sendButton.disabled = false;

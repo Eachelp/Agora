@@ -956,3 +956,79 @@ test("기획서를 읽지 못한 READY는 실행 대기가 아니라 그 사유�
   assert.match(status.next, /TASK\.md/);
   assert.ok(!/‘실행 ▶’을 누르면/.test(status.next), "누를 수 없는 버튼을 안내하면 안 됩니다");
 });
+
+// 입력칸 잠금 문구는 "지금 무엇을 기다리는지"를 말해야 한다. 실제 판정 함수를
+// DOM 스텁 위에서 그대로 돌린다(문자열 검사가 아니라 동작 확인).
+function loadComposerLock(state = {}) {
+  const vm = require("node:vm");
+  const src = read("src/chat.js");
+  const start = src.indexOf("function lockComposer(locked) {");
+  assert.ok(start > 0, "입력칸 잠금 코드를 찾지 못했습니다");
+  // 다음 최상위 함수 직전까지가 lockComposer의 본문이다.
+  const end = src.indexOf("\nfunction ", start + 1);
+  assert.ok(end > start, "입력칸 잠금 코드의 끝을 찾지 못했습니다");
+  const context = {
+    composerInput: { disabled: false, placeholder: "", blur() {} },
+    sendButton: { disabled: false, textContent: "" },
+    attachButton: { disabled: false },
+    professionalModeEnabled: true,
+    professionalRunWasLive: false,
+    specialistNeedsInput: false,
+    specialistStopReason: null,
+    specialistNode: null,
+    specialistActive: false,
+    specialistBlockedAvailable: false,
+    specialistResumePhase: null,
+    specialistPendingApprovals: [],
+    ...state,
+  };
+  context.awaitingHumanApproval = () =>
+    context.specialistStopReason === "HUMAN_APPROVAL_REQUIRED"
+    || context.specialistResumePhase === "awaiting_human_approval";
+  vm.createContext(context);
+  vm.runInContext(src.slice(start, end), context);
+  context.lockComposer(Boolean(state.locked));
+  return { placeholder: context.composerInput.placeholder, button: context.sendButton.textContent };
+}
+
+// 막힘은 "실행이 도는 중"이 아니라 "사용자를 기다리는 중"이다. 아무것도 끝나지
+// 않는데 "실행이 끝난 뒤"라고 안내하면 사용자는 영영 기다린다.
+test("막힘 상태의 입력칸은 다음 처리를 고르라고 안내한다", () => {
+  const blocked = loadComposerLock({
+    specialistNode: "IMPLEMENTING",
+    specialistBlockedAvailable: true,
+    locked: true,
+  });
+  assert.match(blocked.placeholder, /다음 처리 선택/);
+  assert.ok(!/실행이 끝난 뒤/.test(blocked.placeholder), "끝나지 않을 것을 기다리게 하면 안 됩니다");
+  assert.equal(blocked.button, "선택 대기");
+
+  // 실제로 실행이 도는 중에는 기존 안내가 그대로다.
+  const running = loadComposerLock({ specialistNode: "IMPLEMENTING", specialistActive: true, locked: true });
+  assert.match(running.placeholder, /실행이 끝난 뒤/);
+});
+
+// 중단된 실행이 READY로 돌아오면 '실행 ▶'이 눌린다(백엔드는 status가 아니라
+// 승인된 기획만 본다). 그때 안내가 PLAN·전체 실행만 말하면, 강조된 버튼을
+// 눌러도 되는지 알 수 없다.
+test("중단됐어도 승인된 기획이 남은 READY는 실행할 수 있다고 안내한다", () => {
+  const ready = {
+    specialistNode: "READY",
+    specialistStatus: "INTERRUPTED",
+    specialistStopReason: "EXECUTION_INTERRUPTED",
+    specialistPlanReady: true,
+    specialistImplementationReady: true,
+  };
+  const v = loadSpecialistView(ready);
+  assert.equal(v.canStartImplementation(), true, "백엔드는 이 상태에서 실행을 허용합니다");
+  assert.match(v.status.next, /실행 ▶/, "눌리는 버튼이 안내에 있어야 합니다");
+  assert.match(v.status.headline, /중단/, "중단됐다는 사실은 지우지 않습니다");
+  assert.equal(v.status.tone, "waiting");
+  // 스테퍼와 상태 줄의 색이 갈라지지 않는다.
+  assert.equal(v.progress.tone, v.status.tone);
+
+  // 승인된 기획을 못 읽는 중단이라면 예전처럼 중단 안내가 맞다.
+  const noPlan = loadSpecialistView({ ...ready, specialistImplementationReady: false });
+  assert.equal(noPlan.canStartImplementation(), false);
+  assert.match(noPlan.status.headline, /실행이 중단되었습니다/);
+});
