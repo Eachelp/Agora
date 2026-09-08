@@ -2,6 +2,7 @@ const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const { StringDecoder } = require("node:string_decoder");
 const { buildRunMetrics } = require("./chat-run-metrics");
+const { isInternalToolError } = require("./chat-events");
 
 // 에이전트 작업은 며칠간 이어질 수도 있으므로 기본 실행 시간 제한을 두지 않습니다.
 // timeoutMs는 테스트나 명시적인 호출자가 양수를 전달한 경우에만 적용됩니다.
@@ -516,9 +517,15 @@ function runAgentProcess({
       const trustedText = String(text || "").trim();
 
       const permissionText = `${parsedError || ""}\n${stderr || ""}`;
+      // 파서가 놓친 승인 요청을 stderr 문구로 마지막에 한 번 더 잡는 휴리스틱입니다.
+      // 파서와 같은 배제 조건을 씁니다(chat-events.js의 isAgyApprovalError): 도구를
+      // 잘못 호출했다는 내부 오류 문구에도 "declaring permissions" 같은 권한 단어가
+      // 섞여 나오는데, 그걸 승인 요청으로 읽으면 실패 사유가 사라지고 화면에는
+      // 뜰 수 없는 승인 카드만 남습니다.
       const looksLikePermissionIssue =
         /permission|approval|권한|승인/i.test(permissionText) &&
-        /denied|required|prompt|거부|필요/i.test(permissionText);
+        /denied|required|prompt|거부|필요/i.test(permissionText) &&
+        !isInternalToolError(permissionText);
 
       // 신뢰 가능한 최종 답변이 없을 때만 권한 문제 휴리스틱을 적용합니다.
       // trustedText가 있으면(=실제로 정상 완료됐으면) stderr에 섞인 권한 관련

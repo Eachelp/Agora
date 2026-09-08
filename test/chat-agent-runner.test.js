@@ -429,6 +429,19 @@ test("본문 없이 권한 오류만 남으면 승인 요청으로 승격한다"
   assert.equal(result.approvalRequired, true);
 });
 
+// 파서와 같은 배제 조건: 도구를 잘못 호출했다는 내부 오류에도 권한 단어가 섞여
+// 나온다. 그걸 승인 요청으로 읽으면 실패 사유가 사라지고 "알 수 없는 오류"만 남는다.
+test("내부 도구 오류에 권한 단어가 섞여 있어도 승인 요청으로 승격하지 않는다", async () => {
+  const run = runNode(
+    "console.error('error declaring permissions: invalid tool call, parameter is incorrect');process.exit(1)"
+  );
+  const result = await run.promise;
+  assert.ok(!result.approvalRequired, "내부 오류를 승인 요청으로 바꾸면 안 됩니다");
+  assert.equal(result.ok, false);
+  // 사유가 사라지지 않아야 한다.
+  assert.match(String(result.error || ""), /invalid tool call|종료 코드|exit/i);
+});
+
 test("중간 답변(delta)만 있고 권한 오류로 끝나면 성공이 아니라 승인 요청으로 처리한다", async () => {
   const script = [
     "console.log(JSON.stringify({kind:'delta',text:'작업 중간 결과'}))",

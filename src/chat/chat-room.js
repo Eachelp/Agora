@@ -1028,18 +1028,24 @@ class ChatRoom extends EventEmitter {
     if (!this.needsWorkspaceLease(context)) return this.runResponseTurn(agent, context, generation);
 
     // 병렬 그룹 안의 턴은 그룹이 이미 잡아 둔 소유권 안으로 중첩해 들어간다.
-    const lease = this.acquireWorkspaceMutation({
-      purpose: "chat-turn",
-      parentToken: context.workspaceLeaseParentToken || null,
-    });
+    const parentToken = context.workspaceLeaseParentToken || null;
+    const lease = this.acquireWorkspaceMutation({ purpose: "chat-turn", parentToken });
     if (!lease.ok) {
       this.appendSystem(lease.error);
       return { ok: false, stopReason: "WORKSPACE_BUSY", error: lease.error };
     }
+    // 턴 도중 승인 대기로 소유권을 잠시 놓았다가 다시 잡을 수 있다. finally는
+    // 처음 받은 token이 아니라 "지금 들고 있는" token을 돌려줘야 한다.
+    const leaseState = { token: lease.token, parentToken };
     try {
-      return await this.runResponseTurn(agent, context, generation);
+      return await this.runResponseTurn(
+        agent,
+        { ...context, workspaceLeaseState: leaseState },
+        generation
+      );
     } finally {
-      this.releaseWorkspaceMutation(lease.token);
+      this.releaseWorkspaceMutation(leaseState.token);
+      leaseState.token = null;
     }
   }
 
@@ -1209,11 +1215,50 @@ class ChatRoom extends EventEmitter {
       if (generation !== this.generation || result?.cancelled) return;
       emitEvent({ kind: "run-end", ok: Boolean(result?.ok) });
       if (!result?.approvalRequired || agent.autoApprove || approvedRetry) break;
+      // 승인 재시도는 다음 실행에 자동 승인을 실어 보내는 것이고, 자동 승인은
+      // workspace-write에서만 유효하다(chat-argv.js). 그 아래 권한에서 승인 카드를
+      // 띄우면 사용자가 승인해도 같은 실행이 같은 이유로 실패한다 — 카드를 띄우지
+      // 않고, 무엇을 바꿔야 하는지 사유로 알린다.
+      if (permissionMode !== "workspace-write") {
+        // 이 단계의 권한이 방 권한보다 낮게 잡힌 경우(전문 실행 단계 상한, 역할 상담)는
+        // 방 설정을 올려도 풀리지 않는다. 무엇을 바꿔야 하는지 그대로 구분해 알린다.
+        const cappedByStage = this.meta.permissionMode === "workspace-write";
+        result = {
+          ...result,
+          ok: false,
+          error: cappedByStage
+            ? "이 단계는 읽기 전용이라 도구 실행 권한을 승인할 수 없습니다. 파일을 바꾸는 일은 구현 단계에서 진행해 주세요."
+            : "이 도구 실행에는 파일 변경 권한이 필요합니다. 방 권한을 '워크스페이스 쓰기'로 올린 뒤 다시 시도해 주세요.",
+        };
+        break;
+      }
+      // 승인 카드는 사용자가 답할 때까지 기다린다(제한 시간 없음). 그동안 workspace
+      // 변경 소유권을 쥐고 있으면 같은 폴더를 쓰는 다른 대화가 전부 막힌다.
+      // 이 시점의 실행은 이미 끝났으므로(run-end) 파일을 더 건드리지 않는다 —
+      // 기다리는 동안은 소유권을 놓고, 승인을 받은 뒤 다시 잡는다.
+      const leaseState = context.workspaceLeaseState || null;
+      if (leaseState?.token) {
+        this.releaseWorkspaceMutation(leaseState.token);
+        leaseState.token = null;
+      }
       const approved = await this.requestApproval(agent, result.approval);
       if (generation !== this.generation) return;
       if (!approved) {
         result = { ok: false, error: "권한 요청을 거부했습니다." };
         break;
+      }
+      if (leaseState) {
+        // 기다리는 사이 다른 대화가 같은 폴더를 잡았을 수 있다. 되찾지 못하면
+        // 승인을 받았더라도 재실행하지 않는다(동시 변경 금지).
+        const regained = this.acquireWorkspaceMutation({
+          purpose: "chat-turn",
+          parentToken: leaseState.parentToken,
+        });
+        if (!regained.ok) {
+          this.appendSystem(regained.error);
+          return { ok: false, stopReason: "WORKSPACE_BUSY", error: regained.error };
+        }
+        leaseState.token = regained.token;
       }
       approvedRetry = true;
     }

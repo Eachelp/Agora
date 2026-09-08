@@ -1430,6 +1430,8 @@ test("권한 요청을 승인하면 같은 턴을 자동 승인으로 한 번 �
   const calls = [];
   const room = new ChatRoom({
     agents: makeAgents(),
+    // 재시도는 자동 승인을 실어 보내는 것이고, 자동 승인은 이 권한에서만 유효하다.
+    meta: { permissionMode: "workspace-write" },
     runAgent: ({ agent, autoApprove }) => {
       calls.push({ agentId: agent.id, autoApprove });
       return {
@@ -4079,6 +4081,127 @@ test("쓰기 권한에서도 독립 발언은 서로를 폴더 잠금으로 막�
   assert.equal(room.messages.filter((message) => message.authorType === "agent").length, 2);
 });
 
+// 승인 카드는 사용자가 답할 때까지 제한 없이 기다린다. 그동안 workspace 소유권을
+// 쥐고 있으면 같은 폴더를 쓰는 다른 대화가 통째로 멈춘다.
+test("승인 카드를 기다리는 동안에는 작업 폴더 소유권을 놓는다", async () => {
+  const { WorkspaceMutationLease } = require("../src/agora/workspace-mutation-lease");
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-approval-lease-"));
+  const lease = new WorkspaceMutationLease();
+  const calls = [];
+  const room = new ChatRoom({
+    sessionId: "approval-lease-room",
+    agents: makeAgents(),
+    meta: { permissionMode: "workspace-write", workspace },
+    mutationLease: lease,
+    runAgent: ({ agent, autoApprove }) => {
+      calls.push({ agentId: agent.id, autoApprove });
+      return {
+        promise: Promise.resolve(autoApprove
+          ? { ok: true, text: "승인 후 완료" }
+          : { ok: false, approvalRequired: true, approval: { summary: "명령 권한" } }),
+        cancel: () => {},
+      };
+    },
+  });
+
+  let approvalId = null;
+  room.once("approval-request", (event) => { approvalId = event.approvalId; });
+  room.sendUserMessage("@codex 실행해줘");
+  await tick();
+
+  assert.ok(approvalId, "승인 카드가 떠야 합니다");
+  // 기다리는 사이 다른 대화가 같은 폴더를 잡을 수 있어야 한다.
+  const other = lease.acquire({ resourceKind: "workspace", resourceId: workspace, holderId: "other-room" });
+  assert.equal(other.ok, true, `다른 대화가 막히면 안 됩니다: ${other.error || ""}`);
+  lease.release(other.token);
+
+  room.resolveApproval(approvalId, "approve");
+  await settle(room);
+  assert.deepEqual(calls, [
+    { agentId: "codex", autoApprove: false },
+    { agentId: "codex", autoApprove: true },
+  ]);
+  assert.equal(room.messages.at(-1).text, "승인 후 완료");
+  // 턴이 끝나면 소유권도 남지 않는다.
+  const after = lease.acquire({ resourceKind: "workspace", resourceId: workspace, holderId: "other-room" });
+  assert.equal(after.ok, true, "턴이 끝난 뒤에도 소유권이 남아 있으면 안 됩니다");
+  lease.release(after.token);
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+// 기다리는 사이 다른 대화가 폴더를 잡았다면, 승인을 받았어도 재실행하지 않는다.
+test("승인 뒤 작업 폴더를 되찾지 못하면 재실행하지 않는다", async () => {
+  const { WorkspaceMutationLease } = require("../src/agora/workspace-mutation-lease");
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-approval-busy-"));
+  const lease = new WorkspaceMutationLease();
+  const calls = [];
+  const room = new ChatRoom({
+    sessionId: "approval-busy-room",
+    agents: makeAgents(),
+    meta: { permissionMode: "workspace-write", workspace },
+    mutationLease: lease,
+    runAgent: ({ agent, autoApprove }) => {
+      calls.push({ agentId: agent.id, autoApprove });
+      return {
+        promise: Promise.resolve({ ok: false, approvalRequired: true, approval: { summary: "명령 권한" } }),
+        cancel: () => {},
+      };
+    },
+  });
+
+  let approvalId = null;
+  room.once("approval-request", (event) => { approvalId = event.approvalId; });
+  room.sendUserMessage("@codex 실행해줘");
+  await tick();
+  assert.ok(approvalId, "승인 카드가 떠야 합니다");
+
+  const other = lease.acquire({ resourceKind: "workspace", resourceId: workspace, holderId: "other-room" });
+  assert.equal(other.ok, true);
+  room.resolveApproval(approvalId, "approve");
+  await settle(room);
+
+  assert.deepEqual(calls, [{ agentId: "codex", autoApprove: false }], "재실행하면 안 됩니다");
+  const busy = room.messages.filter(
+    (message) => message.authorType === "system" && /작업 폴더/.test(message.text || "")
+  );
+  assert.equal(busy.length, 1, "무엇 때문에 멈췄는지 알려야 합니다");
+  lease.release(other.token);
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+// 자동 승인은 workspace-write에서만 유효하다(chat-argv.js). 그 아래 권한에서 카드를
+// 띄우면 승인해도 같은 실행이 같은 이유로 실패한다.
+test("쓰기 권한이 아니면 승인 카드 대신 권한을 올리라고 알린다", async () => {
+  const calls = [];
+  const events = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { permissionMode: "chat" },
+    runAgent: ({ agent, autoApprove }) => {
+      calls.push({ agentId: agent.id, autoApprove });
+      return {
+        promise: Promise.resolve({
+          ok: false,
+          approvalRequired: true,
+          approval: { summary: "명령 권한", detail: "rm -rf 실행 권한이 필요합니다" },
+        }),
+        cancel: () => {},
+      };
+    },
+  });
+  room.on("approval-request", (event) => events.push(event));
+  room.sendUserMessage("@codex 실행해줘");
+  await settle(room);
+
+  assert.equal(events.length, 0, "승인해도 통하지 않는 카드를 띄우면 안 됩니다");
+  assert.deepEqual(calls, [{ agentId: "codex", autoApprove: false }], "같은 실행을 반복하면 안 됩니다");
+  const last = room.messages.at(-1);
+  assert.equal(last.error, true);
+  assert.match(last.text, /워크스페이스 쓰기/);
+  // 무슨 권한이 막혔는지 원문도 남긴다.
+  assert.match(last.text, /rm -rf 실행 권한이 필요합니다/);
+});
+
 test("동시 실행 시 담당자별 폴더 계약이 실제 프롬프트에 실린다", async () => {
   const { WorkspaceMutationLease } = require("../src/agora/workspace-mutation-lease");
   const prompts = [];
@@ -4186,4 +4309,30 @@ test("그룹 폴더 잠금이 거부돼도 같은 요청을 다시 보낼 수 �
   // dedupe 키가 남으면 같은 요청이 영영 다시 예약되지 않는다.
   assert.equal(room.pendingTurns.size, 0, "거부된 턴의 예약 기록은 남으면 안 됩니다");
   lease.release(held.token);
+});
+
+// 전문 실행 단계 상한(읽기 전용)으로 막힌 경우에는 방 설정을 올려도 풀리지 않는다.
+test("단계 상한으로 막힌 권한 요청은 방 권한을 올리라고 하지 않는다", async () => {
+  const events = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { permissionMode: "workspace-write" },
+    runAgent: () => ({
+      promise: Promise.resolve({
+        ok: false,
+        approvalRequired: true,
+        approval: { summary: "명령 권한" },
+      }),
+      cancel: () => {},
+    }),
+  });
+  room.on("approval-request", (event) => events.push(event));
+  const agent = room.findAgent("codex");
+  await room.respond(agent, { consult: { stage: "review" } });
+
+  assert.equal(events.length, 0);
+  const last = room.messages.at(-1);
+  assert.equal(last.error, true);
+  assert.match(last.text, /읽기 전용/);
+  assert.ok(!last.text.includes("방 권한"), "방 설정을 올려도 풀리지 않는 경우입니다");
 });

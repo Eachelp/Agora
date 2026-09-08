@@ -296,12 +296,19 @@ const AGY_INTERNAL_TOOL_ERROR = /invalid tool call|invalid_args|invalid artifact
 // 그래서 명령어 안에 우연히 내부 오류 표식(not a valid, invalid_args 등)이 들어
 // 있으면 **진짜 권한 거부가 내부 오류로 오분류돼** 승인 카드가 뜨지 않는다.
 // 판정 전에 되풀이된 명령을 지우고, 남은 설명 문구만 본다.
+// CLI가 낸 오류 문구가 "도구를 잘못 호출했다"는 내부 오류인가.
+// 승인 요청과 구분하기 위한 배제 조건이며, 러너의 stderr 휴리스틱
+// (chat-agent-runner.js)도 같은 기준을 쓴다.
+function isInternalToolError(text) {
+  return AGY_INTERNAL_TOOL_ERROR.test(String(text || ""));
+}
+
 function isAgyApprovalError(message, commandLine = "") {
   const raw = String(message || "");
   if (!raw) return false;
   const echoed = String(commandLine || "").trim();
   const text = echoed ? raw.split(echoed).join(" ") : raw;
-  if (AGY_INTERNAL_TOOL_ERROR.test(text)) return false;
+  if (isInternalToolError(text)) return false;
   return /permission|approval|권한|승인/i.test(text)
     && /denied|denies|require|request|ask|prompt|not allowed|거부|필요|요청/i.test(text);
 }
@@ -434,6 +441,7 @@ function createLineParser(providerId, options = {}) {
 
 module.exports = {
   createLineParser,
+  isInternalToolError,
   parseClaudeLine,
   parseCodexLine,
   parseAgyLine,
