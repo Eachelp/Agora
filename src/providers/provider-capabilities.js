@@ -15,7 +15,14 @@ const MODEL_PROBE_TIMEOUT_MS = 15000;
 // 계정에 열린 모델을 보고합니다). 이 시간이 지나면 캐시로 먼저 응답하고 뒤에서 다시
 // 조회해 갱신합니다.
 const MODEL_CATALOG_TTL_MS = 6 * 60 * 60 * 1000;
-const SAFE_MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{1,63}$/;
+// 조회에 실패한 카탈로그를 매 화면 갱신마다 다시 프로브하지 않도록 두는 최소 간격.
+// 실패는 대개 CLI가 응답하지 않는 상황이라, 실패 직후 연달아 재시도해 봐야
+// 같은 시간만 더 기다리게 된다.
+const CATALOG_RETRY_BACKOFF_MS = 5 * 60 * 1000;
+// 저장된 카탈로그의 형식 버전. 파서가 바뀌면(예: `claude --help`의 전체 이름 예시를
+// 더 이상 모델로 읽지 않게 된 변경) 예전 형식으로 저장된 목록은 그대로 쓰면 안 된다.
+// 버전이 다르면 캐시가 없는 것으로 보고 지금 다시 조회한다.
+const CATALOG_SCHEMA_VERSION = 2;
 
 function probeCodexModelCatalog(commandPath, needsShell, timeoutMs = 8000, deps = {}) {
   return new Promise((resolve) => {
@@ -271,7 +278,10 @@ const PROVIDER_DEFS = Object.freeze([
     authProbeArgs: Object.freeze(["auth", "status"]),
     loginCommand: "claude auth login",
     // 별칭 목록은 발견 시 `claude --help`로 갱신되며, 아래는 그 폴백입니다.
-    models: Object.freeze(["default", "fable", "opus", "sonnet"]),
+    // 조회에 실패했을 때 쓰는 기본 목록. CLAUDE_MODEL_OPTIONS와 같은 집합이어야
+    // 한다 — 여기서 haiku가 빠져 있으면 haiku를 골라 둔 사용자가 조회 실패 한 번에
+    // 조용히 다른 모델로 옮겨 간다.
+    models: Object.freeze(["default", "fable", "opus", "sonnet", "haiku"]),
     modelOptions: CLAUDE_MODEL_OPTIONS,
     modelsFromHelp: true,
     efforts: CLAUDE_EFFORTS,
@@ -430,7 +440,6 @@ function createCapabilityService(options = {}) {
   let records = null;
   let discovering = null;
   let refreshing = null;
-  const listeners = new Set();
 
   function statSafe(file) {
     try {
@@ -593,7 +602,7 @@ function createCapabilityService(options = {}) {
     if (!force && cachedCatalog) {
       // CLI 버전이 바뀌었거나 카탈로그가 오래됐습니다. 시작을 막지 않도록 지금은
       // 마지막 목록으로 응답하고, refreshStaleCatalogs()가 뒤에서 다시 조회해
-      // 갱신합니다(호출자는 갱신 알림을 구독해 화면을 새로 그립니다).
+      // 갱신합니다(호출자는 그 반환값을 보고 화면을 새로 그립니다).
       applyCatalog(record, cachedCatalog);
       record.modelCatalogStale = true;
       return record;
@@ -607,6 +616,10 @@ function createCapabilityService(options = {}) {
   // 저장된 카탈로그가 쓸 만한 모양이면 돌려줍니다(모델 옵션이 비어 있으면 없는 것).
   function catalogFromCache(def, cached) {
     if (!cached || !Array.isArray(cached.modelOptions) || cached.modelOptions.length === 0) return null;
+    // 형식이 다른(= 예전 파서가 쓴) 목록은 없는 것으로 본다. 예전 claude 파서는
+    // 도움말의 전체 이름 예시(claude-fable-5)까지 모델로 담았는데, 그런 항목이
+    // 남아 있으면 새 파서를 넣어도 사용자는 계속 옛 고정 버전을 고르게 된다.
+    if (cached.catalogSchemaVersion !== CATALOG_SCHEMA_VERSION) return null;
     if (def.id === "agy" && cached.modelOptionsVersion !== AGY_MODEL_OPTIONS_VERSION) return null;
     const models = Array.isArray(cached.models) && cached.models.length > 0
       ? cached.models
@@ -665,10 +678,16 @@ function createCapabilityService(options = {}) {
     const probed = await probeCatalog(def, record.commandPath, record.needsShell);
     if (!probed) {
       if (fallbackCatalog) applyCatalog(record, fallbackCatalog);
+      // 실패한 것도 "아직 못 받은 목록"이다. 표시해 두지 않으면 캐시가 없는
+      // 첫 실행에서 조회가 한 번 실패했을 때 기본값만 있는 목록이 다음 정기
+      // 재확인(1시간)까지 그대로 굳는다. 다만 곧바로 다시 찌르지는 않는다.
+      record.modelCatalogStale = true;
+      record.catalogRetryAt = now() + CATALOG_RETRY_BACKOFF_MS;
       return false;
     }
     applyCatalog(record, probed);
     delete record.modelCatalogStale;
+    delete record.catalogRetryAt;
     if (stat) {
       record.cachePatch = {
         [cacheKey]: {
@@ -678,11 +697,35 @@ function createCapabilityService(options = {}) {
           models: probed.models,
           modelOptions: probed.modelOptions,
           probedAt: now(),
+          catalogSchemaVersion: CATALOG_SCHEMA_VERSION,
           ...(def.id === "agy" ? { modelOptionsVersion: AGY_MODEL_OPTIONS_VERSION } : {}),
         },
       };
     }
     return true;
+  }
+
+  // 프로바이더 하나가 캐시에 남길 수 있는 실행 경로 수. 버전 관리자(asdf/volta 등)를
+  // 쓰면 Node를 올릴 때마다 경로가 바뀌어 항목이 계속 쌓이는데, 그 전부가 설정 파일에
+  // 들어 있어 관계없는 설정 변경마다 통째로 다시 쓰인다. 최근 것 몇 개면 충분하다.
+  const MAX_CACHE_ENTRIES_PER_PROVIDER = 3;
+
+  // provider별로 최근 조회한 것만 남긴다(캐시 키는 `${id}:${실행경로}`).
+  function pruneCache(cached) {
+    const byProvider = new Map();
+    for (const [key, value] of Object.entries(cached)) {
+      const id = key.split(":")[0];
+      if (!byProvider.has(id)) byProvider.set(id, []);
+      byProvider.get(id).push([key, value]);
+    }
+    const kept = {};
+    for (const entries of byProvider.values()) {
+      entries
+        .sort((a, b) => (b[1]?.probedAt || 0) - (a[1]?.probedAt || 0))
+        .slice(0, MAX_CACHE_ENTRIES_PER_PROVIDER)
+        .forEach(([key, value]) => { kept[key] = value; });
+    }
+    return kept;
   }
 
   function persistPatches(results) {
@@ -695,7 +738,7 @@ function createCapabilityService(options = {}) {
     }
     if (Object.keys(patches).length > 0) {
       try {
-        cache.set({ ...(cache.get() || {}), ...patches });
+        cache.set(pruneCache({ ...(cache.get() || {}), ...patches }));
       } catch {}
     }
   }
@@ -707,7 +750,17 @@ function createCapabilityService(options = {}) {
   async function discover({ force = false, recheck = false } = {}) {
     if (records && !force && !recheck) return records;
     if (discovering && !force) return discovering;
-    discovering = (async () => {
+    // 강제 새로고침이라도 이미 도는 탐지와 겹치게 두지 않는다. 겹치면 두 탐지가
+    // 같은 CLI를 동시에 프로브하고(순차 탐지로 피하려던 상황이다) records는
+    // 늦게 끝난 쪽이 이겨, 화면에 돌려준 목록과 실제로 실행에 쓰는 목록이
+    // 달라진다. 앞선 탐지가 끝나기를 기다렸다가 이어서 돈다.
+    const previous = discovering;
+    const run = (async () => {
+      if (previous) {
+        try {
+          await previous;
+        } catch {}
+      }
       let persistedCache = null;
       try {
         persistedCache = cache.get() || null;
@@ -723,10 +776,13 @@ function createCapabilityService(options = {}) {
       records = results;
       return records;
     })();
+    discovering = run;
     try {
-      return await discovering;
+      return await run;
     } finally {
-      discovering = null;
+      // 내가 마지막 주자일 때만 비운다. 뒤이어 대기 중인 탐지가 있으면 그쪽이
+      // discovering을 들고 있으므로 건드리지 않는다.
+      if (discovering === run) discovering = null;
     }
   }
 
@@ -735,46 +791,54 @@ function createCapabilityService(options = {}) {
   }
 
   // discover()가 캐시로 응답해 둔 오래된 카탈로그를 뒤에서 다시 조회합니다.
-  // 목록이 실제로 바뀐 경우에만 구독자에게 알립니다. 동시에 여러 번 불려도
-  // 조회는 한 번만 돕니다.
+  // 목록이 실제로 바뀌었는지는 반환값(changed)으로 알립니다 — 호출자가 그때만
+  // 화면을 새로 그립니다. 동시에 여러 번 불려도 조회는 한 번만 돕니다.
   async function refreshStaleCatalogs() {
     if (refreshing) return refreshing;
-    refreshing = (async () => {
-      if (discovering) await discovering;
-      const current = records || [];
-      const stale = current.filter((record) => record.modelCatalogStale && record.commandPath);
-      let changed = false;
-      for (const record of stale) {
-        const def = PROVIDER_DEFS.find((entry) => entry.id === record.id);
-        if (!def) continue;
-        const before = catalogSignature(record);
-        const refreshed = await refreshCatalog(def, record, {
-          stat: statSafe(record.commandPath),
-          cacheKey: `${def.id}:${record.commandPath}`,
-          fallbackCatalog: { models: record.models, modelOptions: record.modelOptions },
-        });
-        // 조회 중에 다시 탐지돼 record가 교체됐으면 이 결과는 버립니다.
-        if (records !== current) {
-          delete record.cachePatch;
-          continue;
-        }
-        if (refreshed && catalogSignature(record) !== before) changed = true;
-      }
-      if (records === current) persistPatches(stale);
-      if (changed) {
-        for (const listener of listeners) {
-          try {
-            listener(records);
-          } catch {}
-        }
-      }
-      return { changed, records };
-    })();
+    refreshing = runStaleRefresh(true);
     try {
       return await refreshing;
     } finally {
       refreshing = null;
     }
+  }
+
+  // retryOnce: records가 도중에 교체돼 결과가 버려졌을 때 한 번 더 돌 것인가.
+  async function runStaleRefresh(retryOnce) {
+    if (discovering) await discovering;
+    const current = records || [];
+    const stale = current.filter((record) => (
+      record.modelCatalogStale
+      && record.commandPath
+      && !(Number.isFinite(record.catalogRetryAt) && now() < record.catalogRetryAt)
+    ));
+    let changed = false;
+    for (const record of stale) {
+      const def = PROVIDER_DEFS.find((entry) => entry.id === record.id);
+      if (!def) continue;
+      const before = catalogSignature(record);
+      const refreshed = await refreshCatalog(def, record, {
+        stat: statSafe(record.commandPath),
+        cacheKey: `${def.id}:${record.commandPath}`,
+        fallbackCatalog: { models: record.models, modelOptions: record.modelOptions },
+      });
+      // 조회 중에 다시 탐지돼 record가 교체됐으면 이 결과는 버립니다.
+      if (records !== current) {
+        delete record.cachePatch;
+        continue;
+      }
+      if (refreshed && catalogSignature(record) !== before) changed = true;
+    }
+    if (records !== current) {
+      // 조회 도중 재탐지가 records를 통째로 갈아 끼웠다. 방금 받은 목록은
+      // 버려진 상태이므로, 그대로 changed:false를 돌려주면 호출자는 갱신이
+      // 없었다고 읽고 화면은 오래된 목록으로 남는다. 새 records 기준으로
+      // 한 번 더 돈다(한 번만 — 무한 재시도로 번지지 않게).
+      if (!retryOnce) return { changed, records };
+      return await runStaleRefresh(false);
+    }
+    persistPatches(stale);
+    return { changed, records };
   }
 
   function catalogSignature(record) {
@@ -787,18 +851,11 @@ function createCapabilityService(options = {}) {
     ]));
   }
 
-  // 백그라운드 카탈로그 갱신으로 모델 목록이 바뀌면 호출됩니다. 해제 함수를 돌려줍니다.
-  function subscribe(listener) {
-    if (typeof listener !== "function") return () => {};
-    listeners.add(listener);
-    return () => listeners.delete(listener);
-  }
-
   function getRecord(id) {
     return (records || []).find((record) => record.id === id) || null;
   }
 
-  return { discover, refreshStaleCatalogs, hasStaleCatalogs, subscribe, getRecord, defs: PROVIDER_DEFS };
+  return { discover, refreshStaleCatalogs, hasStaleCatalogs, getRecord, defs: PROVIDER_DEFS };
 }
 
 // renderer로 보내는 안전한 뷰: 실행 경로/셸/환경 정보는 제외합니다.

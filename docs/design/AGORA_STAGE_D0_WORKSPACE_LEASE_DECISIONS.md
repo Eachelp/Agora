@@ -85,17 +85,42 @@ parentToken이 현재 lease의 유효한 token       → 중첩(depth++)
 
 renderer가 버튼을 비활성화하더라도 control plane이 스스로 막아야 한다는 원칙을 따른다.
 
+**갱신(독립 발언 동시 실행 이후)**: 위에서 근거로 든 "room 안의 turn은 `turnActive`로
+직렬화된다"는 이제 turn 큐를 타는 경로에서도 성립하지 않는다 — 독립 발언 묶음은
+`pumpTurnQueue`가 한 묶음으로 모아 `Promise.all`로 동시에 돌린다. 그래서 `parentToken`이
+증명하는 "진짜 중첩"의 범위가 넓어졌다: 예전에는 한 작업 안의 하위 단계였고, 지금은
+**한 사용자 지시가 만든 동시 실행 묶음**도 포함한다. 계약 자체(증명 없는 재진입 금지)는
+그대로다 — 묶음도 그룹이 소유권을 한 번 잡고 각 turn이 그 token으로 중첩해 들어간다.
+
 ### 2.4 참여자는 셋이다
 
 ```text
 1. Professional 실행           — 블록 모드(runExecutionBlock)와 step 모드 모두
 2. Checkpoint restore          — 사용자 트리거 경로
-3. workspace-write 일반 채팅 turn
+3. workspace-write 일반 채팅 turn — 순차 1개, 또는 독립 발언 묶음 N개(2.5)
 ```
 
 **`runExecutionBlock`만 감싼 초기 구현은 step 모드를 통째로 빠뜨렸다(B1).** `resumeSpecialist`는 `mode === "step"`이면 `resumeStepPhase`로 분기하며, 이 경로는 `runExecutionBlock`을 타지 않고 자체적으로 freeze·checkpoint 생성·Builder 실행을 한다. 일반 `respond()`의 소유권은 `!context.specialist`에만 적용되므로 specialist Builder가 그쪽에서 대신 보호되지도 않았다. 결과적으로 step 모드에서는 one-writer 보증이 존재하지 않았다.
 
 초기 통합 테스트가 이를 잡지 못한 이유는 `runExecutionBlock`을 **직접 호출해 wrapper를 검증**했기 때문이다. 실제 진입점(`resumeSpecialist` → step 분기)을 타지 않았다. 이번 수정의 회귀 테스트는 진입점에서 시작한다.
+
+### 2.5 독립 발언 묶음은 한 참여자다
+
+독립 발언(`independent`)은 담당자들이 서로의 답을 보지 않으므로 순서를 지킬 이유가
+없다. 그래서 같은 묶음은 동시에 실행한다. 이때 turn마다 소유권을 잡으면 두 번째
+turn이 곧바로 "이미 이 대화가 작업 폴더를 변경하고 있습니다"로 튕긴다.
+
+계약: **묶음이 소유권을 한 번 잡고(`purpose: "chat-turn-group"`), 각 turn은 그
+token을 `parentToken`으로 중첩해 들어간다.** 밖에서 보면 참여자는 여전히 하나이고,
+다른 대화는 예전과 똑같이 막힌다. one-writer 보증은 **대화 사이**에서 유지된다.
+
+묶음 **안쪽**에서는 같은 파일을 두 담당자가 고치면 나중 쓰기가 이긴다. 소유권으로
+막지 않는 이유는, 이 실행 방식이 "각자 따로 만들어 비교한다"는 사용자 지시에서
+나오기 때문이다. 대신 쓰기 권한 + 동시 실행이면 프롬프트에 담당자별 폴더 계약을
+싣는다(`chat-prompt.js`: `` `<담당자 id>/` `` 하위에만 새 파일을 두고, 기존 파일은
+고치지 않는다). 이것은 **지시이지 강제가 아니다** — argv 경계는 여전히 workspace
+전체를 열어 준다. 강제·탐지는 D-0의 범위 밖이며, 필요해지면 실행 뒤 변경 목록
+(`workspace-diff`)으로 계약 위반을 보고하는 쪽이 먼저다.
 
 **소유권 범위가 모드마다 다른 이유**:
 
@@ -106,7 +131,7 @@ step의 단계 사이에 다른 대화가 workspace를 바꿨는지는 **소유�
 
 `workspace-read` / `chat` 실행은 참여자가 아니다. 읽기는 서로 막지 않는다.
 
-### 2.5 memory-only이며 보증 경계가 있다
+### 2.6 memory-only이며 보증 경계가 있다
 
 ```text
 보증 범위: 하나의 Agora main process 안에서
@@ -119,7 +144,7 @@ step의 단계 사이에 다른 대화가 workspace를 바꿨는지는 **소유�
 
 memory-only라는 성질이 여기서 판단을 정한다: 잘못 남긴 소유권은 앱 재시작으로 사라지지만, 잘못 푼 소유권은 데이터를 잃는다. 그래서 남기는 쪽이 fail-closed다.
 
-### 2.6 API는 일반화 가능한 모양, 구현은 workspace만
+### 2.7 API는 일반화 가능한 모양, 구현은 workspace만
 
 ```text
 acquire({ resourceKind, resourceId, holderId, runId, role, purpose, parentToken })
@@ -127,7 +152,7 @@ acquire({ resourceKind, resourceId, holderId, runId, role, purpose, parentToken 
 
 `resourceKind`가 `workspace`가 아니면 **조용히 통과시키지 않고 거부한다.** 범용 Resource Registry를 미리 만들지 않으면서(Charter non-goal), D-B에서 확장할 자리는 남긴다. 거부하지 않고 통과시키면 "통제되는 줄 알았는데 아니었던" 자원이 생긴다.
 
-### 2.7 결정 시점 provenance — seam이 아니라 실제 sink
+### 2.8 결정 시점 provenance — seam이 아니라 실제 sink
 
 `acquired / reentered / denied / released`를 결정 시점에 방출하고, **production 조립에서 실제 sink를 연결한다.**
 
@@ -137,7 +162,7 @@ acquire({ resourceKind, resourceId, holderId, runId, role, purpose, parentToken 
 
 **provenance 기록 실패가 mutation 통제를 무너뜨리지 않는다** — emit은 통제 경로 밖에서 삼킨다.
 
-### 2.8 사용자 표면에 내부 어휘를 노출하지 않는다
+### 2.9 사용자 표면에 내부 어휘를 노출하지 않는다
 
 Charter §9(Progressive Disclosure). BUSY 메시지는 "같은 작업 폴더를 다른 대화가 변경하고 있습니다"이며 lease/holder/resourceId 같은 엔진 어휘를 쓰지 않는다. 테스트가 이를 강제한다.
 
@@ -161,7 +186,7 @@ Charter §9(Progressive Disclosure). BUSY 메시지는 "같은 작업 폴더를 
 
 - **PLAN 블록(기획 단계)은 참여자에 넣지 않았다.** Charter D-0이 명시한 참여자는 셋이고, PLAN은 mutation~판정 구간이 아니다. 다만 Planner의 TASK.md 저장은 Agora 자신의 managed write이므로, 향후 관측 결과 경합이 확인되면 Charter 개정(§8) 후 확장한다. 임의 확장하지 않는다.
 - **verification 실행 경로**는 아직 존재하지 않는다. D-A0/D-A2에서 이 블록 소유권 안으로 들어온다(2.4의 구간 정의가 이미 그것을 포함한다).
-- **영속 provenance 저장소와 graph projection**은 만들지 않았다(D-C 범위). D-0은 process 수명의 결정 기록까지 책임진다(2.7).
+- **영속 provenance 저장소와 graph projection**은 만들지 않았다(D-C 범위). D-0은 process 수명의 결정 기록까지 책임진다(2.8).
 
 ---
 
@@ -199,10 +224,10 @@ Windows `npm test` 1040/0 fail은 통과했으나, production 진입 경로 기�
 | # | 지적 | 수정 |
 |---|---|---|
 | B1 | step 모드 전문 실행이 lease를 우회 | `resumeStepPhase`를 phase 단위 소유권으로 감쌈 (2.4) |
-| B2 | 세션 삭제가 실행 중 writer의 소유권을 조기 강제 해제 | `releaseWorkspaceMutationsIfIdle()` — 실행이 남아 있으면 유지 (2.5) |
+| B2 | 세션 삭제가 실행 중 writer의 소유권을 조기 강제 해제 | `releaseWorkspaceMutationsIfIdle()` — 실행이 남아 있으면 유지 (2.6) |
 | B3 | `holder=sessionId` 재진입이 동시 restore IPC를 허용 | `parentToken` 증명 기반 재진입 (2.3) |
 | B4 | lexical 경로 identity가 realpath alias를 접지 못함 | `fs.realpathSync` 추가 (2.1) |
-| F1 | production에 provenance sink 미연결 | 조립에서 실제 journal 연결 (2.7) |
+| F1 | production에 provenance sink 미연결 | 조립에서 실제 journal 연결 (2.8) |
 
 검수의 방법론적 지적 하나를 함께 수용했다 — **wrapper를 직접 호출하는 테스트는 진입 경로의 우회를 잡지 못한다.** 이번 회귀 테스트는 모두 실제 진입점에서 시작한다.
 

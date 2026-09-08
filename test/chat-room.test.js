@@ -4336,3 +4336,115 @@ test("단계 상한으로 막힌 권한 요청은 방 권한을 올리라고 하
   assert.match(last.text, /읽기 전용/);
   assert.ok(!last.text.includes("방 권한"), "방 설정을 올려도 풀리지 않는 경우입니다");
 });
+
+// 실행 중인 턴은 방금 도착한 @멘션을 대신 볼 수 없다. 그 promise를 돌려주면
+// 호출이 조용히 사라진다 — 순차 실행과 같게 새 턴으로 잡아야 한다.
+test("동시 실행 중인 담당자를 @멘션으로 부르면 순차 실행과 똑같이 이어서 답한다", async () => {
+  async function run(independent) {
+    const calls = [];
+    const room = new ChatRoom({
+      agents: makeAgents(),
+      random: () => 0.9,
+      runAgent: ({ agent }) => {
+        calls.push(agent.id);
+        if (agent.id === "claude") {
+          return {
+            promise: new Promise((resolve) => setTimeout(() => resolve({ ok: true, text: "claude 답" }), 120)),
+            cancel: () => {},
+          };
+        }
+        return { promise: Promise.resolve({ ok: true, text: "시안 완료. @claude 확인해줘" }), cancel: () => {} };
+      },
+    });
+    room.sendUserMessage({ text: "@claude @codex 각자 시안 만들어줘", independent });
+    await settle(room);
+    await new Promise((resolve) => setTimeout(resolve, 160));
+    await settle(room);
+    return calls;
+  }
+  assert.deepEqual(await run(false), ["claude", "codex", "claude"], "순차 실행의 기준 동작");
+  assert.deepEqual(await run(true), ["claude", "codex", "claude"], "동시 실행에서도 멘션이 살아 있어야 합니다");
+});
+
+// 같은 사용자 메시지가 같은 담당자를 두 번 배정하는 것은 그대로 접는다.
+test("같은 사용자 메시지가 같은 담당자를 두 번 배정하지는 않는다", async () => {
+  const runner = gatedRunner();
+  const room = new ChatRoom({ agents: makeAgents(), runAgent: runner.runAgent });
+  room.sendUserMessage({ text: "@claude @codex 각자 해줘", independent: true });
+  await tick();
+  const claude = room.findAgent("claude");
+  const rootId = room.messages.find((message) => message.authorType === "user")?.id;
+  room.scheduleResponse(claude, { turnRootId: rootId });
+  assert.equal(room.turnState().queue.length, 0, "같은 배정이 큐에 또 쌓이면 안 됩니다");
+  runner.release();
+  await settle(room);
+  assert.deepEqual(runner.started.sort(), ["claude", "codex"]);
+});
+
+// 중지는 subprocess 종료를 기다리지 않는다. 화면 표시용 카운터(activeRuns)는
+// 즉시 0이 되지만, 그 값으로 소유권을 정리하면 아직 살아서 파일을 쓰는 실행이
+// 있는데도 다른 대화에 폴더를 넘기게 된다.
+test("중지 직후에는 실행이 끝날 때까지 작업 폴더 소유권을 놓지 않는다", async () => {
+  const { WorkspaceMutationLease } = require("../src/agora/workspace-mutation-lease");
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-stop-lease-"));
+  const lease = new WorkspaceMutationLease();
+  const finishers = [];
+  const room = new ChatRoom({
+    sessionId: "stop-lease-room",
+    agents: makeAgents(),
+    meta: { permissionMode: "workspace-write", workspace },
+    mutationLease: lease,
+    runAgent: () => ({
+      // 실제 CLI처럼 cancel()은 종료 신호만 보내고, promise는 프로세스가
+      // 실제로 끝날 때 풀린다.
+      promise: new Promise((resolve) => { finishers.push(() => resolve({ ok: false, cancelled: true })); }),
+      cancel: () => {},
+    }),
+  });
+  room.sendUserMessage({ text: "@claude @codex 각자 만들어줘", independent: true });
+  await tick();
+  assert.equal(room.liveRuns, 2);
+
+  room.interject();
+  assert.equal(room.activeRuns, 0, "화면 표시는 즉시 멈춥니다");
+  assert.equal(room.liveRuns, 2, "실행은 아직 살아 있습니다");
+  assert.equal(room.releaseWorkspaceMutationsIfIdle(), 0, "살아 있는 실행이 있으면 놓지 않습니다");
+  const busy = lease.acquire({ resourceKind: "workspace", resourceId: workspace, holderId: "other-room" });
+  assert.equal(busy.ok, false, "다른 대화가 그 틈에 들어오면 안 됩니다");
+
+  for (const finish of finishers) finish();
+  await settle(room);
+  assert.equal(room.liveRuns, 0);
+  const free = lease.acquire({ resourceKind: "workspace", resourceId: workspace, holderId: "other-room" });
+  assert.equal(free.ok, true, "실행이 끝나면 소유권이 남아 있으면 안 됩니다");
+  lease.release(free.token);
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+// 실패 문구가 "원본 로그를 확인해 주세요"라고 안내하는데, 거부한 경우에만
+// 그 로그 이름과 부분 출력을 버리고 있었다.
+test("권한 요청을 거부해도 진단 정보는 남는다", async () => {
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { permissionMode: "workspace-write" },
+    runAgent: () => ({
+      promise: Promise.resolve({
+        ok: false,
+        approvalRequired: true,
+        approval: { summary: "명령 권한" },
+        partialText: "중간까지 만든 결과",
+        output: { stdoutBytes: 4096, rawLogName: "r1.log" },
+      }),
+      cancel: () => {},
+    }),
+  });
+  room.once("approval-request", ({ approvalId }) => room.resolveApproval(approvalId, "reject"));
+  room.sendUserMessage("@codex 실행해줘");
+  await settle(room);
+
+  const last = room.messages.at(-1);
+  assert.equal(last.error, true);
+  assert.equal(last.text, "권한 요청을 거부했습니다.");
+  assert.equal(last.partialText, "중간까지 만든 결과");
+  assert.equal(last.runOutput.rawLogName, "r1.log");
+});

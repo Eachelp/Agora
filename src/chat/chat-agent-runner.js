@@ -552,6 +552,10 @@ function runAgentProcess({
           // 자동 승인이 켜진 방은 이 결과를 그대로 실패로 그린다. 사유가 없으면
           // "알 수 없는 오류"가 되므로 어떤 경우에도 읽을 수 있는 이유를 싣는다.
           error: parsedApproval.summary || "도구 실행 권한이 필요합니다.",
+          // 화면에 흘러가던 중간 출력은 다른 실패 분기와 똑같이 보존한다.
+          // 여기만 빠뜨려서, 답변을 다 스트리밍한 실행이 승인 요청으로 끝나면
+          // 그 내용이 통째로 사라졌다.
+          ...(deltaText.trim() ? { partialText: deltaText.trim() } : {}),
           output: outputInfo,
         });
         return;

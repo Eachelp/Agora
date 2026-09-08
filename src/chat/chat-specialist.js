@@ -1877,8 +1877,29 @@ class SpecialistMixin {
     });
   }
 
+  // READY(기획 검수 통과)는 재개 상태를 남기지 않는다 — 다음 동작이 "실행"이라
+  // 기다릴 답이 없기 때문이다. 하지만 화면은 이 상태에서 입력칸을 '기획 수정'으로
+  // 열어 두고, FSM도 READY+WAITING에서 USER_ANSWER_PLAN을 허용한다. 그 입력이
+  // 실제로 먹히도록 승인된 기획에서 같은 모양의 재개 상태를 만들어 준다.
+  resumeForReadyPlanEdit() {
+    const run = this.professionalRun;
+    const plan = this.professionalPlan;
+    if (!run || run.node !== "READY" || run.status !== "WAITING") return null;
+    if (!plan?.taskInfo) return null;
+    return {
+      stages: plan.stages,
+      mode: plan.mode,
+      maxAutoRevisions: plan.implementationAutoRevisions || 0,
+      implementationAutoRevisions: plan.implementationAutoRevisions || 0,
+      action: plan.mode === "auto" ? "full" : "plan",
+      feedback: plan.feedback || "",
+      taskInfo: plan.taskInfo,
+      phase: "plan_ready",
+    };
+  }
+
   async _answerPlanQuestion(answer) {
-    const resume = this.specialistResume;
+    const resume = this.specialistResume || this.resumeForReadyPlanEdit();
     // READY(plan_ready) 상태 및 task_contract_incomplete 상태에서도 기획 수정을 허용한다.
     if (!resume || !["needs_decision", "plan_review_fix_required", "plan_ready", "task_contract_incomplete"].includes(resume.phase)) {
       return { ok: false, error: "답변을 기다리는 기획 질문이 없거나 기획 수정 가능한 상태가 아닙니다." };
@@ -2377,13 +2398,19 @@ class SpecialistMixin {
     this.specialistResume = null;
     this.emitSpecialistState();
     try {
+      // checkpoint 실패 후 사용자 선택 처리: 재시도 / 무보호 진행 / 취소.
+      //
+      // 이 분기는 실행 모드보다 **먼저** 와야 한다. checkpoint 실패는 단계가
+      // 아니라 상태이고, resumeStepPhase는 이 phase를 모른다. 순서가 반대였을 때
+      // 단계별(step) 실행에서 백업이 실패하면 사용자의 선택이 "알 수 없는
+      // 단계입니다"로 끝났고, 그 직전에 specialistResume를 비운 뒤라 재개 상태까지
+      // 사라져 어떤 버튼도 듣지 않았다.
+      if (resume.phase === "checkpoint_failed") {
+        return await this.resumeCheckpointFailure(resume, requestedGeneration, checkpointAction, lease.token);
+      }
       // 단계별(step) 실행은 phase에 따라 다음 한 단계만 진행합니다.
       if (resume.mode === "step") {
         return await this.resumeStepPhase(resume, requestedGeneration, lease.token);
-      }
-      // checkpoint 실패 후 사용자 선택 처리: 재시도 / 무보호 진행 / 취소.
-      if (resume.phase === "checkpoint_failed") {
-        return await this.resumeCheckpointFailure(resume, requestedGeneration, checkpointAction, lease.token);
       }
       this.appendSystem("기획이 승인되었습니다. 구현을 이어서 진행합니다.");
       try {

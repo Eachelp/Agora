@@ -516,3 +516,26 @@ test("AB2. [REVIEW] base argv가 이미 --conversation을 가지면 실행 전�
   assert.equal(r2.stopReason, "AGY_TURN_START_FAILED");
   assert.equal(b.calls.length, 0, "attached --conversation=도 실행 전 거부");
 });
+
+// continuity 실패는 최종 판정이다. 승인 요청 플래그가 살아남으면 화면에는
+// "도구 권한을 승인해 주세요" 카드가 뜨고, 승인하면 같은 실행을 한 번 더 돌린 뒤
+// 같은 이유로 실패한다.
+test("R-2. continuity 실패는 승인 요청으로 되살아나지 않는다", async () => {
+  const { adapter } = makeAdapter((i) => i === 0
+    ? { conversationId: ID_A, result: { ok: true, text: "one" } }
+    : {
+        emit: [],
+        result: {
+          ok: false,
+          approvalRequired: true,
+          approval: { summary: "도구 권한: run_command", detail: "승인 필요" },
+          error: "도구 실행 권한이 필요합니다.",
+        },
+      });
+  await adapter.runTurn({ context: ctx(), invocation: inv(), session: session("kA") }).promise;
+  const r2 = await adapter.runTurn({ context: ctx(), invocation: inv(), session: session("kA") }).promise;
+  assert.equal(r2.ok, false);
+  assert.equal(r2.stopReason, "AGY_CONVERSATION_RESUME_FAILED");
+  assert.equal(r2.approvalRequired, undefined, "승인 요청으로 둔갑하면 안 됩니다");
+  assert.equal(r2.approval, undefined);
+});

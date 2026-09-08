@@ -398,8 +398,20 @@ Builder가 `BLOCKED` 상태로 STOP했을 때, 프로그램은 사용자에게 �
 
 `@all` 요청 시 **같은 턴의 다른 AI 답변(형제 메시지)을 서로 전달하지 않고**, 동일한 전(前) 턴 맥락 스냅샷만 보고 각각 독립 응답한다.
 
-- **구현 지점**: [chat-room.js](../../src/chat/chat-room.js) `independent` 플래그와 `promptMessages(promptLimit, independent)`, [chat-prompt.js](../../src/chat/chat-prompt.js) broadcast 분기.
+독립 발언은 서로의 답을 보지 않으므로 순서를 지킬 이유가 없다. 같은 묶음은
+`pumpTurnQueue`가 한 번에 모아 동시에 실행한다(`runParallelTurns`). 쓰기 권한에서는
+묶음이 workspace 소유권을 한 번 잡고 각 turn이 그 token으로 중첩해 들어가므로,
+다른 대화는 예전과 똑같이 막힌다(Stage D-0 §2.5).
+
+- **구현 지점**: [chat-room.js](../../src/chat/chat-room.js) `independent` 플래그와
+  `promptMessages(promptLimit, independent)`, 동시 실행(`runParallelTurns`,
+  `parallelGroupId`), [chat-prompt.js](../../src/chat/chat-prompt.js) broadcast 분기와
+  `parallel` 폴더 계약.
 - **UI**: [chat.html](../../src/chat.html#L118) `@all 응답 방식` 토글 (이어 발언 / 독립 발언).
+- **동시 쓰기**: 쓰기 권한 + 동시 실행이면 프롬프트에 담당자별 폴더 계약을 싣는다
+  (`` `<담당자 id>/` `` 하위에만 새 파일). **지시이지 강제가 아니다** — argv 경계는
+  workspace 전체를 열어 주고, 같은 파일을 함께 고치면 나중 쓰기가 이긴다. 탐지·보고는
+  후속 항목이다(Stage D-0 §2.5).
 - **상태**: 구현 완료. 일반 채팅·토론의 순차 transcript 전달은 그대로 유지한다.
 
 ---

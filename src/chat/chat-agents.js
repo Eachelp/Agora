@@ -16,10 +16,18 @@ function resolvedModel(record, configured) {
     return configured;
   }
   if (record.id === "claude") {
-    // 별칭(fable)은 설치된 CLI가 아는 최신 Fable을 가리키므로 그대로 넘긴다.
-    // 예전에는 별칭을 목록의 전체 이름(claude-fable-5 — --help 예시에서 온 옛 고정
-    // 버전)으로 바꿔 넘겨, "최신"을 고른 사용자가 조용히 옛 버전을 쓰게 됐다.
-    // 목록에 없는 저장값(예: 예전 목록의 claude-fable-5)도 같은 이유로 별칭으로 돌아간다.
+    // 별칭(fable/opus/sonnet/haiku)은 설치된 CLI가 아는 그 계열의 최신 모델을
+    // 가리키므로 그대로 넘긴다. 예전에는 별칭을 목록의 전체 이름(claude-fable-5 —
+    // --help 예시에서 온 옛 고정 버전)으로 바꿔 넘겨, "최신"을 고른 사용자가 조용히
+    // 옛 버전을 쓰게 됐다.
+    //
+    // 목록에 없는 저장값은 **같은 계열의 별칭**으로 돌린다(claude-opus-4 → opus).
+    // 예전에는 계열과 무관하게 전부 fable로 보냈는데, 그러면 조회가 한 번 실패해
+    // 목록이 기본값으로 줄어든 순간 haiku를 고른 사용자가 아무 안내 없이 더 비싼
+    // 모델로 옮겨 갔다. 계열을 알 수 없으면 CLI 기본값에 맡긴다.
+    const family = String(configured || "").match(/^(?:claude-)?(fable|opus|sonnet|haiku)\b/i)?.[1]?.toLowerCase();
+    const sameFamily = family ? options.find((option) => option.id === family) : null;
+    if (sameFamily) return sameFamily.id;
     return options.find((option) => option.id === "fable")?.id || options[0]?.id || "default";
   }
   // 모델 옵션을 조회하지 못하면 "unknown"을 넘겨 호출을 실패시키는 대신

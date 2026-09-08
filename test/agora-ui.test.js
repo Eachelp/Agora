@@ -633,7 +633,11 @@ function loadSpecialistView(state = {}) {
     specialistStopReason: null,
     specialistMissingSections: null,
     specialistBlockedAvailable: false,
+    specialistResumeAvailable: false,
+    specialistPlanReady: false,
     specialistNeedsInput: false,
+    // 승인된 기획서를 실제로 들고 있는 상태가 기본값이다.
+    specialistImplementationReady: true,
     specialistResumePhase: null,
     specialistPendingApprovals: [],
     ...state,
@@ -647,6 +651,8 @@ function loadSpecialistView(state = {}) {
     progress: context.specialistProgressView(),
     status: context.specialistStatusView(),
     steps: context.PROFESSIONAL_STEPS,
+    canStartImplementation: (options = {}) =>
+      context.canStartImplementationNow({ implementationConfigured: true, busy: false, ...options }),
   };
 }
 
@@ -804,14 +810,39 @@ test("모드 토글은 라벨대로 전환만 하고 입력창을 함께 갱신�
 // ---- 버튼 활성 조건이 백엔드 조건과 같은가 ----
 test("기획 검수를 통과하면 '실행 ▶'이 실제로 눌린다", () => {
   const renderer = read("src/chat.js");
-  const decl = renderer.slice(renderer.indexOf("const canStartImplementation"));
-  const expr = decl.slice(0, decl.indexOf(";"));
-  // READY에는 승인 대기 resume이 늘 있으므로 awaitingUser로 막으면 영영 꺼져 있다.
-  assert.ok(!expr.includes("blockedOrBusy"), "READY의 승인 대기를 '바쁨'으로 세면 안 됩니다");
-  assert.ok(!expr.includes("awaitingUser"), "READY의 승인 대기를 '바쁨'으로 세면 안 됩니다");
-  for (const needed of ["implementationConfigured", "specialistPlanReady", "!specialistBusy", "!specialistBlockedAvailable", "!awaitingAnswer"]) {
-    assert.ok(expr.includes(needed), `${needed} 조건이 있어야 합니다`);
-  }
+  // 소스 모양이 아니라 실제 판정을 돌린다. 예전 결함(READY에 늘 있는 재개 상태를
+  // '바쁨'으로 셈)은 표현식만 검사하면 그대로 통과했다.
+  const ready = {
+    specialistNode: "READY",
+    specialistStatus: "WAITING",
+    specialistPlanReady: true,
+    specialistImplementationReady: true,
+    // READY에는 재개 상태가 남아 있을 수 있고, 그것만으로 막으면 안 된다.
+    specialistResumeAvailable: true,
+  };
+  assert.equal(loadSpecialistView(ready).canStartImplementation(), true, "통과 직후에는 눌려야 합니다");
+  // 백엔드가 거절하는 상태에서는 꺼져 있어야 한다.
+  assert.equal(
+    loadSpecialistView({ ...ready, specialistImplementationReady: false }).canStartImplementation(),
+    false, "승인된 기획서가 없으면 백엔드가 거절합니다"
+  );
+  assert.equal(
+    loadSpecialistView({ ...ready, specialistBlockedAvailable: true }).canStartImplementation(),
+    false, "막힌 실행은 먼저 정리해야 합니다"
+  );
+  assert.equal(
+    loadSpecialistView({ ...ready, specialistNeedsInput: true }).canStartImplementation(),
+    false, "사용자가 답해야 하는 대기가 있으면 시작하지 않습니다"
+  );
+  assert.equal(
+    loadSpecialistView({ ...ready, specialistStopReason: "HUMAN_APPROVAL_REQUIRED" }).canStartImplementation(),
+    false, "완료 전 확인 대기 중에는 시작하지 않습니다"
+  );
+  assert.equal(loadSpecialistView(ready).canStartImplementation({ busy: true }), false);
+  assert.equal(
+    loadSpecialistView(ready).canStartImplementation({ implementationConfigured: false }),
+    false, "구현 담당자가 없으면 시작할 수 없습니다"
+  );
   assert.match(renderer, /professionalImplementationButton\.disabled = !canStartImplementation/);
   // 강조와 활성 조건이 갈라지면 "빛나는데 눌리지 않는" 버튼이 생긴다.
   assert.match(renderer, /const nextIsImplementation = canStartImplementation/);
@@ -910,4 +941,18 @@ test("동시에 도는 턴 목록이 화면 상태까지 전달된다", () => {
   // "일반 응답 진행 중" 판정도 동시 실행을 봐야 한다.
   const busy = renderer.slice(renderer.indexOf("const ordinaryTurnBusy"));
   assert.match(busy.slice(0, 400), /roomTurnState\.running \|\| \[\]/);
+});
+
+// 앱을 다시 켰을 때 승인된 기획서(TASK.md)를 읽지 못하면 '실행 ▶'은 꺼진다.
+// 화면이 "실행을 기다리고 있습니다"라고만 하면 사용자는 눌리지 않는 버튼 앞에서
+// 이유를 알 수 없다.
+test("기획서를 읽지 못한 READY는 실행 대기가 아니라 그 사유를 알린다", () => {
+  const { status } = loadSpecialistView({
+    specialistNode: "READY",
+    specialistStatus: "WAITING",
+    specialistImplementationReady: false,
+  });
+  assert.match(status.headline, /기획서를 읽지 못했습니다/);
+  assert.match(status.next, /TASK\.md/);
+  assert.ok(!/‘실행 ▶’을 누르면/.test(status.next), "누를 수 없는 버튼을 안내하면 안 됩니다");
 });

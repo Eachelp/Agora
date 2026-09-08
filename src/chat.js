@@ -131,6 +131,8 @@ let specialistResumePhase = null;
 let specialistActive = false;
 let specialistNeedsInput = false;
 let specialistPlanReady = false;
+// 승인된 기획서를 실제로 들고 있어 구현을 시작할 수 있는가(백엔드 기준).
+let specialistImplementationReady = false;
 let specialistNode = null;
 let specialistStatus = null;
 // 작업 전 백업으로 되돌릴 수 있는지. 백엔드(canRestore)가 유일한 근거이며,
@@ -428,9 +430,12 @@ function setSpecialistState(state = {}) {
   specialistActive = Boolean(state.active);
   specialistResumeAvailable = Boolean(state.available);
   specialistBlockedAvailable = Boolean(state.blocked);
-  specialistResumePhase = specialistResumeAvailable ? state.phase || null : null;
+  specialistResumePhase = specialistResumeAvailable ? state.resumePhase || null : null;
   specialistNeedsInput = Boolean(state.needsInput);
   specialistPlanReady = Boolean(state.planReady);
+  // 기획 검수는 통과했지만 승인된 기획서를 실제로 들고 있는지는 별개다.
+  // (앱을 다시 켰을 때 TASK.md를 읽지 못하면 통과 표시만 남는다.)
+  specialistImplementationReady = Boolean(state.implementationReady);
   specialistNode = state.node || null;
   specialistStatus = state.status || null;
   specialistPlanTaskPath = state.planTaskPath || null;
@@ -1798,9 +1803,10 @@ function renderHeader() {
   // 대기 resume이 늘 있으므로 awaitingUser가 항상 참이었다. 그래서 **기획 검수를
   // 통과한 바로 그 상태에서 '실행 ▶'이 영영 꺼져 있었다** — 툴팁은 실행할 수
   // 있다고 말하면서. 백엔드가 허용하는 조건과 같게 맞춘다.
-  const canStartImplementation = Boolean(
-    implementationConfigured && specialistPlanReady && !specialistBusy && !specialistBlockedAvailable && !awaitingAnswer
-  );
+  const canStartImplementation = canStartImplementationNow({
+    implementationConfigured,
+    busy: specialistBusy,
+  });
   professionalPlanButton.disabled = !planConfigured || specialistBusy || !planStartable;
   professionalImplementationButton.disabled = !canStartImplementation;
   const canRegenerateRecord = specialistNode === "COMPLETED" || (specialistNode === "RECORDING" && specialistStatus === "WAITING");
@@ -2023,6 +2029,15 @@ function specialistStatusView() {
   // 걸려 있으면 그쪽이 우선이다. 예전에는 node만 보고 "실행을 기다립니다"라고
   // 안내했는데, 그 순간 '실행 ▶'은 비활성이고 입력창은 다른 것을 요구하고 있었다.
   if (specialistNode === "READY" && !specialistNeedsInput) {
+    // 검수는 통과했는데 승인된 기획서를 읽지 못한 경우(앱을 다시 켠 뒤 TASK.md가
+    // 사라졌거나 바뀐 경우)에는 '실행 ▶'이 꺼져 있다. 왜 못 누르는지 밝힌다.
+    if (!specialistImplementationReady) {
+      return {
+        headline: "기획 검수는 통과했지만 승인된 기획서를 읽지 못했습니다.",
+        next: "작업 폴더에서 기획서(TASK.md)가 지워졌거나 바뀌었습니다. 입력칸에 수정 사항을 적어 기획을 다시 통과시켜 주세요.",
+        tone: "waiting",
+      };
+    }
     return {
       headline: "기획 검수를 통과했습니다. 실행을 기다리고 있습니다.",
       next: "‘기획안 보기’로 확인한 뒤 ‘실행 ▶’을 누르면 구현을 시작합니다. 입력칸에 쓰면 기획을 수정합니다.",
@@ -2031,6 +2046,25 @@ function specialistStatusView() {
   }
   if (stop) return { headline: stop.text, next: stop.next, tone: "waiting" };
   return { headline: "다음 진행을 기다리고 있습니다.", next: "", tone: "waiting" };
+}
+
+// '실행 ▶'을 누를 수 있는가. 백엔드(startSpecialist의 implementation 분기)가
+// 허용하는 조건과 같아야 한다: 기획 검수 통과 + 승인된 기획서 보유 + 막힘 아님
+// + 실행 중 아님 + 사용자가 답해야 하는 대기 없음.
+//
+// 이 판정은 두 번 어긋난 적이 있다. 한 번은 READY에 늘 있는 재개 상태를 '바쁨'으로
+// 세어 통과 직후 버튼이 영영 꺼져 있었고, 한 번은 앱을 다시 켠 뒤 기획서를 읽지
+// 못했는데도 켜져서 누르면 백엔드가 거절했다. 그래서 화면 그리기에서 떼어 내
+// 그 자체로 시험할 수 있게 둔다.
+function canStartImplementationNow({ implementationConfigured, busy }) {
+  return Boolean(
+    implementationConfigured
+    && specialistPlanReady
+    && specialistImplementationReady
+    && !busy
+    && !specialistBlockedAvailable
+    && !(specialistNeedsInput || awaitingHumanApproval())
+  );
 }
 
 function renderProfessionalStatusDetail() {
@@ -3595,27 +3629,6 @@ async function resolveBlocked(action) {
 
 // 막힌 사유를 기획자에게 넘겨 지시서를 다시 쓰게 합니다.
 // 별도 실행 경로를 만들지 않고, 기존 Handoff로 마지막 구현자 메시지를 전달합니다.
-function handoffBlockedToPlanner() {
-  const project = projects.find((entry) => entry.id === activeProjectId);
-  const planner = roleConfigFromProject(project, "planning");
-  if (!planner?.agentId) {
-    flashNotice("프로젝트 설정에서 기획 담당자를 먼저 지정해 주세요.");
-    return;
-  }
-  const lastAgentMessage = [...messages].reverse().find(
-    (message) => message.authorType === "agent" && message.id
-  );
-  if (!lastAgentMessage) {
-    flashNotice("전달할 구현자 메시지를 찾지 못했습니다.");
-    return;
-  }
-  call(
-    window.chatApi.handoffMessage(activeSessionId, planner.agentId, lastAgentMessage.id, "REVIEW")
-  ).then((result) => {
-    if (result) flashNotice("기획자에게 막힘 사유를 전달했습니다.", false);
-    if (result?.meta) sessionMeta = result.meta;
-  });
-}
 
 // 작업 지시서(TASK.md)를 OS 기본 편집기로 엽니다.
 function openTaskFileForEdit() {
@@ -4607,8 +4620,23 @@ function renderFailedMessage(bubble, message) {
       parts.push(`총 출력 ${formatBytes(output.stdoutBytes)}`);
     }
     if (output.captureTruncated) parts.push("중간 일부는 보존되지 않음");
-    if (output.rawLogName) parts.push(`원본 로그 보관됨: ${output.rawLogName}`);
     diag.textContent = parts.join(" · ");
+    // 실패 문구가 "원본 로그를 확인해 주세요"라고 안내하면서 그 로그로 가는 길이
+    // 화면에 없었다. 이름만 적어 두는 대신 보관 폴더를 여는 버튼을 준다.
+    if (output.rawLogName) {
+      if (parts.length > 0) diag.append(" · ");
+      diag.append("원본 로그 보관됨: ");
+      const openLog = document.createElement("button");
+      openLog.type = "button";
+      openLog.className = "failure-log-link";
+      openLog.textContent = output.rawLogName;
+      openLog.title = "이 로그가 보관된 폴더를 엽니다";
+      openLog.addEventListener("click", async () => {
+        if (!activeSessionId) return;
+        await call(window.chatApi.openRunLogFolder(activeSessionId));
+      });
+      diag.append(openLog);
+    }
     bubble.append(diag);
   }
 }

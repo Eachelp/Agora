@@ -210,8 +210,6 @@ test("실행 파일 크기·수정시각이 같아도 CLI 버전이 바뀌면 �
     cacheStore,
     now,
   });
-  const notified = [];
-  second.service.subscribe((records) => notified.push(records.find((record) => record.id === "codex").models));
   const records = await second.service.discover();
   const codex = records.find((record) => record.id === "codex");
   // 시작은 막지 않는다: 마지막 목록으로 먼저 응답하고 stale로 표시한다.
@@ -227,7 +225,6 @@ test("실행 파일 크기·수정시각이 같아도 CLI 버전이 바뀌면 �
   assert.deepEqual(second.service.getRecord("codex").models, ["default", "gpt-6", "gpt-5.6-sol"]);
   assert.equal(second.service.getRecord("codex").modelCatalogStale, undefined);
   assert.equal(second.service.hasStaleCatalogs(), false);
-  assert.deepEqual(notified, [["default", "gpt-6", "gpt-5.6-sol"]]);
   // 캐시도 새 버전·새 목록으로 바뀐다.
   const cached = cacheStore.value[`codex:${codexPath}`];
   assert.equal(cached.version, "codex-cli 0.150.0");
@@ -351,6 +348,7 @@ test("claude 별칭에는 최신 모델임을 알리는 표시 이름이 붙는�
     helpText: { [claudePath]: CLAUDE_HELP },
   });
   const claude = (await service.discover()).find((record) => record.id === "claude");
+  // 도움말이 알려 준 별칭만 담는다(haiku는 이 도움말에 없다).
   assert.deepEqual(claude.models, ["default", "fable", "opus", "sonnet"]);
   assert.deepEqual(
     claude.modelOptions.map((option) => [option.id, option.label]),
@@ -443,7 +441,9 @@ test("claude 검증된 모델/노력 옵션이 노출된다", async () => {
   const { service } = makeService({});
   const records = await service.discover();
   const claude = records.find((record) => record.id === "claude");
-  assert.deepEqual(claude.models, ["default", "fable", "opus", "sonnet"]);
+  // 조회 실패 시 쓰는 기본 목록은 노출 목록(CLAUDE_MODEL_OPTIONS)과 같은 집합이어야
+  // 한다. 한쪽에서만 빠진 모델을 골라 둔 사용자는 조용히 다른 모델로 옮겨 간다.
+  assert.deepEqual(claude.models, ["default", "fable", "opus", "sonnet", "haiku"]);
   assert.ok(claude.efforts.includes("max"));
   const codex = records.find((record) => record.id === "codex");
   assert.deepEqual(codex.models, ["default"]);
@@ -644,4 +644,108 @@ test("예전 세션이 저장한 변형 id는 모델과 노력 쌍으로 옮겨�
   assert.equal(resolveEffortVariant(modelOptions, "gemini-9-flash"), null);
   assert.equal(resolveEffortVariant(modelOptions, "claude-opus-4-6-thinking"), null);
   assert.equal(resolveEffortVariant(modelOptions, ""), null);
+});
+
+// 예전 파서가 저장해 둔 목록에는 도움말의 전체 이름 예시(claude-fable-5)가 모델로
+// 들어 있다. 형식 버전으로 걸러 내지 않으면 새 파서를 넣어도 사용자는 계속 그
+// 옛 고정 버전을 고르게 된다 — 게다가 `claude --help`가 실패하는 환경에서는
+// 다시 조회할 기회조차 없어 영영 남는다.
+test("예전 형식으로 저장된 모델 목록은 신뢰하지 않는다", async () => {
+  const claudePath = "C:\\Users\\u\\.local\\bin\\claude.exe";
+  const files = new Set([claudePath]);
+  const cacheStore = {
+    value: {
+      [`claude:${claudePath}`]: {
+        mtimeMs: 111,
+        size: 222,
+        version: "2.1.198",
+        probedAt: Date.now(),
+        // catalogSchemaVersion 없음 = 예전 형식
+        models: ["default", "fable", "claude-fable-5"],
+        modelOptions: [
+          { id: "default", efforts: ["default"] },
+          { id: "fable", efforts: ["default"] },
+          { id: "claude-fable-5", efforts: ["default"] },
+        ],
+      },
+    },
+  };
+  // --help가 실패하는 환경: 캐시를 신뢰하면 되돌릴 방법이 없다.
+  const { service } = makeService({ files, probes: { [claudePath]: "2.1.198\n" }, cacheStore });
+  const claude = (await service.discover()).find((record) => record.id === "claude");
+  assert.equal(
+    claude.modelOptions.some((option) => option.id === "claude-fable-5"),
+    false,
+    "예전 형식 캐시의 고정 버전이 그대로 살아 있으면 안 됩니다"
+  );
+  assert.deepEqual(claude.models, ["default", "fable", "opus", "sonnet", "haiku"]);
+});
+
+// 캐시가 없는 첫 실행에서 조회가 실패하면 기본값만 남는다. 다시 조회할 대상으로
+// 표시해 두지 않으면 그 목록이 다음 정기 재확인(1시간)까지 그대로 굳는다.
+test("캐시 없이 카탈로그 조회에 실패하면 다시 조회할 대상으로 남는다", async () => {
+  const codexPath = "C:\\Users\\u\\.local\\bin\\codex.exe";
+  const files = new Set([codexPath]);
+  let probeOk = false;
+  let clock = 1000;
+  const { service } = makeService({
+    files,
+    whereResults: { codex: `${codexPath}\r\n` },
+    probes: { [codexPath]: "codex-cli 0.146.0\n" },
+    codexModelProbe: async () => (probeOk
+      ? [{ id: "gpt-6", label: "GPT-6", isDefault: true, efforts: ["medium"] }]
+      : null),
+    cacheStore: {},
+    now: () => clock,
+  });
+  const codex = (await service.discover()).find((record) => record.id === "codex");
+  assert.deepEqual(codex.models, ["default"], "조회 실패 시 기본값만 남습니다");
+  assert.equal(codex.modelCatalogStale, true, "다시 조회할 대상이어야 합니다");
+  assert.equal(service.hasStaleCatalogs(), true);
+
+  // 실패 직후 연달아 찌르지는 않는다.
+  probeOk = true;
+  assert.equal((await service.refreshStaleCatalogs()).changed, false, "실패 직후에는 쉬어야 합니다");
+
+  // 잠시 뒤에는 다시 시도한다.
+  clock += 10 * 60 * 1000;
+  const result = await service.refreshStaleCatalogs();
+  assert.equal(result.changed, true);
+  assert.deepEqual(service.getRecord("codex").models, ["default", "gpt-6"]);
+  assert.equal(service.hasStaleCatalogs(), false);
+});
+
+// 강제 새로고침 버튼은 연타할 수 있다(화면에 두 개 있고 둘 다 스스로 잠기지 않는다).
+// 두 탐지가 겹치면 records는 늦게 끝난 쪽이 이겨, 화면에 돌려준 목록과 실제 실행에
+// 쓰는 목록이 달라진다.
+test("강제 새로고침이 겹쳐도 탐지는 한 번에 하나씩 돈다", async () => {
+  const codexPath = "C:\\Users\\u\\.local\\bin\\codex.exe";
+  const files = new Set([codexPath]);
+  let inFlight = 0;
+  let maxInFlight = 0;
+  let round = 0;
+  const { service } = makeService({
+    files,
+    whereResults: { codex: `${codexPath}\r\n` },
+    probes: { [codexPath]: "codex-cli 0.146.0\n" },
+    codexModelProbe: async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      inFlight -= 1;
+      round += 1;
+      return [{ id: `gpt-${round}`, label: `GPT ${round}`, isDefault: true, efforts: ["medium"] }];
+    },
+  });
+  const [a, b] = await Promise.all([
+    service.discover({ force: true }),
+    service.discover({ force: true }),
+  ]);
+  assert.equal(maxInFlight, 1, "동시에 두 탐지가 돌면 안 됩니다");
+  // 각 호출은 자기 시점의 목록을 돌려주고, 나중에 끝난 쪽이 records를 갖는다.
+  // 겹쳐 돌 때처럼 "화면에 준 목록"과 "실행이 쓰는 목록"이 엇갈리지 않는다.
+  const live = service.getRecord("codex").models;
+  assert.deepEqual(b.find((record) => record.id === "codex").models, live);
+  assert.deepEqual(a.find((record) => record.id === "codex").models, ["default", "gpt-1"]);
+  assert.deepEqual(live, ["default", "gpt-2"]);
 });

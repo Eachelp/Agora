@@ -48,6 +48,7 @@ const INVOKE = Object.freeze({
   SPECIALIST_RESOLVE_APPROVAL: "chat:specialist:resolve-approval",
   SPECIALIST_RECORD_INPUT_RETRIEVAL: "chat:specialist:record-input-retrieval",
   SPECIALIST_INPUT_USAGE: "chat:specialist:input-usage",
+  RUN_LOG_OPEN_FOLDER: "chat:run-log:open-folder",
   TASK_OPEN_FILE: "chat:task:open-file",
   TASK_READ_FILE: "chat:task:read-file",
   MESSAGE_HANDOFF: "chat:message:handoff",
@@ -158,6 +159,8 @@ contextBridge.exposeInMainWorld("chatApi", {
     ipcRenderer.invoke(INVOKE.SPECIALIST_RECORD_INPUT_RETRIEVAL, { sessionId, inputId, ...metadata }),
   specialistInputUsage: (sessionId) =>
     ipcRenderer.invoke(INVOKE.SPECIALIST_INPUT_USAGE, { sessionId }),
+  openRunLogFolder: (sessionId) =>
+    ipcRenderer.invoke(INVOKE.RUN_LOG_OPEN_FOLDER, { sessionId }),
   openTaskFile: (sessionId, taskPath) =>
     ipcRenderer.invoke(INVOKE.TASK_OPEN_FILE, { sessionId, taskPath }),
   readTaskFile: (sessionId, taskPath) =>

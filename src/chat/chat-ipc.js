@@ -435,6 +435,9 @@ function createChatFeature(options) {
   }
 
   function startProviderRecheck() {
+    // 종료 뒤에 들어온 요청이 타이머를 되살리면, shutdown()은 이미 한 번
+    // 지웠으므로 아무도 걷어 가지 않는 interval이 남는다.
+    if (shuttingDown) return;
     if (providerRecheckTimer || !Number.isFinite(PROVIDER_RECHECK_INTERVAL_MS)) return;
     providerRecheckTimer = setInterval(() => {
       recheckProviders();
@@ -1475,6 +1478,25 @@ function roomMeta(meta) {
       wrap(async ({ sessionId, taskPath }) => {
         const target = resolveTaskFilePath(sessionId, taskPath);
         const error = await shell.openPath(target);
+        if (error) throw new Error(error);
+        return {};
+      })
+    );
+
+    // 실패한 실행의 원본 로그가 있는 폴더를 OS 파일 탐색기로 엽니다.
+    // 화면에는 파일 이름만 보여 주고 경로는 내보내지 않으므로, 경로를 renderer로
+    // 건네는 대신 여기서 직접 엽니다. 대상은 세션 저장소가 관리하는 로그 폴더
+    // 하나뿐이라 임의 경로 열기가 되지 않습니다.
+    ipcMain.handle(
+      "chat:run-log:open-folder",
+      wrap(async ({ sessionId }) => {
+        const store = ensureStore();
+        if (!store) throw new Error(storeError || "저장소를 사용할 수 없습니다.");
+        const id = String(sessionId || "");
+        if (!store.getSession(id)) throw new Error("세션을 찾을 수 없습니다.");
+        const dir = store.runLogsDir(id);
+        if (!fs.existsSync(dir)) throw new Error("이 대화에는 아직 보관된 실행 로그가 없습니다.");
+        const error = await shell.openPath(dir);
         if (error) throw new Error(error);
         return {};
       })

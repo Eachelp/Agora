@@ -129,3 +129,20 @@ test("예전에 저장한 gemini 변형 id는 접힌 모델과 노력으로 이�
   assert.equal(current.model, "gemini-3.7-flash");
   assert.equal(current.effort, "medium");
 });
+
+test("목록에 없는 저장값은 같은 계열의 별칭으로 돌아간다", () => {
+  const options = [
+    { id: "default", efforts: ["default", "low"] },
+    { id: "fable", efforts: ["default", "low"] },
+    { id: "opus", efforts: ["default", "low"] },
+    { id: "haiku", efforts: ["default", "low"] },
+  ];
+  // 계열을 알 수 있으면 그 계열의 최신 별칭으로 간다. 예전에는 계열과 무관하게
+  // 전부 fable로 보내, 목록이 잠깐 줄어든 사이 사용자가 고른 것보다 비싼 모델로
+  // 조용히 옮겨 갔다.
+  assert.equal(roomAgentFromCapability(record("claude", options), { model: "claude-opus-4" }).model, "opus");
+  assert.equal(roomAgentFromCapability(record("claude", options), { model: "claude-haiku-4-5" }).model, "haiku");
+  assert.equal(roomAgentFromCapability(record("claude", options), { model: "claude-fable-5" }).model, "fable");
+  // 계열조차 알 수 없으면 예전처럼 최신 별칭으로 돌아간다.
+  assert.equal(roomAgentFromCapability(record("claude", options), { model: "무엇인지-모를-이름" }).model, "fable");
+});

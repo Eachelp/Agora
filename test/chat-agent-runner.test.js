@@ -569,3 +569,17 @@ test("승인 이벤트가 있어도 최종 답변이 도착했으면 성공으�
   // error가 비면 화면에 "알 수 없는 오류"만 남는다.
   assert.ok(blocked.error && blocked.error.length > 0, "승인 결과에도 읽을 수 있는 사유가 있어야 합니다");
 });
+
+// 스트리밍으로 이미 답이 다 나왔는데 승인 요청으로 끝나면, 다른 실패 분기와 달리
+// 그 내용이 통째로 사라졌다. 화면에 보였던 것은 남겨야 한다.
+test("승인 요청으로 끝나도 화면에 보였던 중간 출력을 보존한다", async () => {
+  const script = [
+    "console.log(JSON.stringify({kind:'delta',text:'거의 다 만든 시안'}))",
+    "console.log(JSON.stringify({kind:'approval-required',summary:'도구 권한: run_command',detail:'승인 필요'}))",
+    "process.exit(1)",
+  ].join(";");
+  const parseLine = (line) => { try { return JSON.parse(line); } catch { return null; } };
+  const result = await runNode(script, { parseLine }).promise;
+  assert.equal(result.approvalRequired, true);
+  assert.equal(result.partialText, "거의 다 만든 시안");
+});

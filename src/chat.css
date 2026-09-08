@@ -1605,6 +1605,21 @@ textarea:focus-visible {
   overflow-wrap: anywhere;
 }
 
+/* 보관된 실행 로그 이름. 누르면 그 폴더를 연다. */
+.failure-log-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.failure-log-link:hover {
+  opacity: 0.8;
+}
+
 /* --- 첨부 --- */
 .icon-button {
   flex: none;

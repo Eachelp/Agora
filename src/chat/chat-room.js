@@ -16,7 +16,6 @@ const {
 } = require("../agora/professional-run");
 const { TaskManager, hashText } = require("../agora/task-manager");
 const { REQUIRED_SECTIONS, validateTaskContract } = require("../agora/task-contract-validator");
-const { describeWorkspaceChanges } = require("../agora/workspace-diff");
 // Stage D-B — 자원/행동 심사. 실제 변경 직전에 이 관문을 통과해야 한다(§23).
 const {
   adjudicateAction,
@@ -328,6 +327,10 @@ class ChatRoom extends EventEmitter {
     this.cancels = new Set();
     this.typingCounts = new Map();
     this.activeRuns = 0;
+    // activeRuns는 화면 busy 표시용이라 중지하면 즉시 0으로 되돌린다.
+    // liveRuns는 "정말로 살아 있는 실행"이며, subprocess가 실제로 끝나야만
+    // 줄어든다. 소유권 정리는 이쪽만 본다.
+    this.liveRuns = 0;
     this.approvalSeq = 0;
     this.pendingApprovals = new Map();
   }
@@ -396,10 +399,19 @@ class ChatRoom extends EventEmitter {
       available: Boolean(this.specialistResume),
       mode: this.specialistResume?.mode || null,
       phase: professional?.phase || this.specialistResume?.phase || null,
+      // 재개 phase는 따로 낸다. 위 phase는 professional run이 있으면 언제나
+      // 그쪽 값('PLAN'/'ACT')이 이겨서, 화면의 재개 phase 대비책(승인 대기 판정
+      // 같은 것)이 영영 참이 되지 않았다.
+      resumePhase: this.specialistResume?.phase || null,
       node: professional?.node || null,
       status: professional?.status || null,
       needsInput: Boolean(professional?.needsInput) || ["needs_decision", "plan_review_fix_required", "task_contract_incomplete"].includes(this.specialistResume?.phase),
       planReady: (Boolean(professional?.planReady) || Boolean(this.professionalPlan)) && this.specialistResume?.phase !== "task_contract_incomplete" && professional?.stopReason !== "TASK_CONTRACT_INCOMPLETE",
+      // 구현을 실제로 시작할 수 있는가. planReady는 FSM 노드(READY)만 보므로,
+      // 앱을 다시 켰을 때 TASK.md를 읽지 못해 승인된 기획을 복원하지 못한 경우에도
+      // 참이다. 그 상태에서 '실행 ▶'을 켜면 백엔드는 "기획 검수가 통과한 뒤에
+      // 실행할 수 있습니다"로 거절한다 — 화면이 켤 수 있는 조건을 백엔드와 맞춘다.
+      implementationReady: Boolean(this.professionalPlan?.taskInfo),
       // 승인된 기획안(Frozen Task 원본)을 채팅에서 열어볼 수 있게 경로/제목을 노출합니다.
       planTaskPath: taskPath,
       planTaskId: taskId,
@@ -610,9 +622,17 @@ class ChatRoom extends EventEmitter {
         return this.pendingTurns.get(dedupeKey).promise;
       }
       // 실행 중인 턴 전체를 본다. 병렬 묶음에서는 currentTurn 하나만 보면
-      // 같은 대상에게 같은 요청이 두 번 예약될 수 있다.
-      for (const running of this.runningTurns) {
-        if (running.dedupeKey === dedupeKey) return running.promise;
+      // 같은 사용자 메시지가 같은 대상에게 두 번 배정될 수 있다.
+      //
+      // 다만 실행 중인 턴은 이미 프롬프트를 만들어 들어갔으므로, 방금 도착한
+      // @멘션을 대신 볼 수 없다. 그 promise를 돌려주면 호출이 조용히 사라진다
+      // — 동시 실행에서만 열리는 창이고(순차 실행에서는 멘션 대상이 실행 중일
+      // 수 없다), 사용자에겐 "불렀는데 아무도 대답하지 않는" 것으로 보인다.
+      // 그래서 최초 배정(mentionDepth 0)만 접고, 멘션 호출은 새 턴으로 잡는다.
+      if (!context.mentionDepth) {
+        for (const running of this.runningTurns) {
+          if (running.dedupeKey === dedupeKey) return running.promise;
+        }
       }
     }
 
@@ -885,11 +905,13 @@ class ChatRoom extends EventEmitter {
 
   trackRunStart() {
     this.activeRuns += 1;
+    this.liveRuns += 1;
     if (this.activeRuns === 1) this.emit("busy", true);
   }
 
   trackRunEnd() {
     this.activeRuns = Math.max(0, this.activeRuns - 1);
+    this.liveRuns = Math.max(0, this.liveRuns - 1);
     if (this.activeRuns === 0) this.emit("busy", false);
   }
 
@@ -981,7 +1003,11 @@ class ChatRoom extends EventEmitter {
   // 소유권을 그대로 둔다 — memory-only라 앱을 다시 켜면 사라지므로, 잘못 푸는 것보다
   // 남기는 쪽이 안전하다(fail-closed).
   releaseWorkspaceMutationsIfIdle() {
-    if (this.activeRuns > 0 || this.specialistActive === true) return 0;
+    // activeRuns가 아니라 liveRuns를 본다. stopAllSilently가 화면 표시를 위해
+    // activeRuns를 즉시 0으로 되돌리기 때문에, 그 값으로 판단하면 방금 kill한
+    // — 아직 살아서 파일을 쓰고 있는 — 실행을 "없다"고 읽고 소유권을 넘겨
+    // 다른 대화가 같은 폴더를 동시에 바꾸게 된다.
+    if (this.liveRuns > 0 || this.activeRuns > 0 || this.specialistActive === true) return 0;
     return this.releaseAllWorkspaceMutations();
   }
 
@@ -1244,7 +1270,15 @@ class ChatRoom extends EventEmitter {
       const approved = await this.requestApproval(agent, result.approval);
       if (generation !== this.generation) return;
       if (!approved) {
-        result = { ok: false, error: "권한 요청을 거부했습니다." };
+        // 사유만 바꾸고 진단 정보는 남긴다. 실패 문구가 "원본 로그를 확인해
+        // 주세요"라고 안내하는데 정작 그 로그 이름과 부분 출력을 여기서
+        // 버리면, 거부한 사용자만 아무 단서도 못 보게 된다.
+        result = {
+          ...result,
+          ok: false,
+          approvalRequired: false,
+          error: "권한 요청을 거부했습니다.",
+        };
         break;
       }
       if (leaseState) {

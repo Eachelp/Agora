@@ -285,6 +285,11 @@ class AGYManagedAdapter extends HarnessAdapter {
     delete next.cancelled;
     delete next.timedOut;
     delete next.outputLimited;
+    // 승인 요청도 종료 형태 플래그다. 남겨 두면 continuity 실패가 화면에
+    // "도구 권한을 승인해 주세요"로 둔갑하고, 승인하면 같은 실행을 한 번 더
+    // 돌린 뒤 같은 이유로 실패한다.
+    delete next.approvalRequired;
+    delete next.approval;
     if (typeof next.text === "string") {
       const trimmed = next.text.trim();
       if (trimmed && !next.partialText) next.partialText = trimmed;
