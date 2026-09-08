@@ -89,23 +89,57 @@ function fingerprintFile(absPath) {
   return { state: BINDING_STATES.BOUND, sha256, size: stat.size };
 }
 
+// 산출물로 선언된 대상은 "바뀌면 안 되는 입력"이 될 수 없다.
+//
+// 작업 폴더 파일 입력은 mode를 적지 않으면 frozen이 기본이다(task-schema-v2).
+// 그런데 기획자는 고칠 파일을 Inputs에도 자연스럽게 적는다. 그러면 같은 계약이
+// "이 파일은 바뀌면 안 된다"와 "이 파일이 산출물이다"를 동시에 요구하게 되어,
+// 구현·검수가 모두 통과해도 마지막 재대조에서 반드시 막힌다 — 어떤 실행도
+// 만족시킬 수 없는 계약이다.
+//
+// 그래서 **기본값으로 frozen이 된 입력만** 산출물과 겹칠 때 풀어 준다. 기획이
+// 명시적으로 `(frozen)`이라고 적었다면 그것은 저자의 판단이므로 덮지 않는다 —
+// 그 경우는 계약이 실제로 모순이며, 막히는 것이 맞다.
+function deliverableLocators(deliverables) {
+  const items = Array.isArray(deliverables) ? deliverables : (deliverables?.items || []);
+  return new Set(
+    items
+      .map((item) => (typeof item === "string" ? item : item?.locator))
+      .filter(Boolean)
+      .map((locator) => path.normalize(String(locator)).replace(/[\\/]+$/, ""))
+  );
+}
+
+function isDeclaredDeliverable(input, locators) {
+  if (!locators || locators.size === 0) return false;
+  if (input.kind === "url") return false;
+  return locators.has(path.normalize(String(input.locator)).replace(/[\\/]+$/, ""));
+}
+
 // 승인·동결 시점의 입력 결합. frozen 입력만 지문을 뜬다.
 function bindInputs(inputs = [], context = {}) {
   const root = context.root ? realOrResolved(context.root) : null;
   const now = Number.isFinite(context.now) ? context.now : Date.now();
+  const deliverables = deliverableLocators(context.deliverables);
   const bindings = [];
 
   for (const input of inputs) {
     if (!input || !input.locator) continue;
+    // 기본값으로 frozen이 된 산출물은 live로 본다(위 주석).
+    const releasedAsDeliverable = input.mode === "frozen"
+      && input.modeDeclared !== true
+      && isDeclaredDeliverable(input, deliverables);
+    const mode = releasedAsDeliverable ? "live" : input.mode;
     const base = {
       inputId: input.inputId,
       locator: input.locator,
       kind: input.kind,
-      mode: input.mode,
+      mode,
       boundAt: now,
+      ...(releasedAsDeliverable ? { releasedAsDeliverable: true } : {}),
     };
 
-    if (input.mode !== "frozen") {
+    if (mode !== "frozen") {
       // live 입력은 지문을 강제하지 않는다. 실제 사용 기록은 retrieval에서 남는다.
       bindings.push({ ...base, state: BINDING_STATES.UNBOUND, sha256: null, size: null, retrievals: [] });
       continue;

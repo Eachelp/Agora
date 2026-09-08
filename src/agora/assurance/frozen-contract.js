@@ -75,6 +75,9 @@ function buildFrozenContract(taskContent, context = {}) {
   const binding = inputBinding.bindInputs(parsed.inputs.items, {
     root: context.root || null,
     now,
+    // 산출물 목록을 함께 준다. 고칠 파일이 Inputs에도 적혀 있으면 기본값 frozen을
+    // 풀어야 계약이 만족 가능해진다(input-binding.js 주석 참고).
+    deliverables: parsed.deliverables,
   });
 
   // frozen 입력이 승인 시점에 이미 없으면 계약이 성립하지 않는다.

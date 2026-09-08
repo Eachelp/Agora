@@ -550,3 +550,60 @@ test("기획자 프롬프트는 TASK 파일을 Agora가 저장한다고 알려�
     "기획자가 파일을 쓴다고 오해할 문구가 남아 있습니다"
   );
 });
+
+// 산출물로 선언된 파일은 "바뀌면 안 되는 입력"이 될 수 없다.
+//
+// 작업 폴더 파일 입력은 mode를 적지 않으면 frozen이 기본인데, 기획자는 고칠
+// 파일을 Inputs에도 자연스럽게 적는다. 그러면 구현·검수가 모두 통과해도 마지막
+// 재대조에서 반드시 막힌다 — 실제 앱에서 그렇게 막히는 것을 확인하고 고쳤다.
+test("기본값 frozen인 입력이 산출물이기도 하면 동결하지 않는다", () => {
+  const root = tempRoot();
+  const file = path.join(root, "greet.js");
+  fs.writeFileSync(file, "원본");
+
+  const binding = inputBinding.bindInputs(
+    [{ inputId: "IN-01", locator: "greet.js", kind: "path", mode: "frozen", modeDeclared: false }],
+    { root, deliverables: { items: [{ deliverableId: "DL-01", locator: "greet.js" }] } }
+  );
+  assert.equal(binding.bindings[0].mode, "live");
+  assert.equal(binding.bindings[0].releasedAsDeliverable, true);
+  assert.equal(binding.bindings[0].state, "UNBOUND");
+
+  // 구현이 그 파일을 고쳐도 완료를 막지 않는다.
+  fs.writeFileSync(file, "구현이 고친 내용");
+  assert.equal(inputBinding.recheckFrozenInputs(binding, { root }).ok, true);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+// 기획이 명시적으로 (frozen)이라고 적었다면 저자의 판단이므로 덮지 않는다.
+// 그 계약은 실제로 모순이며 막히는 것이 맞다.
+test("명시적으로 선언된 frozen은 산출물이어도 그대로 둔다", () => {
+  const root = tempRoot();
+  const file = path.join(root, "greet.js");
+  fs.writeFileSync(file, "원본");
+
+  const binding = inputBinding.bindInputs(
+    [{ inputId: "IN-01", locator: "greet.js", kind: "path", mode: "frozen", modeDeclared: true }],
+    { root, deliverables: { items: [{ locator: "greet.js" }] } }
+  );
+  assert.equal(binding.bindings[0].mode, "frozen");
+  assert.equal(binding.bindings[0].state, "BOUND");
+
+  fs.writeFileSync(file, "바뀐 내용");
+  assert.equal(inputBinding.recheckFrozenInputs(binding, { root }).ok, false);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+// 산출물이 아닌 입력의 동결은 그대로다(제한을 넓히지 않는다).
+test("산출물이 아닌 입력은 여전히 동결되고 변경을 잡는다", () => {
+  const root = tempRoot();
+  fs.writeFileSync(path.join(root, "참고자료.csv"), "원본");
+  const binding = inputBinding.bindInputs(
+    [{ inputId: "IN-01", locator: "참고자료.csv", kind: "path", mode: "frozen", modeDeclared: false }],
+    { root, deliverables: { items: [{ locator: "결과.md" }] } }
+  );
+  assert.equal(binding.bindings[0].mode, "frozen");
+  fs.writeFileSync(path.join(root, "참고자료.csv"), "누가 바꿈");
+  assert.equal(inputBinding.recheckFrozenInputs(binding, { root }).ok, false);
+  fs.rmSync(root, { recursive: true, force: true });
+});
