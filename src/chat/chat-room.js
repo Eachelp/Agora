@@ -2,6 +2,7 @@ const { EventEmitter } = require("node:events");
 const path = require("node:path");
 const { GROUP_ALIASES } = require("./chat-agents");
 const { parseMentions } = require("./chat-mention");
+const { filesModifiedSince } = require("../agora/workspace-scan");
 const { buildAgentPrompt } = require("./chat-prompt");
 const {
   specialistPermissionMode,
@@ -825,11 +826,55 @@ class ChatRoom extends EventEmitter {
         return;
       }
     }
+    // 담당자별 폴더 계약이 지켜졌는지 보기 위해 실행 직전 상태를 찍어 둔다.
+    // 감시는 실행에 영향을 주지 않는다 — 실패하면 아무 말도 하지 않을 뿐이다.
+    // 담당자별 폴더 계약이 지켜졌는지는 실행이 끝난 뒤에 본다. 시작 시각만
+    // 기억해 두면 되므로 실행이 늦어지지 않는다.
+    const startedAt = needsLease ? Date.now() : null;
+    const generation = this.generation;
     try {
       await Promise.all(batch.map((item) => this.runQueuedTurn(item, { parentToken: lease.token })));
     } finally {
       this.releaseWorkspaceMutation(lease.token);
     }
+    // 중지·초기화로 세대가 바뀌었으면 알리지 않는다. 비워진 대화에 뒤늦은
+    // 안내만 남는다.
+    if (startedAt !== null && generation === this.generation) {
+      await this.reportFolderContractBreaches(batch, startedAt);
+    }
+  }
+
+  // 담당자별 폴더 계약 감시 — 실행 전후 상태를 비교해 "폴더 밖이 바뀌었다"를 알린다.
+  //
+  // 계약 자체는 프롬프트로 준 지시이고 강제가 아니다(argv 경계는 작업 폴더 전체를
+  // 열어 준다). 그래서 여기서 하는 일은 막는 것이 아니라 **보이게 하는 것**이다.
+  // 조용히 덮어써진 파일을 사용자가 나중에 발견하는 것이 가장 나쁜 결과다.
+  async reportFolderContractBreaches(batch, startedAt) {
+    if (!this.meta.workspace) return;
+    let outside;
+    try {
+      const scan = await filesModifiedSince(this.meta.workspace, startedAt);
+      // 훑지 못했으면(너무 큰 폴더, 시간 초과) 아무 말도 하지 않는다.
+      if (!scan.ok) return;
+      const changed = scan.paths;
+      if (changed.length === 0) return;
+      // 담당자 폴더 안의 변경은 계약대로다. 누가 남의 폴더에 썼는지는 알 수 없고
+      // (동시에 돌았으므로 변경을 담당자에게 귀속시킬 수 없다), 그 판단은 사용자가
+      // 결과를 보고 하는 편이 정확하다. 여기서는 "폴더 밖"만 센다.
+      const folders = batch.map((item) => `${item.agent.id}/`);
+      outside = changed.filter((rel) => !folders.some((folder) => rel.startsWith(folder)));
+      if (outside.length === 0) return;
+    } catch {
+      return;
+    }
+    const shown = outside.slice(0, 8).map((rel) => `\`${rel}\``).join(", ");
+    const rest = outside.length > 8 ? ` 외 ${outside.length - 8}개` : "";
+    const folders = batch.map((item) => `\`${item.agent.id}/\``).join(", ");
+    this.appendSystem(
+      `동시 실행 중에 담당자 폴더(${folders}) 밖의 파일이 바뀌었습니다: ${shown}${rest}. `
+      + "각자 자기 폴더에서만 작업하도록 안내했지만 강제되지는 않습니다 — "
+      + "서로의 결과를 덮어썼을 수 있으니 확인해 주세요."
+    );
   }
 
   waitForIdle() {

@@ -410,8 +410,10 @@ Builder가 `BLOCKED` 상태로 STOP했을 때, 프로그램은 사용자에게 �
 - **UI**: [chat.html](../../src/chat.html#L118) `@all 응답 방식` 토글 (이어 발언 / 독립 발언).
 - **동시 쓰기**: 쓰기 권한 + 동시 실행이면 프롬프트에 담당자별 폴더 계약을 싣는다
   (`` `<담당자 id>/` `` 하위에만 새 파일). **지시이지 강제가 아니다** — argv 경계는
-  workspace 전체를 열어 주고, 같은 파일을 함께 고치면 나중 쓰기가 이긴다. 탐지·보고는
-  후속 항목이다(Stage D-0 §2.5).
+  workspace 전체를 열어 주고, 같은 파일을 함께 고치면 나중 쓰기가 이긴다. 대신 묶음이
+  끝나면 폴더 밖에서 바뀐 파일을 찾아 안내로 남긴다
+  ([workspace-scan.js](../../src/agora/workspace-scan.js), `reportFolderContractBreaches`).
+  누가 바꿨는지는 귀속할 수 없어 담당자를 지목하지 않는다(Stage D-0 §2.5).
 - **상태**: 구현 완료. 일반 채팅·토론의 순차 transcript 전달은 그대로 유지한다.
 
 ---

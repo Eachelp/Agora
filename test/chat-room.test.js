@@ -4024,6 +4024,12 @@ function gatedRunner() {
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 40));
 
+// 공유 /tmp를 작업 폴더로 쓰면 담당자 폴더 계약 감시가 이 머신 전체의 변경을
+// 훑는다. 테스트마다 자기 폴더를 쓴다.
+function makeWorkspace() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "agora-room-ws-"));
+}
+
 test("독립 발언은 서로를 기다리지 않고 동시에 시작한다", async () => {
   const runner = gatedRunner();
   const room = new ChatRoom({ agents: makeAgents(), runAgent: runner.runAgent });
@@ -4062,7 +4068,7 @@ test("쓰기 권한에서도 독립 발언은 서로를 폴더 잠금으로 막�
     // lease는 소유자(대화)를 세션 id로 식별한다.
     sessionId: "parallel-write-room",
     agents: makeAgents(),
-    meta: { permissionMode: "workspace-write", workspace: os.tmpdir() },
+    meta: { permissionMode: "workspace-write", workspace: makeWorkspace() },
     mutationLease: new WorkspaceMutationLease(),
     runAgent: runner.runAgent,
   });
@@ -4208,7 +4214,7 @@ test("동시 실행 시 담당자별 폴더 계약이 실제 프롬프트에 실
   const room = new ChatRoom({
     sessionId: "parallel-prompt-room",
     agents: makeAgents(),
-    meta: { permissionMode: "workspace-write", workspace: os.tmpdir() },
+    meta: { permissionMode: "workspace-write", workspace: makeWorkspace() },
     mutationLease: new WorkspaceMutationLease(),
     runAgent: ({ agent, prompt }) => {
       prompts.push({ agentId: agent.id, prompt });
@@ -4447,4 +4453,93 @@ test("권한 요청을 거부해도 진단 정보는 남는다", async () => {
   assert.equal(last.text, "권한 요청을 거부했습니다.");
   assert.equal(last.partialText, "중간까지 만든 결과");
   assert.equal(last.runOutput.rawLogName, "r1.log");
+});
+
+// 담당자별 폴더 계약은 프롬프트로 준 지시이고 강제가 아니다. 그래서 지켜지지
+// 않았을 때 조용히 넘어가면, 서로 덮어쓴 결과를 사용자가 한참 뒤에 발견한다.
+test("동시 실행이 담당자 폴더 밖을 건드리면 알린다", async () => {
+  const { WorkspaceMutationLease } = require("../src/agora/workspace-mutation-lease");
+  const workspace = makeWorkspace();
+  // 사용자가 실행 전부터 갖고 있던 변경. 이것을 담당자 탓으로 돌리면 안 된다.
+  fs.writeFileSync(path.join(workspace, "사용자-메모.txt"), "미리 적어 둔 것", "utf8");
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+
+  const room = new ChatRoom({
+    sessionId: "folder-contract-room",
+    agents: makeAgents(),
+    meta: { permissionMode: "workspace-write", workspace },
+    mutationLease: new WorkspaceMutationLease(),
+    // 실제 CLI처럼 프로세스가 뜬 뒤에 파일을 쓴다.
+    runAgent: ({ agent }) => ({
+      promise: new Promise((resolve) => setTimeout(() => {
+        // claude는 계약대로 자기 폴더에, codex는 공용 파일에 쓴다.
+        const rel = agent.id === "claude" ? path.join("claude", "시안.md") : "README.md";
+        const file = path.join(workspace, rel);
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, `${agent.id} 작업`, "utf8");
+        resolve({ ok: true, text: `${agent.id} 답` });
+      }, 25)),
+      cancel: () => {},
+    }),
+  });
+  room.sendUserMessage({ text: "@claude @codex 각자 시안 만들어줘", independent: true });
+  await settle(room);
+
+  const notice = room.messages.filter(
+    (message) => message.authorType === "system" && /담당자 폴더/.test(message.text || "")
+  );
+  assert.equal(notice.length, 1, "폴더 밖 변경을 알려야 합니다");
+  assert.match(notice[0].text, /README\.md/);
+  assert.ok(!notice[0].text.includes("시안.md"), "계약을 지킨 변경까지 지목하면 안 됩니다");
+  assert.ok(!notice[0].text.includes("사용자-메모"), "실행 전 사용자 변경을 담당자 탓으로 돌리면 안 됩니다");
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test("모두 자기 폴더 안에서 작업하면 아무 말도 하지 않는다", async () => {
+  const { WorkspaceMutationLease } = require("../src/agora/workspace-mutation-lease");
+  const workspace = makeWorkspace();
+  const room = new ChatRoom({
+    sessionId: "folder-contract-clean-room",
+    agents: makeAgents(),
+    meta: { permissionMode: "workspace-write", workspace },
+    mutationLease: new WorkspaceMutationLease(),
+    runAgent: ({ agent }) => ({
+      promise: new Promise((resolve) => setTimeout(() => {
+        const file = path.join(workspace, agent.id, "시안.md");
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, `${agent.id} 작업`, "utf8");
+        resolve({ ok: true, text: `${agent.id} 답` });
+      }, 25)),
+      cancel: () => {},
+    }),
+  });
+  room.sendUserMessage({ text: "@claude @codex 각자 시안 만들어줘", independent: true });
+  await settle(room);
+
+  const notice = room.messages.filter(
+    (message) => message.authorType === "system" && /담당자 폴더/.test(message.text || "")
+  );
+  assert.equal(notice.length, 0, `계약을 지켰는데 지적하면 안 됩니다: ${notice.map((m) => m.text).join(" / ")}`);
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+// 읽기 전용 권한에서는 쓸 수 없으므로 훑을 이유가 없다.
+test("쓰기 권한이 아니면 폴더 계약을 감시하지 않는다", async () => {
+  const workspace = makeWorkspace();
+  const room = new ChatRoom({
+    sessionId: "folder-contract-read-room",
+    agents: makeAgents(),
+    meta: { permissionMode: "chat", workspace },
+    runAgent: ({ agent }) => ({
+      promise: Promise.resolve({ ok: true, text: `${agent.id} 답` }),
+      cancel: () => {},
+    }),
+  });
+  let scans = 0;
+  const original = room.reportFolderContractBreaches.bind(room);
+  room.reportFolderContractBreaches = async (...args) => { scans += 1; return original(...args); };
+  room.sendUserMessage({ text: "@claude @codex 각자 답해줘", independent: true });
+  await settle(room);
+  assert.equal(scans, 0);
+  fs.rmSync(workspace, { recursive: true, force: true });
 });
