@@ -797,6 +797,16 @@ tail 관점)에서 추가로 확정된 것: Archivist 페르소나 누락(그룹
    함께 쓴다. `chat-handoff-consumer.test.js`에 보완 라운드의 BLOCKED +
    HANDOFF @planner 회귀(수용 순서·안내 1회·자동 재기획 없음)를 추가했고,
    기존 혼합 auto-revise·다회차 예산·Archivist 시나리오는 그대로 green이다.
+4. **구현 막힘 hold 클로저 중복**(chat-specialist.js `holdForBlocked` ×2 —
+   3번을 처리하다 발견): `runExecutionBlockInner`와 `resumeStepPhaseInner`가
+   같은 이름의 클로저를 따로 가졌고, step 쪽만 Run 기록(`persistBlockedRun`
+   → block.json)과 FSM 전이가 빠져 있었다.
+   → **처리됨**. 클래스 메서드 `holdForBuilderBlocked` 하나로 합쳤다. 실행
+   블록은 `BUILDER_BLOCKED`, FSM을 IMPLEMENTING으로 옮기지 않는 step 호환
+   경로는 그 경로의 다른 hold와 같이 `HOLD_BLOCKED`로 상태를 BLOCKED로 둔다.
+   step 경로도 실행 블록과 같은 순서로 변경분을 먼저 수집해 막힘 기록에
+   실제 diff가 남는다. `chat-room.test.js`에 step 경로의 BLOCKED 회귀(Run
+   기록·FSM 상태·keep)를 추가했다.
 
 ### 의도적으로 유지한 것(리뷰가 dead-code로 지목했으나 보존)
 

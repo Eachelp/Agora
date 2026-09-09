@@ -6,6 +6,7 @@ const path = require("node:path");
 const { TaskManager } = require("../src/agora/task-manager");
 const turnCheckpoint = require("../src/agora/turn-checkpoint");
 const { ChatRoom } = require("../src/chat/chat-room");
+const { createProfessionalRun } = require("../src/agora/professional-run");
 
 
 function makePlanContract(goal = "목표", extra = "") {
@@ -4542,4 +4543,157 @@ test("쓰기 권한이 아니면 폴더 계약을 감시하지 않는다", async
   await settle(room);
   assert.equal(scans, 0);
   fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+// --- 구현 막힘 hold는 실행 블록과 단계별(step) 경로가 함께 쓴다 (holdForBuilderBlocked) ---
+//
+// 예전에는 runExecutionBlockInner와 resumeStepPhaseInner가 같은 이름의
+// 클로저(holdForBlocked)를 따로 가졌고, step 쪽만 Run 기록(block.json)과
+// FSM 전이가 빠져 있었다.
+
+test("holdForBuilderBlocked: IMPLEMENTING에서는 BUILDER_BLOCKED, 그 밖에서는 HOLD_BLOCKED로 막는다", () => {
+  const room = Object.create(ChatRoom.prototype);
+  const events = [];
+  const persisted = [];
+  room.transitionProfessional = (event) => {
+    events.push(event);
+    return { ok: true };
+  };
+  room.persistBlockedRun = (args) => {
+    persisted.push(args);
+    return true;
+  };
+  room.persistRecoveryState = () => true;
+  room.recoveryFor = () => ({});
+  room.emitSpecialistState = () => {};
+  room.messages = [];
+  room.appendSystem = (text) => room.messages.push(text);
+
+  // 실행 블록: USER_EXECUTE로 IMPLEMENTING에 들어와 있다.
+  room.professionalRun = { node: "IMPLEMENTING", status: "RUNNING" };
+  const exec = room.holdForBuilderBlocked({
+    runInfo: { runId: "RUN-1" },
+    checkpoint: { supported: true },
+    round: 2,
+    result: { builderStatus: "BLOCKED" },
+    declaration: "BLOCKED",
+  });
+  assert.equal(exec.stopReason, "BLOCKED");
+  assert.equal(exec.canRestore, true);
+  assert.equal(exec.completedIterations, 2);
+
+  // step 호환 경로: FSM이 READY에 머문다 — 조용히 실패하는 BUILDER_BLOCKED 대신 HOLD_BLOCKED.
+  room.professionalRun = { node: "READY", status: "WAITING" };
+  const step = room.holdForBuilderBlocked({
+    runInfo: { runId: "RUN-2" },
+    checkpoint: null,
+    round: 1,
+    result: { builderStatus: "MISSING" },
+    declaration: "MISSING",
+  });
+  assert.equal(step.stopReason, "BUILDER_STATUS_MISSING");
+  assert.equal(step.canRestore, false);
+
+  assert.deepEqual(events, [
+    { type: "BUILDER_BLOCKED", blockReason: "BLOCKED" },
+    { type: "HOLD_BLOCKED", stopReason: "BUILDER_STATUS_MISSING", blockReason: "BUILDER_STATUS_MISSING" },
+  ]);
+  // 두 경로 모두 Run 기록을 남긴다.
+  assert.deepEqual(persisted.map((args) => [args.runInfo.runId, args.stopReason, args.round]), [
+    ["RUN-1", "BLOCKED", 2],
+    ["RUN-2", "BUILDER_STATUS_MISSING", 1],
+  ]);
+  // 메시지는 되돌릴 수 있는지에 따라 달라진다.
+  assert.match(room.messages[0], /지금까지의 변경은 그대로 두었습니다/);
+  assert.match(room.messages[1], /STATUS: DONE 또는 STATUS: BLOCKED가 없어/);
+});
+
+test("단계별 실행 경로의 BLOCKED도 Run 기록(block.json)과 FSM 상태를 남기고 keep으로 풀린다", async (t) => {
+  const ws = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-room-step-blocked-")));
+  t.after(() => fs.rmSync(ws, { recursive: true, force: true }));
+  const run = (args) => require("node:child_process").execFileSync("git", args, { cwd: ws, encoding: "utf8" });
+  run(["init"]);
+  run(["config", "user.email", "t@example.com"]);
+  run(["config", "user.name", "tester"]);
+  fs.writeFileSync(path.join(ws, "a.txt"), "hello\n", "utf8");
+  const taskRelative = path.join(".project-memory", "tasks", "TASK-001.md");
+  const taskContent = [
+    "## Goal", "a.txt를 고친다",
+    "## Requirements", "내용을 바꾼다",
+    "## Implementation Approach", "파일을 직접 수정한다",
+    "## Acceptance Criteria", "a.txt가 바뀐다",
+    "## Verification", "파일 내용을 읽어 확인한다",
+    "## Out of Scope", "그 밖의 파일",
+  ].join("\n");
+  fs.mkdirSync(path.dirname(path.join(ws, taskRelative)), { recursive: true });
+  fs.writeFileSync(path.join(ws, taskRelative), taskContent, "utf8");
+  run(["add", "."]);
+  run(["commit", "-m", "init"]);
+
+  const taskManager = new TaskManager();
+  const blocks = [];
+  const writeRunBlock = taskManager.writeRunBlock.bind(taskManager);
+  taskManager.writeRunBlock = (runInfo, block) => {
+    blocks.push({ runInfo, block });
+    return writeRunBlock(runInfo, block);
+  };
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace: ws },
+    taskManager,
+    checkpoint: turnCheckpoint,
+    // 승인된 기획, 실행 대기 — step 재개 시점의 실제 FSM 상태.
+    initialProfessionalRun: createProfessionalRun({ node: "READY", status: "WAITING", stopReason: "PLAN_READY", taskPath: taskRelative }),
+    runAgent: ({ agent }) => {
+      if (agent.id === "codex") {
+        fs.writeFileSync(path.join(ws, "a.txt"), "half done\n", "utf8");
+        return { promise: Promise.resolve({ ok: true, text: "명세가 모호합니다\nSTATUS: BLOCKED" }), cancel: () => {} };
+      }
+      return { promise: Promise.resolve({ ok: true, text: "VERDICT: PASS" }), cancel: () => {} };
+    },
+  });
+  // step 경로는 startSpecialist가 아니라 PLAN_READY 뒤 resumeSpecialist()로만 들어간다.
+  // 실제로 그 경로(resumeStepPhaseInner)를 지나는지 확인한다 — 실행 블록이 아니다.
+  let stepEntered = 0;
+  const stepInner = room.resumeStepPhaseInner.bind(room);
+  room.resumeStepPhaseInner = (...args) => {
+    stepEntered += 1;
+    return stepInner(...args);
+  };
+  room.specialistResume = {
+    stages: {
+      implementation: { agent: room.findAgent("codex") },
+      review: { agent: room.findAgent("claude") },
+    },
+    mode: "step",
+    phase: "plan_ready",
+    taskInfo: { relativePath: taskRelative, filename: "TASK-001.md" },
+    feedback: "",
+    maxAutoRevisions: 0,
+  };
+
+  const result = await room.resumeSpecialist();
+
+  assert.equal(stepEntered, 1);
+  assert.equal(result.ok, false);
+  assert.equal(result.stopReason, "BLOCKED");
+  assert.equal(result.blocked, true);
+  assert.equal(result.canRestore, true);
+  // 예전 step 경로에는 없던 것들: Run 기록과 FSM 상태.
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0].block.reason, "BLOCKED");
+  assert.equal(blocks[0].block.builderStatus, "BLOCKED");
+  assert.match(blocks[0].block.changes.text, /half done/);
+  assert.ok(fs.existsSync(path.join(blocks[0].runInfo.runDir, "block.json")));
+  assert.equal(room.professionalRun.status, "BLOCKED");
+  assert.equal(room.professionalRun.blockReason, "BLOCKED");
+  assert.ok(
+    room.messages.some((m) => m.authorType === "system" && /지금까지의 변경은 그대로 두었습니다/.test(m.text))
+  );
+  // 되돌리지 않고 기다린다(A안). keep은 변경을 남기고 보류만 푼다.
+  assert.equal(fs.readFileSync(path.join(ws, "a.txt"), "utf8").replace(/\r\n/g, "\n"), "half done\n");
+  const keep = await room.resolveBlocked("keep");
+  assert.equal(keep.ok, true);
+  assert.equal(room.specialistBlocked, null);
+  assert.equal(fs.readFileSync(path.join(ws, "a.txt"), "utf8").replace(/\r\n/g, "\n"), "half done\n");
 });

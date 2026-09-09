@@ -852,6 +852,67 @@ class SpecialistMixin {
     };
   }
 
+  // 구현자가 DONE을 선언하지 못했을 때의 막힘 hold(BLOCKED · 선언 누락 · 선언
+  // 모순). 실행 블록(auto/full)과 단계별(step) 경로가 함께 쓴다 — 예전에는 두
+  // 함수가 같은 이름의 클로저(holdForBlocked)를 따로 가졌고, step 쪽만 Run
+  // 기록(persistBlockedRun)과 FSM 전이가 빠져 있었다.
+  // 되돌릴 수 있는지(canRestore)는 checkpoint가 실제로 잡혔는지로만 판단한다.
+  holdForBuilderBlocked({ runInfo, taskInfo, checkpoint, round = 1, result = null, declaration = "BLOCKED", changes = null } = {}) {
+    const canRestore = Boolean(checkpoint && checkpoint.supported === true);
+    const stopReason = declaration === "MISSING"
+      ? "BUILDER_STATUS_MISSING"
+      : declaration === "AMBIGUOUS"
+        ? "BUILDER_STATUS_AMBIGUOUS"
+        : "BLOCKED";
+    // 실행 블록은 USER_EXECUTE로 IMPLEMENTING에 들어와 있어 BUILDER_BLOCKED가
+    // 맞다. step 호환 경로는 FSM을 IMPLEMENTING으로 옮기지 않으므로(그 전이는
+    // runExecutionBlockInner가 한다) 이 경로의 다른 hold(holdForRecovery)와
+    // 같이 HOLD_BLOCKED로 상태만 BLOCKED로 둔다 — 전이를 시도만 하고 조용히
+    // 실패하게 두면 막힌 Run이 WAITING으로 남는다.
+    this.transitionProfessional(
+      this.professionalRun?.node === "IMPLEMENTING"
+        ? { type: "BUILDER_BLOCKED", blockReason: stopReason }
+        : { type: "HOLD_BLOCKED", stopReason, blockReason: stopReason }
+    );
+    this.persistBlockedRun({ runInfo, taskInfo, checkpoint, stage: "implementation", round, stopReason, result, changes });
+    this.specialistBlocked = {
+      checkpoint: canRestore ? checkpoint : null,
+      canRestore,
+      taskPath: taskInfo?.relativePath || null,
+      runId: runInfo?.runId || null,
+      stage: "implementation",
+      blockReason: stopReason,
+    };
+    this.persistRecoveryState(this.recoveryFor(checkpoint, {
+      status: "blocked",
+      runId: runInfo?.runId || null,
+      taskPath: taskInfo?.relativePath || null,
+      stage: "implementation",
+      blockReason: stopReason,
+    }));
+    this.specialistActive = false;
+    this.emitSpecialistState();
+    this.appendSystem(
+      declaration === "MISSING"
+        ? "구현 결과에 STATUS: DONE 또는 STATUS: BLOCKED가 없어 안전하게 멈췄습니다. 아래에서 다음 처리를 선택해 주세요."
+        : declaration === "AMBIGUOUS"
+          ? "구현 결과에 서로 다른 STATUS 표기가 있어 최종 상태를 판단할 수 없습니다. 아래에서 다음 처리를 선택해 주세요."
+          : canRestore
+            ? "구현이 막혔습니다(BLOCKED). 지금까지의 변경은 그대로 두었습니다. 아래에서 다음 처리를 선택해 주세요."
+            : "구현이 막혔습니다(BLOCKED). 아래에서 다음 처리를 선택해 주세요. (git workspace가 아니라 자동 복원은 지원되지 않습니다)"
+    );
+    return {
+      ok: false,
+      stage: "implementation",
+      completedIterations: round,
+      needsUserDecision: true,
+      stopReason,
+      blocked: true,
+      canRestore,
+      result,
+    };
+  }
+
   holdForDegradedReview({ runInfo, taskInfo, checkpoint, stage = "review", round = 1, changes = null, review = null } = {}) {
     const reason = "DIFF_UNAVAILABLE";
     this.transitionProfessional({ type: "HOLD_BLOCKED", stopReason: reason, blockReason: reason });
@@ -2847,39 +2908,6 @@ class SpecialistMixin {
         this.checkpointEngine.cleanupCheckpoint(checkpoint);
       }
     };
-    const holdForBlocked = (blockedRound, blockedResult, declaration = "BLOCKED") => {
-      const canRestore = Boolean(checkpoint && checkpoint.supported === true);
-      const stopReason = declaration === "MISSING"
-        ? "BUILDER_STATUS_MISSING"
-        : declaration === "AMBIGUOUS"
-          ? "BUILDER_STATUS_AMBIGUOUS"
-          : "BLOCKED";
-      const message = declaration === "MISSING"
-        ? "구현 결과에 STATUS: DONE 또는 STATUS: BLOCKED가 없어 안전하게 멈췄습니다. 아래에서 다음 처리를 선택해 주세요."
-        : declaration === "AMBIGUOUS"
-          ? "구현 결과에 서로 다른 STATUS 표기가 있어 최종 상태를 판단할 수 없습니다. 아래에서 다음 처리를 선택해 주세요."
-          : "구현이 막혔습니다(BLOCKED). 아래에서 다음 처리를 선택해 주세요.";
-      this.specialistBlocked = {
-        checkpoint: canRestore ? checkpoint : null,
-        canRestore,
-        taskPath: taskInfo?.relativePath || null,
-        runId: runInfo?.runId || null,
-        stage: "implementation",
-        blockReason: stopReason,
-      };
-      this.persistRecoveryState(this.recoveryFor(checkpoint, {
-        status: "blocked",
-        runId: runInfo?.runId || null,
-        taskPath: taskInfo?.relativePath || null,
-        stage: "implementation",
-        blockReason: stopReason,
-      }));
-      retainCheckpoint = canRestore;
-      this.specialistActive = false;
-      this.emitSpecialistState();
-      this.appendSystem(message);
-      return { ok: false, stage: "implementation", completedIterations: blockedRound, needsUserDecision: true, stopReason, blocked: true, canRestore, result: blockedResult };
-    };
 
     try {
       if (resume.phase === "plan_ready") {
@@ -2983,8 +3011,8 @@ class SpecialistMixin {
         if (!builderResult?.ok) return this.specialistFail(implementation, "implementation", 1, builderResult);
         // 선언 누락·모순은 사용자 결정이 아니라 출력 계약 실패다. 읽기 전용으로 한 번 다시 청한다.
         builderResult = await this.repairBuilderStatus(implementation, builderResult, requestedGeneration, frozenTaskMeta());
-        if (builderResult.builderStatus !== "DONE") return holdForBlocked(1, builderResult, builderResult.builderStatus);
-        // 구현 완료 → 사용자 확인 대기.
+        // 실행 블록과 같은 순서 — 변경분을 먼저 수집해 막힘 기록(block.json)에도
+        // 실제 diff가 남고, diff 수집 실패는 막힘보다 먼저 드러난다.
         const changeSnapshot = await describeWorkspaceChanges(workspace, {
           checkpoint,
           excludePaths: runGeneratedPaths(workspace, runInfo),
@@ -3001,6 +3029,20 @@ class SpecialistMixin {
             message: "변경(Diff)을 수집하지 못해 검수를 시작할 수 없습니다. 변경은 그대로 남아 있습니다. 아래에서 다음 처리를 선택해 주세요.",
           });
         }
+        if (builderResult.builderStatus !== "DONE") {
+          const hold = this.holdForBuilderBlocked({
+            runInfo,
+            taskInfo,
+            checkpoint,
+            round: 1,
+            result: builderResult,
+            declaration: builderResult.builderStatus,
+            changes: changeSnapshot,
+          });
+          retainCheckpoint = hold.canRestore;
+          return hold;
+        }
+        // 구현 완료 → 사용자 확인 대기.
         // Stage D — 결과물 snapshot 확정 + 동결된 검사 실행(INV-5 · D-A2).
         // 사용자를 기다리기 **전에** 수행한다. 대기 중 결과물이 바뀌면 판정 직전
         // 재확인이 그것을 잡아낸다. 보완 실행에서도 같은 지점이 다시 돈다(B4).
@@ -3232,7 +3274,6 @@ class SpecialistMixin {
         }
         // 선언 누락·모순은 사용자 결정이 아니라 출력 계약 실패다. 읽기 전용으로 한 번 다시 청한다.
         builderResult = await this.repairBuilderStatus(implementation, builderResult, requestedGeneration, frozenTaskMeta());
-        if (builderResult.builderStatus !== "DONE") return holdForBlocked(2, builderResult, builderResult.builderStatus);
         const changeSnapshot = await describeWorkspaceChanges(workspace, {
           checkpoint,
           excludePaths: runGeneratedPaths(workspace, runInfo),
@@ -3248,6 +3289,19 @@ class SpecialistMixin {
             result: { changes: changeSnapshot.diff },
             message: "보완 후 변경(Diff)을 수집하지 못해 검수를 시작할 수 없습니다. 변경은 그대로 남아 있습니다. 아래에서 다음 처리를 선택해 주세요.",
           });
+        }
+        if (builderResult.builderStatus !== "DONE") {
+          const hold = this.holdForBuilderBlocked({
+            runInfo,
+            taskInfo,
+            checkpoint,
+            round: 2,
+            result: builderResult,
+            declaration: builderResult.builderStatus,
+            changes: changeSnapshot,
+          });
+          retainCheckpoint = hold.canRestore;
+          return hold;
         }
         // Stage D — 결과물 snapshot 확정 + 동결된 검사 실행(INV-5 · D-A2).
         // 사용자를 기다리기 **전에** 수행한다. 대기 중 결과물이 바뀌면 판정 직전
@@ -3718,63 +3772,6 @@ class SpecialistMixin {
 
     // BLOCKED(A안): 즉시 되돌리지 않고 Builder 작업물을 그대로 둔 채 멈춥니다.
     // 사용자가 [작업 전으로 복원]/[Task 폐기]를 고르면 그때 복원합니다.
-    const holdForBlocked = (blockedRound, blockedResult, declaration = "BLOCKED") => {
-      const stopReason = declaration === "MISSING"
-        ? "BUILDER_STATUS_MISSING"
-        : declaration === "AMBIGUOUS"
-          ? "BUILDER_STATUS_AMBIGUOUS"
-          : "BLOCKED";
-      this.transitionProfessional({
-        type: "BUILDER_BLOCKED",
-        blockReason: stopReason,
-      });
-      this.persistBlockedRun({
-        runInfo,
-        taskInfo,
-        checkpoint,
-        stage: "implementation",
-        round: blockedRound,
-        stopReason,
-        result: blockedResult,
-        changes: changeSnapshot,
-      });
-      this.specialistBlocked = {
-        checkpoint: checkpointSupported ? checkpoint : null,
-        canRestore: checkpointSupported,
-        taskPath: taskInfo?.relativePath || null,
-        runId: runInfo?.runId || null,
-        stage: "implementation",
-        blockReason: stopReason,
-      };
-      this.persistRecoveryState(this.recoveryFor(checkpoint, {
-        status: "blocked",
-        runId: runInfo?.runId || null,
-        taskPath: taskInfo?.relativePath || null,
-        stage: "implementation",
-        blockReason: stopReason,
-      }));
-      this.specialistActive = false;
-      this.emitSpecialistState();
-      this.appendSystem(
-        declaration === "MISSING"
-          ? "구현 결과에 STATUS: DONE 또는 STATUS: BLOCKED가 없어 안전하게 멈췄습니다. 아래에서 다음 처리를 선택해 주세요."
-          : declaration === "AMBIGUOUS"
-            ? "구현 결과에 서로 다른 STATUS 표기가 있어 최종 상태를 판단할 수 없습니다. 아래에서 다음 처리를 선택해 주세요."
-            : checkpointSupported
-              ? "구현이 막혔습니다(BLOCKED). 지금까지의 변경은 그대로 두었습니다. 아래에서 다음 처리를 선택해 주세요."
-              : "구현이 막혔습니다(BLOCKED). 아래에서 다음 처리를 선택해 주세요. (git workspace가 아니라 자동 복원은 지원되지 않습니다)"
-      );
-      return {
-        ok: false,
-        stage: "implementation",
-        completedIterations: blockedRound,
-        needsUserDecision: true,
-        stopReason,
-        blocked: true,
-        canRestore: checkpointSupported,
-        result: blockedResult,
-      };
-    };
     // V1.5 — 구현자의 routing 축 소비. 최초 라운드와 보완 라운드가 같은
     // 규칙을 쓴다(issue #3): DONE + HANDOFF: @reviewer는 기본 흐름과 같고,
     // BLOCKED + HANDOFF: @planner(재기획 요청)는 수용하되 작업물 keep/restore
@@ -3798,7 +3795,15 @@ class SpecialistMixin {
           "구현자가 재기획(HANDOFF: @planner)을 요청했습니다. 아래에서 작업물을 유지하거나 복원하며 재기획으로 이어 주세요."
         );
       }
-      return holdForBlocked(controlRound, controlResult, controlResult.builderStatus);
+      return this.holdForBuilderBlocked({
+        runInfo,
+        taskInfo,
+        checkpoint,
+        round: controlRound,
+        result: controlResult,
+        declaration: controlResult.builderStatus,
+        changes: changeSnapshot,
+      });
     };
 
     const frozenBeforeBuilder = validateForStage("implementation", round);
