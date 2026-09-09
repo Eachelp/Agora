@@ -993,6 +993,9 @@ function loadComposerLock(state = {}) {
     context.specialistStopReason === "HUMAN_APPROVAL_REQUIRED"
     || context.specialistResumePhase === "awaiting_human_approval";
   context.canResumeAfterApproval = () => Boolean(state.canResumeAfterApproval);
+  // 실제 professionalRunBusy와 같은 기준(백엔드 isSpecialistLocked와 동일).
+  context.professionalRunBusy = () =>
+    Boolean(context.specialistActive || context.specialistResumeAvailable || context.specialistBlockedAvailable);
   vm.createContext(context);
   vm.runInContext(src.slice(start, end), context);
   context.lockComposer(Boolean(state.locked));
@@ -1298,4 +1301,52 @@ test("보완·재기획은 현재 작업과 실제 라운드로 표시한다", (
     assert.equal(rounds, "기획 2차 · 구현 3차");
     assert.doesNotMatch(status.headline, /완료|통과/);
   }
+});
+
+// 일반 모드의 메모 전용 입력창은 전문 실행이 **실제로** 돌거나 입력을 기다릴 때만이다.
+// 예전에는 "실행 노드가 남아 있다"로 판정해, 중단된 실행이 있는 대화는 영영 메모
+// 전용이 됐다 — 일반 모드에서 @claude를 불러도 메모로만 남고 답이 오지 않았다.
+test("중단된 전문 실행이 남아 있어도 일반 모드 입력창은 메모 전용이 되지 않는다", () => {
+  const src = read("src/chat.js");
+  const vm = require("node:vm");
+  const start = src.indexOf("function professionalRunBusy() {");
+  const end = src.indexOf("\n}\n", start) + 3;
+  assert.ok(start > 0, "professionalRunBusy를 찾지 못했습니다");
+  const busy = (state) => {
+    const context = { specialistActive: false, specialistResumeAvailable: false, specialistBlockedAvailable: false, ...state };
+    vm.createContext(context);
+    vm.runInContext(src.slice(start, end), context);
+    return context.professionalRunBusy();
+  };
+  // 중단·완료된 실행: 노드는 남지만 바쁘지 않다.
+  assert.equal(busy({}), false);
+  // 돌거나(active), 사용자 결정을 기다리거나(resume), 막힌(blocked) 실행: 바쁘다.
+  assert.equal(busy({ specialistActive: true }), true);
+  assert.equal(busy({ specialistResumeAvailable: true }), true);
+  assert.equal(busy({ specialistBlockedAvailable: true }), true);
+
+  // 입력창: 중단된 실행이 남은 일반 모드 → 보통 대화 입력.
+  const idle = loadComposerLock({
+    professionalModeEnabled: false,
+    professionalRunWasLive: true,
+    specialistNode: "IMPLEMENTING",
+    specialistStopReason: "EXECUTION_INTERRUPTED",
+    locked: false,
+  });
+  assert.equal(idle.button, "전송");
+  assert.match(idle.placeholder, /질문이나 작업을 입력하세요/);
+  // 실행 대기(READY, 재개 상태 있음)인 일반 모드 → 기획자 메모.
+  const waiting = loadComposerLock({
+    professionalModeEnabled: false,
+    professionalRunWasLive: true,
+    specialistNode: "READY",
+    specialistResumeAvailable: true,
+    locked: false,
+  });
+  assert.equal(waiting.button, "메모 남기기");
+  assert.match(waiting.placeholder, /전문 실행은 그대로 둡니다/);
+
+  // 전송 경로도 같은 기준으로 메모 여부를 정한다(백엔드 recordOnly의 입력).
+  assert.match(src, /professionalModeEnabled \|\| professionalRunBusy\(\)/);
+  assert.ok(!/professionalModeEnabled \|\| professionalRunWasLive/.test(src), "노드 잔존만으로 메모로 만들면 안 됩니다");
 });

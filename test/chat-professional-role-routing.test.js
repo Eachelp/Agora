@@ -113,9 +113,10 @@ test("renderer와 IPC는 professional draft와 turn-state 경계를 연결한다
   const preload = fs.readFileSync(path.join(__dirname, "..", "src", "chat-preload.js"), "utf8");
   const ipc = fs.readFileSync(path.join(__dirname, "..", "src", "chat", "chat-ipc.js"), "utf8");
 
-  // 전문 실행이 살아 있는 동안에는 일반 모드 발화도 메모(draft)로만 남긴다.
-  // 그러지 않으면 참가자 전원이 응답해 실행 맥락에 일반 대화가 섞인다.
-  assert.match(renderer, /professionalModeEnabled \|\| professionalRunWasLive/);
+  // 전문 실행이 실제로 돌거나 입력을 기다리는 동안에는 일반 모드 발화도 메모(draft)로만
+  // 남긴다. 그러지 않으면 참가자 전원이 응답해 실행 맥락에 일반 대화가 섞인다.
+  // (중단된 실행의 노드가 남은 것만으로는 메모로 만들지 않는다 — agora-ui.test.js)
+  assert.match(renderer, /professionalModeEnabled \|\| professionalRunBusy\(\)/);
   assert.match(renderer, /window\.chatApi\.onTurnState/);
   assert.match(renderer, /effectivePlanReview = planReview\.agentId \? planReview : review/);
   assert.match(preload, /professionalDraft = false/);

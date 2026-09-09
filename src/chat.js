@@ -529,6 +529,15 @@ function setSpecialistState(state = {}) {
   professionalRunWasLive = runLive;
 }
 
+// 전문 실행이 실제로 돌거나 사용자 입력을 기다리는 중인가 — 백엔드의
+// isSpecialistLocked(active || resume || blocked)와 같은 기준이다.
+// "노드가 남아 있다"(runLive)는 여기 쓰지 않는다: 중단된 실행도 노드는 남으므로
+// 그 기준이면 전문 실행을 한 번 돌린 대화는 영영 메모 전용이 되어, 일반 모드에서
+// @claude를 불러도 답이 오지 않았다.
+function professionalRunBusy() {
+  return Boolean(specialistActive || specialistResumeAvailable || specialistBlockedAvailable);
+}
+
 function specialistLocksComposer() {
   // READY 상태에서는 기획 수정을 허용하기 위해 composer를 잠그지 않는다.
   if (specialistNode === "READY" && !specialistActive) return false;
@@ -5293,9 +5302,10 @@ async function sendCurrentMessage() {
       text,
       attachmentIds,
       independent,
-      // 전문 실행이 살아 있는 동안에는 일반 모드에서도 메모로만 남긴다.
-      // 그러지 않으면 참가자 전원이 응답해 실행 맥락에 일반 대화가 섞인다.
-      professionalModeEnabled || professionalRunWasLive,
+      // 전문 실행이 실제로 돌거나 입력을 기다리는 동안에는 일반 모드에서도
+      // 메모로만 남긴다. 그러지 않으면 참가자 전원이 응답해 실행 맥락에 일반
+      // 대화가 섞인다. 중단된 실행의 노드가 남은 것만으로는 메모로 만들지 않는다.
+      professionalModeEnabled || professionalRunBusy(),
       // `@팀 실행`이 버튼과 같은 자동 보완 정책을 쓰도록 토글 값을 함께 보낸다.
       currentProfessionalPolicy()
     )
@@ -5612,11 +5622,11 @@ function lockComposer(locked) {
   attachButton.disabled = locked || specialistNeedsInput;
   // 일반 모드를 고른 동안에는 전문 조작 문구를 쓰지 않는다. 그 발화는 실행을
   // 건드리지 않고 기획자가 다음 라운드에 읽을 메모로만 남는다.
-  const noteOnly = !professionalModeEnabled && professionalRunWasLive;
+  const noteOnly = !professionalModeEnabled && professionalRunBusy();
   if (noteOnly) {
     composerInput.disabled = false;
     sendButton.disabled = false;
-    composerInput.placeholder = "기획자에게 남길 메모를 입력하세요. 실행은 그대로 진행됩니다 (Enter 전송)";
+    composerInput.placeholder = "기획자에게 남길 메모를 입력하세요. 전문 실행은 그대로 둡니다 (Enter 전송)";
     sendButton.textContent = "메모 남기기";
   } else if (awaitingHumanApproval()) {
     // 승인은 입력창 위 확인 목록에서 한다. "실행이 끝난 뒤"라고 안내하면
