@@ -792,6 +792,11 @@ tail 관점)에서 추가로 확정된 것: Archivist 페르소나 누락(그룹
 3. **builder 제어 소비·재기획 안내 중복**(chat-specialist.js 최초 라운드 ↔
    보완 라운드): 두 결정 지점의 consumeControlRequest + 재기획 안내 로직이
    통째로 중복. 단일 헬퍼로 합치되 auto-revise 상태 전이 회귀 확인 필요.
+   → **처리됨**(issue #3). `runExecutionBlockInner` 안의 `consumeBuilderControl`
+   (소비 → DONE이면 진행, 아니면 재기획 안내 + 막힘 hold)을 두 라운드가
+   함께 쓴다. `chat-handoff-consumer.test.js`에 보완 라운드의 BLOCKED +
+   HANDOFF @planner 회귀(수용 순서·안내 1회·자동 재기획 없음)를 추가했고,
+   기존 혼합 auto-revise·다회차 예산·Archivist 시나리오는 그대로 green이다.
 
 ### 의도적으로 유지한 것(리뷰가 dead-code로 지목했으나 보존)
 

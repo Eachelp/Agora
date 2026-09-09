@@ -385,6 +385,56 @@ test("자동 보완 루프에서 검토자가 handoff를 생략해도 재검토 
   assert.deepEqual(acceptedRoles, ["reviewer", "builder", "reviewer", "reviewer"]);
 });
 
+// 최초 라운드와 보완 라운드의 구현자 제어 소비는 한 헬퍼를 지난다(issue #3).
+// 보완 라운드에서 BLOCKED + HANDOFF: @planner가 나와도 최초 라운드와 같은
+// 규칙 — 수용은 하되 자동 재기획은 하지 않고(INV-5) 같은 안내를 남긴다.
+test("보완 라운드의 BLOCKED + HANDOFF: @planner도 최초 라운드와 같은 규칙으로 소비된다", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-handoff-replan-revised-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const journal = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { workspace },
+    taskManager: new TaskManager(),
+    appendProfessionalEvent: (event) => {
+      journal.push(event);
+      return true;
+    },
+    readProfessionalEvents: () => journal.slice(),
+    runAgent: fakeRunner({
+      claude: [
+        { ok: true, text: `${makePlanContract("보완 라운드 재기획")}\n\nHANDOFF: @reviewer` },
+        { ok: true, text: "구현 완료\nSTATUS: DONE\n\nHANDOFF: @reviewer" },
+        // 보완 라운드의 구현자가 계획 자체의 문제를 발견한다.
+        { ok: true, text: "계획이 현실과 어긋납니다\nSTATUS: BLOCKED\n\nHANDOFF: @planner\nREASON: API 스키마가 계획과 다름" },
+      ],
+      codex: [
+        { ok: true, text: "기획 검수 통과\nVERDICT: PASS\n\nHANDOFF: @builder" },
+        {
+          ok: true,
+          text: "수정이 필요합니다\nVERDICT: FIX_REQUIRED\nISSUES:\n1.\nscope: IN\nseverity: BLOCKING\nlocation: a.js\nproblem: 버그\nevidence: 실패\nimpact: 회귀\n\nHANDOFF: @builder",
+        },
+      ],
+    }),
+  });
+  room.sendUserMessage({ text: "작업해줘", recordOnly: true });
+
+  const result = await room.startSpecialist({ action: "full", maxAutoRevisions: 1, stages: fullStages(room) });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.stopReason, "BLOCKED");
+  assert.equal(room.specialistState().blocked, true);
+  // 두 라운드의 handoff가 순서대로 수용되고, 마지막이 보완 라운드의 @planner다.
+  const accepted = journal.filter((event) => event.type === "HANDOFF_ACCEPTED").map((event) => event.role);
+  assert.deepEqual(accepted, ["reviewer", "builder", "reviewer", "builder", "planner"]);
+  // 최초 라운드(DONE)에는 안내가 없고, 보완 라운드(BLOCKED + @planner)에 정확히 한 번 남는다.
+  const notices = room.messages.filter(
+    (message) => message.authorType === "system" && /재기획\(HANDOFF: @planner\)을 요청했습니다/.test(message.text)
+  );
+  assert.equal(notices.length, 1);
+  assert.match(notices[0].text, /아래에서 작업물을 유지하거나 복원하며 재기획으로 이어 주세요/);
+});
+
 test("다회차 자동 보완이 예산을 소진하지 않고 최종 Archivist까지 도달한다", async (t) => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agora-handoff-budget-"));
   t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));

@@ -3775,6 +3775,31 @@ class SpecialistMixin {
         result: blockedResult,
       };
     };
+    // V1.5 — 구현자의 routing 축 소비. 최초 라운드와 보완 라운드가 같은
+    // 규칙을 쓴다(issue #3): DONE + HANDOFF: @reviewer는 기본 흐름과 같고,
+    // BLOCKED + HANDOFF: @planner(재기획 요청)는 수용하되 작업물 keep/restore
+    // 선택은 기존대로 사용자 몫이다(INV-5 — BLOCKED 자동 진행 금지).
+    // 소비는 결과와 무관하게 먼저 한다 — 이 역할을 향한 invocation을 settle
+    // 하고 예산을 소비하는 결정 지점이다. DONE이 아니면 막힘 hold를 돌려주고,
+    // DONE이면 null — 호출부가 BUILDER_DONE 전이로 이어 간다.
+    const consumeBuilderControl = (controlRound, controlResult) => {
+      const builderControl = this.consumeControlRequest({
+        contract: "implementation",
+        result: controlResult.builderStatus,
+        outcome: controlResult,
+      });
+      if (controlResult.builderStatus === "DONE") return null;
+      if (
+        builderControl.accepted &&
+        builderControl.control?.action === "HANDOFF" &&
+        builderControl.control.targetRole === "planner"
+      ) {
+        this.appendSystem(
+          "구현자가 재기획(HANDOFF: @planner)을 요청했습니다. 아래에서 작업물을 유지하거나 복원하며 재기획으로 이어 주세요."
+        );
+      }
+      return holdForBlocked(controlRound, controlResult, controlResult.builderStatus);
+    };
 
     const frozenBeforeBuilder = validateForStage("implementation", round);
     if (frozenBeforeBuilder) return frozenBeforeBuilder;
@@ -3839,27 +3864,8 @@ class SpecialistMixin {
       return this.specialistFail(implementation, "implementation", round, builderResult);
     }
     builderResult = await this.repairBuilderStatus(implementation, builderResult, requestedGeneration, frozenTaskMeta());
-    // V1.5 — 구현자의 routing 축 소비. DONE + HANDOFF: @reviewer는 기본
-    // 흐름과 같고, BLOCKED + HANDOFF: @planner(재기획 요청)는 수용하되
-    // 작업물 keep/restore 선택은 기존대로 사용자 몫이다(INV-5 — BLOCKED
-    // 자동 진행 금지).
-    const builderControl = this.consumeControlRequest({
-      contract: "implementation",
-      result: builderResult.builderStatus,
-      outcome: builderResult,
-    });
-    if (builderResult.builderStatus !== "DONE") {
-      if (
-        builderControl.accepted &&
-        builderControl.control?.action === "HANDOFF" &&
-        builderControl.control.targetRole === "planner"
-      ) {
-        this.appendSystem(
-          "구현자가 재기획(HANDOFF: @planner)을 요청했습니다. 아래에서 작업물을 유지하거나 복원하며 재기획으로 이어 주세요."
-        );
-      }
-      return holdForBlocked(round, builderResult, builderResult.builderStatus);
-    }
+    const builderHold = consumeBuilderControl(round, builderResult);
+    if (builderHold) return builderHold;
     const builderTransition = this.transitionProfessional({ type: "BUILDER_DONE" });
     if (!builderTransition.ok) {
       return this.holdForRecovery({
@@ -4268,24 +4274,8 @@ class SpecialistMixin {
         return this.specialistFail(implementation, "implementation", round, builderResult);
       }
       builderResult = await this.repairBuilderStatus(implementation, builderResult, requestedGeneration, frozenTaskMeta());
-      // V1.5 — 보완 라운드의 구현자 routing 축 소비(첫 라운드와 동일 규칙).
-      const revisedBuilderControl = this.consumeControlRequest({
-        contract: "implementation",
-        result: builderResult.builderStatus,
-        outcome: builderResult,
-      });
-      if (builderResult.builderStatus !== "DONE") {
-        if (
-          revisedBuilderControl.accepted &&
-          revisedBuilderControl.control?.action === "HANDOFF" &&
-          revisedBuilderControl.control.targetRole === "planner"
-        ) {
-          this.appendSystem(
-            "구현자가 재기획(HANDOFF: @planner)을 요청했습니다. 아래에서 작업물을 유지하거나 복원하며 재기획으로 이어 주세요."
-          );
-        }
-        return holdForBlocked(round, builderResult, builderResult.builderStatus);
-      }
+      const revisedBuilderHold = consumeBuilderControl(round, builderResult);
+      if (revisedBuilderHold) return revisedBuilderHold;
       const revisedBuilderTransition = this.transitionProfessional({ type: "BUILDER_DONE" });
       if (!revisedBuilderTransition.ok) {
         return this.holdForRecovery({
