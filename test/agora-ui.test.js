@@ -301,8 +301,9 @@ test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있
     assert.match(html, new RegExp(`id="${id}"`));
   }
   // 전문 실행은 PLAN → ACT 흐름과 보조 기록 동작을 분리해 보여 준다.
-  assert.match(html, /id="btn-professional-plan"[^>]*>PLAN<\/button>/);
-  assert.match(html, /id="btn-professional-implementation"[^>]*>실행 ▶<\/button>/);
+  // (PLAN·실행 버튼은 라벨 뒤에 현재 자동 보완 정책 배지를 함께 담는다.)
+  assert.match(html, /id="btn-professional-plan"[^>]*><span>PLAN<\/span>/);
+  assert.match(html, /id="btn-professional-implementation"[^>]*><span>실행 ▶<\/span>/);
   assert.match(html, /id="btn-professional-full"[^>]*>전체 실행 ⚡<\/button>/);
   assert.match(html, /data-professional-step="plan-review"/);
   assert.match(renderer, /specialistNode/);
@@ -1189,4 +1190,54 @@ test("막힘 안내는 선택지가 실제로 있는 자리를 가리킨다", ()
   });
   assert.match(memo.placeholder, /메모/);
   assert.equal(memo.button, "메모 남기기");
+});
+
+// 자동 보완 설정은 실행 버튼의 의미를 바꾼다: 꺼져 있으면 검수가 수정을 요구할 때
+// 멈추고 물어보고, 켜져 있으면 정해진 횟수만큼 자동으로 다시 돈다. 그 사실이
+// 버튼에 보이지 않아 "왜 어떤 때는 멈추고 어떤 때는 쭉 가는지" 알 수 없었다.
+function loadPolicyHelpers() {
+  const vm = require("node:vm");
+  const src = read("src/chat.js");
+  const start = src.indexOf("function policyBadgeText(revisions) {");
+  const tail = src.indexOf("return `${description} ${consequence}`;", start);
+  assert.ok(start > 0 && tail > start, "정책 배지 코드를 찾지 못했습니다");
+  const end = src.indexOf("\n}", tail) + 2;
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(src.slice(start, end), context);
+  return context;
+}
+
+test("실행 버튼의 배지가 자동 보완 설정을 그대로 말한다", () => {
+  const { policyBadgeText, policyTooltip } = loadPolicyHelpers();
+  assert.equal(policyBadgeText(0), "검수 후 확인");
+  assert.equal(policyBadgeText(1), "자동 보완 1회");
+  assert.equal(policyBadgeText(3), "자동 보완 3회");
+
+  // 툴팁은 이 설정에서 실제로 무슨 일이 일어나는지 말한다
+  // (chat-specialist.js: canAutoRevise && maxAutoRevisions로 재실행 횟수를 정한다).
+  const off = policyTooltip("구현·검수를 실행합니다.", 0, "구현");
+  assert.match(off, /멈추고 물어봅니다/);
+  assert.ok(!/자동으로 다시 돌립니다/.test(off));
+  const on = policyTooltip("구현·검수를 실행합니다.", 2, "구현");
+  assert.match(on, /최대 2회까지 자동으로 다시 돌립니다/);
+  // 무엇을 하는 버튼인지도 잃지 않는다.
+  assert.match(off, /구현·검수를 실행합니다/);
+  assert.match(on, /구현·검수를 실행합니다/);
+});
+
+test("배지는 버튼 안에 있고, 못 누르는 버튼은 그 이유를 먼저 말한다", () => {
+  const html = read("src/chat.html");
+  const renderer = read("src/chat.js");
+  // 배지는 버튼 안에 있어야 "이 버튼이 이렇게 동작한다"로 읽힌다.
+  assert.match(html, /id="btn-professional-plan"[^>]*>[\s\S]{0,200}id="badge-professional-plan"/);
+  assert.match(html, /id="btn-professional-implementation"[^>]*>[\s\S]{0,200}id="badge-professional-implementation"/);
+  // 배지 함수는 title을 건드리지 않는다 — 비활성 버튼의 "왜 못 누르는지"를 덮으면 안 된다.
+  const body = renderer.slice(
+    renderer.indexOf("function renderProfessionalPolicyBadges()"),
+    renderer.indexOf("function policyBadgeText(")
+  );
+  assert.ok(!/\.title\s*=/.test(body), "배지 렌더가 툴팁을 덮으면 안 됩니다");
+  // 토글·횟수를 바꾸면 즉시 반영된다.
+  assert.match(renderer, /syncAutoRevisionControls\(\)[\s\S]{0,200}renderProfessionalPolicyBadges\(\)/);
 });

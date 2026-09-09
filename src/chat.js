@@ -60,6 +60,8 @@ const planAutoReviseToggle = document.getElementById("plan-auto-revise");
 const planAutoLimitSelect = document.getElementById("plan-auto-limit");
 const implementationAutoReviseToggle = document.getElementById("implementation-auto-revise");
 const implementationAutoLimitSelect = document.getElementById("implementation-auto-limit");
+const planPolicyBadge = document.getElementById("badge-professional-plan");
+const implementationPolicyBadge = document.getElementById("badge-professional-implementation");
 const storeWarning = document.getElementById("store-warning");
 const popover = document.getElementById("popover");
 const popoverBackdrop = document.getElementById("popover-backdrop");
@@ -229,6 +231,32 @@ implementationAutoLimitSelect.value = String(
 function syncAutoRevisionControls() {
   planAutoLimitSelect.disabled = !planAutoReviseToggle.checked;
   implementationAutoLimitSelect.disabled = !implementationAutoReviseToggle.checked;
+  renderProfessionalPolicyBadges();
+}
+
+// 자동 보완 설정이 실행 버튼의 의미를 바꾼다: 꺼져 있으면 검수가 수정을 요구할 때
+// 멈추고 사용자에게 승인을 묻고, 켜져 있으면 정해진 횟수만큼 자동으로 다시 돈다
+// (chat-specialist.js의 canAutoRevise / maxRounds). 그 사실이 버튼에 보이지 않아
+// "왜 어떤 때는 멈추고 어떤 때는 쭉 가는지" 알 수 없었다. 버튼이 직접 말하게 한다.
+function renderProfessionalPolicyBadges() {
+  const policy = currentProfessionalPolicy();
+  if (planPolicyBadge) planPolicyBadge.textContent = policyBadgeText(policy.planAutoRevisions);
+  if (implementationPolicyBadge) {
+    implementationPolicyBadge.textContent = policyBadgeText(policy.implementationAutoRevisions);
+  }
+}
+
+function policyBadgeText(revisions) {
+  return revisions > 0 ? `자동 보완 ${revisions}회` : "검수 후 확인";
+}
+
+// 눌릴 수 있는 버튼의 툴팁: 무엇을 하는지 + 이 설정에서 검수가 수정을 요구하면
+// 어떻게 되는지. 비활성 버튼의 툴팁은 "왜 못 누르는지"가 우선이라 여기 오지 않는다.
+function policyTooltip(description, revisions, stageLabel) {
+  const consequence = revisions > 0
+    ? `${stageLabel} 검수가 수정을 요구하면 최대 ${revisions}회까지 자동으로 다시 돌립니다.`
+    : `${stageLabel} 검수가 수정을 요구하면 멈추고 물어봅니다(자동 보완 꺼짐).`;
+  return `${description} ${consequence}`;
 }
 
 for (const [control, key] of [
@@ -248,6 +276,7 @@ for (const [control, key] of [
   control.addEventListener("change", () => {
     control.value = String(boundedRevisionLimit(control.value));
     localStorage.setItem(key, control.value);
+    renderProfessionalPolicyBadges();
   });
 }
 syncAutoRevisionControls();
@@ -1857,6 +1886,9 @@ function renderHeader() {
   });
   professionalPlanButton.disabled = !planConfigured || specialistBusy || !planStartable;
   professionalImplementationButton.disabled = !canStartImplementation;
+  // 눌릴 수 있는 버튼의 툴팁은 "이 설정으로 무엇이 일어나는가"를 말한다.
+  // 눌리지 않는 이유는 아래에서 그 자리를 덮어쓴다.
+  renderProfessionalPolicyBadges();
   const canRegenerateRecord = specialistNode === "COMPLETED" || (specialistNode === "RECORDING" && specialistStatus === "WAITING");
   professionalRecordButton.hidden = !canRegenerateRecord;
   // 기록 다시 생성은 기록이 실패해 멈춘 상태(RECORDING/WAITING)에서 쓰라고 있는
@@ -1869,7 +1901,7 @@ function renderHeader() {
   professionalPlanButton.title = ordinaryTurnBusy
     ? "일반 응답이 끝난 뒤 전문 기획을 시작할 수 있습니다"
     : planConfigured
-      ? "기획을 만들고 다른 담당자가 기획을 검수합니다"
+      ? policyTooltip("기획을 만들고 다른 담당자가 기획을 검수합니다.", currentProfessionalPolicy().planAutoRevisions, "기획")
       : `기획·검토 담당자가 필요합니다. ${roleSetupHint}`;
   professionalFullButton.title = ordinaryTurnBusy
     ? "일반 응답이 끝난 뒤 전체 전문 실행을 시작할 수 있습니다"
@@ -1901,7 +1933,7 @@ function renderHeader() {
     : awaitingAnswer
       ? "먼저 대기 중인 질문이나 확인 항목을 처리해 주세요"
     : canStartImplementation
-      ? "기획 검수를 통과한 작업을 구현·검수·기록까지 실행합니다"
+      ? policyTooltip("기획 검수를 통과한 작업을 구현·검수·기록까지 실행합니다.", currentProfessionalPolicy().implementationAutoRevisions, "구현")
       : "실행 중에는 새로 시작할 수 없습니다";
   // 다음에 실행할 단계를 강조합니다: 기획 통과 전이면 1단계, 통과 후면 2단계.
   // 강조와 활성 조건은 같은 값을 써야 "빛나는데 눌리지 않는" 버튼이 생기지 않는다.

@@ -1628,6 +1628,28 @@ textarea:focus-visible {
   opacity: 0.8;
 }
 
+/* 실행 버튼 안의 현재 정책 배지("검수 후 확인" / "자동 보완 2회").
+   라벨보다 조용하게 — 무엇을 누르는지가 먼저이고, 배지는 그 결과를 덧붙인다. */
+.chip-button .chip-badge {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.chip-button:disabled .chip-badge {
+  background: transparent;
+}
+
+.chip-button.is-next-step .chip-badge {
+  background: rgba(255, 255, 255, 0.22);
+  color: inherit;
+}
+
 /* 막힘 처리 — 실행이 멈춘 자리(상태 줄 바로 아래)에 선택지를 펼쳐 둔다. */
 .professional-blocked {
   display: flex;
