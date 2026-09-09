@@ -1008,14 +1008,12 @@ function renderProjects() {
     const addChat = document.createElement("button");
     addChat.type = "button";
     addChat.className = "project-action";
-    addChat.title = `${project.name}에 새 채팅`;
+    addChat.title = `${project.name}에 새 채팅 (Ctrl/⌘+N)`;
     addChat.setAttribute("aria-label", `${project.name}에 새 채팅`);
     addChat.textContent = "+";
-    addChat.addEventListener("click", async (event) => {
+    addChat.addEventListener("click", (event) => {
       event.stopPropagation();
-      setProjectOpen(project.id, true);
-      const result = await call(window.chatApi.sessionsCreate(project.id));
-      if (result) applyFullState(result);
+      void createChatIn(project.id);
     });
     const settings = document.createElement("button");
     settings.type = "button";
@@ -1035,18 +1033,43 @@ function renderProjects() {
     if (open) {
       const list = document.createElement("ul");
       list.className = "session-list project-sessions";
+      // 펼친 프로젝트마다 늘 보이는 '새 채팅' 줄. 행 우측의 흐린 +만으로는
+      // 자주 쓰는 동작이 눈에 띄지 않았다(상단의 선명한 버튼은 프로젝트를 만든다).
+      const newChat = document.createElement("li");
+      newChat.className = "project-new-chat";
+      const newChatButton = document.createElement("button");
+      newChatButton.type = "button";
+      newChatButton.className = "project-new-chat-button";
+      newChatButton.textContent = "＋ 새 채팅";
+      newChatButton.title = `${project.name}에 새 채팅 (Ctrl/⌘+N)`;
+      newChatButton.addEventListener("click", () => { void createChatIn(project.id); });
+      newChat.append(newChatButton);
+      list.append(newChat);
       const entries = sessionsByProject[project.id] || [];
       for (const entry of entries) list.append(buildSessionItem(entry));
-      if (entries.length === 0) {
-        const empty = document.createElement("li");
-        empty.className = "project-sessions-empty";
-        empty.textContent = "채팅 없음";
-        list.append(empty);
-      }
       item.append(list);
     }
 
     projectListEl.append(item);
+  }
+}
+
+// 프로젝트에 새 채팅을 만들고 바로 입력할 수 있게 한다. 사이드바의 +, 목록의
+// '새 채팅' 줄, Ctrl/⌘+N이 전부 여기로 온다.
+let creatingChat = false;
+async function createChatIn(projectId) {
+  if (!projectId || creatingChat) return;
+  creatingChat = true;
+  try {
+    setProjectOpen(projectId, true);
+    const result = await call(window.chatApi.sessionsCreate(projectId));
+    if (result) {
+      applyFullState(result);
+      // 만들고 나서 다시 입력창을 클릭하게 하지 않는다.
+      composerInput.focus();
+    }
+  } finally {
+    creatingChat = false;
   }
 }
 
@@ -2163,11 +2186,16 @@ function setRailActive(button) {
 // 초기값을 그대로 둔다.
 function renderRailLabels() {
   for (const [agentId, button] of railAgentButtons) {
-    const name = agentById(agentId)?.name;
+    const agent = agentById(agentId);
+    const name = agent?.name;
     if (!button || !name) continue;
     const label = button.querySelector(".app-rail-label");
     if (label) label.textContent = name;
-    const hint = `${name} 담당 모델·추론 설정`;
+    // 헤더의 참가자 칩은 못 쓰는 참가자를 흐리게 보여 주는데 레일은 그러지
+    // 않아, 설치되지 않은 AI가 설치된 것과 똑같이 켜져 보였다. 같은 기준을 쓴다.
+    const unavailable = agentUnavailableReason(agent);
+    button.classList.toggle("is-unavailable", Boolean(unavailable));
+    const hint = unavailable ? `${name} · ${unavailable}` : `${name} 담당 모델·추론 설정`;
     button.title = hint;
     button.setAttribute("aria-label", hint);
   }
@@ -2279,6 +2307,12 @@ function buildPopoverMenu(target, items) {
 popoverBackdrop.addEventListener("click", closePopover);
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !popover.hidden) closePopover();
+  // Ctrl/⌘+N — 지금 프로젝트에 새 채팅. 이름을 고치는 중에는 그 편집이 우선이다.
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey
+    && String(event.key).toLowerCase() === "n" && activeProjectId && !renamingSessionId) {
+    event.preventDefault();
+    void createChatIn(activeProjectId);
+  }
   // F2로 현재 대화 이름을 바로 고칩니다. 사이드바가 접혀 있으면 상단 제목에서 편집합니다.
   if (event.key === "F2" && activeSessionId && !renamingSessionId) {
     event.preventDefault();
@@ -4818,6 +4852,14 @@ function agentUnavailableReason(agent) {
   return "";
 }
 
+// 한 줄 목록에 들어갈 만큼 짧은 사유. 전체 문장(설치 명령·주소 포함)은 툴팁이 맡는다.
+function agentUnavailableShort(agent) {
+  if (!agent) return "담당자 없음";
+  if (agent.enabled === false) return "세션에서 꺼짐";
+  if (!agent.available) return "CLI 없음";
+  return "";
+}
+
 // 역할 멘션을 쓸 수 있는가와, 못 쓴다면 왜인가. 회색 항목에 이유를 붙이기 위해
 // boolean 대신 { available, reason }을 돌려준다.
 function roleMentionStatus(project, roleId) {
@@ -4827,11 +4869,16 @@ function roleMentionStatus(project, roleId) {
     config = roleConfigFromProject(project, "review");
   }
   if (!config.agentId) {
-    return { available: false, reason: "담당자 미지정 · 프로젝트 설정(⋯)에서 지정" };
+    return {
+      available: false,
+      reason: "담당자 미지정 · 프로젝트 설정(⋯)에서 지정",
+      reasonShort: "담당자 미지정",
+    };
   }
   const agent = agents.find((entry) => entry.id === config.agentId);
   const reason = agentUnavailableReason(agent);
-  return reason ? { available: false, reason } : { available: true, reason: "" };
+  if (!reason) return { available: true, reason: "", reasonShort: "" };
+  return { available: false, reason, reasonShort: `담당자 ${agentUnavailableShort(agent)}` };
 }
 
 function roleMentionAvailable(project, roleId) {
@@ -4853,6 +4900,7 @@ function mentionTargets() {
       color: agent.color,
       available: agent.available && agent.enabled,
       reason: agentUnavailableReason(agent),
+      reasonShort: agentUnavailableShort(agent),
     })),
     {
       alias: "모두",
@@ -4860,6 +4908,7 @@ function mentionTargets() {
       color: "#52525b",
       available: agents.some((agent) => agent.available && agent.enabled),
       reason: "쓸 수 있는 참가자가 없음",
+      reasonShort: "참가자 없음",
     },
     ...ROLE_MENTION_TARGETS.map((role) => {
       const status = roleMentionStatus(project, role.roleId);
@@ -4869,6 +4918,7 @@ function mentionTargets() {
         color: "#7c6f64",
         available: status.available,
         reason: status.reason,
+        reasonShort: status.reasonShort,
       };
     }),
     {
@@ -4879,6 +4929,9 @@ function mentionTargets() {
       // 어느 역할이 비어 있는지 알아야 무엇을 지정할지 안다.
       reason: teamMissing.length > 0
         ? `${teamMissing.map((role) => role.name).join("·")} 담당자 미지정`
+        : "",
+      reasonShort: teamMissing.length > 0
+        ? `${teamMissing.map((role) => role.name).join("·")} 미지정`
         : "",
     },
   ];
@@ -4931,10 +4984,14 @@ function updateMentionPopup() {
     alias.textContent = `@${option.alias}`;
     const desc = document.createElement("span");
     desc.className = "desc";
-    // 회색 항목에는 "사용 불가"가 아니라 **왜** 못 쓰는지를 적는다.
+    // 회색 항목에는 "사용 불가"가 아니라 **왜** 못 쓰는지를 적는다. 목록에는
+    // 한 줄에 들어가는 짧은 형태를, 툴팁에는 설치 명령·주소까지 있는 전체 사유를.
     desc.textContent = option.available
       ? option.label
-      : `${option.label} · ${option.reason || "사용 불가"}`;
+      : `${option.label} · ${option.reasonShort || option.reason || "사용 불가"}`;
+    if (!option.available && option.reason) {
+      button.title = `${option.label} · ${option.reason}`;
+    }
     button.append(dot, alias, desc);
     button.addEventListener("mousedown", (event) => {
       event.preventDefault();

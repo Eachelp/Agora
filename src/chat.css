@@ -997,7 +997,7 @@ textarea:focus-visible {
   bottom: calc(100% - 2px);
   left: 50%;
   transform: translateX(-50%);
-  width: min(340px, calc(100% - 32px));
+  width: min(420px, calc(100% - 32px));
   background: var(--surface);
   border: 1px solid var(--line-strong);
   border-radius: 12px;
@@ -1026,14 +1026,22 @@ textarea:focus-visible {
   flex: none;
 }
 
+/* 별칭은 절대 줄바꿈하지 않는다 — "@기\n획자"처럼 갈라지면 무엇을 부르는지 읽을 수 없다. */
 .mention-option .alias {
+  flex: none;
+  white-space: nowrap;
   font-weight: 600;
 }
 
+/* 설명·사유는 한 줄로 두고 넘치면 말줄임. 전체 문장은 항목 툴팁에 있다. */
 .mention-option .desc {
   margin-left: auto;
+  min-width: 0;
   font-size: 11px;
   color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .mention-option.is-active,
@@ -2784,8 +2792,14 @@ textarea:focus-visible {
   right: 5px;
   transform: translateY(-50%);
   display: inline-flex;
-  opacity: 0.4;
+  /* 0.4는 보이지 않는 것과 같았다. 쉬고 있어도 읽히고, 현재 프로젝트에서는 선명하게. */
+  opacity: 0.65;
   transition: opacity 120ms ease-out;
+}
+
+.project-item.is-active > .project-row .project-actions,
+.project-row:hover .project-actions {
+  opacity: 1;
 }
 
 .project-item:hover .project-actions,
@@ -3480,6 +3494,16 @@ textarea:focus-visible {
   outline-offset: 1px;
 }
 
+/* 설치되지 않았거나 이 세션에서 꺼진 참가자. 헤더 칩(.agent-chip.is-unavailable)과 같은 정도로 흐리게. */
+.app-rail-button.is-unavailable {
+  opacity: 0.45;
+}
+
+.app-rail-button.is-unavailable img,
+.app-rail-button.is-unavailable .app-rail-glyph {
+  filter: grayscale(0.8);
+}
+
 .app-rail-button img,
 .app-rail-glyph {
   width: 28px;
@@ -3795,6 +3819,29 @@ textarea:focus-visible {
   top: 50%;
   right: 4px;
   transform: translateY(-50%);
+}
+
+/* 펼친 프로젝트 목록 맨 위의 '새 채팅' 줄. 늘 보이되 채팅 항목보다 조용하게. */
+.project-new-chat {
+  list-style: none;
+}
+
+.project-new-chat-button {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.project-new-chat-button:hover,
+.project-new-chat-button:focus-visible {
+  background: var(--accent-soft);
 }
 
 /* 프로젝트 아래 중첩된 채팅 목록: 자체 스크롤 없이 트리 흐름에 붙습니다.

@@ -87,7 +87,11 @@ test("사이드바는 프로젝트 토글 트리 하나로 통합된다", () => 
   assert.match(renderer, /project-caret/);
   assert.match(renderer, /agora\.chat\.projectTreeClosed/);
   assert.match(renderer, /function buildSessionItem\(entry\)/);
-  assert.match(renderer, /sessionsCreate\(project\.id\)/);
+  // 행의 +와 목록의 '새 채팅' 줄, Ctrl/⌘+N은 모두 한 곳(createChatIn)을 거쳐
+  // 그 프로젝트에 세션을 만들고 입력창에 포커스를 준다.
+  assert.match(renderer, /createChatIn\(project\.id\)/);
+  assert.match(renderer, /sessionsCreate\(projectId\)/);
+  assert.match(renderer, /project-new-chat-button/);
   // 선택된 채팅이 접힌 프로젝트 안에 숨지 않도록 항상 드러냅니다.
   assert.match(renderer, /function revealActiveSession/);
   // 백엔드는 프로젝트별 세션 목록을 내려주고, 새 채팅은 대상 프로젝트를 지정할 수 있습니다.
@@ -1075,6 +1079,14 @@ test("부를 수 없는 멘션 대상에는 이유가 붙는다", () => {
   assert.equal(byAlias.기획자.reason, "");
   assert.match(byAlias.구현자.reason, /담당자 미지정/, "미지정이면 어디서 지정하는지 알려야 한다");
   assert.match(byAlias.구현자.reason, /프로젝트 설정/);
+  // 목록에는 한 줄에 들어가는 짧은 형태를 쓴다(전체 문장은 툴팁). 설치 명령·주소가
+  // 목록에 들어가면 별칭까지 줄바꿈돼 "@기/획자"처럼 갈라진다.
+  assert.equal(byAlias.gpt.reasonShort, "CLI 없음");
+  assert.equal(byAlias.gemini.reasonShort, "세션에서 꺼짐");
+  assert.equal(byAlias.구현자.reasonShort, "담당자 미지정");
+  assert.equal(byAlias.검토자.reasonShort, "담당자 CLI 없음");
+  assert.equal(byAlias.팀.reasonShort, "검토자·구현자 미지정");
+  assert.ok(byAlias.gpt.reasonShort.length < byAlias.gpt.reason.length);
   assert.match(byAlias.검토자.reason, /Codex CLI가 필요/, "지정됐지만 CLI가 없으면 그 사유");
   // 팀 상담은 비어 있는 역할 이름을 나열한다.
   assert.equal(byAlias.팀.available, false);
@@ -1087,4 +1099,45 @@ test("부를 수 없는 멘션 대상에는 이유가 붙는다", () => {
     project: { defaultRoles: { planning: "claude", review: "claude", implementation: "claude" } },
   });
   assert.equal(full.find((t) => t.alias === "팀").available, true);
+});
+
+
+// 왼쪽 레일도 헤더 칩과 같은 기준으로 못 쓰는 참가자를 흐리게 표시해야 한다.
+// 실제 renderRailLabels를 스텁 버튼 위에서 돌린다.
+test("레일은 설치되지 않았거나 꺼진 참가자를 흐리게 표시하고 이유를 툴팁에 둔다", () => {
+  const vm = require("node:vm");
+  const src = read("src/chat.js");
+  const start = src.indexOf("function renderRailLabels() {");
+  const end = src.indexOf("\n}\n", start) + 3;
+  const reasonStart = src.indexOf("function agentUnavailableReason(agent) {");
+  const reasonEnd = src.indexOf("\n}\n", reasonStart) + 3;
+  assert.ok(start > 0 && reasonStart > 0, "레일 코드를 찾지 못했습니다");
+  const fakeButton = () => {
+    const el = { classes: new Set(), attrs: {}, title: "", label: { textContent: "" } };
+    el.classList = { toggle: (c, on) => { if (on) el.classes.add(c); else el.classes.delete(c); } };
+    el.setAttribute = (k, v) => { el.attrs[k] = v; };
+    el.querySelector = () => el.label;
+    return el;
+  };
+  const buttons = { claude: fakeButton(), codex: fakeButton(), agy: fakeButton() };
+  const agents = {
+    claude: { id: "claude", name: "Claude", available: true, enabled: true },
+    codex: { id: "codex", name: "GPT", available: false, enabled: true, reason: "Codex CLI가 필요합니다." },
+    agy: { id: "agy", name: "Gemini", available: true, enabled: false },
+  };
+  const context = {
+    railAgentButtons: new Map(Object.entries(buttons)),
+    agentById: (id) => agents[id] || null,
+  };
+  vm.createContext(context);
+  vm.runInContext(src.slice(reasonStart, reasonEnd) + src.slice(start, end), context);
+  context.renderRailLabels();
+
+  assert.equal(buttons.claude.classes.has("is-unavailable"), false);
+  assert.match(buttons.claude.title, /담당 모델·추론 설정/);
+  assert.equal(buttons.codex.classes.has("is-unavailable"), true, "설치되지 않은 참가자는 흐리게");
+  assert.match(buttons.codex.title, /Codex CLI가 필요/, "이유는 툴팁에");
+  assert.equal(buttons.agy.classes.has("is-unavailable"), true, "세션에서 꺼진 참가자도 흐리게");
+  assert.match(buttons.agy.title, /꺼져 있음/);
+  assert.equal(buttons.codex.label.textContent, "GPT", "이름 갱신은 그대로");
 });
