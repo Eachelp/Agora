@@ -200,14 +200,15 @@ test("사이드바 2열부터 메인 대화까지 얇은 색 테두리의 둥근
   assert.ok(!css.includes("professional-actions-label"), "숨겨진 라벨 규칙은 남기지 않습니다");
   assert.ok(!/\.step-num \{/.test(css), "쓰지 않는 단계 번호 뱃지 규칙은 남기지 않습니다");
   // 같은 선택자를 여러 번 덮어쓰면 최종값을 읽으려면 파일 전체를 훑어야 한다.
-  for (const selector of [".professional-actions", ".professional-auto-options", ".professional-progress"]) {
+  for (const selector of [".professional-actions", ".professional-auto-options", ".professional-status-detail"]) {
     const count = css.split(`\n${selector} {`).length - 1;
     assert.equal(count, 1, `${selector} 규칙은 한 블록으로 유지합니다 (현재 ${count}개)`);
   }
-  assert.match(html, /class="professional-action-row"[\s\S]*id="btn-professional-full"[\s\S]*id="professional-progress"/);
+  assert.match(html, /class="professional-action-row"[\s\S]*id="btn-professional-full"[\s\S]*id="professional-status-detail"/);
   assert.match(css, /\.professional-action-row \{[^}]*grid-area: actions[^}]*justify-content: flex-start/);
-  assert.match(css, /\.professional-actions \{[^}]*grid-template-areas:[\s\S]*"actions"[\s\S]*"progress"/);
-  assert.match(css, /\.professional-progress \{[^}]*grid-area: progress[\s\S]*?justify-content: flex-start/);
+  assert.match(css, /\.professional-actions \{[^}]*grid-template-areas:[\s\S]*"actions"[\s\S]*"status"/);
+  assert.match(css, /\.professional-status-detail \{[^}]*grid-area: status/);
+  assert.ok(!html.includes("data-professional-step"), "현재 상태에서 앞 작업의 완료를 추정하는 단계 막대는 표시하지 않습니다");
   assert.match(css, /\.professional-auto-options \{[^}]*order: 2/);
   assert.match(css, /\.chat-scroll \{\s*background: var\(--surface\)/);
   assert.match(css, /\.composer \{\s*background: var\(--surface\)/);
@@ -288,7 +289,7 @@ test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있
     "btn-professional-record",
     "btn-professional-full",
     "btn-professional-plan-view",
-    "professional-progress",
+    "professional-status-detail",
     "plan-auto-revise",
     "plan-auto-limit",
     "implementation-auto-revise",
@@ -300,7 +301,7 @@ test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있
   assert.match(html, /id="btn-professional-plan"[^>]*>PLAN<\/button>/);
   assert.match(html, /id="btn-professional-implementation"[^>]*>실행 ▶<\/button>/);
   assert.match(html, /id="btn-professional-full"[^>]*>전체 실행 ⚡<\/button>/);
-  assert.match(html, /data-professional-step="plan-review"/);
+  assert.match(html, /id="professional-status-detail"[^>]*role="status"/);
   assert.match(renderer, /specialistNode/);
   // 옛 모달 시작 화면(3방식 선택)은 제거되어 renderer에 남지 않는다.
   assert.doesNotMatch(renderer, /function buildStartDialog/);
@@ -553,7 +554,7 @@ test("사용자가 골라야 진행되는 지점에는 실제 선택 버튼이 �
     "BLOCKED 선택지는 기존 모달로 이어져야 합니다"
   );
   // preload가 action을 넘기지 않으면 어떤 버튼도 의미가 없다.
-  assert.match(preload, /SPECIALIST_RESUME, \{ sessionId, action \}/);
+  assert.match(preload, /SPECIALIST_RESUME, \{ sessionId, action, expectedRunId \}/);
 });
 
 // professionalModeEnabled는 화면 로컬 값이라 토글을 눌러야만 바뀌었다. 그래서
@@ -624,7 +625,7 @@ test("레일 라벨은 참가자 이름에서 채워지고 HTML은 기본값만 
 function loadSpecialistView(state = {}) {
   const vm = require("node:vm");
   const src = read("src/chat.js");
-  const start = src.indexOf("const PROFESSIONAL_STEPS = Object.freeze([");
+  const start = src.indexOf("const PROFESSIONAL_NODE_LABELS = Object.freeze({");
   const end = src.indexOf("function renderProfessionalStatusDetail(");
   assert.ok(start > 0 && end > start, "상태 판정 코드를 찾지 못했습니다");
   const context = {
@@ -633,47 +634,45 @@ function loadSpecialistView(state = {}) {
     specialistStopReason: null,
     specialistMissingSections: null,
     specialistBlockedAvailable: false,
+    specialistActive: false,
+    specialistResumeAvailable: false,
     specialistResumePhase: null,
     specialistPendingApprovals: [],
+    specialistApprovalsLoading: false,
+    specialistApprovalsError: "",
+    specialistPlanRound: 0,
+    specialistImplementationRound: 0,
     ...state,
   };
-  context.awaitingHumanApproval = () =>
-    context.specialistStopReason === "HUMAN_APPROVAL_REQUIRED"
-    || context.specialistResumePhase === "awaiting_human_approval";
   vm.createContext(context);
+  vm.runInContext(src.slice(src.indexOf("function awaitingHumanApproval()"), src.indexOf("function resetSpecialistApprovals()")), context);
   vm.runInContext(src.slice(start, end), context);
   return {
-    progress: context.specialistProgressView(),
     status: context.specialistStatusView(),
-    steps: context.PROFESSIONAL_STEPS,
+    rounds: context.specialistRoundSummary(),
   };
 }
 
 test("READY는 기획검수 진행 중이 아니라 '검수 통과·실행 대기'로 보인다", () => {
-  const { progress, status } = loadSpecialistView({ specialistNode: "READY", specialistStatus: "WAITING" });
-  // 기획과 기획검수는 끝났다. 강조는 아직 시작하지 않은 구현으로 간다.
-  assert.equal(progress.completeThrough, 1);
-  assert.equal(progress.highlight, 2);
-  assert.equal(progress.tone, "waiting");
+  const { status } = loadSpecialistView({ specialistNode: "READY", specialistStatus: "WAITING" });
+  assert.equal(status.tone, "waiting");
   assert.match(status.headline, /기획 검수를 통과했습니다/);
   assert.match(status.next, /실행/);
 });
 
 test("COMPLETED는 기록 단계가 계속 돌고 있는 것처럼 보이지 않는다", () => {
-  const { progress, status } = loadSpecialistView({ specialistNode: "COMPLETED", specialistStatus: "COMPLETED" });
-  assert.equal(progress.completeThrough, 4, "다섯 단계 모두 끝난 것으로 표시합니다");
-  assert.equal(progress.highlight, -1, "완료 뒤에는 진행 중인 단계가 없습니다");
-  assert.equal(progress.tone, "done");
+  const { status } = loadSpecialistView({ specialistNode: "COMPLETED", specialistStatus: "COMPLETED" });
+  assert.equal(status.tone, "done");
   assert.match(status.headline, /완료/);
 });
 
 test("완료 뒤 기록 정리(Archivist) 중지는 본 실행의 완료를 뒤집지 않는다", () => {
-  const { progress, status } = loadSpecialistView({
+  const { status } = loadSpecialistView({
     specialistNode: "COMPLETED",
     specialistStatus: "COMPLETED",
     specialistStopReason: "USER_INTERRUPTED",
   });
-  assert.equal(progress.tone, "done");
+  assert.equal(status.tone, "done");
   assert.match(status.headline, /본 실행이 완료되었습니다/);
   assert.match(status.headline, /기록 정리는 중지/);
 });
@@ -685,9 +684,9 @@ test("중단과 실행 중은 다른 상태로 표시된다", () => {
     specialistStatus: "INTERRUPTED",
     specialistStopReason: "USER_INTERRUPTED",
   });
-  assert.equal(running.progress.tone, "running");
+  assert.equal(running.status.tone, "running");
   assert.match(running.status.headline, /구현 진행 중/);
-  assert.equal(stopped.progress.tone, "stopped");
+  assert.equal(stopped.status.tone, "stopped");
   assert.match(stopped.status.headline, /중지|중단/);
   assert.match(stopped.status.next, /다시 시작/);
 });
@@ -723,13 +722,13 @@ test("모르는 멈춤 사유를 완료나 복원 가능으로 포장하지 않�
 });
 
 test("BLOCKED는 막힌 이유와 다음 선택을 함께 안내한다", () => {
-  const { progress, status } = loadSpecialistView({
+  const { status } = loadSpecialistView({
     specialistNode: "IMPLEMENTING",
     specialistStatus: "BLOCKED",
     specialistStopReason: "BLOCKED",
     specialistBlockedAvailable: true,
   });
-  assert.equal(progress.tone, "blocked");
+  assert.equal(status.tone, "blocked");
   assert.match(status.headline, /막혀/);
   assert.match(status.next, /다음 처리 선택/);
 });
@@ -743,23 +742,23 @@ test("승인 대기 항목을 화면에서 보고 승인·거부할 수 있다",
   const html = read("src/chat.html");
   const renderer = read("src/chat.js");
   assert.match(html, /id="specialist-approvals"/);
-  assert.match(renderer, /window\.chatApi\.specialistPendingApprovals\(sessionId\)/);
-  assert.match(renderer, /window\.chatApi\.specialistResolveApproval\(sessionId, criterionId, approved, null\)/);
+  assert.match(renderer, /window\.chatApi\.specialistPendingApprovals\(context\.sessionId\)/);
+  assert.match(renderer, /window\.chatApi\.specialistResolveApproval\(context\.sessionId, criterionId, approved, null, context\.runId\)/);
   // 항목 본문과 사람이 필요한 이유를 함께 보여 준다.
   assert.match(renderer, /item\.statement \|\| item\.criterionId/);
   assert.match(renderer, /사용자 확인이 필요한 이유/);
   // 중복 제출 방지.
-  assert.match(renderer, /specialistApprovalsInFlight\.has\(criterionId\)/);
+  assert.match(renderer, /specialistApprovalsBusy \|\| specialistApprovalsLoading/);
   assert.match(renderer, /button\.disabled = busy/);
   // 응답 뒤에는 백엔드가 준 최신 목록과 상태를 그대로 반영한다.
-  assert.match(renderer, /specialistPendingApprovals = Array\.isArray\(result\.pending\)/);
+  assert.match(renderer, /specialistPendingApprovals = awaitingHumanApproval\(\) && Array\.isArray\(result\.pending\)/);
   assert.match(renderer, /if \(result\.specialist\) setSpecialistState\(result\.specialist\)/);
   // 승인되지 않았는데 화면만 넘어가지 않도록, 재개는 백엔드 판단(resumable)에 맡긴다.
   assert.match(renderer, /if \(result\.resumable && specialistPendingApprovals\.length === 0\)/);
   // 세션을 바꾼 뒤 늦게 온 응답이 지금 화면을 덮지 않는다.
-  assert.match(renderer, /if \(sessionId !== activeSessionId\) return;/);
+  assert.match(renderer, /if \(!isCurrentApprovalContext\(context\)\) return;/);
   // 승인 대기 중 입력창은 "실행이 끝난 뒤"가 아니라 무엇을 기다리는지 알려 준다.
-  assert.match(renderer, /awaitingHumanApproval\(\)[\s\S]{0,400}아래에서 확인 항목을 승인하거나 거부해 주세요/);
+  assert.match(renderer, /awaitingHumanApproval\(\)[\s\S]{0,400}확인 목록에서 항목을 승인하거나 거부해 주세요/);
 });
 
 // ---- 복원 가능 여부와 복원 조작 ----
@@ -822,14 +821,12 @@ test("기획 검수를 통과하면 '실행 ▶'이 실제로 눌린다", () => 
 });
 
 test("기록이 실패해 멈춘 상태는 기록 단계에서 기다리는 것으로 보인다", () => {
-  const { progress, status } = loadSpecialistView({
+  const { status } = loadSpecialistView({
     specialistNode: "RECORDING",
     specialistStatus: "WAITING",
     specialistStopReason: "RECORDER_FAILED",
   });
-  assert.equal(progress.highlight, 4, "기록 단계를 가리켜야 합니다");
-  assert.equal(progress.tone, "waiting");
-  assert.equal(progress.completeThrough, 3, "구현 검수까지는 끝난 상태입니다");
+  assert.equal(status.tone, "waiting");
   assert.match(status.next, /기록 다시 생성/);
 });
 
@@ -843,4 +840,26 @@ test("승인 대기는 남은 항목 수와 할 일을 함께 알려 준다", ()
   });
   assert.match(status.headline, /2건/);
   assert.match(status.next, /승인하거나 거부/);
+});
+
+test("최종 승인 뒤에는 검수 완료와 기록 대기 상태를 보여 준다", () => {
+  const { status } = loadSpecialistView({
+    specialistNode: "REVIEWING", specialistStatus: "WAITING",
+    specialistStopReason: "HUMAN_APPROVAL_REQUIRED", specialistResumeAvailable: true,
+    specialistResumePhase: "review_pass",
+  });
+  assert.equal(status.tone, "waiting");
+  assert.match(status.next, /기록 이어서 진행/);
+});
+
+test("보완·재기획은 현재 작업과 실제 라운드로 표시한다", () => {
+  for (const [node, headline] of [["IMPLEMENTING", "구현 진행 중입니다."], ["PLANNING", "기획 진행 중입니다."]]) {
+    const { status, rounds } = loadSpecialistView({
+      specialistNode: node, specialistStatus: "RUNNING",
+      specialistPlanRound: 2, specialistImplementationRound: 3,
+    });
+    assert.equal(status.headline, headline);
+    assert.equal(rounds, "기획 2차 · 구현 3차");
+    assert.doesNotMatch(status.headline, /완료|통과/);
+  }
 });

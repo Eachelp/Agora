@@ -1,5 +1,7 @@
 # Agora Stage C — Session Lifecycle Decision Log
 
+> 후속 상태 안내(2026-09-06): 아래 `FINAL REVIEW PENDING`과 §11은 `27d9de5` 기준 당시 기록으로 보존한다. 이후 독립 검수의 FINAL PASS는 [Stage C 최종 검수](AGORA_STAGE_C_FINAL_REVIEW.md)에 기록되어 있다. 현재 제품 안내는 [문서 안내](../README.md)를 따른다.
+
 > 상태: **FINAL REVIEW PENDING**
 > 최초 기록: 2026-08-19
 > 기준 브랜치: `claude/agora-stage-c-session-lifecycle-2h7hlf`

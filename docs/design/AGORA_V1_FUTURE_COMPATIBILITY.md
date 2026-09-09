@@ -2,6 +2,8 @@
 
 이 문서는 Agora v1을 구현하거나 검토할 때 지켜야 할 **구조적 경계**를 기록한다.
 
+> 적용 안내(2026-09-06): 초기 확장 원칙을 유지하되 이미 구현된 전문 실행·기록·복구와 미래 확장을 구분한다. 현행 기능 목록은 [문서 안내](../README.md), 실행 계약은 [V1 설계](AGORA_V1_DESIGN.md)를 따른다. 화면의 진행 안내 개선은 Professional V2 엔진 도입을 의미하지 않는다.
+
 v2·v3의 방향은 확정된 참고사항이지만, 이 문서는 해당 기능을 지금 구현하라는 명세가 아니다. v1은 사람이 주도하는 멀티에이전트 작업공간으로 남긴다.
 
 ## 1. 이번 v1에서 만들지 않는 것
@@ -10,8 +12,10 @@ v2·v3의 방향은 확정된 참고사항이지만, 이 문서는 해당 기능
 
 | 미래 방향 | v1에서 만들지 않는 구성 요소 |
 |---|---|
-| v2 — Playbook / Autoresearch | Workflow Engine, DAG framework, Playbook parser, Evaluator, 반복 실행 loop, Git checkpoint/restore 자동화, experiment history UI |
-| v3 — Knowledge / Recorder | RAG, Vector DB, Obsidian plugin, Recorder Agent, Knowledge Graph, cloud sync backend |
+| v2 — Playbook / Autoresearch | 범용 Workflow Engine, DAG framework, Playbook parser, 실험용 Evaluator·반복 loop, 사용자 승인 없이 실험 결과에 따라 KEEP/REVERT하는 자동화, experiment history UI |
+| v3 — Knowledge / Recorder | RAG, Vector DB, Obsidian plugin, 지식 통합용 Recorder 확장, Knowledge Graph, cloud sync backend |
+
+현재 전문 실행에는 제한된 자동 보완, Git 체크포인트와 사용자 선택 복원, Recorder와 선택적 Archivist가 이미 있다. 이들은 위 표의 범용 실험·지식 시스템과 구분한다. V1.5의 Handoff도 정해진 FSM 안에서 검증하며, 역할이 다음 호출을 자율 결정하는 V2나 Orchestrator는 향후 범위다.
 
 향후 반복 흐름은 `Playbook → Task → Execution → Evaluation → KEEP/REVERT → Experiment Log`가 될 수 있다. 향후 지식 흐름은 `Discussion → User Decision → Recorder → Markdown/Obsidian → local retrieval`가 될 수 있다. 그러나 지금은 이 흐름을 위한 framework·parser·자동화·저장소를 미리 만들지 않는다.
 

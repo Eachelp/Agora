@@ -706,7 +706,18 @@ function createCapabilityService(options = {}) {
   //          존중하므로 바뀐 것이 없으면 카탈로그 조회는 생기지 않습니다.
   async function discover({ force = false, recheck = false } = {}) {
     if (records && !force && !recheck) return records;
-    if (discovering && !force) return discovering;
+    if (discovering) {
+      if (!force) return discovering;
+      // 자동 재확인이 늦게 끝나 수동 재탐지 결과를 덮어쓰지 않게 순서를 지킨다.
+      await discovering;
+      return discover({ force: true });
+    }
+    if (refreshing) {
+      // 배경 갱신이 저장한 최신 목록을 읽은 뒤 탐지한다. 이전 캐시를 먼저 읽으면
+      // 재탐지 실패 시 방금 갱신된 목록을 오래된 폴백으로 되돌릴 수 있다.
+      await refreshing;
+      return discover({ force, recheck });
+    }
     discovering = (async () => {
       let persistedCache = null;
       try {

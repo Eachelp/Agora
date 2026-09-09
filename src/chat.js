@@ -55,7 +55,6 @@ const professionalImplementationButton = document.getElementById("btn-profession
 const professionalRecordButton = document.getElementById("btn-professional-record");
 const professionalFullButton = document.getElementById("btn-professional-full");
 const professionalPlanViewButton = document.getElementById("btn-professional-plan-view");
-const professionalProgress = document.getElementById("professional-progress");
 const planAutoReviseToggle = document.getElementById("plan-auto-revise");
 const planAutoLimitSelect = document.getElementById("plan-auto-limit");
 const implementationAutoReviseToggle = document.getElementById("implementation-auto-revise");
@@ -144,8 +143,12 @@ let specialistFrozenRunId = null;
 // 완료 전에 사용자가 직접 확인해야 하는 항목(HUMAN_APPROVAL). 검수자가 대신
 // 해소할 수 없어, 이 목록과 승인/거부 경로가 없으면 실행이 영영 대기에 남는다.
 let specialistPendingApprovals = [];
-// 처리 중인 항목(중복 제출 방지) — criterionId 집합.
-const specialistApprovalsInFlight = new Set();
+let specialistApprovalContext = null;
+let specialistApprovalRequest = 0;
+let specialistApprovalsLoading = false;
+let specialistApprovalsError = "";
+// 한 번에 한 항목만 처리해 응답 순서에 따라 남은 목록이 되돌아가지 않게 한다.
+let specialistApprovalsBusy = false;
 let professionalModeEnabled = false;
 // 직전 상태에서 전문 실행이 살아 있었는지. "살아나는 순간"에만 전문 모드를 켜기
 // 위한 것이며, 매 이벤트마다 켜서 사용자의 토글을 덮어쓰지 않기 위해 둔다.
@@ -424,7 +427,7 @@ function setSpecialistState(state = {}) {
   specialistActive = Boolean(state.active);
   specialistResumeAvailable = Boolean(state.available);
   specialistBlockedAvailable = Boolean(state.blocked);
-  specialistResumePhase = specialistResumeAvailable ? state.phase || null : null;
+  specialistResumePhase = specialistResumeAvailable ? state.resumePhase || state.phase || null : null;
   specialistNeedsInput = Boolean(state.needsInput);
   specialistPlanReady = Boolean(state.planReady);
   specialistNode = state.node || null;
@@ -440,14 +443,23 @@ function setSpecialistState(state = {}) {
   specialistMissingSections = Array.isArray(state.missingSections) && state.missingSections.length > 0
     ? [...state.missingSections]
     : null;
-  // 승인 대기로 들어오면 항목을 받아 오고, 벗어나면 즉시 비운다. 화면이 이미
-  // 처리된 항목을 계속 보여 주면 "승인했는데 그대로"로 보인다.
-  if (awaitingHumanApproval()) refreshPendingApprovals();
-  else if (specialistPendingApprovals.length > 0) {
-    specialistPendingApprovals = [];
-    specialistApprovalsInFlight.clear();
-    renderSpecialistApprovals();
+  const approvalFlow = awaitingHumanApproval() || canResumeAfterApproval();
+  if (!approvalFlow || specialistApprovalContext?.sessionId !== activeSessionId
+    || specialistApprovalContext?.runId !== specialistFrozenRunId) {
+    resetSpecialistApprovals();
+    if (approvalFlow && activeSessionId) {
+      specialistApprovalContext = { sessionId: activeSessionId, runId: specialistFrozenRunId };
+    }
   }
+  if (awaitingHumanApproval()) {
+    if (!specialistApprovalsBusy) void refreshPendingApprovals();
+  } else {
+    specialistApprovalRequest += 1;
+    specialistPendingApprovals = [];
+    specialistApprovalsLoading = false;
+    specialistApprovalsError = "";
+  }
+  renderSpecialistApprovals();
   // 전문 실행이 **새로 살아날 때** 그 조작 버튼을 한 번 드러낸다.
   //
   // professionalModeEnabled는 화면 로컬 값이라 사용자가 토글을 눌러야만 바뀌었다.
@@ -537,82 +549,150 @@ function renderSpecialistChoice() {
   }
 }
 
-// 완료 전 사용자 확인(HUMAN_APPROVAL)으로 대기 중인가.
-// 백엔드는 이 대기를 REVIEWING/WAITING + HUMAN_APPROVAL_REQUIRED로 두고
-// specialistResume.phase를 awaiting_human_approval로 남긴다. 둘 중 하나만 봐도
-// 되지만, 재시작 복원처럼 한쪽만 남는 경로가 있어 둘 다 본다.
+// 승인 후에도 FSM의 stopReason은 기록 시작까지 남는다. 실제 재개 단계가
+// review_pass이면 더 이상 승인 목록을 기다리지 않는다.
 function awaitingHumanApproval() {
-  return specialistStopReason === "HUMAN_APPROVAL_REQUIRED"
-    || specialistResumePhase === "awaiting_human_approval";
+  if (specialistActive || specialistBlockedAvailable
+    || ["INTERRUPTED", "BLOCKED", "INVALID", "COMPLETED"].includes(specialistStatus)
+    || specialistResumePhase === "review_pass") return false;
+  return specialistResumePhase === "awaiting_human_approval"
+    || (specialistNode === "REVIEWING" && specialistStatus === "WAITING"
+      && specialistStopReason === "HUMAN_APPROVAL_REQUIRED");
 }
 
-// 승인 대기 항목을 백엔드에서 받아 온다. 세션을 바꾼 뒤 늦게 도착한 응답이
-// 지금 화면을 덮지 않도록 요청 시점의 세션과 대조한다.
+function canResumeAfterApproval() {
+  return specialistResumeAvailable && specialistResumePhase === "review_pass"
+    && !specialistActive && !specialistBlockedAvailable && specialistStatus !== "INTERRUPTED";
+}
+
+function resetSpecialistApprovals() {
+  specialistApprovalContext = null;
+  specialistApprovalRequest += 1;
+  specialistPendingApprovals = [];
+  specialistApprovalsLoading = false;
+  specialistApprovalsError = "";
+  specialistApprovalsBusy = false;
+}
+
+function isCurrentApprovalContext(context) {
+  return Boolean(context && context === specialistApprovalContext
+    && context.sessionId === activeSessionId && context.runId === specialistFrozenRunId);
+}
+
+// 세션뿐 아니라 실행과 요청 순서도 대조한다. 이전 대화의 목록이나 늦게 온
+// 조회 응답으로 다른 실행의 동일한 criterionId를 승인하면 안 된다.
 async function refreshPendingApprovals() {
-  const sessionId = activeSessionId;
-  if (!sessionId) return;
-  const result = await call(window.chatApi.specialistPendingApprovals(sessionId));
-  if (sessionId !== activeSessionId) return;
-  if (!result) return;
-  specialistPendingApprovals = Array.isArray(result.pending) ? result.pending : [];
+  const context = specialistApprovalContext;
+  if (!isCurrentApprovalContext(context) || !awaitingHumanApproval() || specialistApprovalsBusy) return;
+  const request = ++specialistApprovalRequest;
+  specialistApprovalsLoading = true;
+  specialistApprovalsError = "";
   renderSpecialistApprovals();
+  try {
+    const result = await window.chatApi.specialistPendingApprovals(context.sessionId);
+    if (!isCurrentApprovalContext(context) || request !== specialistApprovalRequest) return;
+    if (!result || result.ok === false || result.runId !== context.runId || !Array.isArray(result.pending)) {
+      throw new Error(result?.error || "승인 목록을 확인하지 못했습니다. 다시 불러와 주세요.");
+    }
+    specialistPendingApprovals = result.pending;
+  } catch (error) {
+    if (!isCurrentApprovalContext(context) || request !== specialistApprovalRequest) return;
+    specialistPendingApprovals = [];
+    specialistApprovalsError = error?.message || "승인 목록을 불러오지 못했습니다.";
+  }
+  specialistApprovalsLoading = false;
+  renderSpecialistApprovals();
+  renderHeader();
 }
 
 // 승인/거부를 백엔드에 전달한다. 성공하면 백엔드가 돌려준 최신 상태와 남은
 // 항목을 그대로 반영한다(프론트가 완료로 앞질러 표시하지 않는다).
-async function resolveApproval(criterionId, approved) {
-  const sessionId = activeSessionId;
-  if (!sessionId || specialistApprovalsInFlight.has(criterionId)) return;
+async function resolveApproval(criterionId, approved, context = specialistApprovalContext) {
+  if (!isCurrentApprovalContext(context) || !context.runId || !awaitingHumanApproval()
+    || specialistApprovalsBusy || specialistApprovalsLoading) return;
+  const item = specialistPendingApprovals.find((entry) => entry.criterionId === criterionId);
+  if (!item) return;
   if (!approved) {
-    const item = specialistPendingApprovals.find((entry) => entry.criterionId === criterionId);
     const label = item?.statement ? `\n\n${item.statement}` : "";
     if (!window.confirm(`이 항목을 거부할까요? 거부하면 이 실행은 완료로 처리되지 않습니다.${label}`)) return;
   }
-  specialistApprovalsInFlight.add(criterionId);
+  specialistApprovalRequest += 1;
+  specialistApprovalsBusy = true;
   renderSpecialistApprovals();
-  const result = await call(window.chatApi.specialistResolveApproval(sessionId, criterionId, approved, null));
-  specialistApprovalsInFlight.delete(criterionId);
-  if (sessionId !== activeSessionId) return;
+  const result = await call(window.chatApi.specialistResolveApproval(context.sessionId, criterionId, approved, null, context.runId));
+  if (!isCurrentApprovalContext(context)) return;
   if (!result) {
-    // 실패는 목록을 그대로 두어 다시 시도할 수 있게 한다(오류는 call이 알린다).
-    renderSpecialistApprovals();
+    specialistApprovalsBusy = false;
+    await refreshPendingApprovals();
     return;
   }
-  specialistPendingApprovals = Array.isArray(result.pending) ? result.pending : [];
   if (result.specialist) setSpecialistState(result.specialist);
-  renderSpecialistApprovals();
+  if (isCurrentApprovalContext(context)) {
+    specialistPendingApprovals = awaitingHumanApproval() && Array.isArray(result.pending) ? result.pending : [];
+    specialistApprovalsBusy = false;
+  }
   syncComposerLock();
   renderHeader();
+  if (!isCurrentApprovalContext(context)) return;
   // 남은 승인이 없고 백엔드가 이어서 진행할 수 있다고 알려 준 경우에만 재개한다.
   // 승인되지 않았는데 화면만 완료로 넘어가지 않도록, 판단은 백엔드 값에 맡긴다.
   if (result.resumable && specialistPendingApprovals.length === 0) {
-    const resumed = await call(window.chatApi.specialistResume(sessionId));
-    if (sessionId !== activeSessionId) return;
-    if (resumed?.meta) sessionMeta = resumed.meta;
-    if (resumed?.specialist) setSpecialistState(resumed.specialist);
-    syncComposerLock();
-    renderHeader();
+    await resumeAfterApproval(context);
   } else if (specialistPendingApprovals.length > 0) {
     flashNotice(`남은 확인 항목이 ${specialistPendingApprovals.length}건 있습니다.`, false);
   }
+}
+
+async function resumeAfterApproval(context = specialistApprovalContext) {
+  if (!isCurrentApprovalContext(context) || !canResumeAfterApproval() || specialistApprovalsBusy) return;
+  specialistApprovalsBusy = true;
+  renderSpecialistApprovals();
+  const result = await call(window.chatApi.specialistResume(context.sessionId, undefined, context.runId));
+  if (!isCurrentApprovalContext(context)) return;
+  specialistApprovalsBusy = false;
+  if (result?.meta) sessionMeta = result.meta;
+  if (result?.specialist) setSpecialistState(result.specialist);
+  syncComposerLock();
+  renderHeader();
 }
 
 // 승인 대기 항목 목록. 항목 본문과 사람이 필요한 이유를 함께 보여 준다.
 function renderSpecialistApprovals() {
   if (!specialistApprovalsBar) return;
   specialistApprovalsBar.replaceChildren();
-  const show = awaitingHumanApproval() && specialistPendingApprovals.length > 0;
+  const context = specialistApprovalContext;
+  const show = isCurrentApprovalContext(context) && (awaitingHumanApproval() || canResumeAfterApproval());
   specialistApprovalsBar.hidden = !show;
   if (!show) return;
 
   const head = document.createElement("div");
   head.className = "specialist-approvals-head";
-  head.textContent = `완료 전에 확인할 항목 ${specialistPendingApprovals.length}건`;
+  head.textContent = canResumeAfterApproval() ? "확인이 끝났습니다. 기록을 이어서 진행할 수 있습니다."
+    : specialistApprovalsLoading ? "확인할 항목을 불러오는 중입니다…"
+      : specialistApprovalsError || (specialistPendingApprovals.length > 0
+        ? `완료 전에 확인할 항목 ${specialistPendingApprovals.length}건`
+        : "표시할 승인 항목이 없습니다. 목록을 다시 확인하거나 PLAN으로 재기획해 주세요.");
   specialistApprovalsBar.append(head);
+
+  if (canResumeAfterApproval() || (!specialistApprovalsLoading && specialistPendingApprovals.length === 0)) {
+    const resume = canResumeAfterApproval();
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "button";
+    button.textContent = specialistApprovalsBusy ? "처리 중…" : resume ? "기록 이어서 진행" : "목록 다시 불러오기";
+    button.disabled = specialistApprovalsBusy;
+    button.addEventListener("click", () => {
+      if (!isCurrentApprovalContext(context)) return;
+      return resume ? resumeAfterApproval(context) : refreshPendingApprovals();
+    });
+    specialistApprovalsBar.append(button);
+    return;
+  }
+  if (specialistPendingApprovals.length === 0) return;
 
   const hint = document.createElement("p");
   hint.className = "popover-hint";
-  hint.textContent = "검수자가 대신 확인할 수 없는 항목입니다. 승인하면 기록 단계로 이어지고, 거부하면 완료로 처리하지 않습니다.";
+  hint.textContent = "각 항목을 직접 확인한 뒤 승인해 주세요.";
   specialistApprovalsBar.append(hint);
 
   for (const item of specialistPendingApprovals) {
@@ -631,7 +711,7 @@ function renderSpecialistApprovals() {
     }
     const actions = document.createElement("div");
     actions.className = "specialist-approval-actions";
-    const busy = specialistApprovalsInFlight.has(item.criterionId);
+    const busy = specialistApprovalsBusy || specialistApprovalsLoading;
     for (const choice of [
       { label: busy ? "처리 중…" : "승인", approved: true, primary: true },
       { label: "거부", approved: false, primary: false },
@@ -641,7 +721,7 @@ function renderSpecialistApprovals() {
       button.className = choice.primary ? "button button-primary" : "button";
       button.textContent = choice.label;
       button.disabled = busy;
-      button.addEventListener("click", () => resolveApproval(item.criterionId, choice.approved));
+      button.addEventListener("click", () => resolveApproval(item.criterionId, choice.approved, context));
       actions.append(button);
     }
     row.append(actions);
@@ -1779,62 +1859,26 @@ function renderHeader() {
   const nextIsPlan = planConfigured && !specialistPlanReady && !blockedOrBusy;
   professionalPlanButton.classList.toggle("is-next-step", nextIsPlan);
   professionalImplementationButton.classList.toggle("is-next-step", nextIsImplementation);
-  renderProfessionalProgress();
   renderProfessionalStatusDetail();
 }
 
-const PROFESSIONAL_STEPS = Object.freeze([
-  { key: "plan", label: "기획" },
-  { key: "plan-review", label: "기획검수" },
-  { key: "implementation", label: "구현" },
-  { key: "review", label: "구현검수" },
-  { key: "record", label: "기록" },
-]);
+// 재기획·보완은 이전 작업으로 돌아간다. 순번으로 앞 단계의 완료를 추정하지
+// 않고, 백엔드가 보고한 현재 작업과 라운드만 표시한다.
+const PROFESSIONAL_NODE_LABELS = Object.freeze({
+  PLANNING: "기획",
+  PLAN_REVIEW: "기획 검수",
+  READY: "실행 대기",
+  IMPLEMENTING: "구현",
+  REVIEWING: "구현 검수",
+  RECORDING: "기록",
+  COMPLETED: "완료",
+});
 
-// 진행 표시는 node만으로 정하면 어긋난다. READY(기획 검수 통과·실행 대기)가
-// "기획검수 진행 중"처럼, COMPLETED가 "기록 진행 중"처럼 보였다. node와 status를
-// 함께 보고 어느 단계까지 끝났는지, 지금 강조할 단계가 무엇인지, 그 단계가
-// 진행 중인지 기다리는 중인지 멈춘 것인지를 한 곳에서 계산한다.
-// (상태 표시와 버튼 조건이 서로 다른 판단을 하지 않도록 이 함수 하나만 쓴다.)
-function specialistProgressView() {
-  const stepByNode = {
-    PLANNING: 0,
-    PLAN_REVIEW: 1,
-    READY: 1,
-    IMPLEMENTING: 2,
-    REVIEWING: 3,
-    RECORDING: 4,
-    COMPLETED: 4,
-  };
-  const step = Number.isInteger(stepByNode[specialistNode]) ? stepByNode[specialistNode] : -1;
-  if (step < 0) return { completeThrough: -1, highlight: -1, tone: "idle" };
-  // 본 실행 완료. 뒤이은 기록 정리(Archivist)를 중지해도 이 완료는 뒤집히지 않는다.
-  if (specialistNode === "COMPLETED") return { completeThrough: 4, highlight: -1, tone: "done" };
-  const tone = specialistStatus === "RUNNING"
-    ? "running"
-    : specialistStatus === "BLOCKED" || specialistStatus === "INVALID"
-      ? "blocked"
-      : specialistStatus === "INTERRUPTED"
-        ? "stopped"
-        : "waiting";
-  // READY는 기획 검수까지 끝나고 구현 시작을 기다리는 상태다. 다음 단계(구현)를
-  // 가리켜야 "지금 할 수 있는 행동"과 강조가 맞는다.
-  if (specialistNode === "READY") return { completeThrough: 1, highlight: 2, tone: "waiting" };
-  return { completeThrough: step - 1, highlight: step, tone };
-}
-
-function renderProfessionalProgress() {
-  if (!professionalProgress) return;
-  const view = specialistProgressView();
-  professionalProgress.dataset.tone = view.tone;
-  PROFESSIONAL_STEPS.forEach((step, index) => {
-    const item = professionalProgress.querySelector(`[data-professional-step="${step.key}"]`);
-    if (!item) return;
-    item.classList.toggle("is-complete", index <= view.completeThrough);
-    item.classList.toggle("is-current", index === view.highlight && view.tone === "running");
-    item.classList.toggle("is-waiting", index === view.highlight && view.tone === "waiting");
-    item.classList.toggle("is-stopped", index === view.highlight && (view.tone === "blocked" || view.tone === "stopped"));
-  });
+function specialistRoundSummary() {
+  const rounds = [];
+  if (specialistPlanRound > 0) rounds.push(`기획 ${specialistPlanRound}차`);
+  if (specialistImplementationRound > 0) rounds.push(`구현 ${specialistImplementationRound}차`);
+  return rounds.join(" · ");
 }
 
 // 멈춤·대기 사유를 사용자 언어로 옮긴다. 내부 코드(USER_INTERRUPTED 같은)는
@@ -1856,6 +1900,8 @@ const SPECIALIST_STOP_INFO = Object.freeze({
   REVIEW_PASS: { text: "구현 검수를 통과했습니다.", next: "이어서 기록 단계를 진행할 수 있습니다." },
   BLOCKED: { text: "구현이 막혀 안전하게 멈췄습니다.", next: "아래 ‘다음 처리 선택’에서 변경 유지·복원·재기획 중 하나를 고르세요." },
   EXECUTION_BLOCKED: { text: "구현이 막혀 안전하게 멈췄습니다.", next: "아래 ‘다음 처리 선택’에서 처리 방법을 고르세요." },
+  ASSURANCE_BLOCKED: { text: "확인 조건을 충족하지 못해 완료를 보류했습니다.", next: "아래 ‘다음 처리 선택’에서 처리 방법을 고르세요." },
+  ASSURANCE_INVALIDATED: { text: "확인한 뒤 결과물이나 입력 자료가 바뀌었습니다.", next: "아래 ‘다음 처리 선택’에서 다시 확인할 방법을 고르세요." },
   USER_INTERRUPTED: { text: "사용자가 실행을 중지했습니다.", next: "PLAN 또는 전체 실행으로 다시 시작할 수 있습니다." },
   EXECUTION_INTERRUPTED: { text: "실행이 중단되었습니다.", next: "PLAN 또는 전체 실행으로 다시 시작할 수 있습니다." },
   WORKSPACE_BUSY: { text: "같은 폴더를 다른 작업이 쓰고 있어 시작하지 못했습니다.", next: "그 작업이 끝난 뒤 다시 시도해 주세요." },
@@ -1907,11 +1953,20 @@ function specialistStatusView() {
       tone: "blocked",
     };
   }
+  if (canResumeAfterApproval()) {
+    return {
+      headline: "확인이 끝났습니다. 기록 단계를 기다리고 있습니다.",
+      next: "아래 ‘기록 이어서 진행’으로 다시 시도할 수 있습니다.",
+      tone: "waiting",
+    };
+  }
   if (awaitingHumanApproval()) {
     const count = specialistPendingApprovals.length;
     return {
       headline: count > 0 ? `완료 전에 확인할 항목이 ${count}건 있습니다.` : "완료 전에 확인할 항목이 있습니다.",
-      next: "아래 목록에서 승인하거나 거부해 주세요.",
+      next: specialistApprovalsLoading ? "확인 목록을 불러오고 있습니다."
+        : specialistApprovalsError || count === 0 ? "아래에서 목록을 다시 불러올 수 있습니다."
+          : "아래 목록에서 승인하거나 거부해 주세요.",
       tone: "waiting",
     };
   }
@@ -1919,7 +1974,8 @@ function specialistStatusView() {
     // 완료 뒤의 기록 정리(Archivist)를 중지한 경우까지 실패로 보이지 않게 한다.
     const archivistStopped = specialistStopReason === "USER_INTERRUPTED";
     return {
-      headline: archivistStopped ? "본 실행이 완료되었습니다. 추가 기록 정리는 중지했습니다." : "본 실행이 완료되었습니다.",
+      headline: specialistActive ? "본 실행이 완료되었습니다. 추가 기록 작업 중입니다."
+        : archivistStopped ? "본 실행이 완료되었습니다. 추가 기록 정리는 중지했습니다." : "본 실행이 완료되었습니다.",
       next: "‘기록 다시 생성’으로 기록을 다시 만들거나, 새 작업을 요청할 수 있습니다.",
       tone: "done",
     };
@@ -1932,11 +1988,10 @@ function specialistStatusView() {
     };
   }
   if (specialistStatus === "RUNNING") {
-    const view = specialistProgressView();
-    const label = PROFESSIONAL_STEPS[view.highlight]?.label;
+    const label = PROFESSIONAL_NODE_LABELS[specialistNode];
     return {
       headline: label ? `${label} 진행 중입니다.` : "전문 실행이 진행 중입니다.",
-      next: "끝날 때까지 기다려 주세요. 일반 대화로 전환하면 기획자에게 메모를 남길 수 있습니다.",
+      next: "일반 대화로 전환하면 실행 중에도 기획자에게 메모를 남길 수 있습니다.",
       tone: "running",
     };
   }
@@ -1954,11 +2009,20 @@ function specialistStatusView() {
 function renderProfessionalStatusDetail() {
   const box = document.getElementById("professional-status-detail");
   if (!box) return;
+  const detailsOpen = Boolean(box.querySelector("details")?.open);
   box.replaceChildren();
   const view = specialistStatusView();
   box.dataset.tone = view.tone;
+  box.hidden = !view.headline;
   if (!view.headline) return;
 
+  const roundSummary = specialistRoundSummary();
+  if (roundSummary) {
+    const context = document.createElement("span");
+    context.className = "professional-status-context";
+    context.textContent = roundSummary;
+    box.append(context);
+  }
   const headline = document.createElement("span");
   headline.className = "professional-status-headline";
   headline.textContent = view.headline;
@@ -1976,9 +2040,6 @@ function renderProfessionalStatusDetail() {
   if (specialistNode) facts.push(`상태: ${specialistNode}/${specialistStatus || "-"}`);
   if (specialistFrozenRunId) facts.push(`Run: ${specialistFrozenRunId}`);
   if (specialistPlanTaskId) facts.push(`기획안: ${specialistPlanTaskId}`);
-  // 라운드는 백엔드가 센 값만 쓴다(화면의 자동 보완 설정값과 다르다).
-  if (specialistPlanRound > 0) facts.push(`기획 라운드: ${specialistPlanRound}`);
-  if (specialistImplementationRound > 0) facts.push(`구현 라운드: ${specialistImplementationRound}`);
   if (specialistCheckpointProtection) {
     facts.push(specialistCheckpointProtection === "protected"
       ? "작업 전 백업: 있음"
@@ -1989,6 +2050,7 @@ function renderProfessionalStatusDetail() {
   if (facts.length === 0) return;
   const details = document.createElement("details");
   details.className = "professional-status-facts";
+  details.open = detailsOpen;
   const summary = document.createElement("summary");
   summary.textContent = "자세히";
   const list = document.createElement("span");
@@ -3475,7 +3537,6 @@ async function replanBlocked(workspaceAction) {
   flashNotice("막힌 사유를 전달하고 재기획을 시작했습니다.", false);
   if (result.meta) sessionMeta = result.meta;
   if (result.specialist) setSpecialistState(result.specialist);
-  specialistBlockedAvailable = false;
   syncComposerLock();
   renderHeader();
 }
@@ -3506,7 +3567,6 @@ async function resolveBlocked(action) {
   );
   if (result?.meta) sessionMeta = result.meta;
   if (result?.specialist) setSpecialistState(result.specialist);
-  specialistBlockedAvailable = false;
   syncComposerLock();
   renderHeader();
 }
@@ -5045,7 +5105,14 @@ function applyFullState(full) {
   if (Object.hasOwn(full, "activeProjectId")) activeProjectId = full.activeProjectId;
   if (full.sessions) sessions = full.sessions;
   if (full.sessionsByProject) sessionsByProject = full.sessionsByProject;
-  if (Object.hasOwn(full, "activeSessionId")) activeSessionId = full.activeSessionId;
+  if (Object.hasOwn(full, "activeSessionId")) {
+    if (activeSessionId !== full.activeSessionId) {
+      resetSpecialistApprovals();
+      renderSpecialistApprovals();
+      closeSpecialistDialog();
+    }
+    activeSessionId = full.activeSessionId;
+  }
 
   if (full.session) {
     sessionMeta = full.session.meta;
@@ -5130,7 +5197,14 @@ window.chatApi.onSessionsChanged((payload) => {
   // 초기 chat:state(CLI 탐지 포함)가 느릴 때 이 이벤트가 먼저 도착합니다.
   // 트리 데이터를 함께 받지 않으면 그 사이 사이드바가 "채팅 없음"으로 그려집니다.
   if (payload.sessionsByProject) sessionsByProject = payload.sessionsByProject;
-  if (Object.hasOwn(payload, "activeSessionId")) activeSessionId = payload.activeSessionId;
+  if (Object.hasOwn(payload, "activeSessionId")) {
+    if (activeSessionId !== payload.activeSessionId) {
+      resetSpecialistApprovals();
+      renderSpecialistApprovals();
+      closeSpecialistDialog();
+    }
+    activeSessionId = payload.activeSessionId;
+  }
   renderProjects();
   const entry = activeSessionEntry();
   if (entry && sessionMeta && entry.title !== sessionMeta.title) {
@@ -5179,12 +5253,15 @@ function lockComposer(locked) {
     composerInput.placeholder = "기획자에게 남길 메모를 입력하세요. 실행은 그대로 진행됩니다 (Enter 전송)";
     sendButton.textContent = "메모 남기기";
   } else if (awaitingHumanApproval()) {
-    // 승인은 입력창이 아니라 아래 목록에서 한다. "실행이 끝난 뒤"라고 안내하면
+    // 승인은 입력창 위 확인 목록에서 한다. "실행이 끝난 뒤"라고 안내하면
     // 사용자가 무엇을 기다리는지 모른 채 막힌다.
     composerInput.disabled = true;
     sendButton.disabled = true;
-    composerInput.placeholder = "아래에서 확인 항목을 승인하거나 거부해 주세요";
+    composerInput.placeholder = "확인 목록에서 항목을 승인하거나 거부해 주세요";
     sendButton.textContent = "확인 대기";
+  } else if (canResumeAfterApproval()) {
+    composerInput.placeholder = "‘기록 이어서 진행’을 눌러 주세요";
+    sendButton.textContent = "기록 대기";
   } else if (specialistNeedsInput) {
     if (specialistStopReason === "CHECKPOINT_FAILED") {
       composerInput.placeholder = "아래에서 다음 처리를 선택하세요";

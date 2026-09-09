@@ -1,5 +1,7 @@
 # Agora Stage D-0 — Workspace Mutation Lease Decision Log
 
+> 문서 안내(2026-09-06): D-0 결정 시점의 계약과 검수 이력을 보존한다. 아래 완료·테스트 판정은 명시된 baseline에 한정한다. 현재 복원 버튼은 Git 여부만이 아니라 backend의 `canRestore`에 따르며, 사용법과 후속 검증은 [문서 안내](../README.md)에서 확인한다.
+
 > 상태: **D-0 COMPLETE · 독립 검수 PASS @ 05636ca**
 > 최초 기록: 2026-08-20
 > 기준 브랜치: `feat/stage-d0-workspace-lease`

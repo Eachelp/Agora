@@ -137,8 +137,8 @@ contextBridge.exposeInMainWorld("chatApi", {
     ipcRenderer.invoke(INVOKE.SPECIALIST_PLAN_ANSWER, { sessionId, text }),
   // action은 checkpoint 실패 후 선택(retry / proceed_unprotected)을 전달한다.
   // 이 인자가 빠져 있어 백엔드가 지원하는 선택지를 화면에서 고를 수 없었다.
-  specialistResume: (sessionId, action) =>
-    ipcRenderer.invoke(INVOKE.SPECIALIST_RESUME, { sessionId, action }),
+  specialistResume: (sessionId, action, expectedRunId) =>
+    ipcRenderer.invoke(INVOKE.SPECIALIST_RESUME, { sessionId, action, expectedRunId }),
   specialistCancel: (sessionId) =>
     ipcRenderer.invoke(INVOKE.SPECIALIST_CANCEL, { sessionId }),
   specialistResolveBlocked: (sessionId, action) =>
@@ -151,8 +151,8 @@ contextBridge.exposeInMainWorld("chatApi", {
   // Reviewer가 대신 풀 수 없는 항목이므로 사용자 경로가 반드시 있어야 한다.
   specialistPendingApprovals: (sessionId) =>
     ipcRenderer.invoke(INVOKE.SPECIALIST_PENDING_APPROVALS, { sessionId }),
-  specialistResolveApproval: (sessionId, criterionId, approved, note) =>
-    ipcRenderer.invoke(INVOKE.SPECIALIST_RESOLVE_APPROVAL, { sessionId, criterionId, approved, note }),
+  specialistResolveApproval: (sessionId, criterionId, approved, note, expectedRunId) =>
+    ipcRenderer.invoke(INVOKE.SPECIALIST_RESOLVE_APPROVAL, { sessionId, criterionId, approved, note, expectedRunId }),
   // Stage D §3.1 — live 입력의 실제 사용 기록/조회.
   specialistRecordInputRetrieval: (sessionId, inputId, metadata = {}) =>
     ipcRenderer.invoke(INVOKE.SPECIALIST_RECORD_INPUT_RETRIEVAL, { sessionId, inputId, ...metadata }),

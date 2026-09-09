@@ -1,5 +1,7 @@
 # Agora Stage C — Final Independent Review
 
+> 문서 안내(2026-09-06): 아래 FINAL PASS는 명시된 2026-08-20 검수 커밋의 판정이다. 이후 변경까지 재검증했다는 뜻이 아니다. 현재 제품 범위와 검증 안내는 [문서 안내](../README.md)에서 확인한다.
+
 > 판정: **FINAL PASS**
 > 독립 검수일: 2026-08-20
 > 검수 대상 feature branch: `claude/agora-stage-c-session-lifecycle-2h7hlf`

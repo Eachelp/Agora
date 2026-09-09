@@ -1306,8 +1306,11 @@ class SpecialistMixin {
   }
 
   // 사용자가 승인/거부한다. Reviewer도 Builder도 이 경로를 대신 호출할 수 없다.
-  resolveHumanApproval({ criterionId, approved, note = null } = {}) {
+  resolveHumanApproval({ criterionId, approved, note = null, expectedRunId = null } = {}) {
     const runInfo = this.currentRunInfo();
+    if (expectedRunId !== null && expectedRunId !== runInfo?.runId) {
+      return { ok: false, error: "확인하던 실행이 바뀌었습니다. 승인 목록을 다시 불러와 주세요." };
+    }
     const assurance = this.ensureAssuranceRun(runInfo);
     if (!assurance?.assured) {
       return { ok: false, error: "이 실행에는 승인할 확인 항목이 없습니다." };
@@ -1343,6 +1346,21 @@ class SpecialistMixin {
         resumedFromApproval: true,
       };
       resumable = true;
+    } else if (final && this.specialistResume?.phase === "awaiting_human_approval") {
+      // 거부·결과물 변경은 더 기다린다고 해소되지 않는다. 기존 복구 선택으로
+      // 넘겨 변경 유지·복원·재기획을 고를 수 있게 한다. 승인만 남으면 계속 대기한다.
+      const resume = this.specialistResume;
+      this.holdForAssuranceBlocked({
+        runInfo,
+        taskInfo: resume.taskInfo,
+        checkpoint: resume.checkpoint,
+        round: this.professionalRun?.implementationRound || 1,
+        changes: resume.builderDiff,
+        final,
+        stages: resume.stages,
+        mode: resume.mode,
+      });
+      if (this.specialistBlocked) this.specialistResume = null;
     }
     this.emitSpecialistState();
     return {
@@ -2059,6 +2077,21 @@ class SpecialistMixin {
         ? this.taskManager?.readRunEvidence?.(retryRunInfo) || null
         : null;
       if (retryingRecorder) {
+        // 기록 실패 뒤 대기하는 동안에도 결과물·입력이 바뀔 수 있다. 이전
+        // 승인을 재사용하기 전에 정상 기록 경로와 같은 확인을 거친다.
+        const finalBeforeRecord = this.finalizeAssurance(retryRunInfo);
+        if (finalBeforeRecord && !finalBeforeRecord.finalPass) {
+          return this.holdForAssuranceBlocked({
+            runInfo: retryRunInfo,
+            taskInfo: taskFileInfo(this.professionalRun?.taskPath),
+            checkpoint: retryCheckpoint,
+            round: this.professionalRun?.implementationRound || 1,
+            changes: { text: retryChanges },
+            final: finalBeforeRecord,
+            stages,
+            mode: "step",
+          });
+        }
         const transition = this.transitionProfessional({ type: "USER_RETRY_RECORDER" });
         if (!transition.ok) return this.professionalTransitionFailure("recorder", transition);
       }
@@ -2078,6 +2111,7 @@ class SpecialistMixin {
           evidence: retryEvidence,
           round: this.professionalRun?.implementationRound || 1,
         });
+        if (retryingRecorder) this.recordAssuranceRecorder({ runInfo: retryRunInfo, ok: Boolean(recorderResult?.ok) });
         if (!recorderResult?.ok) {
           if (retryingRecorder) this.transitionProfessional({ type: "RECORDER_FAILED", stopReason: "RECORDER_FAILED" });
           return recorderResult;
@@ -3276,6 +3310,15 @@ class SpecialistMixin {
       }
 
       if (resume.phase === "review_pass") {
+        const round = this.professionalRun?.implementationRound || 1;
+        // 기존 step 호출은 FSM 없이 resume만 사용한다. 승인으로 실제
+        // REVIEWING에서 넘어온 전문 실행에만 완료 저장 절차를 적용한다.
+        const completesProfessionalRun = resume.resumedFromApproval && this.professionalRun?.node === "REVIEWING";
+        const holdRecording = (stopReason, result = null) => this.holdForRecovery({
+          runInfo, taskInfo, checkpoint, stage: "recorder", round, stopReason, result,
+          changes: { text: resume.builderChanges || "", diff: resume.builderDiff || null },
+          message: "전문 실행 상태를 저장하지 못했습니다. 변경과 복구 정보는 그대로 유지합니다.",
+        });
         const frozenCheck = this.validateFrozenTask(runInfo);
         if (!frozenCheck.ok) {
           return this.holdForFrozenTaskCorruption({
@@ -3305,10 +3348,12 @@ class SpecialistMixin {
 
         // 승인으로 재개된 실행은 professional FSM의 남은 전이를 이어받는다.
         // 이것이 없으면 승인 후 Run이 REVIEWING에 영원히 남는다(B5).
-        if (resume.resumedFromApproval && this.professionalRun) {
-          this.transitionProfessional({ type: "REVIEW_PASS" });
+        if (completesProfessionalRun) {
+          const reviewed = this.transitionProfessional({ type: "REVIEW_PASS" });
+          if (!reviewed.ok) return holdRecording("PROFESSIONAL_RUN_WRITE_FAILED", reviewed);
           if (this.professionalRun?.status === "WAITING") {
-            this.transitionProfessional({ type: "USER_CONTINUE_RECORD" });
+            const continued = this.transitionProfessional({ type: "USER_CONTINUE_RECORD" });
+            if (!continued.ok) return holdRecording("PROFESSIONAL_RUN_WRITE_FAILED", continued);
           }
         }
 
@@ -3331,6 +3376,15 @@ class SpecialistMixin {
           if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
           if (!recorderResult?.ok) {
             this.specialistActive = false;
+            retainCheckpoint = Boolean(checkpoint?.supported);
+            this.recordAssuranceRecorder({ runInfo, ok: false });
+            if (this.professionalRun?.node === "RECORDING") {
+              // 승인 후 재개는 이 step 경로를 탄다. 실패를 정상 기록 재시도
+              // 상태로 남겨야 화면의 '기록 다시 생성'을 사용할 수 있다.
+              this.transitionProfessional({ type: "RECORDER_FAILED", stopReason: "RECORDER_FAILED" });
+            } else {
+              this.specialistResume = { ...resume, runInfo, checkpoint };
+            }
             const recordError = recorderResult?.error || "기록관 실행이 실패했습니다.";
             this.appendSystem(`전문 모드 구현·검토는 통과했지만 기록관이 결과를 정리하지 못했습니다. (${recordError})`);
             return { ok: true, completedIterations: 1, recorded: false, recording: recorderResult?.text || "", recordError };
@@ -3342,8 +3396,25 @@ class SpecialistMixin {
         }
         // Stage D-C — step에서도 Recorder 결과가 provenance 사슬을 닫는다(§26).
         this.recordAssuranceRecorder({ runInfo, ok: Boolean(recorderResult?.ok) });
-        if (resume.resumedFromApproval && this.professionalRun) {
-          this.transitionProfessional({ type: "RECORDER_DONE" });
+        if (completesProfessionalRun) {
+          // 승인으로 block을 빠져나온 실행도 Task와 Run 결과를 함께 마감한다.
+          // 마지막 디스크 저장까지 끝내야 화면에 COMPLETED를 보낼 수 있다.
+          const writeResult = (status) => !runInfo?.runDir || !this.taskManager?.writeRunResult
+            || this.taskManager.writeRunResult(runInfo, {
+              status, finalVerdict: "PASS", recorded: Boolean(recorderResult?.ok), round,
+            });
+          if (!writeResult("COMMITTING")) return holdRecording("RUN_STATE_WRITE_FAILED");
+          if (!this.updateProfessionalTaskState({
+            taskPath: taskInfo?.relativePath || null,
+            taskHash: runInfo?.taskHash || null,
+            status: "done",
+            activeRunId: null,
+            lastRunId: runInfo?.runId || null,
+          })) return holdRecording("WORKFLOW_WRITE_FAILED");
+          if (!writeResult("COMPLETED")) return holdRecording("RUN_STATE_WRITE_FAILED");
+          const completed = this.transitionProfessional({ type: "RECORDER_DONE" });
+          if (!completed.ok) return holdRecording("PROFESSIONAL_RUN_WRITE_FAILED", completed);
+          this.settleIncomingHandoff();
         }
         this.specialistActive = false;
         this.appendSystem("전문 모드 구현·검토·기록이 완료되었습니다.");

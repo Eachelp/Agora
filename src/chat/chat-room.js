@@ -392,6 +392,7 @@ class ChatRoom extends EventEmitter {
       available: Boolean(this.specialistResume),
       mode: this.specialistResume?.mode || null,
       phase: professional?.phase || this.specialistResume?.phase || null,
+      resumePhase: this.specialistResume?.phase || null,
       node: professional?.node || null,
       status: professional?.status || null,
       needsInput: Boolean(professional?.needsInput) || ["needs_decision", "plan_review_fix_required", "task_contract_incomplete"].includes(this.specialistResume?.phase),
@@ -406,7 +407,7 @@ class ChatRoom extends EventEmitter {
       hasTask: professional?.hasTask || Boolean(
         this.specialistBlocked?.taskPath || this.specialistResume?.taskInfo?.relativePath
       ),
-      frozenRunId: professional?.frozenRunId || null,
+      frozenRunId: professional?.frozenRunId || this.specialistResume?.runInfo?.runId || null,
       planRound: professional?.planRound || 1,
       implementationRound: professional?.implementationRound || 0,
       stopReason: professional?.stopReason || null,

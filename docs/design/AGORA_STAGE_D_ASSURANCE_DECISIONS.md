@@ -1,5 +1,7 @@
 # Agora Stage D — Assurance & Governance Decision Log (D-A1 · D-A2 · D-B · D-C)
 
+> 후속 구현 안내(2026-09-06): 아래 내용은 2026-08-25 Stage D 완료 시점의 기록이다. §9의 미구현 항목 중 HUMAN_APPROVAL 화면은 이후 입력창 위 확인 목록으로 연결되었으며, 현재 대화·실행별 승인/거부, 승인 뒤 기록 재개, 기록 실패 재시도, BLOCKED 후속 선택을 제공한다. 당시 기록과 테스트 수는 그대로 보존한다. 현재 범위는 [문서 안내](../README.md), 실제 확인 절차는 [로컬 체크리스트](AGORA_V1_5_LOCAL_SMOKE_CHECKLIST.md)를 따른다.
+
 > 상태: **Stage D COMPLETE (2026-08-25 최종 독립 actual-diff 검수 PASS)**
 > 최초 기록: 2026-08-24
 > 기준 브랜치: `feat/stage-d-assurance-governance`
