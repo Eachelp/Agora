@@ -1077,6 +1077,14 @@ test("부를 수 없는 멘션 대상에는 이유가 붙는다", () => {
   assert.match(byAlias.gemini.reason, /이 세션에서 꺼져/);
   assert.equal(byAlias.기획자.available, true);
   assert.equal(byAlias.기획자.reason, "");
+  // 목록 라벨은 별칭이 이미 말하는 역할명을 되풀이하지 않는다. 자세한 설명은 툴팁(hint).
+  assert.equal(byAlias.기획자.label, "질문 · 읽기 전용");
+  assert.match(byAlias.기획자.hint, /기획자에게 질문/);
+  assert.equal(byAlias.팀.label, "순차 상담 · 읽기 전용");
+  assert.match(byAlias.팀.hint, /기획자 → 검토자 → 구현자/);
+  for (const target of targets) {
+    assert.ok(target.label.length <= 16, `목록 라벨이 깁니다: ${target.alias} — ${target.label}`);
+  }
   assert.match(byAlias.구현자.reason, /담당자 미지정/, "미지정이면 어디서 지정하는지 알려야 한다");
   assert.match(byAlias.구현자.reason, /프로젝트 설정/);
   // 목록에는 한 줄에 들어가는 짧은 형태를 쓴다(전체 문장은 툴팁). 설치 명령·주소가

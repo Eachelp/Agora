@@ -4837,11 +4837,14 @@ composerBox.addEventListener("drop", async (event) => {
 // --- 멘션 자동완성 ---
 // V1.5 역할 멘션 항목. 별칭은 main의 chat-mention ROLE_ALIASES와 같은 완전
 // 단어형이어야 한다 — 어긋나면 자동완성으로 넣은 멘션이 라우팅되지 않는다.
+// label은 목록 한 줄에 들어갈 만큼 짧게 — 별칭이 이미 말하는 역할명을 되풀이하지
+// 않는다("@기획자" 옆의 "기획자에게"는 같은 말이다). 무엇을 하는 호출인지의
+// 자세한 설명은 hint로 툴팁에 둔다.
 const ROLE_MENTION_TARGETS = Object.freeze([
-  { alias: "기획자", label: "기획자에게 질문 (읽기 전용)", roleId: "planning" },
-  { alias: "구현자", label: "구현자에게 질문 (읽기 전용)", roleId: "implementation" },
-  { alias: "검토자", label: "검토자에게 질문 (읽기 전용)", roleId: "review" },
-  { alias: "기록자", label: "기록자에게 질문 (읽기 전용)", roleId: "recorder" },
+  { alias: "기획자", label: "질문 · 읽기 전용", hint: "기획자에게 질문합니다 (읽기 전용 · 실행하지 않음)", roleId: "planning" },
+  { alias: "구현자", label: "질문 · 읽기 전용", hint: "구현자에게 질문합니다 (읽기 전용 · 실행하지 않음)", roleId: "implementation" },
+  { alias: "검토자", label: "질문 · 읽기 전용", hint: "검토자에게 질문합니다 (읽기 전용 · 실행하지 않음)", roleId: "review" },
+  { alias: "기록자", label: "질문 · 읽기 전용", hint: "기록자에게 질문합니다 (읽기 전용 · 실행하지 않음)", roleId: "recorder" },
 ]);
 
 // 참가자를 부를 수 없는 이유. "사용 불가"만 적으면 무엇을 고쳐야 하는지 알 수 없다.
@@ -4915,6 +4918,7 @@ function mentionTargets() {
       return {
         alias: role.alias,
         label: role.label,
+        hint: role.hint,
         color: "#7c6f64",
         available: status.available,
         reason: status.reason,
@@ -4923,7 +4927,8 @@ function mentionTargets() {
     }),
     {
       alias: "팀",
-      label: "팀 상담: 기획자 → 검토자 → 구현자 (읽기 전용)",
+      label: "순차 상담 · 읽기 전용",
+      hint: "기획자 → 검토자 → 구현자 순서로 상담합니다 (읽기 전용 · 실행하지 않음)",
       color: "#7c6f64",
       available: teamMissing.length === 0,
       // 어느 역할이 비어 있는지 알아야 무엇을 지정할지 안다.
@@ -4989,9 +4994,8 @@ function updateMentionPopup() {
     desc.textContent = option.available
       ? option.label
       : `${option.label} · ${option.reasonShort || option.reason || "사용 불가"}`;
-    if (!option.available && option.reason) {
-      button.title = `${option.label} · ${option.reason}`;
-    }
+    const detail = option.hint || option.label;
+    button.title = option.available || !option.reason ? detail : `${detail} · ${option.reason}`;
     button.append(dot, alias, desc);
     button.addEventListener("mousedown", (event) => {
       event.preventDefault();
