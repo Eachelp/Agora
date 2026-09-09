@@ -785,6 +785,10 @@ tail 관점)에서 추가로 확정된 것: Archivist 페르소나 누락(그룹
    reviewDiff·evidence 렌더 블록이 두 stage 분기에 거의 동일하게 중복.
    공통 헬퍼로 추출(단, 한글 문구가 load-bearing이므로 출력 바이트 동일성
    회귀 확인 필요).
+   → **처리됨**(issue #2). `pushFinalArtifactLines`로 추출. 입력 조합
+   80건(전문/토론 recorder × archivist journal 유무 × 산출물 유무·빈 diff·
+   상한 초과)의 프롬프트가 전후 바이트 동일함을 확인했고,
+   `chat-prompt.test.js`가 Recorder ↔ Archivist 산출물 블록 동일성을 지킨다.
 3. **builder 제어 소비·재기획 안내 중복**(chat-specialist.js 최초 라운드 ↔
    보완 라운드): 두 결정 지점의 consumeControlRequest + 재기획 안내 로직이
    통째로 중복. 단일 헬퍼로 합치되 auto-revise 상태 전이 회귀 확인 필요.

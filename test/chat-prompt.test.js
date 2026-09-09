@@ -786,3 +786,71 @@ test("load-bearing 덧말이 제자리에 남아 있다", () => {
   const planReview = controlGuideLines("plan_review").join("\n");
   assert.match(planReview, /`HANDOFF: @builder`\(실행은 사용자 승인 게이트를 그대로 지납니다\)/);
 });
+
+// --- Recorder ↔ Archivist는 같은 canonical 산출물 블록을 받는다 (issue #2) ---
+//
+// 검수 판정 · 최종 변경 · 실행 근거 렌더가 두 분기에 따로 있던 시절에는
+// 한쪽만 고쳐 두 기록이 서로 다른 근거를 보게 될 수 있었다. 이제 한 헬퍼가
+// 그리므로, 같은 입력이면 그 구간이 글자 단위로 같아야 한다.
+function finalArtifactBlock(prompt) {
+  const lines = prompt.split("\n");
+  const start = lines.findIndex((line) => line.startsWith("최종 검수 판정: ") || line === "=== 최종 변경 요약 ===" || line === "=== 실행 근거 요약 ===");
+  if (start < 0) return null;
+  let end = start;
+  for (let i = start; i < lines.length; i += 1) {
+    if (lines[i] === "=== 최종 변경 요약 끝 ===" || lines[i] === "=== 실행 근거 요약 끝 ===") end = i;
+    else if (lines[i].startsWith("최종 검수 판정: ")) end = i;
+  }
+  return lines.slice(start, end + 1).join("\n");
+}
+
+test("전문 Recorder와 Archivist는 같은 입력에 같은 canonical 산출물 블록을 받는다", () => {
+  const base = { agent: AGENTS[1], agents: AGENTS, messages: [message("user", "원문", "user")] };
+  const variants = [
+    { finalVerdict: "PASS", reviewDiff: "diff --git a/a.js b/a.js\n+x", evidence: { execution: "OBSERVED" } },
+    // 빈 diff("변경 없음")도 사실이라 블록이 그려진다.
+    { finalVerdict: "FIX_REQUIRED", reviewDiff: "" },
+    // 상한을 넘는 diff는 boundedText가 자른다 — 양쪽이 같은 상한을 써야 한다.
+    { reviewDiff: "d".repeat(MAX_SPECIALIST_PROMPT_CHARS / 4), evidence: {} },
+    { evidence: { changes: "CHANGED" } },
+  ];
+  for (const artifacts of variants) {
+    const recorder = buildAgentPrompt({
+      ...base,
+      specialist: { stage: "recorder", professional: true, round: 2, ...artifacts },
+    });
+    const archivist = buildAgentPrompt({
+      ...base,
+      specialist: { stage: "archivist", round: 1, journal: [{ type: "ROLE_STARTED" }], ...artifacts },
+    });
+    const recorderBlock = finalArtifactBlock(recorder);
+    assert.ok(recorderBlock, `Recorder에 산출물 블록이 없습니다: ${JSON.stringify(Object.keys(artifacts))}`);
+    assert.equal(finalArtifactBlock(archivist), recorderBlock);
+  }
+  // 산출물이 하나도 없으면 양쪽 다 블록을 그리지 않는다.
+  assert.equal(
+    finalArtifactBlock(buildAgentPrompt({ ...base, specialist: { stage: "recorder", professional: true } })),
+    null
+  );
+  assert.equal(finalArtifactBlock(buildAgentPrompt({ ...base, specialist: { stage: "archivist" } })), null);
+});
+
+test("토론/수동 Recorder는 canonical 산출물을 받지 않는다", () => {
+  const prompt = buildAgentPrompt({
+    agent: AGENTS[1],
+    agents: AGENTS,
+    messages: [message("user", "원문", "user")],
+    specialist: {
+      stage: "recorder",
+      professional: false,
+      finalVerdict: "PASS",
+      reviewDiff: "diff --git a/a.js b/a.js",
+      evidence: { execution: "OBSERVED" },
+    },
+  });
+  assert.equal(finalArtifactBlock(prompt), null);
+  assert.doesNotMatch(prompt, /최종 검수 판정/);
+  assert.doesNotMatch(prompt, /diff --git/);
+  // 출력 계약(JSON 형식 안내)은 그대로 받는다.
+  assert.match(prompt, /"summary": "\.\.\."/);
+});

@@ -91,6 +91,26 @@ function boundedText(value, limit, label) {
   };
 }
 
+// 전문 실행의 canonical 최종 산출물(검수 판정 · 최종 변경 · 실행 근거).
+// Recorder와 Archivist는 같은 자료를 같은 모양으로 받아야 한다 — 한쪽에서만
+// 고치면 두 기록이 서로 다른 근거를 보게 되므로 여기서만 그린다(issue #2).
+// reviewDiff는 키의 존재로 판단한다: 빈 문자열("변경 없음")도 사실이라 적는다.
+function pushFinalArtifactLines(lines, specialist) {
+  if (specialist.finalVerdict) {
+    lines.push(`최종 검수 판정: ${specialist.finalVerdict}`);
+  }
+  if (Object.prototype.hasOwnProperty.call(specialist, "reviewDiff")) {
+    lines.push("=== 최종 변경 요약 ===");
+    lines.push(boundedText(specialist.reviewDiff, MAX_REVIEW_DIFF_CHARS, "최종 변경").text);
+    lines.push("=== 최종 변경 요약 끝 ===");
+  }
+  if (specialist.evidence) {
+    lines.push("=== 실행 근거 요약 ===");
+    lines.push(boundedText(JSON.stringify(specialist.evidence), MAX_REVIEW_EVIDENCE_CHARS, "Evidence").text);
+    lines.push("=== 실행 근거 요약 끝 ===");
+  }
+}
+
 function promptBudgetError(message) {
   const error = new Error(message);
   error.code = "PROMPT_BUDGET_EXCEEDED";
@@ -635,19 +655,9 @@ function buildAgentPrompt({
       lines.push("- 응답 안에 `VERDICT: PASS` 또는 `VERDICT: FIX_REQUIRED` 또는 `VERDICT: UNKNOWN` 하나를 넣으세요.");
       lines.push("- FIX_REQUIRED라면 `ISSUES:` 아래에 이슈별로 `scope: IN/OUT`, `severity: BLOCKING/NON_BLOCKING`, `location`, `problem`, `evidence`, `impact`를 적으세요.");
     } else if (specialist.stage === "recorder") {
-      if (isProfessionalRecorder && specialist.finalVerdict) {
-        lines.push(`최종 검수 판정: ${specialist.finalVerdict}`);
-      }
-      if (isProfessionalRecorder && Object.prototype.hasOwnProperty.call(specialist, "reviewDiff")) {
-        lines.push("=== 최종 변경 요약 ===");
-        lines.push(boundedText(specialist.reviewDiff, MAX_REVIEW_DIFF_CHARS, "최종 변경").text);
-        lines.push("=== 최종 변경 요약 끝 ===");
-      }
-      if (isProfessionalRecorder && specialist.evidence) {
-        lines.push("=== 실행 근거 요약 ===");
-        lines.push(boundedText(JSON.stringify(specialist.evidence), MAX_REVIEW_EVIDENCE_CHARS, "Evidence").text);
-        lines.push("=== 실행 근거 요약 끝 ===");
-      }
+      // 토론/수동 recorder(professional이 아닌 경우)는 canonical 산출물을
+      // 받지 않는다 — 대화를 근거로 하는 일반 기록이다.
+      if (isProfessionalRecorder) pushFinalArtifactLines(lines, specialist);
       lines.push(...RECORDER_OUTPUT_LINES);
     } else if (specialist.stage === "archivist") {
       // V1.5 Archivist(제안서 §7.4) — System Journal과 canonical artifact를
@@ -659,19 +669,7 @@ function buildAgentPrompt({
         );
         lines.push("=== System Journal 끝 ===");
       }
-      if (specialist.finalVerdict) {
-        lines.push(`최종 검수 판정: ${specialist.finalVerdict}`);
-      }
-      if (Object.prototype.hasOwnProperty.call(specialist, "reviewDiff")) {
-        lines.push("=== 최종 변경 요약 ===");
-        lines.push(boundedText(specialist.reviewDiff, MAX_REVIEW_DIFF_CHARS, "최종 변경").text);
-        lines.push("=== 최종 변경 요약 끝 ===");
-      }
-      if (specialist.evidence) {
-        lines.push("=== 실행 근거 요약 ===");
-        lines.push(boundedText(JSON.stringify(specialist.evidence), MAX_REVIEW_EVIDENCE_CHARS, "Evidence").text);
-        lines.push("=== 실행 근거 요약 끝 ===");
-      }
+      pushFinalArtifactLines(lines, specialist);
       lines.push("- 위 기록과 산출물만을 근거로, 사람이 읽기 좋은 정리를 작성하세요.");
       lines.push("- 새로운 사실·결정·판정을 만들지 마세요. 기록에 없는 내용은 '기록에 없음'이라고 밝히세요.");
       lines.push("- 이 정리는 파생 요약(derivedSummary)입니다. canonical verdict나 승인 상태를 바꾸지 않습니다.");
