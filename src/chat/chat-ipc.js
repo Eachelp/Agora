@@ -1572,6 +1572,10 @@ function roomMeta(meta) {
         if (patch?.defaultRoles && typeof patch.defaultRoles === "object" && !Array.isArray(patch.defaultRoles)) {
           next.defaultRoles = patch.defaultRoles;
         }
+        // 전문 실행 자동 보완 정책(프로젝트 단위). 값 검증·clamp는 project-store가 한다.
+        if (patch?.autoRevisions && typeof patch.autoRevisions === "object" && !Array.isArray(patch.autoRevisions)) {
+          next.autoRevisions = patch.autoRevisions;
+        }
         const project = ensureProjectStore().updateProject(projectId, next);
         for (const [sessionId] of rooms) {
           const meta = store.readMeta(sessionId);

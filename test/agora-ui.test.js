@@ -1241,3 +1241,41 @@ test("배지는 버튼 안에 있고, 못 누르는 버튼은 그 이유를 먼�
   // 토글·횟수를 바꾸면 즉시 반영된다.
   assert.match(renderer, /syncAutoRevisionControls\(\)[\s\S]{0,200}renderProfessionalPolicyBadges\(\)/);
 });
+
+// 자동 보완 정책은 프로젝트가 갖고, 화면 토글은 그 값에서 시작하는 임시 조정이다.
+// 0(=끄기)이 유효한 값이라 읽기 함수가 이를 살려야 한다 — 횟수 select 전용
+// clamp(1~3)를 그대로 쓰면 "꺼짐"이 1회로 되살아난다(실제로 그랬다).
+test("저장된 자동 보완 정책의 '꺼짐'이 1회로 되살아나지 않는다", () => {
+  const vm = require("node:vm");
+  const src = read("src/chat.js");
+  const start = src.indexOf("function boundedRevisionLimit(value, fallback = 1) {");
+  const end = src.indexOf("function boundedDiscussionTurns(");
+  assert.ok(start > 0 && end > start, "clamp 함수를 찾지 못했습니다");
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(src.slice(start, end), context);
+
+  // 횟수 select는 1~3만 고를 수 있다(0이 없다).
+  assert.equal(context.boundedRevisionLimit(0), 1);
+  assert.equal(context.boundedRevisionLimit(5), 3);
+  // 저장된 정책은 0을 그대로 읽어야 한다.
+  assert.equal(context.boundedAutoRevisions(0), 0);
+  assert.equal(context.boundedAutoRevisions(undefined), 0);
+  assert.equal(context.boundedAutoRevisions(2), 2);
+  assert.equal(context.boundedAutoRevisions(99), 3);
+  assert.equal(context.boundedAutoRevisions(-1), 0);
+});
+
+test("자동 보완 값은 프로젝트에서 읽고, 화면 토글은 저장하지 않는다", () => {
+  const renderer = read("src/chat.js");
+  // 프로젝트 값에서 토글을 채운다.
+  assert.match(renderer, /function applyProjectAutoRevisions/);
+  assert.match(renderer, /project\?\.autoRevisions/);
+  // 프로젝트가 바뀔 때 다시 채운다.
+  assert.match(renderer, /applyProjectAutoRevisions\(projectsChanged/);
+  // 더 이상 localStorage에 담지 않는다(앱 전역이 되어 모든 프로젝트가 함께 바뀌었다).
+  assert.ok(!/planAutoRevise"|implementationAutoRevise"/.test(renderer),
+    "자동 보완 설정을 localStorage에 저장하면 안 됩니다");
+  // 프로젝트 설정에서 저장된다.
+  assert.match(renderer, /autoRevisions,\n\s*\}\)\);/);
+});

@@ -504,3 +504,56 @@ test("makeRunAgent passes canonical workspace to provider invocation builder", (
     "buildAgentInvocation must receive the canonical workspace"
   );
 });
+
+// 전문 실행 자동 보완 정책은 프로젝트가 갖는다. 예전에는 화면(localStorage)에만
+// 있어서 한 프로젝트에서 바꾸면 모든 프로젝트가 함께 바뀌었다.
+test("자동 보완 정책은 프로젝트마다 따로 저장된다", async () => {
+  const root = makeRoot();
+  const feature = makeFeature(root, { canceled: true, filePaths: [] });
+
+  // chat:projects:create는 만들어진 세션을 돌려준다 — 프로젝트 id는 그 meta에 있다.
+  const a = (await feature.invoke("chat:projects:create", { name: "실험" })).session.meta.projectId;
+  const b = (await feature.invoke("chat:projects:create", { name: "실제 코드" })).session.meta.projectId;
+  const listed = (payload, id) => (payload.projects || []).find((entry) => entry.id === id);
+  // 새 프로젝트의 기본값은 "자동 보완 없음"이다(검수가 멈추고 물어본다).
+  assert.deepEqual(listed(await feature.invoke("chat:state"), a).autoRevisions, { plan: 0, implementation: 0 });
+
+  const saved = await feature.invoke("chat:projects:update", {
+    projectId: a,
+    patch: { autoRevisions: { plan: 3, implementation: 2 } },
+  });
+  assert.deepEqual(saved.project.autoRevisions, { plan: 3, implementation: 2 });
+
+  // 다른 프로젝트는 그대로다.
+  assert.deepEqual(listed(saved, b).autoRevisions, { plan: 0, implementation: 0 });
+
+  // 범위를 벗어난 값은 잘라 낸다(0~3).
+  const clamped = await feature.invoke("chat:projects:update", {
+    projectId: a,
+    patch: { autoRevisions: { plan: 99, implementation: -5 } },
+  });
+  assert.deepEqual(clamped.project.autoRevisions, { plan: 3, implementation: 0 });
+
+  // 다른 항목만 저장해도 정책은 유지된다.
+  const renamed = await feature.invoke("chat:projects:update", {
+    projectId: a,
+    patch: { name: "이름만 변경" },
+  });
+  assert.deepEqual(renamed.project.autoRevisions, { plan: 3, implementation: 0 });
+});
+
+// 이 필드가 없던 시절에 만든 프로젝트 파일도 같은 모양으로 읽혀야 한다.
+test("예전 프로젝트 파일에도 자동 보완 기본값이 채워진다", async () => {
+  const root = makeRoot();
+  const feature = makeFeature(root, { canceled: true, filePaths: [] });
+  const created = await feature.invoke("chat:projects:create", { name: "옛 프로젝트" });
+  const projectId = created.session.meta.projectId;
+  const file = path.join(root, "projects", `${projectId}.json`);
+  const raw = JSON.parse(fs.readFileSync(file, "utf8"));
+  delete raw.autoRevisions;
+  fs.writeFileSync(file, JSON.stringify(raw), "utf8");
+
+  const state = await feature.invoke("chat:state");
+  const project = state.projects.find((entry) => entry.id === projectId);
+  assert.deepEqual(project.autoRevisions, { plan: 0, implementation: 0 });
+});

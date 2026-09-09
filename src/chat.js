@@ -175,10 +175,6 @@ let specialistMissingSections = null;
 const SIDEBAR_WIDTH_KEY = "agora.chat.sidebarWidth";
 const SIDEBAR_COLLAPSED_KEY = "agora.chat.sidebarCollapsed";
 const DOCTOR_SEEN_KEY = "agora.chat.doctorSeen.v1";
-const PLAN_AUTO_REVISE_KEY = "agora.chat.planAutoRevise";
-const PLAN_AUTO_LIMIT_KEY = "agora.chat.planAutoLimit";
-const IMPLEMENTATION_AUTO_REVISE_KEY = "agora.chat.implementationAutoRevise";
-const IMPLEMENTATION_AUTO_LIMIT_KEY = "agora.chat.implementationAutoLimit";
 const DISCUSSION_LENGTH_KEY = "agora.chat.discussionLength";
 const DISCUSSION_CUSTOM_TURNS_KEY = "agora.chat.discussionCustomTurns";
 const DISCUSSION_MODE_KEY = "agora.chat.discussionMode";
@@ -213,20 +209,40 @@ function boundedRevisionLimit(value, fallback = 1) {
   return Number.isInteger(parsed) ? Math.min(3, Math.max(1, parsed)) : fallback;
 }
 
+// 저장된 자동 보완 정책을 읽는다. 0(=끄기)이 유효한 값이라 boundedRevisionLimit
+// (횟수 select 전용, 1~3으로 clamp)을 쓰면 "꺼짐"이 1회로 되살아난다.
+function boundedAutoRevisions(value) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) ? Math.min(3, Math.max(0, parsed)) : 0;
+}
+
 function boundedDiscussionTurns(value, fallback = 15) {
   const parsed = Number.parseInt(value, 10);
   return Number.isInteger(parsed) ? Math.min(50, Math.max(3, parsed)) : fallback;
 }
 
-planAutoReviseToggle.checked = localStorage.getItem(PLAN_AUTO_REVISE_KEY) === "true";
-planAutoLimitSelect.value = String(
-  boundedRevisionLimit(localStorage.getItem(PLAN_AUTO_LIMIT_KEY), 2)
-);
-implementationAutoReviseToggle.checked =
-  localStorage.getItem(IMPLEMENTATION_AUTO_REVISE_KEY) === "true";
-implementationAutoLimitSelect.value = String(
-  boundedRevisionLimit(localStorage.getItem(IMPLEMENTATION_AUTO_LIMIT_KEY), 1)
-);
+// 자동 보완 정책은 **프로젝트**가 갖는다(project.autoRevisions). 화면의 토글은
+// 그 값에서 시작해 이번 실행만 임시로 바꾸는 자리다. 예전에는 localStorage에
+// 저장돼 앱 전역이라, 한 프로젝트에서 3회로 바꾸면 다른 프로젝트도 3회가 됐다.
+//
+// 어느 프로젝트의 값을 올려 둔 상태인지 기억해, 프로젝트가 바뀔 때만 다시 채운다.
+// 매 상태 갱신마다 덮으면 사용자가 방금 바꾼 임시 값이 사라진다.
+let autoRevisionsProjectId = null;
+
+function applyProjectAutoRevisions(force = false) {
+  const project = activeProjectEntry();
+  const projectId = project?.id || null;
+  if (!force && projectId === autoRevisionsProjectId) return;
+  autoRevisionsProjectId = projectId;
+  const policy = project?.autoRevisions || {};
+  const plan = boundedAutoRevisions(policy.plan);
+  const implementation = boundedAutoRevisions(policy.implementation);
+  planAutoReviseToggle.checked = plan > 0;
+  if (plan > 0) planAutoLimitSelect.value = String(plan);
+  implementationAutoReviseToggle.checked = implementation > 0;
+  if (implementation > 0) implementationAutoLimitSelect.value = String(implementation);
+  syncAutoRevisionControls();
+}
 
 function syncAutoRevisionControls() {
   planAutoLimitSelect.disabled = !planAutoReviseToggle.checked;
@@ -259,23 +275,14 @@ function policyTooltip(description, revisions, stageLabel) {
   return `${description} ${consequence}`;
 }
 
-for (const [control, key] of [
-  [planAutoReviseToggle, PLAN_AUTO_REVISE_KEY],
-  [implementationAutoReviseToggle, IMPLEMENTATION_AUTO_REVISE_KEY],
-]) {
-  control.addEventListener("change", () => {
-    localStorage.setItem(key, String(control.checked));
-    syncAutoRevisionControls();
-  });
+// 여기서 바꾼 값은 이번 실행에만 적용된다. 계속 쓸 값은 프로젝트 설정(⋯)에 둔다.
+for (const control of [planAutoReviseToggle, implementationAutoReviseToggle]) {
+  control.addEventListener("change", syncAutoRevisionControls);
 }
 
-for (const [control, key] of [
-  [planAutoLimitSelect, PLAN_AUTO_LIMIT_KEY],
-  [implementationAutoLimitSelect, IMPLEMENTATION_AUTO_LIMIT_KEY],
-]) {
+for (const control of [planAutoLimitSelect, implementationAutoLimitSelect]) {
   control.addEventListener("change", () => {
     control.value = String(boundedRevisionLimit(control.value));
-    localStorage.setItem(key, control.value);
     renderProfessionalPolicyBadges();
   });
 }
@@ -1375,6 +1382,39 @@ function openProjectSettings(anchor, project) {
       roleControls.set(role.id, { agent: select, model, effort });
     }
 
+    // 전문 실행 자동 보완 정책 — 이 프로젝트에서 계속 쓸 값.
+    // 검수가 수정을 요구할 때 몇 번까지 자동으로 다시 돌릴지 정한다(0이면 멈추고 물어봄).
+    const autoSection = document.createElement("section");
+    autoSection.className = "project-default-section";
+    const autoTitle = document.createElement("strong");
+    autoTitle.textContent = "전문 실행 자동 보완";
+    const autoHint = document.createElement("p");
+    autoHint.className = "popover-hint";
+    autoHint.textContent = "검수가 수정을 요구하면 몇 번까지 자동으로 다시 돌릴지 정합니다. 끄면 멈추고 물어봅니다. 실행 줄의 토글로 이번 실행만 다르게 할 수 있습니다.";
+    autoSection.append(autoTitle, autoHint);
+    const autoControls = new Map();
+    for (const [key, label] of [["plan", "기획"], ["implementation", "구현"]]) {
+      const saved = boundedAutoRevisions(project.autoRevisions?.[key]);
+      const row = document.createElement("div");
+      row.className = "project-auto-revision-row";
+      const on = document.createElement("input");
+      on.type = "checkbox";
+      on.checked = saved > 0;
+      const count = document.createElement("select");
+      for (const value of [1, 2, 3]) {
+        const item = document.createElement("option");
+        item.value = String(value);
+        item.textContent = `${value}회`;
+        count.append(item);
+      }
+      count.value = String(saved > 0 ? saved : (key === "plan" ? 2 : 1));
+      count.disabled = !on.checked;
+      on.addEventListener("change", () => { count.disabled = !on.checked; });
+      row.append(makeField(label, on), makeField("횟수", count));
+      autoSection.append(row);
+      autoControls.set(key, { on, count });
+    }
+
         const actions = document.createElement("div");
     actions.className = "project-popover-actions";
     const save = document.createElement("button");
@@ -1400,12 +1440,17 @@ function openProjectSettings(anchor, project) {
           };
         }
       }
+      const autoRevisions = {};
+      for (const [key, controls] of autoControls) {
+        autoRevisions[key] = controls.on.checked ? boundedRevisionLimit(controls.count.value) : 0;
+      }
       const result = await call(window.chatApi.projectsUpdate(project.id, {
         name: name.value,
         context: context.value,
         defaultPermissionMode: permission.value,
         defaultAgents,
         defaultRoles,
+        autoRevisions,
       }));
       if (result) {
         closePopover();
@@ -1440,6 +1485,7 @@ function openProjectSettings(anchor, project) {
       makeField("프로젝트 폴더", workspaceField),
       defaultAgentSection,
       roleSection,
+      autoSection,
       actions
     );
   });
@@ -5399,8 +5445,13 @@ function applyFullState(full) {
   if (full.diagnostics) diagnostics = full.diagnostics;
   if (full.discussionPresets) discussionPresets = full.discussionPresets;
   if (full.projects) projects = full.projects;
+  const projectsChanged = Boolean(full.projects);
   if (full.workflow) workflow = full.workflow;
   if (Object.hasOwn(full, "activeProjectId")) activeProjectId = full.activeProjectId;
+  // 프로젝트가 바뀌면 그 프로젝트의 자동 보완 정책으로 토글을 채운다. 같은
+  // 프로젝트에서 목록만 다시 온 경우에는(설정 저장 직후 등) 강제로 다시 채워
+  // 방금 저장한 값이 화면에 반영되게 한다.
+  applyProjectAutoRevisions(projectsChanged && activeProjectId === autoRevisionsProjectId);
   if (full.sessions) sessions = full.sessions;
   if (full.sessionsByProject) sessionsByProject = full.sessionsByProject;
   if (Object.hasOwn(full, "activeSessionId")) activeSessionId = full.activeSessionId;
