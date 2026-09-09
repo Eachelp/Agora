@@ -5,6 +5,7 @@ const CHANNELS = Object.freeze({
   SAVE: "settings:save",
   FONTS: "settings:fonts",
   ACCOUNT: "settings:account",
+  ACCOUNT_LOGIN: "settings:account-login",
   USAGE: "settings:usage",
   APPEARANCE: "appearance:update",
   NAVIGATE: "settings:navigate",
@@ -21,6 +22,13 @@ contextBridge.exposeInMainWorld("settingsApi", {
     const listener = (_event, value) => handler(value);
     ipcRenderer.on(CHANNELS.APPEARANCE, listener);
     return () => ipcRenderer.removeListener(CHANNELS.APPEARANCE, listener);
+  },
+  // 앱 안 CLI 로그인의 진행 상황(started · url · output · exit).
+  onAccountLogin: (handler) => {
+    if (typeof handler !== "function") return () => {};
+    const listener = (_event, value) => handler(value);
+    ipcRenderer.on(CHANNELS.ACCOUNT_LOGIN, listener);
+    return () => ipcRenderer.removeListener(CHANNELS.ACCOUNT_LOGIN, listener);
   },
   onNavigate: (handler) => {
     if (typeof handler !== "function") return () => {};

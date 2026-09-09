@@ -22,7 +22,7 @@ const { buildAccountSubmenu } = require("../account-submenu");
 const { commandNeedsShell, selectCommandPath } = require("../command-resolution");
 const { cliCandidates } = require("../providers/provider-capabilities");
 const { buildWindowsCodexLaunchScript } = require("../codex-desktop-launch");
-const { linuxTerminalInvocation, writeUnixLoginScript } = require("../unix-login");
+const { createCliLoginRunner } = require("./cli-login");
 
 // Codex/Claude/AGY 계정 전환, 로그인 스크립트 생성, Codex 로컬 프록시 제어를 모아 놓은
 // 모듈입니다. 이 모듈은 트레이·채팅 창 같은 UI를 소유하지 않습니다 — 그 UI들을 다루는
@@ -69,6 +69,20 @@ function createAccountSwitching(ui) {
     stop: () => stopCodexDesktopApp(),
     launch: () => launchCodexDesktopApp(),
   };
+
+  // CLI 로그인은 터미널 창 대신 앱이 자식 프로세스로 돌린다(cli-login). 테스트는
+  // 가짜 러너를 주입해 실제 CLI를 띄우지 않는다. 진행 상황은 notifyAccountLogin으로
+  // 설정 창에 흘러간다(없으면 조용히 버린다).
+  const cliLogin = ui.cliLogin || createCliLoginRunner();
+  const notifyAccountLogin = typeof ui.notifyAccountLogin === "function"
+    ? (event) => {
+      try {
+        ui.notifyAccountLogin(event);
+      } catch {
+        // 설정 창 통지 실패가 로그인 자체를 막으면 안 된다.
+      }
+    }
+    : () => {};
 
   // userData에 남기는 간단한 디버그 로그입니다.
   // 로그인 터미널처럼 사용자가 "아무 일도 안 일어났다"고 느끼는 작업은 실제 launcher 오류를 남겨야 추적이 됩니다.
@@ -148,21 +162,6 @@ function createAccountSwitching(ui) {
   // 경로 안에 작은따옴표가 있어도 PowerShell single-quoted string 규칙에 맞게 이스케이프합니다.
   function quotePowerShellString(value) {
     return `'${String(value).replace(/'/g, "''")}'`;
-  }
-
-  // cmd.exe /c start 안에 들어갈 경로를 큰따옴표로 감쌉니다.
-  // Windows 파일 경로에는 보통 큰따옴표가 없지만, 혹시 모를 값을 이스케이프해 둡니다.
-  function quoteCmdArgument(value) {
-    return `"${String(value).replace(/"/g, '\\"')}"`;
-  }
-
-  function quoteShellArgument(value) {
-    return `'${String(value).replace(/'/g, "'\\''")}'`;
-  }
-
-  // macOS에서 더블클릭(shell.openPath)하면 Terminal이 실행하는 .command 셸 스크립트를 만듭니다.
-  function writeMacLoginScript(fileName, lines) {
-    return writeUnixLoginScript(app.getPath("userData"), fileName, lines);
   }
 
   // PowerShell helper를 숨김 창으로 실행합니다.
@@ -277,132 +276,6 @@ Write-Output "Stopped $($processes.Count) AGY process(es)."
     return true;
   }
 
-  async function openLoginScript(scriptPath) {
-    if (process.platform !== "linux") return shell.openPath(scriptPath);
-
-    const terminal = [
-      "x-terminal-emulator",
-      "gnome-terminal",
-      "konsole",
-      "xfce4-terminal",
-      "xterm",
-    ].map((name) => resolveCommand(name)).find(Boolean);
-    if (!terminal) return "Linux terminal emulator was not found.";
-
-    const invocation = linuxTerminalInvocation(terminal, scriptPath);
-    return new Promise((resolve) => {
-      const child = spawn(invocation.command, invocation.args, {
-        detached: true,
-        stdio: "ignore",
-      });
-      child.once("spawn", () => {
-        child.unref();
-        resolve("");
-      });
-      child.once("error", (error) => resolve(error.message || String(error)));
-    });
-  }
-
-  // Codex 공식 로그인 흐름을 실행할 스크립트를 만듭니다. (Windows: .cmd / macOS: .command)
-  // Agora는 토큰을 직접 받지 않고, pending profile CODEX_HOME 안에서 `codex login`만 실행하게 합니다.
-  function writeCodexLoginScript(profile) {
-    if (["darwin", "linux"].includes(process.platform)) {
-      const codexCommand = resolveCommand("codex", codexCommandCandidates());
-      const fileName = process.platform === "darwin"
-        ? "agora-codex-login.command"
-        : "agora-codex-login.sh";
-      const scriptPath = writeMacLoginScript(fileName, [
-        `echo "Agora Codex Login - ${profile.id}"`,
-        `export CODEX_HOME=${quoteShellArgument(profile.homePath)}`,
-        `${codexCommand ? quoteShellArgument(codexCommand) : "codex"} login`,
-      ]);
-      appendDebugLog(
-        `login script written: ${scriptPath}; profile=${profile.key}; home=${profile.homePath}; codex=${codexCommand || "PATH"}`
-      );
-      return scriptPath;
-    }
-
-    const scriptPath = path.join(app.getPath("userData"), "agora-codex-login.cmd");
-    const codexCommand = codexAccountSwitcher.resolveCodexCommandForBatch();
-    const codexLoginLine = codexCommand
-      ? `call ${quoteCmdArgument(codexCommand)} login`
-      : "call codex login";
-
-    fs.writeFileSync(
-      scriptPath,
-      [
-        "@echo off",
-        `title Agora Codex Login - ${profile.id}`,
-        "echo Agora Codex Login",
-        "echo.",
-        `echo Profile: ${profile.id}`,
-        `echo CODEX_HOME: ${profile.homePath}`,
-        "set \"CODEX_HOME=" + profile.homePath + "\"",
-        "echo.",
-        codexCommand
-          ? `echo Using Codex command: ${codexCommand}`
-          : "echo Codex command was not resolved by Agora. Trying PATH lookup...",
-        "echo.",
-        codexCommand ? "" : "where codex >nul 2>nul",
-        codexCommand ? "" : "if errorlevel 1 (",
-        codexCommand ? "" : "  echo codex command was not found in PATH.",
-        codexCommand ? "" : "  echo Install Codex CLI or open a terminal where codex works.",
-        codexCommand ? "" : "  echo.",
-        codexCommand ? "" : "  pause",
-        codexCommand ? "" : "  exit /b 1",
-        codexCommand ? "" : ")",
-        codexLoginLine,
-        "set AGORA_LOGIN_EXIT=%ERRORLEVEL%",
-        "echo.",
-        "if not \"%AGORA_LOGIN_EXIT%\"==\"0\" (",
-        "  echo Codex login exited with code %AGORA_LOGIN_EXIT%.",
-        ") else (",
-        "  echo Codex login command finished.",
-        ")",
-        "echo Return to Agora and open the account switch menu.",
-        "echo.",
-        "pause",
-        "",
-      ].filter((line) => line !== "").join("\r\n"),
-      "utf8"
-    );
-
-    appendDebugLog(
-      `login script written: ${scriptPath}; profile=${profile.key}; home=${profile.homePath}; codex=${codexCommand || "PATH"}`
-    );
-    return scriptPath;
-  }
-
-  function writeClaudeLoginScript() {
-    const claudeCommand = resolveCommand("claude", claudeCommandCandidates());
-    if (!claudeCommand) throw new Error("Claude 명령을 찾지 못했습니다.");
-
-    if (["darwin", "linux"].includes(process.platform)) {
-      const fileName = process.platform === "darwin"
-        ? "agora-claude-login.command"
-        : "agora-claude-login.sh";
-      return writeMacLoginScript(fileName, [
-        'echo "Agora Claude Login"',
-        `${quoteShellArgument(claudeCommand)} auth login`,
-      ]);
-    }
-
-    const scriptPath = path.join(app.getPath("userData"), "agora-claude-login.cmd");
-    fs.writeFileSync(
-      scriptPath,
-      [
-        "@echo off",
-        "title Agora Claude Login",
-        `call ${quoteCmdArgument(claudeCommand)} auth login`,
-        "echo.",
-        "pause",
-        "",
-      ].join("\r\n"),
-      "utf8"
-    );
-    return scriptPath;
-  }
-
   function getClaudeAuthStatus() {
     return new Promise((resolve, reject) => {
       const command = resolveCommand("claude", claudeCommandCandidates());
@@ -435,57 +308,81 @@ Write-Output "Stopped $($processes.Count) AGY process(es)."
     });
   }
 
-  let codexLoginLaunchInProgress = false;
+  // 로그인 명령은 PATH에서 CLI를 찾는다. 터미널 스크립트가 PATH에 덧붙이던 경로
+  // (사용자 로컬 설치, Homebrew)를 같은 이유로 덧붙인다.
+  function loginEnv(extra = {}) {
+    const env = { ...process.env, ...extra };
+    if (["darwin", "linux"].includes(process.platform)) {
+      const prefix = [path.join(os.homedir(), ".local", "bin"), "/opt/homebrew/bin", "/usr/local/bin"];
+      env.PATH = [...prefix, env.PATH || ""].filter(Boolean).join(path.delimiter);
+    }
+    return env;
+  }
 
-  // Codex 로그인은 브라우저/OAuth/터미널 상호작용이 필요하므로 Agora 내부에서 직접 처리하지 않습니다.
-  // 대신 pending profile CODEX_HOME을 만든 뒤 별도 터미널에서 `codex login`을 한 번만 실행합니다.
-  async function openCodexLoginTerminal() {
-    if (codexLoginLaunchInProgress) {
-      showAccountNotice("이미 Codex 로그인 터미널을 여는 중입니다.");
+  function loginFailureText(result) {
+    const lines = Array.isArray(result?.tail) ? result.tail.slice(-3) : [];
+    if (result?.timedOut) return "시간이 다 되어 로그인을 중단했습니다. 다시 시도해 주세요.";
+    return lines.join("\n") || result?.error || "";
+  }
+
+  // 새 Codex 로그인. pending profile의 CODEX_HOME에서 `codex login`을 앱 안에서
+  // 돌린다 — 예전에는 이 명령을 담은 스크립트를 터미널 창으로 열었다. 로그인이
+  // 끝나 auth.json이 생기면 목록에 실제 계정명으로 나타난다(전환은 사용자 몫).
+  async function startCodexLogin() {
+    if (cliLogin.isRunning("codex")) {
+      showAccountNotice("이미 Codex 로그인이 진행 중입니다.");
       return false;
     }
-
-    codexLoginLaunchInProgress = true;
-
     try {
       codexAccountSwitcher.ensureCurrentAccountProfile();
-      if (!["win32", "darwin", "linux"].includes(process.platform)) {
-        throw new Error(`Agora 로그인 실행기는 ${process.platform}을 지원하지 않습니다.`);
-      }
-
       const profile = codexAccountSwitcher.createLoginProfile();
-      const scriptPath = writeCodexLoginScript(profile);
-
-      showAccountNotice(
-        "새 Codex 로그인 터미널을 여는 중입니다."
-      );
-
-      // 여러 launcher를 순차 시도하면 실패 판정이 애매해서 터미널이 여러 개 뜹니다.
-      // ShellExecute 한 경로만 사용하고, 실패하면 사용자가 직접 실행할 스크립트 경로를 보여줍니다.
-      const error = await openLoginScript(scriptPath);
-      appendDebugLog(`login terminal ShellExecute: ${error || "ok"}`);
-
-      if (error) {
-        showAccountNotice(
-          `Codex 로그인 터미널을 열지 못했어요.\n직접 이 파일을 실행해 주세요:\n${scriptPath}\n\n${error}`
-        );
-        return false;
-      }
-
-      showAccountNotice(
-        "Codex 로그인 터미널을 열었어요.\n로그인이 끝나면 '전환' 목록에 실제 계정명으로 나타납니다."
-      );
+      const codexCommand = (process.platform === "win32" && codexAccountSwitcher.resolveCodexCommandForBatch?.())
+        || resolveCommand("codex", codexCommandCandidates());
+      if (!codexCommand) throw new Error("Codex 명령을 찾지 못했습니다.");
+      cliLogin.start({
+        provider: "codex",
+        command: codexCommand,
+        args: ["login"],
+        env: loginEnv({ CODEX_HOME: profile.homePath }),
+        onEvent: notifyAccountLogin,
+        onExit: (result) => {
+          appendDebugLog(`codex login exit: ok=${result.ok} code=${result.code} profile=${profile.key}`);
+          clearUsageCache("codex");
+          refreshTrayMenu();
+          if (result.ok) {
+            showAccountNotice("Codex 로그인이 끝났습니다. 설정의 '전환' 목록에서 새 계정을 고르세요.");
+          } else if (!result.cancelled) {
+            showAccountNotice(`Codex 로그인이 끝나지 않았습니다.\n${loginFailureText(result)}`);
+          }
+        },
+      });
+      appendDebugLog(`codex login started: profile=${profile.key}; home=${profile.homePath}; codex=${codexCommand}`);
       return true;
     } catch (error) {
-      showAccountNotice(
-        `Codex 로그인 터미널을 열지 못했어요.\n${error.message || String(error)}`
-      );
+      appendDebugLog(`codex login start failed: ${error?.message || String(error)}`);
+      showAccountNotice(`Codex 로그인을 시작하지 못했어요.\n${error?.message || String(error)}`);
       return false;
-    } finally {
-      setTimeout(() => {
-        codexLoginLaunchInProgress = false;
-      }, 3000);
     }
+  }
+
+  // 설정 창의 로그인 패널이 쓰는 통로. 코드 붙여넣기(Claude), 취소, 주소 열기.
+  function submitProviderLoginInput(provider, text) {
+    return cliLogin.input(provider, text);
+  }
+
+  function cancelProviderLogin(provider) {
+    return cliLogin.cancel(provider);
+  }
+
+  function isProviderLoginRunning(provider) {
+    return cliLogin.isRunning(provider);
+  }
+
+  async function openProviderLoginUrl(provider, url) {
+    // 화면이 열어 달라는 주소는 이 로그인이 실제로 출력한 것이어야 한다.
+    if (!cliLogin.knowsUrl(provider, url)) throw new Error("이 로그인이 연 주소가 아닙니다.");
+    await shell.openExternal(url);
+    return true;
   }
 
   // Windows의 Codex Desktop App만 선별적으로 종료합니다.
@@ -789,7 +686,7 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
       profiles,
       formatLabel: formatCodexAccountLabel,
       onSwitch: (key) => switchCodexAccount(key),
-      onLogin: () => openCodexLoginTerminal(),
+      onLogin: () => startCodexLogin(),
     });
   }
 
@@ -832,7 +729,7 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
   }
 
   async function startProviderLogin(provider) {
-    if (provider === "codex") return Boolean(await openCodexLoginTerminal());
+    if (provider === "codex") return Boolean(await startCodexLogin());
 
     if (provider === "agy") {
       let meta = {};
@@ -869,6 +766,9 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
     }
 
     if (provider === "claude") {
+      if (cliLogin.isRunning("claude")) throw new Error("이미 Claude 로그인이 진행 중입니다.");
+      const claudeCommand = resolveCommand("claude", claudeCommandCandidates());
+      if (!claudeCommand) throw new Error("Claude 명령을 찾지 못했습니다.");
       try {
         const status = await getClaudeAuthStatus();
         claudeAccountSwitcher.snapshotCurrent({
@@ -878,21 +778,47 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
       } catch {
         // 처음 로그인하는 PC라면 저장할 현재 계정이 없습니다.
       }
-      const scriptPath = writeClaudeLoginScript();
-      // 외부 login script가 live credential을 바꾸는 시간 창이 열리기 전에
-      // boundary를 설치하고 old inflight turn이 실제로 끝날 때까지 기다린다.
-      // 실패하면 던져서 login script를 아예 실행하지 않는다.
+      // 로그인이 live credential을 바꾸는 시간 창이 열리기 전에 boundary를 설치하고
+      // old inflight turn이 실제로 끝날 때까지 기다린다. 실패하면 던져서 로그인을
+      // 아예 시작하지 않는다.
       const boundary = await installAccountBoundaryOrFail("claude");
+      // 경계는 둘 중 한 곳에서 닫힌다: 프로세스를 띄우지 못했으면 아래 finally에서
+      // 바로, 띄웠으면 로그인 프로세스가 끝날 때(onExit)에.
+      let started = false;
       try {
-        const error = await openLoginScript(scriptPath);
-        if (error) throw new Error(error);
+        cliLogin.start({
+          provider: "claude",
+          command: claudeCommand,
+          args: ["auth", "login"],
+          env: loginEnv(),
+          onEvent: notifyAccountLogin,
+          onExit: async (result) => {
+            // 로그인 프로세스가 끝난 뒤에야 경계를 닫는다. 예전의 터미널 로그인은
+            // 앱이 관측할 수 없어 실행 직후 닫았지만, 이제는 credential이 바뀌는
+            // 순간까지 지켜볼 수 있다(그 동안 새 managed turn은 잠깐 막힌다. 사용자가
+            // 브라우저에서 끝내지 않으면 러너의 시간 제한이 프로세스를 끊고 여기로 온다).
+            completeAccountBoundary(boundary, "claude");
+            clearUsageCache("claude");
+            appendDebugLog(`claude login exit: ok=${result.ok} code=${result.code}`);
+            if (result.ok) {
+              try {
+                const status = await getClaudeAuthStatus();
+                claudeAccountSwitcher.snapshotCurrent({ email: status.email, plan: status.subscriptionType });
+              } catch {
+                // 상태 조회가 막혀도 로그인 자체는 끝났다. 목록은 다음 조회 때 채워진다.
+              }
+              showAccountNotice("Claude 로그인이 끝났습니다.");
+            } else if (!result.cancelled) {
+              showAccountNotice(`Claude 로그인이 끝나지 않았습니다.\n${loginFailureText(result)}`);
+            }
+            refreshTrayMenu();
+          },
+        });
+        started = true;
       } finally {
-        // launcher 실행이 확정된 시점에 트랜잭션을 닫는다. 외부 터미널에서
-        // 진행되는 로그인 자체는 Agora가 관측할 수 없으므로 그 수명까지
-        // admission을 잠그지 않는다(모든 managed session은 이미 폐기됐다).
-        completeAccountBoundary(boundary, "claude");
+        if (!started) completeAccountBoundary(boundary, "claude");
       }
-      clearUsageCache("claude");
+      appendDebugLog(`claude login started: claude=${claudeCommand}`);
       return true;
     }
 
@@ -1162,7 +1088,11 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
     setCodexProxyMode,
     restoreCodexProxyMode,
     teardownCodexProxyOnQuit,
-    openCodexLoginTerminal,
+    startCodexLogin,
+    submitProviderLoginInput,
+    cancelProviderLogin,
+    openProviderLoginUrl,
+    isProviderLoginRunning,
     switchCodexAccount,
     buildProviderAccountSubmenu,
     switchProviderAccount,

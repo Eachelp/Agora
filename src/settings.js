@@ -8,6 +8,9 @@ const fontSizeInput = document.querySelector("#font-size");
 const fontSizeValue = document.querySelector("#font-size-value");
 
 let state = null;
+// 앱 안 CLI 로그인의 진행 상황(제공자별). 설정 창이 열려 있는 동안만 산다 — 창을
+// 닫았다 열면 진행 중인 로그인은 계속 돌고, 다음 이벤트부터 패널이 다시 그려진다.
+const loginStates = new Map();
 let installedFonts = [];
 let selectedFont = "";
 let selectedFontSize = 12;
@@ -220,6 +223,132 @@ function createEmptyState(title) {
   return empty;
 }
 
+function setLoginState(providerId, patch) {
+  loginStates.set(providerId, { ...(loginStates.get(providerId) || {}), ...patch });
+}
+
+// 로그인 진행 조작(주소 열기·코드 보내기·취소). 실패는 토스트로만 알리고 패널은 그대로 둔다.
+async function loginAction(input, sourceButton) {
+  setButtonBusy(sourceButton, true);
+  try {
+    const response = await api.account(input);
+    if (!response?.ok) throw new Error(responseError(response, "로그인 작업에 실패했습니다."));
+    return response;
+  } catch (error) {
+    showError(error.message || String(error));
+    return null;
+  } finally {
+    setButtonBusy(sourceButton, false);
+  }
+}
+
+// 계정 그룹 제목 아래의 로그인 패널. 예전에는 [계정 추가]가 터미널 창을 열어
+// 사용자가 그 창에서 로그인을 마쳐야 했다. 이제 CLI는 앱이 뒤에서 돌리고,
+// 브라우저 열기·인증 코드 붙여넣기·취소만 여기서 한다.
+function createLoginPanel(provider, login) {
+  const panel = createElement("section", "login-panel");
+  panel.dataset.provider = provider.id;
+  panel.appendChild(createElement(
+    "strong",
+    "",
+    login.running
+      ? `${provider.label} 로그인 진행 중`
+      : login.ok
+        ? `${provider.label} 로그인 완료`
+        : `${provider.label} 로그인이 끝나지 않았습니다`
+  ));
+
+  if (login.running) {
+    panel.appendChild(createElement(
+      "p",
+      "login-hint",
+      "브라우저에서 로그인을 마쳐 주세요. 브라우저가 자동으로 열리지 않았다면 아래 버튼으로 여세요."
+    ));
+    const row = createElement("div", "login-row");
+    const url = login.urls?.[login.urls.length - 1] || "";
+    const open = createElement("button", "button", "브라우저 열기");
+    open.type = "button";
+    open.disabled = !url;
+    open.title = url ? url : "로그인 주소를 아직 받지 못했습니다";
+    open.addEventListener("click", () =>
+      loginAction({ provider: provider.id, action: "login-open-url", url }, open)
+    );
+    const cancel = createElement("button", "button", "취소");
+    cancel.type = "button";
+    cancel.addEventListener("click", () =>
+      loginAction({ provider: provider.id, action: "login-cancel" }, cancel)
+    );
+    row.append(open, cancel);
+    panel.appendChild(row);
+
+    // Claude는 브라우저가 보여 주는 인증 코드를 CLI에 넘겨야 끝난다. 다른 CLI도
+    // 입력을 기다리는 프롬프트를 내면 같은 칸을 쓴다.
+    if (provider.id === "claude" || login.prompt) {
+      const codeRow = createElement("div", "login-row");
+      const input = document.createElement("input");
+      input.type = "text";
+      input.placeholder = "브라우저에 표시된 인증 코드를 붙여 넣으세요";
+      input.value = login.draft || "";
+      input.setAttribute("aria-label", `${provider.label} 인증 코드`);
+      input.addEventListener("input", () => setLoginState(provider.id, { draft: input.value }));
+      const send = createElement("button", "button button-primary", "코드 보내기");
+      send.type = "button";
+      const submit = async () => {
+        const text = input.value.trim();
+        if (!text) return;
+        const response = await loginAction({ provider: provider.id, action: "login-input", text }, send);
+        if (response) {
+          setLoginState(provider.id, { draft: "", sent: true });
+          renderAccounts();
+        }
+      };
+      send.addEventListener("click", submit);
+      input.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        submit();
+      });
+      codeRow.append(input, send);
+      panel.appendChild(codeRow);
+      if (login.sent) {
+        panel.appendChild(createElement("p", "login-hint", "코드를 보냈습니다. 확인이 끝나면 계정 목록이 갱신됩니다."));
+      }
+    }
+    return panel;
+  }
+
+  if (login.ok) {
+    panel.appendChild(createElement(
+      "p",
+      "login-hint",
+      provider.id === "codex" ? "'전환' 목록에서 새 계정을 고르세요." : "계정 목록을 갱신했습니다."
+    ));
+  } else {
+    const reason = login.timedOut
+      ? "시간이 다 되어 중단했습니다. 다시 시도해 주세요."
+      : login.cancelled
+        ? "취소했습니다."
+        : (login.tail || []).slice(-3).join("\n") || login.error || "";
+    if (reason) panel.appendChild(createElement("pre", "login-log", reason));
+  }
+  const row = createElement("div", "login-row");
+  if (!login.ok && !login.cancelled) {
+    const retry = createElement("button", "button", "다시 시도");
+    retry.type = "button";
+    retry.addEventListener("click", () => runAccountAction({ provider: provider.id, action: "login" }, retry));
+    row.appendChild(retry);
+  }
+  const close = createElement("button", "text-button", "닫기");
+  close.type = "button";
+  close.addEventListener("click", () => {
+    loginStates.delete(provider.id);
+    renderAccounts();
+  });
+  row.appendChild(close);
+  panel.appendChild(row);
+  return panel;
+}
+
 function createProviderGroup(provider) {
   const group = createElement("section", "provider-group");
   const heading = createElement("header", "provider-heading");
@@ -236,6 +365,9 @@ function createProviderGroup(provider) {
   );
   heading.append(title, addButton);
   group.appendChild(heading);
+  const login = loginStates.get(provider.id);
+  if (login) group.appendChild(createLoginPanel(provider, login));
+  addButton.disabled = Boolean(login?.running);
 
   const list = createElement("div", "stack-list");
   if (!provider.accounts?.length) {
@@ -357,12 +489,19 @@ async function runAccountAction(input, sourceButton) {
     ? "전환 중…"
     : input.action === "delete"
       ? "삭제 중…"
-      : "여는 중…";
+      : "시작 중…";
   setButtonBusy(sourceButton, true, busyLabel);
   try {
     const response = await api.account(input);
     if (!response?.ok) throw new Error(responseError(response, "계정 작업에 실패했습니다."));
     state = response.data;
+    if (input.action === "login" && response.login?.running) {
+      // 시작 직후부터 패널을 보여 준다. 주소·종료는 onAccountLogin 이벤트로 온다.
+      setLoginState(input.provider, {
+        running: true, urls: [], tail: [], prompt: false, ok: null, draft: "", sent: false,
+        cancelled: false, timedOut: false, error: "",
+      });
+    }
     renderAccounts();
     renderUsage();
   } catch (error) {
@@ -415,6 +554,39 @@ function registerNavigation() {
   api.onNavigate((section) => {
     const target = buttons.find((button) => button.dataset.section === section);
     if (target) activateSection(target);
+  });
+  // 앱 안 CLI 로그인의 진행 상황. 출력 조각마다 다시 그리면 코드 입력칸의 포커스가
+  // 날아가므로, 화면이 달라지는 사건(시작·주소·프롬프트 등장·종료)에만 그린다.
+  api.onAccountLogin?.((event) => {
+    if (!event?.provider) return;
+    const current = loginStates.get(event.provider) || {};
+    if (event.type === "started") {
+      setLoginState(event.provider, {
+        running: true, urls: [], tail: [], prompt: false, ok: null, draft: "", sent: false,
+        cancelled: false, timedOut: false, error: "",
+      });
+    } else if (event.type === "url") {
+      setLoginState(event.provider, { running: true, urls: [...(current.urls || []), event.url] });
+    } else if (event.type === "output") {
+      if (current.prompt || !event.prompt) return;
+      setLoginState(event.provider, { prompt: true });
+    } else if (event.type === "exit") {
+      setLoginState(event.provider, {
+        running: false,
+        ok: Boolean(event.ok),
+        cancelled: Boolean(event.cancelled),
+        timedOut: Boolean(event.timedOut),
+        tail: Array.isArray(event.tail) ? event.tail : [],
+        error: event.error || "",
+      });
+      if (event.data) {
+        state = event.data;
+        renderUsage();
+      }
+    } else {
+      return;
+    }
+    renderAccounts();
   });
 }
 

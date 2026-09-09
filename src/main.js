@@ -135,6 +135,21 @@ accountSwitching = createAccountSwitching({
   readSettings,
   writeSettings,
   getChatFeature: () => chatFeature,
+  // 앱 안 CLI 로그인의 진행 상황을 설정 창에 흘려보낸다. 끝나면 갱신된 계정
+  // 목록을 함께 실어 화면이 다시 조회하지 않아도 되게 한다.
+  notifyAccountLogin: async (event) => {
+    let payload = event;
+    if (event?.type === "exit") {
+      try {
+        payload = { ...event, data: await getSettingsData() };
+      } catch {
+        // 목록 조회가 막혀도 종료 사실은 알린다.
+      }
+    }
+    if (settingsWindow && !settingsWindow.isDestroyed()) {
+      settingsWindow.webContents.send("settings:account-login", payload);
+    }
+  },
 });
 const {
   codexAccountSwitcher,
@@ -145,7 +160,11 @@ const {
   setCodexProxyMode,
   restoreCodexProxyMode,
   teardownCodexProxyOnQuit,
-  openCodexLoginTerminal,
+  startCodexLogin,
+  submitProviderLoginInput,
+  cancelProviderLogin,
+  openProviderLoginUrl,
+  isProviderLoginRunning,
   switchCodexAccount,
   buildProviderAccountSubmenu,
   switchProviderAccount,
@@ -297,27 +316,35 @@ function registerIpcHandlers() {
   });
   ipcMain.handle("settings:account", async (_event, input) => {
     try {
+      const provider = input?.provider;
       const action = input?.action;
-      let succeeded = false;
-
-      if (["agy", "claude"].includes(input?.provider)) {
-        if (action === "login") succeeded = await startProviderLogin(input.provider);
-        else if (action === "switch" && typeof input.profileKey === "string") succeeded = await switchProviderAccount(input.provider, input.profileKey);
-        else if (action === "delete" && typeof input.profileKey === "string") succeeded = Boolean(deleteProviderAccount(input.provider, input.profileKey));
-        else return { ok: false, error: "알 수 없는 계정 작업입니다." };
-        return succeeded ? { ok: true, data: await getSettingsData() } : { ok: false, error: "작업을 완료하지 못했습니다." };
-      }
-
-      if (input?.provider && input.provider !== "codex") {
+      if (!["agy", "claude", "codex"].includes(provider)) {
         return { ok: false, error: "지원하지 않는 계정 유형입니다." };
       }
+      // 앱 안 CLI 로그인의 진행 조작. 코드 붙여넣기(Claude)·취소·주소 열기는
+      // 제공자와 무관하게 같은 러너를 쓴다.
+      if (action === "login-input") {
+        submitProviderLoginInput(provider, input.text);
+        return { ok: true, login: { running: isProviderLoginRunning(provider) } };
+      }
+      if (action === "login-cancel") {
+        cancelProviderLogin(provider);
+        return { ok: true, login: { running: isProviderLoginRunning(provider) } };
+      }
+      if (action === "login-open-url") {
+        await openProviderLoginUrl(provider, input.url);
+        return { ok: true, login: { running: isProviderLoginRunning(provider) } };
+      }
 
+      let succeeded = false;
       if (action === "login") {
-        succeeded = await openCodexLoginTerminal();
+        succeeded = provider === "codex" ? await startCodexLogin() : await startProviderLogin(provider);
       } else if (action === "switch" && typeof input.profileKey === "string") {
-        succeeded = await switchCodexAccount(input.profileKey);
+        succeeded = provider === "codex"
+          ? await switchCodexAccount(input.profileKey)
+          : await switchProviderAccount(provider, input.profileKey);
       } else if (action === "delete" && typeof input.profileKey === "string") {
-        succeeded = Boolean(deleteProviderAccount("codex", input.profileKey));
+        succeeded = Boolean(deleteProviderAccount(provider, input.profileKey));
       } else {
         return { ok: false, error: "알 수 없는 계정 작업입니다." };
       }
@@ -325,10 +352,16 @@ function registerIpcHandlers() {
       if (!succeeded) {
         return {
           ok: false,
-          error: "작업을 완료하지 못했습니다. 채팅 창의 안내를 확인해 주세요.",
+          error: provider === "codex"
+            ? "작업을 완료하지 못했습니다. 채팅 창의 안내를 확인해 주세요."
+            : "작업을 완료하지 못했습니다.",
         };
       }
-      return { ok: true, data: await getSettingsData() };
+      return {
+        ok: true,
+        data: await getSettingsData(),
+        login: { running: isProviderLoginRunning(provider) },
+      };
     } catch (error) {
       return { ok: false, error: error.message || String(error) };
     }

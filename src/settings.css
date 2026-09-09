@@ -1537,3 +1537,51 @@ input[type="text"]:focus {
   border-color: var(--accent);
   outline: none;
 }
+
+/* 앱 안 CLI 로그인 진행 패널(계정 그룹 제목 아래). 터미널 창 대신 여기서
+   브라우저를 열고, Claude는 인증 코드를 붙여 넣는다. */
+.login-panel {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--accent-soft);
+}
+
+.login-panel strong {
+  font-size: 12.5px;
+  color: var(--ink);
+}
+
+.login-hint {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.login-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.login-row input[type="text"] {
+  flex: 1 1 220px;
+}
+
+.login-log {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 120px;
+  overflow: auto;
+  border-radius: 6px;
+  background: var(--surface-strong);
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--ink-soft);
+}

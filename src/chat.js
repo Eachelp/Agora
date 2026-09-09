@@ -898,11 +898,23 @@ function renderDoctor() {
       install.addEventListener("click", () => call(window.chatApi.openExternal(diagnostic.installUrl)));
       actions.append(install);
     } else if (diagnostic.loggedIn === false && diagnostic.loginCommand) {
+      // 로그인은 설정의 계정 탭에서 앱 안으로 진행한다(터미널을 열지 않는다).
+      // 명령 복사는 그 흐름이 막혔을 때의 대비책으로 남긴다.
       const login = document.createElement("button");
-      login.className = "button button-small";
+      login.className = "button button-small button-primary";
       login.type = "button";
-      login.textContent = "로그인 명령 복사";
-      login.addEventListener("click", async () => {
+      login.textContent = "로그인";
+      login.title = "설정의 계정 탭에서 브라우저로 로그인합니다";
+      login.addEventListener("click", () => {
+        closeDoctor();
+        window.chatApi.openSettings("accounts");
+      });
+      const copy = document.createElement("button");
+      copy.className = "button button-small";
+      copy.type = "button";
+      copy.textContent = "명령 복사";
+      copy.title = `터미널에서 직접 실행할 명령: ${diagnostic.loginCommand}`;
+      copy.addEventListener("click", async () => {
         try {
           await navigator.clipboard.writeText(diagnostic.loginCommand);
           flashNotice(`${diagnostic.loginCommand} 명령을 복사했습니다.`, false);
@@ -910,7 +922,7 @@ function renderDoctor() {
           flashNotice(`터미널에서 ${diagnostic.loginCommand} 명령을 실행해 주세요.`);
         }
       });
-      actions.append(login);
+      actions.append(login, copy);
     }
     item.append(marker, body, actions);
     doctorList.append(item);

@@ -731,3 +731,187 @@ test("계정 전환 테스트는 실제 Codex Desktop을 건드리지 않는다"
   assert.ok(!fn.includes("stopCodexDesktopApp()"), "운영 함수를 직접 부르면 모킹이 무의미해집니다");
   assert.ok(!fn.includes("launchCodexDesktopApp()"), "운영 함수를 직접 부르면 모킹이 무의미해집니다");
 });
+
+// ---- 앱 안 CLI 로그인 (cli-login 러너 주입) ----
+//
+// 예전에는 [계정 추가]가 로그인 명령을 담은 스크립트를 터미널 창으로 열었고, 그
+// 창에서 무슨 일이 일어나는지 앱은 알 수 없어 계정 경계도 실행 직후 닫아야 했다.
+// 이제 로그인 프로세스는 앱이 직접 돌리므로 끝나는 순간까지 지켜본다.
+
+function fakeLoginRunner({ failStart = null } = {}) {
+  const sessions = new Map();
+  const runner = {
+    starts: [],
+    inputs: [],
+    cancels: [],
+    start(options) {
+      if (failStart) throw new Error(failStart);
+      if (sessions.has(options.provider)) throw new Error("이미 로그인이 진행 중입니다.");
+      if (!options.command) throw new Error("로그인 명령을 찾지 못했습니다.");
+      runner.starts.push(options);
+      sessions.set(options.provider, { ...options, urls: [] });
+      options.onEvent?.({ provider: options.provider, type: "started" });
+      return { provider: options.provider };
+    },
+    input(provider, text) {
+      if (!sessions.has(provider)) throw new Error("진행 중인 로그인이 없습니다.");
+      runner.inputs.push([provider, text]);
+      return true;
+    },
+    cancel(provider) {
+      runner.cancels.push(provider);
+      return sessions.has(provider);
+    },
+    isRunning: (provider) => sessions.has(provider),
+    knowsUrl: (provider, url) => Boolean(sessions.get(provider)?.urls.includes(url)),
+    // 테스트가 CLI의 출력과 종료를 흉내 낸다.
+    emitUrl(provider, url) {
+      const session = sessions.get(provider);
+      session.urls.push(url);
+      session.onEvent?.({ provider, type: "url", url });
+    },
+    async finish(provider, result) {
+      const session = sessions.get(provider);
+      sessions.delete(provider);
+      const summary = { tail: [], ...result };
+      await session.onExit?.({ provider, ...summary });
+      session.onEvent?.({ provider, type: "exit", ...summary });
+    },
+  };
+  return runner;
+}
+
+function makeInAppSwitching(t, { cliLogin, commands = ["claude", "codex"] } = {}) {
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-inapp-login-")));
+  const userData = path.join(home, "userData");
+  const bin = path.join(home, "bin");
+  fs.mkdirSync(userData, { recursive: true });
+  fs.mkdirSync(bin, { recursive: true });
+  // 로그인 명령은 PATH에서 CLI를 찾는다. 실제 CLI 대신 아무것도 하지 않는 실행 파일을 둔다.
+  for (const name of commands) {
+    fs.writeFileSync(path.join(bin, name), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  }
+  const prev = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, PATH: process.env.PATH };
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  // 가짜 CLI가 먼저 잡히되, resolveCommand가 쓰는 which 자체는 찾을 수 있어야 한다.
+  process.env.PATH = [bin, "/usr/bin", "/bin"].join(path.delimiter);
+  t.after(() => {
+    process.env.HOME = prev.HOME;
+    process.env.USERPROFILE = prev.USERPROFILE;
+    process.env.PATH = prev.PATH;
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  const notifications = [];
+  const completes = [];
+  const notices = [];
+  const loginEvents = [];
+  const opened = [];
+  const switching = createAccountSwitching({
+    codexDesktop: { stop: async () => {}, launch: async () => ({ skipped: true }) },
+    electron: {
+      app: { getPath: () => userData },
+      shell: { openPath: async () => "", openExternal: async (url) => { opened.push(url); } },
+    },
+    openChatWindow: () => {},
+    refreshTrayMenu: () => {},
+    readSettings: () => ({}),
+    writeSettings: () => {},
+    cliLogin,
+    notifyAccountLogin: (event) => loginEvents.push(event),
+    getChatFeature: () => ({
+      notifyProviderAccountChanged: async (provider) => {
+        notifications.push(provider);
+        return { providerId: provider, token: `t-${provider}`, complete: () => { completes.push(provider); return true; } };
+      },
+      showSystemNotice: (text) => notices.push(text),
+    }),
+  });
+  return { switching, notifications, completes, notices, loginEvents, opened, home, bin };
+}
+
+test("Claude 로그인은 터미널 없이 앱 안에서 돌고, 계정 경계는 로그인이 끝난 뒤에 닫힌다", async (t) => {
+  if (process.platform === "win32") return t.skip("가짜 CLI를 sh 스크립트로 두는 테스트");
+  const runner = fakeLoginRunner();
+  const { switching, notifications, completes, notices, loginEvents, opened, bin } = makeInAppSwitching(t, { cliLogin: runner });
+
+  assert.equal(await switching.startProviderLogin("claude"), true, "프로세스를 띄웠으면 바로 true다");
+  assert.equal(runner.starts.length, 1);
+  assert.equal(runner.starts[0].command, path.join(bin, "claude"));
+  assert.deepEqual(runner.starts[0].args, ["auth", "login"]);
+  assert.ok(String(runner.starts[0].env.PATH).includes(bin), "로그인 명령은 같은 PATH에서 CLI를 찾는다");
+  assert.deepEqual(notifications, ["claude"], "credential이 바뀌기 전에 경계를 설치한다");
+  assert.deepEqual(completes, [], "로그인이 도는 동안에는 경계를 닫지 않는다");
+  assert.equal(switching.isProviderLoginRunning("claude"), true);
+  assert.equal(loginEvents[0].type, "started");
+
+  // 브라우저 주소는 이 로그인이 출력한 것만 연다.
+  runner.emitUrl("claude", "https://claude.com/cai/oauth/authorize?code=true");
+  await assert.rejects(() => switching.openProviderLoginUrl("claude", "https://evil.example/"), /이 로그인이 연 주소가 아닙니다/);
+  await switching.openProviderLoginUrl("claude", "https://claude.com/cai/oauth/authorize?code=true");
+  assert.deepEqual(opened, ["https://claude.com/cai/oauth/authorize?code=true"]);
+
+  // 붙여 넣은 인증 코드는 CLI로 간다.
+  assert.equal(switching.submitProviderLoginInput("claude", "abc#123"), true);
+  assert.deepEqual(runner.inputs, [["claude", "abc#123"]]);
+
+  await runner.finish("claude", { ok: true, code: 0, tail: ["Login successful"] });
+  assert.deepEqual(completes, ["claude"], "로그인이 끝난 뒤에야 경계를 닫는다");
+  assert.equal(switching.isProviderLoginRunning("claude"), false);
+  assert.ok(notices.some((text) => /Claude 로그인이 끝났습니다/.test(text)));
+  assert.equal(loginEvents.at(-1).type, "exit");
+  assert.equal(loginEvents.at(-1).ok, true);
+  assert.throws(() => switching.submitProviderLoginInput("claude", "late"), /진행 중인 로그인이 없습니다/);
+});
+
+test("Claude 로그인이 실패로 끝나면 경계를 닫고 사유를 알리되, 취소는 조용히 끝난다", async (t) => {
+  if (process.platform === "win32") return t.skip("가짜 CLI를 sh 스크립트로 두는 테스트");
+  const runner = fakeLoginRunner();
+  const { switching, completes, notices } = makeInAppSwitching(t, { cliLogin: runner });
+  await switching.startProviderLogin("claude");
+  await runner.finish("claude", { ok: false, code: 1, tail: ["Failed to authenticate"] });
+  assert.deepEqual(completes, ["claude"]);
+  assert.ok(notices.some((text) => /끝나지 않았습니다[\s\S]*Failed to authenticate/.test(text)));
+
+  await switching.startProviderLogin("claude");
+  assert.equal(switching.cancelProviderLogin("claude"), true);
+  await runner.finish("claude", { ok: false, code: null, cancelled: true });
+  assert.deepEqual(completes, ["claude", "claude"]);
+  assert.equal(notices.filter((text) => /끝나지 않았습니다/.test(text)).length, 1, "취소는 실패 안내를 내지 않는다");
+});
+
+test("Claude 로그인을 시작하지 못하면 경계를 닫고 던진다 — 같은 제공자의 동시 로그인은 거부", async (t) => {
+  if (process.platform === "win32") return t.skip("가짜 CLI를 sh 스크립트로 두는 테스트");
+  const failing = fakeLoginRunner({ failStart: "EPERM" });
+  const broken = makeInAppSwitching(t, { cliLogin: failing });
+  await assert.rejects(() => broken.switching.startProviderLogin("claude"), /EPERM/);
+  assert.deepEqual(broken.completes, ["claude"], "시작 실패도 열어 둔 경계를 닫는다");
+
+  const runner = fakeLoginRunner();
+  const { switching, notifications } = makeInAppSwitching(t, { cliLogin: runner });
+  await switching.startProviderLogin("claude");
+  await assert.rejects(() => switching.startProviderLogin("claude"), /이미 Claude 로그인이 진행 중/);
+  assert.deepEqual(notifications, ["claude"], "거부된 두 번째 시도는 경계를 다시 설치하지 않는다");
+});
+
+test("Codex 로그인은 pending profile의 CODEX_HOME에서 앱 안으로 돌고, 끝나면 전환을 안내한다", async (t) => {
+  if (process.platform === "win32") return t.skip("가짜 CLI를 sh 스크립트로 두는 테스트");
+  const runner = fakeLoginRunner();
+  const { switching, notifications, notices, home, bin } = makeInAppSwitching(t, { cliLogin: runner });
+
+  assert.equal(await switching.startCodexLogin(), true);
+  assert.equal(runner.starts.length, 1);
+  assert.equal(runner.starts[0].command, path.join(bin, "codex"));
+  assert.deepEqual(runner.starts[0].args, ["login"]);
+  const codexHome = runner.starts[0].env.CODEX_HOME;
+  assert.ok(codexHome.startsWith(home), "pending profile은 이 PC의 Agora 계정 폴더 안에 있다");
+  assert.ok(path.basename(codexHome).startsWith("__login_"), "auth.json이 생기기 전에는 목록에 없는 pending 폴더다");
+  assert.ok(fs.existsSync(codexHome));
+  assert.deepEqual(notifications, [], "Codex 로그인은 live credential을 건드리지 않으므로 경계가 필요 없다");
+  assert.equal(await switching.startCodexLogin(), false, "진행 중이면 다시 시작하지 않는다");
+
+  await runner.finish("codex", { ok: true, code: 0 });
+  assert.ok(notices.some((text) => /Codex 로그인이 끝났습니다/.test(text)));
+  assert.equal(switching.isProviderLoginRunning("codex"), false);
+});

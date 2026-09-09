@@ -102,3 +102,29 @@ test("계정 안내는 펫 말풍선 대신 채팅 창 시스템 공지로 전�
   assert.match(accountSwitchingJs, /chatFeature\.showSystemNotice\(text\)/);
   assert.doesNotMatch(accountSwitchingJs, /showBubble|playReaction|isPetEnabled|getPetWindow|getBubbleWindow/);
 });
+
+// [계정 추가]는 터미널 창을 열지 않는다. CLI 로그인은 앱이 자식 프로세스로 돌리고,
+// 설정 창의 패널에서 브라우저 열기·인증 코드 붙여넣기·취소만 한다.
+test("계정 추가는 터미널 대신 앱 안 로그인 패널로 진행한다", () => {
+  const preload = source("src/settings-preload.js");
+  assert.match(preload, /settings:account-login/);
+  assert.match(preload, /onAccountLogin/);
+  assert.match(settingsJs, /api\.onAccountLogin\?\.\(/);
+  for (const label of ["브라우저 열기", "코드 보내기", "취소", "다시 시도", "로그인 진행 중"]) {
+    assert.ok(settingsJs.includes(label), `로그인 패널에 '${label}'이 있어야 합니다`);
+  }
+  for (const action of ["login-input", "login-open-url", "login-cancel"]) {
+    assert.match(settingsJs, new RegExp(`action: "${action}"`));
+    assert.match(mainJs, new RegExp(`"${action}"`));
+  }
+  assert.match(settingsCss, /\.login-panel/);
+  // 터미널 스크립트 경로는 전부 사라졌다.
+  assert.ok(
+    !/openCodexLoginTerminal|writeClaudeLoginScript|writeCodexLoginScript|openLoginScript|unix-login/.test(accountSwitchingJs),
+    "터미널 스크립트 로그인 경로가 남아 있으면 안 됩니다"
+  );
+  assert.ok(!/openCodexLoginTerminal/.test(mainJs));
+  assert.equal(fs.existsSync(path.join(__dirname, "..", "src", "unix-login.js")), false);
+  // 로그인 주소는 그 로그인이 실제로 출력한 것만 연다.
+  assert.match(accountSwitchingJs, /knowsUrl\(provider, url\)/);
+});
