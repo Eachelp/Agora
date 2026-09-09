@@ -152,6 +152,9 @@ const specialistApprovalsInFlight = new Set();
 // 조회에 실패했는데 목록이 비었다는 이유로 화면을 감추면, 입력창은 "확인 대기"로
 // 잠긴 채 확인할 것도 다시 불러올 길도 없는 막다른 상태가 된다.
 let specialistApprovalsFetch = "idle";
+// 막힘 처리 선택지를 상태 줄 아래에 펼치기 위한 상세(캔 복원 여부 등).
+let specialistBlockInfo = null;
+let specialistBlockFetch = "idle";
 let professionalModeEnabled = false;
 // 직전 상태에서 전문 실행이 살아 있었는지. "살아나는 순간"에만 전문 모드를 켜기
 // 위한 것이며, 매 이벤트마다 켜서 사용자의 토글을 덮어쓰지 않기 위해 둔다.
@@ -458,6 +461,14 @@ function setSpecialistState(state = {}) {
     specialistApprovalsFetch = "idle";
     renderSpecialistApprovals();
   }
+  // 막힘도 같다 — 들어오면 상세를 받아 오고, 벗어나면 즉시 비운다. 이미 처리한
+  // 막힘의 선택지가 남아 있으면 "골랐는데 그대로"로 보인다.
+  if (specialistBlockedAvailable) refreshBlockInfo();
+  else if (specialistBlockInfo || specialistBlockFetch !== "idle") {
+    specialistBlockInfo = null;
+    specialistBlockFetch = "idle";
+    renderProfessionalBlocked();
+  }
   // 전문 실행이 **새로 살아날 때** 그 조작 버튼을 한 번 드러낸다.
   //
   // professionalModeEnabled는 화면 로컬 값이라 사용자가 토글을 눌러야만 바뀌었다.
@@ -488,6 +499,9 @@ function syncComposerLock() {
   lockComposer(Boolean(activeApproval || specialistLocksComposer()));
   renderSpecialistChoice();
   renderSpecialistApprovals();
+  // 전문/일반 모드를 오가면 막힘 선택지가 위(상태 줄 아래)와 아래(입력창 옆)
+  // 사이를 옮겨 간다. 둘을 같은 시점에 다시 그려야 한쪽이 사라진 채로 남지 않는다.
+  renderProfessionalBlocked();
 }
 
 // 사용자가 골라야만 진행되는 지점의 선택지를 실제 버튼으로 만든다.
@@ -506,7 +520,12 @@ const SPECIALIST_CHOICES = {
 // "아래에서 선택해 주세요"라는 안내와 실제 위치가 정반대였다. 선택지 자체는
 // 모달이 이미 잘 설명하고 있으므로 여는 길만 안내한 자리에 만든다.
 function specialistChoicesNow() {
+  // 막힘 처리는 상태 줄 아래(#professional-blocked)에 펼쳐 둔다. 입력창 옆에
+  // "다음 처리 선택" 칩을 또 두면 같은 일을 하는 자리가 둘이 되고, 실행이 멈춘
+  // 그 순간 사용자가 봐야 할 곳이 갈린다. 일반 모드로 내려온 동안에는 위 영역이
+  // 숨으므로 여기서 대신 보여 준다(고를 방법이 사라지면 안 된다).
   if (specialistBlockedAvailable) {
+    if (professionalModeEnabled) return null;
     return [{
       label: "다음 처리 선택",
       title: "구현이 막혔습니다. 변경 유지·복원·재기획·지시서 수정 중에서 고릅니다",
@@ -558,6 +577,12 @@ function awaitingHumanApproval() {
 
 // 승인 대기 항목을 백엔드에서 받아 온다. 세션을 바꾼 뒤 늦게 도착한 응답이
 // 지금 화면을 덮지 않도록 요청 시점의 세션과 대조한다.
+// 막힘 처리를 고른 뒤에는 상세가 낡는다. 다음 상태가 오면 다시 받아 온다.
+function invalidateBlockInfo() {
+  specialistBlockInfo = null;
+  specialistBlockFetch = "idle";
+}
+
 async function refreshPendingApprovals() {
   const sessionId = activeSessionId;
   if (!sessionId) return;
@@ -1886,6 +1911,7 @@ function renderHeader() {
   professionalImplementationButton.classList.toggle("is-next-step", nextIsImplementation);
   renderProfessionalProgress();
   renderProfessionalStatusDetail();
+  renderProfessionalBlocked();
 }
 
 const PROFESSIONAL_STEPS = Object.freeze([
@@ -1959,18 +1985,18 @@ const SPECIALIST_STOP_INFO = Object.freeze({
   AMBIGUOUS_VERDICT: { text: "검수 판정이 명확하지 않습니다.", next: "검수 결과를 확인한 뒤 다시 실행할지 정해 주세요." },
   BUILDER_DONE: { text: "구현이 끝났습니다.", next: "이어서 검수를 진행할 수 있습니다." },
   REVIEW_PASS: { text: "구현 검수를 통과했습니다.", next: "이어서 기록 단계를 진행할 수 있습니다." },
-  BLOCKED: { text: "구현이 막혀 안전하게 멈췄습니다.", next: "아래 ‘다음 처리 선택’에서 변경 유지·복원·재기획 중 하나를 고르세요." },
+  BLOCKED: { text: "구현이 막혀 안전하게 멈췄습니다.", next: "변경 유지·복원·재기획 중 하나를 고르세요." },
   // 막힘 처리를 끝낸 뒤의 정상 종료다. 표에 없으면 "확인이 필요한 상태로
   // 멈췄습니다"라는 미상 코드 문구가 떠서, 성공했는데 실패처럼 보인다.
   BLOCK_RESOLVED: { text: "막힌 실행을 정리했습니다.", next: "PLAN 또는 전체 실행으로 새로 시작할 수 있습니다." },
-  EXECUTION_BLOCKED: { text: "구현이 막혀 안전하게 멈췄습니다.", next: "아래 ‘다음 처리 선택’에서 처리 방법을 고르세요." },
+  EXECUTION_BLOCKED: { text: "구현이 막혀 안전하게 멈췄습니다.", next: "처리 방법을 고르세요." },
   USER_INTERRUPTED: { text: "사용자가 실행을 중지했습니다.", next: "PLAN 또는 전체 실행으로 다시 시작할 수 있습니다." },
   EXECUTION_INTERRUPTED: { text: "실행이 중단되었습니다.", next: "PLAN 또는 전체 실행으로 다시 시작할 수 있습니다." },
   WORKSPACE_BUSY: { text: "같은 폴더를 다른 작업이 쓰고 있어 시작하지 못했습니다.", next: "그 작업이 끝난 뒤 다시 시도해 주세요." },
   RECORDER_FAILED: { text: "기록을 만들지 못했습니다.", next: "‘기록 다시 생성’으로 다시 시도할 수 있습니다." },
   TASK_CHANGED_AFTER_REVIEW: { text: "검수 뒤 기획안이 바뀌어 완료로 처리하지 않았습니다.", next: "기획안을 확인하고 다시 검수해 주세요." },
   FROZEN_TASK_MISSING: { text: "승인된 기획안을 찾지 못했습니다.", next: "기획부터 다시 시작해 주세요." },
-  FROZEN_TASK_CORRUPTED: { text: "승인된 기획안이 손상됐습니다.", next: "아래 ‘다음 처리 선택’에서 처리 방법을 고르세요." },
+  FROZEN_TASK_CORRUPTED: { text: "승인된 기획안이 손상됐습니다.", next: "처리 방법을 고르세요." },
   PROTOCOL_FINAL_MISSING: { text: "담당 AI의 최종 응답을 확인하지 못했습니다.", next: "다시 실행하거나 담당자를 바꿔 보세요." },
 });
 
@@ -2011,7 +2037,12 @@ function specialistStatusView() {
   if (specialistBlockedAvailable || specialistStatus === "BLOCKED" || specialistStatus === "INVALID") {
     return {
       headline: stop?.text || "구현이 막혀 안전하게 멈췄습니다.",
-      next: "아래 ‘다음 처리 선택’에서 변경 유지·복원·재기획 중 하나를 고르세요.",
+      // 선택지가 있는 자리는 모드에 따라 다르다. 전문 모드에서는 이 줄 바로 아래에
+      // 펼쳐 두고, 일반 모드에서는 입력창 옆 칩이 대신한다. 없는 것을 가리키면
+      // 사용자는 화면에서 찾다가 길을 잃는다.
+      next: professionalModeEnabled
+        ? "바로 아래에서 변경 유지·복원·재기획 중 하나를 고르세요."
+        : "입력창 옆 ‘다음 처리 선택’에서 변경 유지·복원·재기획 중 하나를 고르세요.",
       tone: "blocked",
     };
   }
@@ -2143,6 +2174,76 @@ function renderProfessionalStatusDetail() {
   list.textContent = facts.join(" · ");
   details.append(summary, list);
   box.append(details);
+}
+
+// 막힘 상세(복원 가능 여부·Run·변경 요약)를 받아 온다. 세션을 바꾼 뒤 늦게 온
+// 응답이 지금 화면을 덮지 않도록 요청 시점의 세션과 대조한다(승인 목록과 같은 계약).
+async function refreshBlockInfo() {
+  const sessionId = activeSessionId;
+  if (!sessionId) return;
+  if (specialistBlockFetch === "loading") return;
+  specialistBlockFetch = "loading";
+  renderProfessionalBlocked();
+  const result = await call(window.chatApi.specialistBlockDetails(sessionId));
+  if (sessionId !== activeSessionId) {
+    // loading에 둔 채 나가면 위 가드에 막혀 다시 조회하지 못한다.
+    specialistBlockFetch = "idle";
+    return;
+  }
+  if (!result) {
+    specialistBlockFetch = "error";
+    renderProfessionalBlocked();
+    return;
+  }
+  specialistBlockInfo = result.details || null;
+  specialistBlockFetch = "ready";
+  renderProfessionalBlocked();
+}
+
+// 막힘 처리 선택지를 상태 줄 바로 아래에 펼친다. 버튼은 모달과 같은 빌더
+// (renderBlockedActions)로 만들어 두 곳이 갈라지지 않게 한다.
+function renderProfessionalBlocked() {
+  const box = document.getElementById("professional-blocked");
+  if (!box) return;
+  box.replaceChildren();
+  const show = specialistBlockedAvailable && professionalModeEnabled;
+  box.hidden = !show;
+  if (!show) return;
+
+  if (specialistBlockFetch === "loading") {
+    const loading = document.createElement("p");
+    loading.className = "popover-hint";
+    loading.textContent = "막힘 정보를 불러오는 중…";
+    box.append(loading);
+    return;
+  }
+  if (specialistBlockFetch === "error") {
+    const failed = document.createElement("p");
+    failed.className = "popover-hint";
+    failed.textContent = "막힘 정보를 불러오지 못했습니다.";
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "button";
+    retry.textContent = "다시 불러오기";
+    retry.addEventListener("click", () => { specialistBlockFetch = "idle"; void refreshBlockInfo(); });
+    box.append(failed, retry);
+    return;
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "professional-blocked-actions";
+  renderBlockedActions(actions, specialistBlockInfo);
+  box.append(actions);
+
+  // 변경 내용·Run 같은 자세한 정보는 예전처럼 모달에서 본다.
+  if (specialistBlockInfo?.block?.changes?.text || specialistBlockInfo?.runId) {
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "professional-blocked-more";
+    more.textContent = "변경 내용 보기";
+    more.addEventListener("click", () => { void openSpecialistDialog(); });
+    box.append(more);
+  }
 }
 
 // --- 에이전트 칩 + 팝오버 ---
@@ -3410,7 +3511,7 @@ specialistButton.addEventListener("click", () => {
   if (!activeSessionId) return;
   // 이 버튼은 일반/전문 화면 전환만 한다. 예전에는 막힘(BLOCKED) 상태에서만
   // 몰래 막힘 처리 모달을 열어, 라벨("전환")과 실제 동작이 어긋났다. 막힘 처리는
-  // 입력창 위의 '다음 처리 선택' 버튼이 전담한다(두 모드 모두에서 보인다).
+  // 전문 모드에서는 상태 줄 아래 패널이, 일반 모드에서는 입력창 옆 칩이 맡는다.
   professionalModeEnabled = !professionalModeEnabled;
   // 모드가 바뀌면 입력창의 잠금·안내 문구·전송 버튼 라벨도 같은 순간에 바뀌어야
   // 한다. renderHeader만 부르면 화면은 전문 모드인데 입력창은 이전 모드의
@@ -3642,6 +3743,7 @@ async function replanBlocked(workspaceAction) {
   if (result.meta) sessionMeta = result.meta;
   if (result.specialist) setSpecialistState(result.specialist);
   specialistBlockedAvailable = false;
+  invalidateBlockInfo();
   syncComposerLock();
   renderHeader();
 }
@@ -3673,6 +3775,7 @@ async function resolveBlocked(action) {
   if (result?.meta) sessionMeta = result.meta;
   if (result?.specialist) setSpecialistState(result.specialist);
   specialistBlockedAvailable = false;
+  invalidateBlockInfo();
   syncComposerLock();
   renderHeader();
 }
@@ -5425,13 +5528,17 @@ function lockComposer(locked) {
       composerInput.disabled = false;
       sendButton.textContent = "답변 보내기";
     }
-  } else if (specialistBlockedAvailable) {
+  } else if (locked && specialistBlockedAvailable) {
     // 막힘은 "실행이 도는 중"이 아니라 "사용자를 기다리는 중"이다. 여기서
     // "실행이 끝난 뒤"라고 안내하면 아무것도 끝나지 않는데 기다리게 된다
     // (승인 대기에서 이미 같은 문제를 고쳤다).
+    //
+    // locked를 함께 보는 이유: 일반 모드에서는 막혀 있어도 입력창을 잠그지
+    // 않는다(기획자에게 메모를 남길 수 있어야 한다). 그 경우 위쪽 noteOnly
+    // 분기가 맡는다.
     composerInput.disabled = true;
     sendButton.disabled = true;
-    composerInput.placeholder = "아래 ‘다음 처리 선택’에서 변경 유지·복원·재기획 중 하나를 골라 주세요";
+    composerInput.placeholder = "위쪽 막힘 안내에서 변경 유지·복원·재기획 중 하나를 골라 주세요";
     sendButton.textContent = "선택 대기";
   } else if (specialistNode === "READY" && !specialistActive) {
     composerInput.disabled = false;

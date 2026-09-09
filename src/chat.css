@@ -1628,6 +1628,49 @@ textarea:focus-visible {
   opacity: 0.8;
 }
 
+/* 막힘 처리 — 실행이 멈춘 자리(상태 줄 바로 아래)에 선택지를 펼쳐 둔다. */
+.professional-blocked {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-md);
+  background: var(--danger-soft);
+}
+
+.professional-blocked-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 안내 문구는 버튼 줄 앞에 한 줄로 흐른다. */
+.professional-blocked-actions .popover-hint {
+  flex-basis: 100%;
+  margin: 0;
+  order: -1;
+}
+
+.professional-blocked-more {
+  margin-left: auto;
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--muted);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.professional-blocked-more:hover {
+  color: var(--ink);
+}
+
 /* --- 첨부 --- */
 .icon-button {
   flex: none;

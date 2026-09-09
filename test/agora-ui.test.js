@@ -638,6 +638,8 @@ function loadSpecialistView(state = {}) {
     specialistMissingSections: null,
     specialistBlockedAvailable: false,
     specialistResumeAvailable: false,
+    // 막힘 선택지가 어디 있는지가 모드에 따라 다르다(전문: 상태 줄 아래 / 일반: 입력창 옆).
+    professionalModeEnabled: true,
     specialistPlanReady: false,
     specialistNeedsInput: false,
     // 승인된 기획서를 실제로 들고 있는 상태가 기본값이다.
@@ -742,7 +744,8 @@ test("BLOCKED는 막힌 이유와 다음 선택을 함께 안내한다", () => {
   });
   assert.equal(progress.tone, "blocked");
   assert.match(status.headline, /막혀/);
-  assert.match(status.next, /다음 처리 선택/);
+  // 선택지는 전문 모드에서 상태 줄 바로 아래에 펼쳐진다(자리 안내는 아래 전용 테스트).
+  assert.match(status.next, /변경 유지·복원·재기획/);
 });
 
 // ---- 완료 전 사용자 확인(HUMAN_APPROVAL) ----
@@ -1003,7 +1006,7 @@ test("막힘 상태의 입력칸은 다음 처리를 고르라고 안내한다",
     specialistBlockedAvailable: true,
     locked: true,
   });
-  assert.match(blocked.placeholder, /다음 처리 선택/);
+  assert.match(blocked.placeholder, /변경 유지·복원·재기획/);
   assert.ok(!/실행이 끝난 뒤/.test(blocked.placeholder), "끝나지 않을 것을 기다리게 하면 안 됩니다");
   assert.equal(blocked.button, "선택 대기");
 
@@ -1148,4 +1151,42 @@ test("레일은 설치되지 않았거나 꺼진 참가자를 흐리게 표시�
   assert.equal(buttons.agy.classes.has("is-unavailable"), true, "세션에서 꺼진 참가자도 흐리게");
   assert.match(buttons.agy.title, /꺼져 있음/);
   assert.equal(buttons.codex.label.textContent, "GPT", "이름 갱신은 그대로");
+});
+
+// 막힘 처리 선택지는 실행이 멈춘 자리(상태 줄 바로 아래)에 펼쳐 둔다. 안내 문구가
+// 화면에 없는 것을 가리키면 사용자는 유일한 출구를 찾다가 길을 잃는다.
+test("막힘 안내는 선택지가 실제로 있는 자리를 가리킨다", () => {
+  const blocked = {
+    specialistNode: "IMPLEMENTING",
+    specialistStatus: "BLOCKED",
+    specialistBlockedAvailable: true,
+    specialistStopReason: "ASSURANCE_INVALIDATED",
+  };
+  // 전문 모드: 선택지가 상태 줄 바로 아래에 있다.
+  const pro = loadSpecialistView({ ...blocked, professionalModeEnabled: true });
+  assert.match(pro.status.next, /바로 아래/);
+  assert.ok(!/다음 처리 선택/.test(pro.status.next), "전문 모드에는 그 칩이 없습니다");
+  // 일반 모드: 위 영역이 숨으므로 입력창 옆 칩이 대신한다.
+  const plain = loadSpecialistView({ ...blocked, professionalModeEnabled: false });
+  assert.match(plain.status.next, /입력창 옆/);
+  assert.match(plain.status.next, /다음 처리 선택/);
+
+  // 입력창은 위쪽 패널을 가리킨다(막혀서 잠긴 것은 전문 모드뿐이다).
+  const composer = loadComposerLock({
+    specialistNode: "IMPLEMENTING",
+    specialistBlockedAvailable: true,
+    locked: true,
+  });
+  assert.match(composer.placeholder, /위쪽/);
+  assert.equal(composer.button, "선택 대기");
+  // 일반 모드에서 막혀 있으면 입력창을 잠그지 않는다 — 기획자에게 메모를 남길 수 있어야 한다.
+  const memo = loadComposerLock({
+    specialistNode: "IMPLEMENTING",
+    specialistBlockedAvailable: true,
+    professionalModeEnabled: false,
+    professionalRunWasLive: true,
+    locked: false,
+  });
+  assert.match(memo.placeholder, /메모/);
+  assert.equal(memo.button, "메모 남기기");
 });

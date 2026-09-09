@@ -175,6 +175,10 @@
           <!-- 현재 상태 한 줄 + 다음 행동 한 줄. 내부 코드·Run id 같은 기술 정보는
                아래 "자세히"를 펼쳤을 때만 보여 준다(사용자 언어 우선). -->
           <div class="professional-status-detail" id="professional-status-detail" aria-live="polite"></div>
+          <!-- 막힘(BLOCKED)에서 고를 수 있는 처리. 실행이 멈춘 그 자리(상태 줄 바로
+               아래)에 펼쳐 둔다 — 예전에는 입력창 옆 작은 칩을 찾아 눌러야 모달이
+               열렸고, 정작 그 순간 유일한 출구가 화면에서 가장 작았다. -->
+          <div class="professional-blocked" id="professional-blocked" hidden aria-live="polite"></div>
         </div>
 
         <div class="store-warning" id="store-warning" hidden></div>
