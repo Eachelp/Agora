@@ -1886,12 +1886,17 @@ class SpecialistMixin {
     const plan = this.professionalPlan;
     if (!run || run.node !== "READY" || run.status !== "WAITING") return null;
     if (!plan?.taskInfo) return null;
+    // 수정 뒤 검수를 다시 통과했을 때 구현까지 이어갈지는 **사용자가 전체 실행을
+    // 눌러 사전 승인했는가**(policy.autoContinueReady)로만 정한다. mode가 auto인
+    // 것은 "구현 자동 보완을 켰다"는 뜻일 뿐 실행 승인이 아니다 — 여기서 mode를
+    // 보면 PLAN 버튼으로 시작한 실행이 기획 수정 한 번에 '실행 ▶' 없이 구현으로
+    // 넘어간다(resumeForWaitingPlan과 같은 기준).
     return {
       stages: plan.stages,
       mode: plan.mode,
       maxAutoRevisions: plan.implementationAutoRevisions || 0,
       implementationAutoRevisions: plan.implementationAutoRevisions || 0,
-      action: plan.mode === "auto" ? "full" : "plan",
+      action: run.policy?.autoContinueReady ? "full" : "plan",
       feedback: plan.feedback || "",
       taskInfo: plan.taskInfo,
       phase: "plan_ready",

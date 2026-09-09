@@ -239,3 +239,45 @@ test("단계별 실행에서도 checkpoint 실패 선택이 처리된다", async
   assert.deepEqual(checkpointCalls, ["retry"]);
   assert.equal(result.ok, true);
 });
+
+// READY에서 기획을 수정해 다시 통과했을 때 구현으로 이어갈지는 "사용자가 전체
+// 실행을 눌러 사전 승인했는가"로만 정한다. mode가 auto인 것(구현 자동 보완 ON,
+// 또는 `@팀 실행`)은 실행 승인이 아니다 — 여기서 mode를 보면 PLAN으로 시작한
+// 실행이 기획 수정 한 번에 '실행 ▶' 없이 구현으로 넘어간다.
+test("READY 기획 수정 뒤 구현 자동 진행은 전체 실행 사전 승인이 있을 때만", async () => {
+  async function run({ mode, autoContinueReady }) {
+    const room = Object.create(ChatRoom.prototype);
+    room.professionalRun = {
+      node: "READY", status: "WAITING", approvedTaskHash: "h",
+      policy: { autoContinueReady, implementationAutoRevisions: mode === "auto" ? 1 : 0 },
+    };
+    room.professionalPlan = {
+      stages: { plan: { agent: { id: "claude" } } },
+      mode,
+      implementationAutoRevisions: mode === "auto" ? 1 : 0,
+      taskInfo: { relativePath: "TASK.md", hash: "h", content: "## Goal" },
+      feedback: "## Goal",
+    };
+    room.transitionProfessional = () => ({ ok: true, state: room.professionalRun });
+    room.professionalTransitionFailure = () => ({ ok: false });
+    room.specialistResume = null;
+    room.specialistActive = false;
+    room.messages = [];
+    room.appendMessage = (msg) => room.messages.push(msg);
+    room.appendSystem = () => {};
+    room.emitSpecialistState = () => {};
+    room.refreshPlanStages = (stages) => stages;
+    room.runPlanBlock = async () => ({ ok: true });
+    let implementationStarted = false;
+    room.runProfessionalImplementation = async () => { implementationStarted = true; return { ok: true }; };
+    room.withProfessionalAuthorization = async (cap, fn) => fn();
+    const result = await room.answerPlanQuestion("느낌표를 붙여 주세요");
+    assert.equal(result.ok, true);
+    return implementationStarted;
+  }
+  assert.equal(await run({ mode: "auto", autoContinueReady: false }), false,
+    "구현 자동 보완이 켜져 있어도 실행 ▶ 없이 구현으로 가면 안 됩니다");
+  assert.equal(await run({ mode: "step", autoContinueReady: false }), false);
+  assert.equal(await run({ mode: "auto", autoContinueReady: true }), true,
+    "전체 실행으로 사전 승인한 경우에만 이어집니다");
+});

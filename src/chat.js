@@ -3457,6 +3457,20 @@ specialistBackdrop.addEventListener("click", (event) => {
   if (event.target === specialistBackdrop) closeSpecialistDialog();
 });
 
+// 화면의 자동 보완 토글을 실행 정책으로 읽는다. 버튼(PLAN/실행/전체 실행)과
+// 멘션(`@팀 실행`)이 **같은 값**을 써야 한다 — 예전에는 멘션 경로가 1회로 고정돼
+// 있어, 토글을 2회로 두고 `@팀 실행`을 치면 조용히 1회로 돌았다.
+function currentProfessionalPolicy() {
+  return {
+    planAutoRevisions: planAutoReviseToggle.checked
+      ? boundedRevisionLimit(planAutoLimitSelect.value, 2)
+      : 0,
+    implementationAutoRevisions: implementationAutoReviseToggle.checked
+      ? boundedRevisionLimit(implementationAutoLimitSelect.value, 1)
+      : 0,
+  };
+}
+
 async function runProfessionalAction(action) {
   if (!activeSessionId || specialistRunning || specialistActive) return;
   // 대기 중인 실행이 있는데 기획을 새로 시작하면 그 실행과 작업 전 백업이 사라진다.
@@ -3473,17 +3487,10 @@ async function runProfessionalAction(action) {
   specialistActive = true;
   renderHeader();
   syncComposerLock();
-  const planAutoRevisions = planAutoReviseToggle.checked
-    ? boundedRevisionLimit(planAutoLimitSelect.value, 2)
-    : 0;
-  const implementationAutoRevisions = implementationAutoReviseToggle.checked
-    ? boundedRevisionLimit(implementationAutoLimitSelect.value, 1)
-    : 0;
   const result = await call(
     window.chatApi.specialistStart(activeSessionId, {
       action,
-      planAutoRevisions,
-      implementationAutoRevisions,
+      ...currentProfessionalPolicy(),
     })
   );
   if (result) {
@@ -4803,45 +4810,76 @@ const ROLE_MENTION_TARGETS = Object.freeze([
   { alias: "기록자", label: "기록자에게 질문 (읽기 전용)", roleId: "recorder" },
 ]);
 
-function roleMentionAvailable(project, roleId) {
+// 참가자를 부를 수 없는 이유. "사용 불가"만 적으면 무엇을 고쳐야 하는지 알 수 없다.
+function agentUnavailableReason(agent) {
+  if (!agent) return "담당자를 찾을 수 없음";
+  if (agent.enabled === false) return `${agent.name}이(가) 이 세션에서 꺼져 있음`;
+  if (!agent.available) return agent.reason || `${agent.name} CLI 없음`;
+  return "";
+}
+
+// 역할 멘션을 쓸 수 있는가와, 못 쓴다면 왜인가. 회색 항목에 이유를 붙이기 위해
+// boolean 대신 { available, reason }을 돌려준다.
+function roleMentionStatus(project, roleId) {
   let config = roleConfigFromProject(project, roleId);
   // 기록 역할은 비워 두면 검토 담당자를 재사용한다(main의 fallback과 동일).
   if (!config.agentId && roleId === "recorder") {
     config = roleConfigFromProject(project, "review");
   }
-  if (!config.agentId) return false;
+  if (!config.agentId) {
+    return { available: false, reason: "담당자 미지정 · 프로젝트 설정(⋯)에서 지정" };
+  }
   const agent = agents.find((entry) => entry.id === config.agentId);
-  return Boolean(agent && agent.available && agent.enabled);
+  const reason = agentUnavailableReason(agent);
+  return reason ? { available: false, reason } : { available: true, reason: "" };
+}
+
+function roleMentionAvailable(project, roleId) {
+  return roleMentionStatus(project, roleId).available;
 }
 
 function mentionTargets() {
   const project = activeProjectEntry();
+  const teamRoles = [
+    { roleId: "planning", name: "기획자" },
+    { roleId: "review", name: "검토자" },
+    { roleId: "implementation", name: "구현자" },
+  ];
+  const teamMissing = teamRoles.filter((role) => !roleMentionAvailable(project, role.roleId));
   return [
     ...agents.map((agent) => ({
       alias: agent.aliases[0],
       label: agent.name,
       color: agent.color,
       available: agent.available && agent.enabled,
+      reason: agentUnavailableReason(agent),
     })),
     {
       alias: "모두",
       label: "모든 에이전트",
       color: "#52525b",
       available: agents.some((agent) => agent.available && agent.enabled),
+      reason: "쓸 수 있는 참가자가 없음",
     },
-    ...ROLE_MENTION_TARGETS.map((role) => ({
-      alias: role.alias,
-      label: role.label,
-      color: "#7c6f64",
-      available: roleMentionAvailable(project, role.roleId),
-    })),
+    ...ROLE_MENTION_TARGETS.map((role) => {
+      const status = roleMentionStatus(project, role.roleId);
+      return {
+        alias: role.alias,
+        label: role.label,
+        color: "#7c6f64",
+        available: status.available,
+        reason: status.reason,
+      };
+    }),
     {
       alias: "팀",
       label: "팀 상담: 기획자 → 검토자 → 구현자 (읽기 전용)",
       color: "#7c6f64",
-      available: ["planning", "review", "implementation"].every((roleId) =>
-        roleMentionAvailable(project, roleId)
-      ),
+      available: teamMissing.length === 0,
+      // 어느 역할이 비어 있는지 알아야 무엇을 지정할지 안다.
+      reason: teamMissing.length > 0
+        ? `${teamMissing.map((role) => role.name).join("·")} 담당자 미지정`
+        : "",
     },
   ];
 }
@@ -4893,7 +4931,10 @@ function updateMentionPopup() {
     alias.textContent = `@${option.alias}`;
     const desc = document.createElement("span");
     desc.className = "desc";
-    desc.textContent = option.available ? option.label : `${option.label} · 사용 불가`;
+    // 회색 항목에는 "사용 불가"가 아니라 **왜** 못 쓰는지를 적는다.
+    desc.textContent = option.available
+      ? option.label
+      : `${option.label} · ${option.reason || "사용 불가"}`;
     button.append(dot, alias, desc);
     button.addEventListener("mousedown", (event) => {
       event.preventDefault();
@@ -4998,7 +5039,9 @@ async function sendCurrentMessage() {
       independent,
       // 전문 실행이 살아 있는 동안에는 일반 모드에서도 메모로만 남긴다.
       // 그러지 않으면 참가자 전원이 응답해 실행 맥락에 일반 대화가 섞인다.
-      professionalModeEnabled || professionalRunWasLive
+      professionalModeEnabled || professionalRunWasLive,
+      // `@팀 실행`이 버튼과 같은 자동 보완 정책을 쓰도록 토글 값을 함께 보낸다.
+      currentProfessionalPolicy()
     )
   );
   if (result) {

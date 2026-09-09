@@ -307,3 +307,52 @@ test("@팀은 역할 담당이 비면 시작하지 않고 안내를 남긴다", 
     )
   );
 });
+
+// `@팀 실행`은 버튼(PLAN)과 같은 자동 보완 정책을 써야 한다. 예전에는 1회/auto로
+// 고정돼 있어 화면 토글이 멘션 경로에는 통하지 않았고, mode를 auto로 강제해
+// 나중에 READY에서 기획을 수정하면 실행 ▶ 없이 구현이 이어질 수 있었다.
+test("@팀 실행은 화면의 자동 보완 정책을 그대로 쓰고 실행을 사전 승인하지 않는다", async () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-team-run-ipc-")));
+  const workspace = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-team-run-ws-")));
+  const calls = [];
+  const feature = makeFeature(root, {
+    capabilities: fakeCapabilities(),
+    runAgent: fakeRunner({}, calls),
+  });
+  await feature.invoke("chat:state");
+  // 워크스페이스는 프로젝트를 만들 때 정해지고, 세션이 그것을 물려받는다.
+  const created = await feature.invoke("chat:projects:create", { name: "팀 실행", workspace });
+  assert.equal(created.ok, true);
+  const sessionId = created.session.meta.id;
+  await feature.invoke("chat:projects:update", {
+    projectId: created.session.meta.projectId,
+    patch: {
+      defaultRoles: {
+        planning: { agentId: "claude" }, plan_review: { agentId: "claude" },
+        implementation: { agentId: "claude" }, review: { agentId: "claude" }, recorder: { agentId: "claude" },
+      },
+    },
+  });
+
+  const sent = await feature.invoke("chat:send", {
+    sessionId,
+    text: "@팀 실행 로그인 기능 만들어줘",
+    professionalPolicy: { planAutoRevisions: 2, implementationAutoRevisions: 0 },
+  });
+  assert.equal(sent.ok, true);
+  // 시작하지 못했다면 그 이유가 대화에 남아 있다 — 실패 메시지에 같이 보여 준다.
+  const systemNotes = () => fs.readFileSync(path.join(root, "sessions", sessionId, "transcript.jsonl"), "utf8")
+    .split("\n").filter(Boolean).map((line) => JSON.parse(line).message)
+    .filter((m) => m?.authorType === "system").map((m) => m.text).join(" | ");
+  assert.equal(sent.teamRun, true, `팀 자율 실행이 시작돼야 합니다: ${systemNotes()}`);
+  await waitFor(() => calls.length >= 1);
+
+  const meta = JSON.parse(fs.readFileSync(path.join(root, "sessions", sessionId, "meta.json"), "utf8"));
+  const policy = meta.professionalRun?.policy || {};
+  assert.equal(policy.planAutoRevisions, 2, "토글의 기획 자동 보완 횟수를 써야 합니다");
+  assert.equal(policy.implementationAutoRevisions, 0, "토글이 꺼져 있으면 0이어야 합니다(예전엔 1 고정)");
+  // 채팅 문장은 EXECUTE 사전 승인을 만들 수 없다(§9.4).
+  assert.equal(policy.autoContinueReady, false);
+  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(workspace, { recursive: true, force: true });
+});

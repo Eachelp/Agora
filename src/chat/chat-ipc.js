@@ -434,6 +434,23 @@ function createChatFeature(options) {
     }
   }
 
+  // 전문 실행의 자동 보완 정책을 IPC 경계에서 한 번 정리한다. 버튼
+  // (chat:specialist:start)과 멘션(chat:send의 `@팀 실행`)이 같은 규칙을 쓴다.
+  function clampAutoRevisions(value, fallback = 0) {
+    return Number.isInteger(value) && value >= 0 ? Math.min(value, 3) : fallback;
+  }
+
+  function specialistPolicyFrom({ planAutoRevisions, implementationAutoRevisions, maxAutoRevisions } = {}) {
+    return {
+      planAutoRevisions: clampAutoRevisions(planAutoRevisions, 0),
+      implementationAutoRevisions: clampAutoRevisions(
+        implementationAutoRevisions,
+        clampAutoRevisions(maxAutoRevisions, 0)
+      ),
+      maxAutoRevisions: Number.isInteger(maxAutoRevisions) && maxAutoRevisions >= 0 ? maxAutoRevisions : 1,
+    };
+  }
+
   function startProviderRecheck() {
     // 종료 뒤에 들어온 요청이 타이머를 되살리면, shutdown()은 이미 한 번
     // 지웠으므로 아무도 걷어 가지 않는 interval이 남는다.
@@ -1958,7 +1975,7 @@ function roomMeta(meta) {
 
     ipcMain.handle(
       "chat:send",
-      wrap(async ({ sessionId, text, attachmentIds, independent, professionalDraft }) => {
+      wrap(async ({ sessionId, text, attachmentIds, independent, professionalDraft, professionalPolicy }) => {
         requireSession(sessionId);
         const room = getRoom(sessionId);
         // 전문 실행 중 사용자 입력은 정책 테이블이 단일 기준이다.
@@ -2024,13 +2041,14 @@ function roomMeta(meta) {
                   room.appendSystem(`팀 자율 실행을 시작하지 못했습니다: ${planned.error}`);
                   return { consult: true, teamRun: false };
                 }
+                // 버튼 경로와 같은 정책을 쓴다. 예전에는 1회/auto로 고정돼 있어
+                // 화면 토글이 멘션 경로에는 통하지 않았고, mode를 auto로 강제해
+                // 나중에 READY에서 기획을 수정하면 실행 ▶ 없이 구현이 이어질 수
+                // 있었다(§9.4 — 채팅 문장은 EXECUTE 사전 승인을 만들 수 없다).
                 const started = room.startSpecialist({
                   stages: planned.stages,
                   action: "plan",
-                  mode: "auto",
-                  planAutoRevisions: 1,
-                  implementationAutoRevisions: 1,
-                  maxAutoRevisions: 1,
+                  ...specialistPolicyFrom(professionalPolicy || {}),
                 });
                 const result = await Promise.race([
                   started,
@@ -2273,20 +2291,7 @@ function roomMeta(meta) {
           stages: planned.stages,
           ...(selectedAction ? { action: selectedAction } : {}),
           mode: mode === "auto" ? "auto" : mode === "quick" ? "quick" : "step",
-          planAutoRevisions:
-            Number.isInteger(planAutoRevisions) && planAutoRevisions >= 0
-              ? Math.min(planAutoRevisions, 3)
-              : 0,
-          implementationAutoRevisions:
-            Number.isInteger(implementationAutoRevisions) && implementationAutoRevisions >= 0
-              ? Math.min(implementationAutoRevisions, 3)
-              : Number.isInteger(maxAutoRevisions) && maxAutoRevisions >= 0
-                ? Math.min(maxAutoRevisions, 3)
-                : 0,
-          maxAutoRevisions:
-            Number.isInteger(maxAutoRevisions) && maxAutoRevisions >= 0
-              ? maxAutoRevisions
-              : 1,
+          ...specialistPolicyFrom({ planAutoRevisions, implementationAutoRevisions, maxAutoRevisions }),
         });
         const result = await Promise.race([
           started,

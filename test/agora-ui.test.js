@@ -1032,3 +1032,59 @@ test("중단됐어도 승인된 기획이 남은 READY는 실행할 수 있다�
   assert.equal(noPlan.canStartImplementation(), false);
   assert.match(noPlan.status.headline, /실행이 중단되었습니다/);
 });
+
+// 멘션 자동완성의 회색 항목은 "사용 불가"가 아니라 **왜** 못 쓰는지를 말해야 한다.
+// 실제 mentionTargets()를 스텁 위에서 돌린다.
+function loadMentionTargets({ agents, project }) {
+  const vm = require("node:vm");
+  const src = read("src/chat.js");
+  const start = src.indexOf("const ROLE_MENTION_TARGETS = Object.freeze([");
+  const end = src.indexOf("function closeMentionPopup(");
+  assert.ok(start > 0 && end > start, "멘션 대상 코드를 찾지 못했습니다");
+  const context = {
+    agents,
+    activeProjectEntry: () => project,
+    roleConfigFromProject: (proj, roleId) => {
+      const raw = proj?.defaultRoles?.[roleId];
+      if (typeof raw === "string") return { agentId: raw };
+      return { agentId: String(raw?.agentId || "") };
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(src.slice(start, end), context);
+  return context.mentionTargets();
+}
+
+test("부를 수 없는 멘션 대상에는 이유가 붙는다", () => {
+  const agents = [
+    { id: "claude", name: "Claude", aliases: ["claude"], color: "#000", available: true, enabled: true },
+    { id: "codex", name: "GPT", aliases: ["gpt"], color: "#000", available: false, enabled: true, reason: "Codex CLI가 필요합니다." },
+    { id: "agy", name: "Gemini", aliases: ["gemini"], color: "#000", available: true, enabled: false },
+  ];
+  const targets = loadMentionTargets({
+    agents,
+    // 기획자만 지정, 검토자는 CLI 없는 담당자, 구현자·기록자는 미지정.
+    project: { defaultRoles: { planning: { agentId: "claude" }, review: { agentId: "codex" } } },
+  });
+  const byAlias = Object.fromEntries(targets.map((t) => [t.alias, t]));
+
+  assert.equal(byAlias.gpt.available, false);
+  assert.match(byAlias.gpt.reason, /Codex CLI가 필요/, "참가자는 탐지 결과의 사유를 그대로 쓴다");
+  assert.match(byAlias.gemini.reason, /이 세션에서 꺼져/);
+  assert.equal(byAlias.기획자.available, true);
+  assert.equal(byAlias.기획자.reason, "");
+  assert.match(byAlias.구현자.reason, /담당자 미지정/, "미지정이면 어디서 지정하는지 알려야 한다");
+  assert.match(byAlias.구현자.reason, /프로젝트 설정/);
+  assert.match(byAlias.검토자.reason, /Codex CLI가 필요/, "지정됐지만 CLI가 없으면 그 사유");
+  // 팀 상담은 비어 있는 역할 이름을 나열한다.
+  assert.equal(byAlias.팀.available, false);
+  assert.match(byAlias.팀.reason, /검토자/);
+  assert.match(byAlias.팀.reason, /구현자/);
+  assert.ok(!/기획자/.test(byAlias.팀.reason), "지정된 역할을 비었다고 하면 안 된다");
+  // 모두 지정되면 이유가 비고 사용 가능이다.
+  const full = loadMentionTargets({
+    agents: [agents[0]],
+    project: { defaultRoles: { planning: "claude", review: "claude", implementation: "claude" } },
+  });
+  assert.equal(full.find((t) => t.alias === "팀").available, true);
+});

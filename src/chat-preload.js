@@ -116,13 +116,14 @@ contextBridge.exposeInMainWorld("chatApi", {
     ipcRenderer.invoke(INVOKE.SESSIONS_RENAME, { sessionId, title }),
   sessionsDelete: (sessionId) => ipcRenderer.invoke(INVOKE.SESSIONS_DELETE, { sessionId }),
 
-  send: (sessionId, text, attachmentIds, independent = false, professionalDraft = false) =>
+  send: (sessionId, text, attachmentIds, independent = false, professionalDraft = false, professionalPolicy = null) =>
     ipcRenderer.invoke(INVOKE.SEND, {
       sessionId,
       text,
       attachmentIds,
       independent,
       professionalDraft,
+      professionalPolicy,
     }),
   stop: (sessionId) => ipcRenderer.invoke(INVOKE.STOP, { sessionId }),
   turnInterject: (sessionId) => ipcRenderer.invoke(INVOKE.TURN_INTERJECT, { sessionId }),
