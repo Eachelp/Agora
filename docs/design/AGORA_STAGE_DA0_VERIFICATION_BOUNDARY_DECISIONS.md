@@ -1,5 +1,7 @@
 # Agora Stage D-A0 — Verification Safety Boundary Decision Log
 
+> 문서 안내(2026-09-06): D-A0의 결정·검수 시점 기록이다. process 검증의 `OBSERVABLE` 경계와 당시 검증 근거를 보존하며, 아래 PASS를 이후 제품 변경의 재검증으로 해석하지 않는다. 현재 안내는 [문서 안내](../README.md)를 따른다.
+
 > 상태: **D-A0 COMPLETE (2026-08-24 최종 독립 actual-diff 검수 PASS)**
 > 최초 기록: 2026-08-22
 > 기준 브랜치: `feat/stage-da0-verification-boundary`

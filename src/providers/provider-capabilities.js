@@ -750,6 +750,16 @@ function createCapabilityService(options = {}) {
   async function discover({ force = false, recheck = false } = {}) {
     if (records && !force && !recheck) return records;
     if (discovering && !force) return discovering;
+    if (refreshing) {
+      // 배경 갱신(오래된 카탈로그 재조회)이 도는 중이면 그것이 저장한 최신 목록을
+      // 읽은 뒤 탐지한다. 이전 캐시를 먼저 읽으면 재탐지 실패 시 방금 갱신된
+      // 목록을 오래된 폴백으로 되돌릴 수 있다. runStaleRefresh는 자기 시작 시점의
+      // 탐지만 기다리므로 여기서 기다려도 서로 맞물리지 않는다.
+      try {
+        await refreshing;
+      } catch {}
+      return discover({ force, recheck });
+    }
     // 강제 새로고침이라도 이미 도는 탐지와 겹치게 두지 않는다. 겹치면 두 탐지가
     // 같은 CLI를 동시에 프로브하고(순차 탐지로 피하려던 상황이다) records는
     // 늦게 끝난 쪽이 이겨, 화면에 돌려준 목록과 실제로 실행에 쓰는 목록이

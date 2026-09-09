@@ -18,6 +18,7 @@ const path = require("node:path");
 
 const { ChatRoom } = require("../src/chat/chat-room");
 const { TaskManager } = require("../src/agora/task-manager");
+const { WorkflowStore } = require("../src/agora/workflow-store");
 
 function makeAgents() {
   return [
@@ -106,6 +107,18 @@ function primeStep(room, taskInfo) {
     feedback: "",
     maxAutoRevisions: 0,
   };
+}
+
+function trackWorkflowTask(room, workspace, taskInfo) {
+  const root = path.join(workspace, "workflow-test");
+  const workflow = new WorkflowStore({ root }).init();
+  const task = workflow.createTask({
+    projectId: "approval-test", title: taskInfo.filename,
+    contentSource: "file", taskPath: taskInfo.relativePath, status: "todo",
+  });
+  room.onProfessionalTaskState = ({ status, activeRunId, lastRunId }) =>
+    Boolean(workflow.updateTask(task.id, { status, activeRunId, lastRunId }));
+  return () => new WorkflowStore({ root }).init().getTask(task.id);
 }
 
 const BUILDER_DONE = { ok: true, text: "구현 완료\nSTATUS: DONE", builderStatus: "DONE", transport: "COMPLETED" };
@@ -208,7 +221,10 @@ test("B5: 거부는 진행 허가가 아니다", async () => {
     assert.equal(rejected.ok, true);
     assert.equal(rejected.final.finalPass, false);
     assert.equal(rejected.resumable, false);
-    assert.notEqual(room.professionalRun.status, "COMPLETED");
+    assert.equal(room.professionalRun.status, "BLOCKED");
+    assert.equal(room.specialistState().blocked, true, "거부 후 변경 유지·복원·재기획을 고를 수 있어야 한다");
+    assert.equal(room.specialistState().available, false, "빈 승인 대기에 남으면 안 된다");
+    assert.equal(room.specialistBlockDetails().canRestore, false);
   } finally {
     fs.rmSync(workspace, { recursive: true, force: true });
   }
@@ -400,6 +416,7 @@ test("B5: block 모드에서 승인 후 professional Run이 실제로 COMPLETED�
       [],
       { withProfessionalRun: true }
     );
+    const readTask = trackWorkflowTask(room, workspace, taskInfo);
     fs.writeFileSync(path.join(workspace, "report.md"), "# 보고서");
     room.professionalPlan = { taskInfo };
 
@@ -412,10 +429,18 @@ test("B5: block 모드에서 승인 후 professional Run이 실제로 COMPLETED�
     });
     assert.equal(started.stopReason, "HUMAN_APPROVAL_REQUIRED", JSON.stringify(started));
     assert.equal(room.professionalRun.node, "REVIEWING");
+    assert.equal(room.specialistState().phase, "ACT");
+    assert.equal(room.specialistState().resumePhase, "awaiting_human_approval");
+    const runId = room.specialistState().frozenRunId;
+    assert.equal(runId, room.currentRunInfo().runId);
+    const stale = room.resolveHumanApproval({ criterionId: "V2", approved: true, expectedRunId: "previous-run" });
+    assert.equal(stale.ok, false, "다른 실행에서 본 항목의 승인은 현재 실행에 적용하면 안 된다");
+    assert.deepEqual(room.pendingHumanApprovals().map((item) => item.criterionId), ["V2"]);
 
-    const resolved = room.resolveHumanApproval({ criterionId: "V2", approved: true });
+    const resolved = room.resolveHumanApproval({ criterionId: "V2", approved: true, expectedRunId: runId });
     assert.equal(resolved.final.finalPass, true, JSON.stringify(resolved.final?.blockers));
     assert.equal(resolved.resumable, true);
+    assert.equal(room.specialistState().resumePhase, "review_pass", "자동 재개 실패 시 화면에서 기록을 다시 이어야 한다");
 
     const completed = await room.resumeSpecialist();
     assert.equal(completed.ok, true, JSON.stringify(completed));
@@ -423,6 +448,144 @@ test("B5: block 모드에서 승인 후 professional Run이 실제로 COMPLETED�
     // 승인이 workflow를 실제로 이어야 B5가 닫힌다.
     assert.equal(room.professionalRun.node, "COMPLETED");
     assert.equal(room.professionalRun.status, "COMPLETED");
+    const savedTask = readTask();
+    assert.equal(savedTask.status, "done", "승인 후 Task도 완료로 저장되어야 한다");
+    assert.equal(savedTask.activeRunId, null);
+    assert.equal(savedTask.lastRunId, runId);
+    const savedResult = room.taskManager.readRunResult(room.currentRunInfo());
+    assert.equal(savedResult.status, "COMPLETED");
+    assert.equal(savedResult.recorded, true);
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("B5: 승인 후 완료 상태 저장 실패는 완료 표시 없이 백업과 복구 상태를 유지한다", async (t) => {
+  for (const failure of ["workflow", "run-result"]) {
+    await t.test(failure, async () => {
+      const { workspace, taskInfo } = setupWorkspace(v2Task({ plan: PLAN_WITH_HUMAN }));
+      try {
+        const cleaned = [];
+        const room = makeRoom(workspace, {
+          claude: [BUILDER_DONE],
+          codex: [{ ok: true, text: "VERDICT: PASS" }, { ok: true, text: "기록 완료" }],
+        }, [], { withProfessionalRun: true });
+        const readTask = trackWorkflowTask(room, workspace, taskInfo);
+        room.checkpointEngine = {
+          createCheckpoint: async () => ({ supported: true, checkpointId: "cp-completion-write" }),
+          cleanupCheckpoint: (checkpoint) => {
+            cleaned.push(checkpoint.checkpointId);
+            return { ok: true };
+          },
+        };
+        fs.writeFileSync(path.join(workspace, "report.md"), "# 보고서", "utf8");
+        room.professionalPlan = { taskInfo };
+        await room.startSpecialist({ action: "implementation", mode: "auto", stages: stepStages(room), maxAutoRevisions: 0 });
+        assert.equal(room.resolveHumanApproval({ criterionId: "V2", approved: true }).resumable, true);
+        const states = [];
+        room.on("specialist-resume-state", (state) => states.push(state.status));
+        if (failure === "workflow") {
+          const saveTask = room.onProfessionalTaskState;
+          room.onProfessionalTaskState = (patch) => patch.status === "done" ? false : saveTask(patch);
+        } else {
+          const writeResult = room.taskManager.writeRunResult.bind(room.taskManager);
+          room.taskManager.writeRunResult = (runInfo, result) => result.status === "COMPLETED" ? false : writeResult(runInfo, result);
+        }
+
+        const completed = await room.resumeSpecialist();
+        assert.equal(completed.ok, false);
+        assert.equal(completed.stopReason, failure === "workflow" ? "WORKFLOW_WRITE_FAILED" : "RUN_STATE_WRITE_FAILED");
+        assert.equal(states.includes("COMPLETED"), false, "저장되지 않은 완료를 화면에 먼저 알리지 않는다");
+        assert.equal(room.specialistState().status, "BLOCKED");
+        assert.equal(room.professionalRun.checkpointId, "cp-completion-write");
+        assert.deepEqual(cleaned, []);
+        const runInfo = room.currentRunInfo();
+        assert.equal(readTask().status, "blocked");
+        assert.equal(readTask().activeRunId, runInfo.runId);
+        assert.equal(room.taskManager.readRunResult(runInfo).status, "BLOCKED");
+      } finally {
+        fs.rmSync(workspace, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("B5: 승인 후 기록 실패는 재시도 가능한 RECORDING/WAITING으로 남는다", async () => {
+  const { workspace, taskInfo } = setupWorkspace(v2Task({ plan: PLAN_WITH_HUMAN }));
+  try {
+    const cleaned = [];
+    const room = makeRoom(workspace, {
+      claude: [BUILDER_DONE],
+      codex: [{ ok: true, text: "VERDICT: PASS" }, { ok: false, error: "기록 실패" }, { ok: true, text: "기록 완료" }],
+    }, [], { withProfessionalRun: true });
+    room.checkpointEngine = {
+      createCheckpoint: async () => ({ supported: true, checkpointId: "cp-recorder-retry" }),
+      cleanupCheckpoint: (checkpoint) => {
+        cleaned.push(checkpoint.checkpointId);
+        return { ok: true };
+      },
+    };
+    fs.writeFileSync(path.join(workspace, "report.md"), "# 보고서");
+    room.professionalPlan = { taskInfo };
+    const started = await room.startSpecialist({
+      action: "implementation", mode: "auto", stages: stepStages(room), maxAutoRevisions: 0,
+    });
+    assert.equal(started.stopReason, "HUMAN_APPROVAL_REQUIRED");
+    assert.equal(room.resolveHumanApproval({ criterionId: "V2", approved: true }).resumable, true);
+    const failed = await room.resumeSpecialist();
+    assert.equal(failed.recorded, false);
+    assert.equal(room.specialistState().node, "RECORDING");
+    assert.equal(room.specialistState().status, "WAITING");
+    assert.equal(room.specialistState().stopReason, "RECORDER_FAILED");
+    assert.equal(room.pendingHumanApprovals().length, 0, "이미 끝낸 승인을 다시 요구하지 않는다");
+    assert.equal(room.professionalRun.checkpointId, "cp-recorder-retry");
+    assert.deepEqual(cleaned, [], "기록에 실패하면 백업을 유지한다");
+    const retried = await room.startSpecialist({ action: "record", stages: stepStages(room) });
+    assert.equal(retried.ok, true);
+    assert.equal(room.specialistState().node, "COMPLETED");
+    assert.equal(room.professionalRun.checkpointId, null);
+    assert.deepEqual(cleaned, ["cp-recorder-retry"]);
+    const { AssuranceRun } = require("../src/agora/assurance/assurance-run");
+    const saved = AssuranceRun.load(room.currentRunInfo().runDir, { root: workspace });
+    assert.deepEqual(saved.provenance.toJSON().events.filter((event) => event.type === "recorder").map((event) => event.ok), [false, true],
+      "디스크에도 기록 실패 뒤 재시도 성공이 남아야 한다");
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("B5: 기록 재시도는 승인 뒤 바뀐 결과물을 완료하지 않고 백업을 유지한다", async () => {
+  const { workspace, taskInfo } = setupWorkspace(v2Task({ plan: PLAN_WITH_HUMAN }));
+  try {
+    const calls = [];
+    const cleaned = [];
+    const room = makeRoom(workspace, {
+      claude: [BUILDER_DONE],
+      codex: [{ ok: true, text: "VERDICT: PASS" }, { ok: false, error: "기록 실패" }, { ok: true, text: "기록 완료" }],
+    }, calls, { withProfessionalRun: true });
+    room.checkpointEngine = {
+      createCheckpoint: async () => ({ supported: true, checkpointId: "cp-recorder-changed" }),
+      cleanupCheckpoint: (checkpoint) => {
+        cleaned.push(checkpoint.checkpointId);
+        return { ok: true };
+      },
+    };
+    fs.writeFileSync(path.join(workspace, "report.md"), "# 승인한 보고서", "utf8");
+    room.professionalPlan = { taskInfo };
+    await room.startSpecialist({ action: "implementation", mode: "auto", stages: stepStages(room), maxAutoRevisions: 0 });
+    assert.equal(room.resolveHumanApproval({ criterionId: "V2", approved: true }).resumable, true);
+    assert.equal((await room.resumeSpecialist()).recorded, false);
+    const callsBeforeRetry = calls.length;
+
+    fs.writeFileSync(path.join(workspace, "report.md"), "# 승인 후 바뀐 보고서", "utf8");
+    const retried = await room.startSpecialist({ action: "record", stages: stepStages(room) });
+    assert.equal(retried.ok, false);
+    assert.equal(retried.stopReason, "ASSURANCE_INVALIDATED");
+    assert.equal(calls.length, callsBeforeRetry, "승인이 무효인 결과물에는 기록관을 실행하지 않는다");
+    assert.equal(room.specialistState().status, "BLOCKED");
+    assert.equal(room.specialistState().canRestore, true);
+    assert.equal(room.professionalRun.checkpointId, "cp-recorder-changed");
+    assert.deepEqual(cleaned, [], "다시 확인이 필요하므로 백업을 삭제하지 않는다");
   } finally {
     fs.rmSync(workspace, { recursive: true, force: true });
   }

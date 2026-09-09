@@ -1,5 +1,7 @@
 # Agora — Stage D Assurance & Governance Charter
 
+> 문서 안내(2026-09-06): 승인된 v0.5 의미 계약을 유지한다. 이번 문서 정리는 안내 링크만 추가하며 불변식·권한·검증 보증을 바꾸지 않는다. 후속 구현 기록은 [Stage D 결정 기록](AGORA_STAGE_D_ASSURANCE_DECISIONS.md), 현재 사용자 표면과 검증 안내는 [문서 안내](../README.md)를 참조한다.
+
 > 상태: **확정 기준 문서 — v0.5 (2026-08-22 사용자 승인)**
 > 작성일: 2026-08-20
 > 코드 baseline: Stage C COMPLETE @ `048dca0` (`origin/feat/multi-harness-runtime`)
@@ -545,6 +547,7 @@ NO cross-process workspace governance     (v1 보증 경계 밖)
 
 ## 초안 이력
 
+- 2026-09-06 · 문서 안내 링크 추가. v0.5 의미 계약과 본문은 변경하지 않음.
 - 2026-08-20 · v0.1 최초 초안.
 - 2026-08-20 · v0.2 사용자 검토 반영: INV-5(Assurance Subject) 신설 · outcome/disposition 축 분리(R-7) · Verification Runner Contract 추가 · Final disposition 집계 규칙 추가 · Input binding(frozen/live) 구분 · M1을 D-A1에 포함/선행으로 재배치 · typed lineage edge(D-C) · provenance graph DB 금지.
 - 2026-08-20 · v0.3 최종 보강 및 **동결**: frozen input admission/최종 재대조 규칙 추가 · R-8(판정 append-only) 신설. 이 버전으로 사용자 승인.

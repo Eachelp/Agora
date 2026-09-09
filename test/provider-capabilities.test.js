@@ -328,6 +328,90 @@ test("recheck는 이미 탐지한 뒤에도 버전·로그인을 다시 확인�
   assert.equal(cacheStore.value[`claude:${claudePath}`].version, "2.2.0");
 });
 
+test("수동 재탐지는 진행 중인 탐지 뒤에 실행되어 이전 목록에 덮이지 않는다", async () => {
+  const codexPath = "C:\\tools\\codex.cmd";
+  const cacheStore = {};
+  let releaseFirst;
+  let firstEntered;
+  let probes = 0;
+  const slowCatalog = new Promise((resolve) => { releaseFirst = resolve; });
+  const entered = new Promise((resolve) => { firstEntered = resolve; });
+  const { service } = makeService({
+    files: new Set([codexPath]),
+    whereResults: { codex: `${codexPath}\r\n` },
+    probes: { [codexPath]: "codex-cli 0.150.0\n" },
+    cacheStore,
+    codexModelProbe: async () => {
+      probes += 1;
+      if (probes === 1) {
+        firstEntered();
+        return slowCatalog;
+      }
+      return [{ id: "new-model", efforts: ["high"] }];
+    },
+  });
+  const initial = service.discover();
+  await entered;
+  const forced = service.discover({ force: true });
+  await new Promise((resolve) => setImmediate(resolve));
+  const probesBeforeRelease = probes;
+  releaseFirst([{ id: "old-model", efforts: ["low"] }]);
+  await Promise.all([initial, forced]);
+  assert.equal(probesBeforeRelease, 1, "수동 조회와 이전 조회를 동시에 실행하지 않는다");
+  assert.equal(probes, 2);
+  assert.deepEqual(service.getRecord("codex").models, ["default", "new-model"]);
+  assert.deepEqual(cacheStore.value[`codex:${codexPath}`].models, ["default", "new-model"]);
+});
+
+for (const discoveryOptions of [{ force: true }, { recheck: true }]) {
+  test(`${discoveryOptions.force ? "실패한 수동 재탐지는" : "자동 재확인은"} 배경 갱신의 최신 목록을 유지한다`, async () => {
+    const codexPath = "C:\\tools\\codex.cmd";
+    const cacheStore = {};
+    let clock = 40_000_000;
+    let releaseRefresh;
+    let refreshEntered;
+    let catalogProbes = 0;
+    const slowRefresh = new Promise((resolve) => { releaseRefresh = resolve; });
+    const entered = new Promise((resolve) => { refreshEntered = resolve; });
+    const { service, calls } = makeService({
+      files: new Set([codexPath]),
+      whereResults: { codex: `${codexPath}\r\n` },
+      probes: { [codexPath]: "codex-cli 0.150.0\n" },
+      cacheStore,
+      now: () => clock,
+      codexModelProbe: async () => {
+        catalogProbes += 1;
+        if (catalogProbes === 1) return [{ id: "old-model", efforts: ["low"] }];
+        if (catalogProbes === 2) {
+          refreshEntered();
+          return slowRefresh;
+        }
+        return null; // 수동 재탐지 실패 시에도 직전 배경 갱신 목록을 폴백으로 써야 한다.
+      },
+    });
+    await service.discover();
+    clock += MODEL_CATALOG_TTL_MS + 1;
+    await service.discover({ recheck: true });
+    const refresh = service.refreshStaleCatalogs();
+    await entered;
+    const rediscovery = service.discover(discoveryOptions);
+    await new Promise((resolve) => setImmediate(resolve));
+    const versionsBeforeRelease = countRuns(calls, codexPath, "--version");
+    releaseRefresh([{ id: "new-model", efforts: ["high"] }]);
+    const [refreshed] = await Promise.all([refresh, rediscovery]);
+
+    assert.equal(versionsBeforeRelease, 2, "배경 갱신이 끝나기 전에 재탐지를 시작하지 않는다");
+    assert.equal(refreshed.changed, true);
+    assert.equal(catalogProbes, discoveryOptions.force ? 3 : 2);
+    assert.deepEqual(service.getRecord("codex").models, ["default", "new-model"]);
+    assert.deepEqual(cacheStore.value[`codex:${codexPath}`].models, ["default", "new-model"]);
+    // 실패한 수동 조회는 '아직 못 받은 목록'으로 남겨 backoff 뒤 다시 조회한다
+    // (refreshCatalog). 목록 자체는 방금 갱신된 것을 유지한다 — 위 단언이 그것이다.
+    assert.equal(service.hasStaleCatalogs(), Boolean(discoveryOptions.force));
+    if (discoveryOptions.force) assert.ok(service.getRecord("codex").catalogRetryAt > clock);
+  });
+}
+
 test("claude --help의 별칭만 모델 목록에 올리고 전체 이름 예시는 제외한다", () => {
   assert.deepEqual(parseClaudeHelpModels(CLAUDE_HELP), ["default", "fable", "opus", "sonnet"]);
   // 도움말 문구가 바뀌어 "full name" 구절이 없어도 claude- 전체 이름은 예시로 본다.

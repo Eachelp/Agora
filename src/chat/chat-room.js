@@ -423,7 +423,7 @@ class ChatRoom extends EventEmitter {
       hasTask: professional?.hasTask || Boolean(
         this.specialistBlocked?.taskPath || this.specialistResume?.taskInfo?.relativePath
       ),
-      frozenRunId: professional?.frozenRunId || null,
+      frozenRunId: professional?.frozenRunId || this.specialistResume?.runInfo?.runId || null,
       planRound: professional?.planRound || 1,
       implementationRound: professional?.implementationRound || 0,
       stopReason: professional?.stopReason || null,

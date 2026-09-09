@@ -2321,9 +2321,12 @@ function roomMeta(meta) {
 
     ipcMain.handle(
       "chat:specialist:resume",
-      wrap(async ({ sessionId, action }) => {
+      wrap(async ({ sessionId, action, expectedRunId }) => {
         requireSession(sessionId);
         const room = getRoom(sessionId);
+        if (expectedRunId != null && expectedRunId !== room.currentRunInfo()?.runId) {
+          throw new Error("확인하던 실행이 바뀌었습니다. 현재 실행 상태를 확인해 주세요.");
+        }
         const project = projectForSession(store.readMeta(sessionId));
         const recorderAgentId = room.specialistResume?.stages?.recorder?.agent?.id || null;
         const started = room.resumeSpecialist(action);
@@ -2456,7 +2459,7 @@ function roomMeta(meta) {
       wrap(async ({ sessionId }) => {
         requireSession(sessionId);
         const room = getRoom(sessionId);
-        return { pending: room.pendingHumanApprovals() };
+        return { runId: room.currentRunInfo()?.runId || null, pending: room.pendingHumanApprovals() };
       })
     );
 
@@ -2487,13 +2490,14 @@ function roomMeta(meta) {
     // 어떤 결과물에 귀속되는지 확정한다(INV-5).
     ipcMain.handle(
       "chat:specialist:resolve-approval",
-      wrap(async ({ sessionId, criterionId, approved, note }) => {
+      wrap(async ({ sessionId, criterionId, approved, note, expectedRunId }) => {
         requireSession(sessionId);
         const room = getRoom(sessionId);
         const result = room.resolveHumanApproval({
           criterionId,
           approved: Boolean(approved),
           note: note || null,
+          expectedRunId,
         });
         if (!result.ok) throw new Error(result.error || "승인을 처리하지 못했습니다.");
         return {
