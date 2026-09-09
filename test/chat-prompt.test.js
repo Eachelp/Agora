@@ -1,6 +1,13 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { buildAgentPrompt, boundedText, MAX_SPECIALIST_PROMPT_CHARS } = require("../src/chat/chat-prompt");
+const {
+  buildAgentPrompt,
+  boundedText,
+  controlGuideLines,
+  CONTROL_GUIDE_HINTS,
+  MAX_SPECIALIST_PROMPT_CHARS,
+} = require("../src/chat/chat-prompt");
+const { RESULT_CONTROL_ROUTES } = require("../src/agora/interaction-contract");
 
 const AGENTS = [
   { id: "claude", name: "Claude", aliases: ["claude"] },
@@ -592,7 +599,7 @@ test("검토자 제어 안내는 UNKNOWN이면 ASK_USER를 붙이라고 알려�
     specialist: { stage: "review", round: 1, maxRounds: 3, controlOutputs: true },
   });
   assert.match(guided, /다음 역할 요청/);
-  assert.match(guided, /UNKNOWN이면 `ASK_USER: <질문 한 줄>`/);
+  assert.match(guided, /UNKNOWN일 때: `ASK_USER: <질문 한 줄>`/);
   assert.match(guided, /HANDOFF: @recorder/);
   assert.match(guided, /HANDOFF: @builder/);
   // 소비자가 없는 경로(step mode)에는 routing 안내가 붙지 않는다.
@@ -601,7 +608,7 @@ test("검토자 제어 안내는 UNKNOWN이면 ASK_USER를 붙이라고 알려�
     specialist: { stage: "review", round: 1, maxRounds: 3 },
   });
   assert.doesNotMatch(plain, /다음 역할 요청/);
-  assert.doesNotMatch(plain, /UNKNOWN이면/);
+  assert.doesNotMatch(plain, /UNKNOWN일 때/);
 });
 
 test("구현자 상담 안내는 세션 권한이 chat이면 파일 읽기를 약속하지 않는다", () => {
@@ -659,4 +666,123 @@ test("동시 실행 + 쓰기 권한일 때만 담당자별 폴더 규칙을 준�
   assert.ok(!build("workspace-read", { folder: "claude", total: 3 }).includes("동시에 실행되고"));
   // 혼자 도는 턴에도 붙이지 않는다.
   assert.ok(!build("workspace-write", null).includes("동시에 실행되고"));
+});
+
+// --- 제어 안내는 RESULT_CONTROL_ROUTES에서 파생된다 (이중 진실 금지) ---
+//
+// 안내 줄에서 (결과, 제어 토큰) 조합을 다시 뽑아낸다. 표와 비교하는 용도라
+// 안내의 문장 형식("X일 때: ...")에 의존한다 — 형식을 바꾸면 여기도 바꾼다.
+function combinationsFromGuide(lines) {
+  const found = new Set();
+  for (const line of lines) {
+    const match = /^  - (\S+)일 때: (.*)$/.exec(line);
+    assert.ok(match, `안내 줄 형식이 아닙니다: ${line}`);
+    const [, result, rest] = match;
+    for (const token of rest.match(/`[^`]+`/g) || []) {
+      const handoff = /^`HANDOFF: @(\w+)`$/.exec(token);
+      if (handoff) found.add(`${result}/HANDOFF/${handoff[1]}`);
+      else if (token === "`COMPLETE`") found.add(`${result}/COMPLETE`);
+      else if (token.startsWith("`ASK_USER:")) found.add(`${result}/ASK_USER`);
+      else assert.fail(`알 수 없는 제어 토큰: ${token}`);
+    }
+  }
+  return found;
+}
+
+function combinationsFromRoutes(byResult) {
+  const expected = new Set();
+  for (const [result, allowed] of Object.entries(byResult)) {
+    if (allowed.ASK_USER === true) expected.add(`${result}/ASK_USER`);
+    if (allowed.COMPLETE === true) expected.add(`${result}/COMPLETE`);
+    for (const target of allowed.HANDOFF || []) expected.add(`${result}/HANDOFF/${target}`);
+  }
+  return expected;
+}
+
+test("제어 안내는 판정표의 허용 조합과 정확히 일치한다 — 계약 전수", () => {
+  for (const [contract, byResult] of Object.entries(RESULT_CONTROL_ROUTES)) {
+    assert.deepEqual(
+      combinationsFromGuide(controlGuideLines(contract)),
+      combinationsFromRoutes(byResult),
+      `${contract}의 안내가 판정표와 다릅니다`
+    );
+  }
+  // 판정표에 없는 계약(deterministic recorder)에는 안내가 없다.
+  assert.deepEqual(controlGuideLines("recorder"), []);
+  assert.deepEqual(controlGuideLines(undefined), []);
+});
+
+test("프롬프트에 붙는 제어 안내도 판정표에서 온다 — 자동 실행 4단계", () => {
+  const base = {
+    agent: AGENTS[0],
+    agents: AGENTS,
+    messages: [message("user", "확정된 작업", "user")],
+  };
+  for (const stage of ["planner", "plan_review", "implementation", "review"]) {
+    const prompt = buildAgentPrompt({
+      ...base,
+      specialist: { stage, round: 1, maxRounds: 3, controlOutputs: true },
+    });
+    const start = prompt.indexOf("=== 다음 역할 요청 (선택) ===");
+    assert.ok(start >= 0, `${stage}에 제어 안내가 없습니다`);
+    const section = prompt.slice(start, prompt.indexOf("=== 전문 모드 끝 ===", start));
+    const guideLines = section.split("\n").filter((line) => line.startsWith("  - "));
+    assert.deepEqual(
+      combinationsFromGuide(guideLines),
+      combinationsFromRoutes(RESULT_CONTROL_ROUTES[stage]),
+      `${stage} 프롬프트의 안내가 판정표와 다릅니다`
+    );
+    assert.match(section, /이 조합만 수용됩니다/);
+  }
+});
+
+test("판정표에 조합을 더하거나 빼면 안내가 따라온다", () => {
+  // 더하기: review의 UNKNOWN에 HANDOFF @planner를 허용하면 안내에도 생긴다.
+  const widened = {
+    review: {
+      ...RESULT_CONTROL_ROUTES.review,
+      UNKNOWN: { ASK_USER: true, HANDOFF: ["planner"] },
+    },
+  };
+  assert.ok(combinationsFromGuide(controlGuideLines("review", widened)).has("UNKNOWN/HANDOFF/planner"));
+  assert.ok(!combinationsFromGuide(controlGuideLines("review")).has("UNKNOWN/HANDOFF/planner"));
+
+  // 빼기: review PASS에서 COMPLETE를 지우면 안내에서도 사라진다.
+  const narrowed = {
+    review: { ...RESULT_CONTROL_ROUTES.review, PASS: { HANDOFF: ["recorder"] } },
+  };
+  const narrowedGuide = combinationsFromGuide(controlGuideLines("review", narrowed));
+  assert.ok(!narrowedGuide.has("PASS/COMPLETE"));
+  assert.ok(narrowedGuide.has("PASS/HANDOFF/recorder"));
+
+  // 덧말은 조합을 따라간다: 덧말이 있던 조합이 빠지면 덧말도 함께 사라진다.
+  assert.doesNotMatch(controlGuideLines("review", narrowed).join("\n"), /사람용 정리가 필요하면.*COMPLETE/);
+  // 덧말이 없는 새 조합도 토큰은 안내된다(누락되지 않는다).
+  assert.match(controlGuideLines("review", widened).join("\n"), /UNKNOWN일 때: `ASK_USER: <질문 한 줄>`, 또는 `HANDOFF: @planner`/);
+});
+
+test("덧말 표의 키는 전부 판정표에 있는 조합이다 — 죽은 덧말 금지", () => {
+  for (const key of Object.keys(CONTROL_GUIDE_HINTS)) {
+    const [contract, result, action, target] = key.split("/");
+    const allowed = RESULT_CONTROL_ROUTES[contract]?.[result];
+    assert.ok(allowed, `${key}: 판정표에 없는 계약/결과`);
+    if (action === "HANDOFF") {
+      assert.ok(Array.isArray(allowed.HANDOFF) && allowed.HANDOFF.includes(target), `${key}: 판정표에 없는 HANDOFF 대상`);
+    } else {
+      assert.equal(allowed[action], true, `${key}: 판정표에 없는 행동`);
+      assert.equal(target, undefined, `${key}: ${action}에는 대상이 없습니다`);
+    }
+  }
+});
+
+test("load-bearing 덧말이 제자리에 남아 있다", () => {
+  const review = controlGuideLines("review").join("\n");
+  assert.match(review, /`HANDOFF: @recorder`/);
+  assert.match(review, /사람용 정리가 필요하면 `HANDOFF: @recorder`/);
+  assert.match(review, /`HANDOFF: @builder`\(범위 내 보완\)/);
+  assert.match(review, /`HANDOFF: @planner`\(계획 문제\)/);
+  const implementation = controlGuideLines("implementation").join("\n");
+  assert.match(implementation, /계획 자체가 문제면 `HANDOFF: @planner`\(재기획 요청\)/);
+  const planReview = controlGuideLines("plan_review").join("\n");
+  assert.match(planReview, /`HANDOFF: @builder`\(실행은 사용자 승인 게이트를 그대로 지납니다\)/);
 });

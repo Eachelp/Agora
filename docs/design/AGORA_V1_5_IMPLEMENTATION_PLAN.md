@@ -777,6 +777,10 @@ tail 관점)에서 추가로 확정된 것: Archivist 페르소나 누락(그룹
    interaction-contract.js `RESULT_CONTROL_ROUTES`): 허용 조합이 두 곳에
    따로 하드코딩돼 있어 한쪽만 바꾸면 어긋난다. `RESULT_CONTROL_ROUTES`를
    단일 원천으로 삼아 프롬프트 안내 문구를 파생 생성하는 방향.
+   → **처리됨**(issue #1). `controlGuideLines`가 표를 순회해 안내 줄을
+   만들고, 조합별 덧말(`CONTROL_GUIDE_HINTS`)만 프롬프트 쪽에 남겼다.
+   `chat-prompt.test.js`가 계약 전수에 대해 안내 ↔ 표 일치, 표 변경 추종,
+   죽은 덧말 부재를 지킨다.
 2. **recorder/archivist 프롬프트 렌더 중복**(chat-prompt.js): finalVerdict·
    reviewDiff·evidence 렌더 블록이 두 stage 분기에 거의 동일하게 중복.
    공통 헬퍼로 추출(단, 한글 문구가 load-bearing이므로 출력 바이트 동일성

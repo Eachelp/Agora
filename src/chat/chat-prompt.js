@@ -1,5 +1,6 @@
 const { buildConversationWindow } = require("./chat-summary-window");
 const { roleContextNotice, includesPromptContext, roleSees } = require("./professional-role-context");
+const { RESULT_CONTROL_ROUTES } = require("../agora/interaction-contract");
 
 const DEFAULT_MAX_MESSAGES = 40;
 // 전문 실행 프롬프트 상한. 압축(위 conversation window)을 거친 뒤에도 남는
@@ -21,6 +22,58 @@ const RECORDER_OUTPUT_LINES = [
   "- 프로젝트 규칙 변경이 필요하면 nextActions에 제안만 적고, 직접 규칙을 바꾸지 마세요.",
   '{"summary": "...", "decisions": [{"title": "...", "content": "..."}], "nextActions": [{"title": "...", "description": "..."}]}',
 ];
+
+// V1.5 Stage 5 — 제어 출력(routing 축) 안내를 만드는 재료.
+//
+// 어떤 결과에 어떤 제어를 붙일 수 있는지는 interaction-contract의
+// RESULT_CONTROL_ROUTES가 유일한 원천이다. Runtime이 같은 표로 조합을
+// 검증하므로, 여기서 조합을 따로 적으면 모델이 안내받은 조합과 Runtime이
+// 받아 주는 조합이 어긋난다(실제로 review의 UNKNOWN → ASK_USER가 안내에서만
+// 빠져 있던 적이 있다). 그래서 안내 줄은 표를 순회해 만들고, 이 파일은
+// 토큰 표기와 "언제 이 조합을 고르는지"를 알려 주는 덧말만 갖는다.
+const CONTROL_TOKEN_TEXT = Object.freeze({
+  ASK_USER: "`ASK_USER: <질문 한 줄>`",
+  COMPLETE: "`COMPLETE`",
+});
+
+// 조합별 덧말. 키는 `계약/결과/행동[/대상]`. 표에 있는데 여기 없는 조합은
+// 덧말 없이 토큰만 안내된다 — 조합이 안내에서 빠지는 일은 없다. 반대로
+// 표에서 사라진 조합의 덧말은 test가 잡는다(chat-prompt.test.js).
+const CONTROL_GUIDE_HINTS = Object.freeze({
+  "plan_review/PASS/HANDOFF/builder": Object.freeze({ suffix: "(실행은 사용자 승인 게이트를 그대로 지납니다)" }),
+  "implementation/BLOCKED/HANDOFF/planner": Object.freeze({ prefix: "계획 자체가 문제면 ", suffix: "(재기획 요청)" }),
+  "review/PASS/HANDOFF/recorder": Object.freeze({ prefix: "사람용 정리가 필요하면 " }),
+  "review/FIX_REQUIRED/HANDOFF/builder": Object.freeze({ suffix: "(범위 내 보완)" }),
+  "review/FIX_REQUIRED/HANDOFF/planner": Object.freeze({ suffix: "(계획 문제)" }),
+});
+
+function hintedControlToken(key, token) {
+  const hint = CONTROL_GUIDE_HINTS[key] || {};
+  return `${hint.prefix || ""}${token}${hint.suffix || ""}`;
+}
+
+// 실행 계약 하나의 제어 안내 줄. 표의 순서를 그대로 따른다(결과 순, 그 안에서
+// 행동 순). 표에 없는 계약이면 빈 배열 — 안내 자체가 붙지 않는다.
+// routes는 test가 표를 바꿔 넣어 파생 여부를 확인할 수 있게 열어 둔다.
+function controlGuideLines(contract, routes = RESULT_CONTROL_ROUTES) {
+  const byResult = routes[String(contract || "")];
+  if (!byResult) return [];
+  const lines = [];
+  for (const [result, allowed] of Object.entries(byResult)) {
+    const options = [];
+    for (const [action, value] of Object.entries(allowed)) {
+      if (action === "HANDOFF") {
+        for (const target of Array.isArray(value) ? value : []) {
+          options.push(hintedControlToken(`${contract}/${result}/HANDOFF/${target}`, `\`HANDOFF: @${target}\``));
+        }
+      } else if (value === true && CONTROL_TOKEN_TEXT[action]) {
+        options.push(hintedControlToken(`${contract}/${result}/${action}`, CONTROL_TOKEN_TEXT[action]));
+      }
+    }
+    if (options.length > 0) lines.push(`  - ${result}일 때: ${options.join(", 또는 ")}`);
+  }
+  return lines;
+}
 
 function boundedText(value, limit, label) {
   const text = String(value || "");
@@ -627,27 +680,15 @@ function buildAgentPrompt({
     // 독립 계약이라 함께 적는다. Runtime이 조합 합법성을 검증하며, 요청일 뿐
     // 실행 승인이 아니다. 소비자가 있는 자동 실행 경로에서만 안내한다.
     if (specialist.controlOutputs) {
-      const controlGuides = {
-        planner: [
-          "- 계획이 준비됐으면(STATUS: PLAN_READY와 함께) `HANDOFF: @reviewer` 한 줄을, 사용자 결정이 필요하면(STATUS: NEEDS_DECISION과 함께) `ASK_USER: <질문 한 줄>`을 붙일 수 있습니다.",
-        ],
-        plan_review: [
-          "- FIX_REQUIRED면 `HANDOFF: @planner`, UNKNOWN이면 `ASK_USER: <질문 한 줄>`, PASS면 `HANDOFF: @builder`를 붙일 수 있습니다(실행은 사용자 승인 게이트를 그대로 지납니다).",
-        ],
-        implementation: [
-          "- DONE이면 `HANDOFF: @reviewer`를, BLOCKED이면 `ASK_USER: <질문 한 줄>` 또는 계획 자체가 문제면 `HANDOFF: @planner`(재기획 요청)를 붙일 수 있습니다.",
-        ],
-        review: [
-          "- PASS면 `COMPLETE` 또는 사람용 정리가 필요하면 `HANDOFF: @recorder`를, FIX_REQUIRED면 `HANDOFF: @builder`(범위 내 보완) 또는 `HANDOFF: @planner`(계획 문제)를, UNKNOWN이면 `ASK_USER: <질문 한 줄>`을 붙일 수 있습니다.",
-        ],
-      };
-      const guide = controlGuides[specialist.stage];
-      if (guide) {
+      // 허용 조합은 RESULT_CONTROL_ROUTES에서 파생한다(위 controlGuideLines).
+      const guide = controlGuideLines(specialist.stage);
+      if (guide.length > 0) {
         lines.push("");
         lines.push("=== 다음 역할 요청 (선택) ===");
         lines.push(
           "- 필요하면 응답 **맨 끝**에 제어 블록을 붙여 다음 진행을 요청할 수 있습니다. 제어 줄은 응답 마지막의 연속된 줄이어야 하며(뒤에 다른 문장 금지), `REASON: <이유 한 줄>`을 함께 적을 수 있습니다."
         );
+        lines.push("- 결과에 따라 붙일 수 있는 제어 줄(이 조합만 수용됩니다):");
         lines.push(...guide);
         lines.push(
           "- 이것은 요청이지 실행이 아닙니다. Runtime이 결과와 요청의 조합을 검증해 수용 여부를 결정하며, 제어 블록이 없으면 기본 흐름으로 진행됩니다."
@@ -732,6 +773,8 @@ function buildAgentPrompt({
 
 module.exports = {
   buildAgentPrompt,
+  controlGuideLines,
+  CONTROL_GUIDE_HINTS,
   // 테스트 seam: 공개 호출 경로(buildAgentPrompt)의 상수 상한으로는 tail===0
   // 경계에 닿지 않아, 상한 우회 회귀를 직접 고정하기 위해 내보낸다.
   boundedText,
