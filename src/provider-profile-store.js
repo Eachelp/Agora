@@ -205,6 +205,31 @@ class ProviderProfileStore {
     fs.rmSync(path.join(this.dir, `${key}.json`), { force: true });
     return safeProfile(profile, false);
   }
+
+  // 활성 계정을 로그아웃할 때 쓴다. active 표시를 먼저 지워 delete()의 활성 보호를
+  // 통과시키고, 저장된 프로필도 지운다. 활성 프로필이 없으면 표시만 지운다.
+  removeActive() {
+    const activeKey = this.getActiveKey();
+    this.clearActive();
+    if (!activeKey) return null;
+    try {
+      return this.delete(activeKey);
+    } catch {
+      // 파일이 이미 없더라도 로그아웃 자체는 성공으로 본다.
+      return null;
+    }
+  }
+
+  // 이 PC의 이 provider 저장 계정을 전부 지운다(반납용). active 표시도 지운다.
+  clearAll() {
+    let removed = 0;
+    for (const record of this.records()) {
+      fs.rmSync(path.join(this.dir, `${record.key}.json`), { force: true });
+      removed += 1;
+    }
+    this.clearActive();
+    return removed;
+  }
 }
 
 module.exports = {

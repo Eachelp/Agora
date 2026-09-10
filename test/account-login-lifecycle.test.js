@@ -915,3 +915,86 @@ test("Codex 로그인은 pending profile의 CODEX_HOME에서 앱 안으로 돌�
   assert.ok(notices.some((text) => /Codex 로그인이 끝났습니다/.test(text)));
   assert.equal(switching.isProviderLoginRunning("codex"), false);
 });
+
+// ---- 로그아웃 / 이 PC 전체 지우기 (라이브 인증 삭제) ----
+//
+// 계정이 하나뿐이면 늘 활성이라 저장 프로필 삭제가 영영 막힌다(반납 시 지울 수
+// 없다). 로그아웃은 이 PC의 라이브 인증과 저장 정보를 지우되 다른 기기 세션은
+// 건드리지 않는다. 라이브 자격 증명 삭제이므로 계정 경계 뒤에서 한다.
+
+function seedClaudeLive(home) {
+  const dir = path.join(home, ".claude");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, ".credentials.json"),
+    JSON.stringify({ claudeAiOauth: { refreshToken: "r-live", accessToken: "a", expiresAt: Date.now() + 3600000 } }));
+  return path.join(dir, ".credentials.json");
+}
+
+function seedCodexLive(home) {
+  const dir = path.join(home, ".codex");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "auth.json"), JSON.stringify({ tokens: { refresh_token: "r-codex" } }));
+  return path.join(dir, "auth.json");
+}
+
+test("Claude 로그아웃은 라이브 자격 증명과 저장 프로필을 지우고, 경계 뒤에서 실행된다", async (t) => {
+  const runner = fakeLoginRunner();
+  const { switching, notifications, completes, home } = makeInAppSwitching(t, { cliLogin: runner });
+  const liveFile = seedClaudeLive(home);
+  // 저장된 활성 프로필도 하나 만든다.
+  const store = switching.claudeAccountSwitcher.store;
+  store.save({ secret: { claudeAiOauth: { refreshToken: "r-live", accessToken: "a" } }, email: "me@x.com", active: true });
+  assert.equal(store.list().length, 1);
+  assert.ok(fs.existsSync(liveFile));
+
+  const result = await switching.logoutProvider("claude");
+  assert.equal(result.live, true, "라이브 자격 증명 파일을 지웠다");
+  assert.equal(fs.existsSync(liveFile), false);
+  assert.equal(store.list().length, 0, "저장된 프로필도 지웠다");
+  assert.deepEqual(notifications, ["claude"], "경계를 설치한다(credential mutation)");
+  assert.deepEqual(completes, ["claude"], "끝나면 경계를 닫는다");
+});
+
+test("Codex 로그아웃은 라이브 auth.json을 지운다", async (t) => {
+  const runner = fakeLoginRunner();
+  const { switching, notifications, completes, home } = makeInAppSwitching(t, { cliLogin: runner });
+  const liveFile = seedCodexLive(home);
+  assert.ok(fs.existsSync(liveFile));
+
+  const result = await switching.logoutProvider("codex");
+  assert.equal(result.live, true);
+  assert.equal(fs.existsSync(liveFile), false);
+  assert.deepEqual(notifications, ["codex"]);
+  assert.deepEqual(completes, ["codex"]);
+});
+
+test("이 PC 전체 지우기는 세 CLI 라이브 인증을 모두 지우고, provider마다 경계를 세운다", async (t) => {
+  const runner = fakeLoginRunner();
+  const { switching, notifications, completes, home } = makeInAppSwitching(t, { cliLogin: runner });
+  const claudeLive = seedClaudeLive(home);
+  const codexLive = seedCodexLive(home);
+
+  const { failures } = await switching.wipeAllAccounts();
+  // agy는 이 테스트 환경에 OS 자격 저장소가 없어 clear가 조용히 넘어갈 수 있다 —
+  // 그래도 wipeAll 자체는 실패가 아니다.
+  assert.equal(fs.existsSync(claudeLive), false, "Claude 라이브 인증이 지워졌다");
+  assert.equal(fs.existsSync(codexLive), false, "Codex 라이브 인증이 지워졌다");
+  assert.deepEqual(notifications, ["claude", "codex", "agy"], "provider마다 경계를 세운다");
+  assert.deepEqual(completes, ["claude", "codex", "agy"], "provider마다 경계를 닫는다");
+  assert.deepEqual(failures, [], "세 provider 모두 정리에 성공한다");
+});
+
+test("이 PC 전체 지우기는 한 provider가 실패해도 나머지를 계속 지운다", async (t) => {
+  const runner = fakeLoginRunner();
+  const { switching, home } = makeInAppSwitching(t, { cliLogin: runner });
+  const claudeLive = seedClaudeLive(home);
+  const codexLive = seedCodexLive(home);
+  // Codex wipeAll이 던지게 만든다.
+  switching.codexAccountSwitcher.wipeAll = () => { throw new Error("codex 정리 실패"); };
+
+  const { failures } = await switching.wipeAllAccounts();
+  assert.equal(fs.existsSync(claudeLive), false, "실패한 provider가 있어도 Claude는 지운다");
+  assert.ok(fs.existsSync(codexLive), "던진 provider의 라이브는 그대로다");
+  assert.equal(failures.length, 1);
+  assert.match(failures[0], /codex.*정리 실패/);
+});

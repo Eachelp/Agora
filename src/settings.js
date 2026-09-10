@@ -407,18 +407,33 @@ function createProviderGroup(provider) {
     );
     actions.appendChild(switchButton);
 
-    const deleteButton = createElement("button", "button danger-button", "삭제");
-    deleteButton.type = "button";
-    deleteButton.disabled = account.active;
-    deleteButton.addEventListener("click", () => {
-      const accountLabel = account.email || account.label || provider.label;
-      if (!window.confirm(`"${accountLabel}" 저장 계정을 삭제할까요?`)) return;
-      runAccountAction(
-        { provider: provider.id, action: "delete", profileKey: account.key },
-        deleteButton
-      );
-    });
-    actions.appendChild(deleteButton);
+    const accountLabel = account.email || account.label || provider.label;
+    if (account.active) {
+      // 활성 계정은 저장 프로필만 지울 수 없다(늘 활성이라 삭제가 영영 막힌다).
+      // 대신 "로그아웃"으로 이 PC의 라이브 인증과 저장 정보를 함께 지운다.
+      const logoutButton = createElement("button", "button danger-button", "로그아웃");
+      logoutButton.type = "button";
+      logoutButton.title = "이 PC에서 로그아웃합니다. 다른 기기의 로그인은 그대로 남습니다";
+      logoutButton.addEventListener("click", () => {
+        if (!window.confirm(
+          `이 PC에서 "${accountLabel}" 계정을 로그아웃할까요?\n` +
+          "이 PC에 저장된 로그인 정보가 지워집니다. 다른 기기의 로그인은 그대로 남습니다."
+        )) return;
+        runAccountAction({ provider: provider.id, action: "logout" }, logoutButton);
+      });
+      actions.appendChild(logoutButton);
+    } else {
+      const deleteButton = createElement("button", "button danger-button", "삭제");
+      deleteButton.type = "button";
+      deleteButton.addEventListener("click", () => {
+        if (!window.confirm(`"${accountLabel}" 저장 계정을 삭제할까요?`)) return;
+        runAccountAction(
+          { provider: provider.id, action: "delete", profileKey: account.key },
+          deleteButton
+        );
+      });
+      actions.appendChild(deleteButton);
+    }
     row.append(identity, actions);
     list.appendChild(row);
   }
@@ -489,7 +504,9 @@ async function runAccountAction(input, sourceButton) {
     ? "전환 중…"
     : input.action === "delete"
       ? "삭제 중…"
-      : "시작 중…";
+      : input.action === "logout"
+        ? "로그아웃 중…"
+        : "시작 중…";
   setButtonBusy(sourceButton, true, busyLabel);
   try {
     const response = await api.account(input);
@@ -557,6 +574,32 @@ function registerNavigation() {
   });
   // 앱 안 CLI 로그인의 진행 상황. 출력 조각마다 다시 그리면 코드 입력칸의 포커스가
   // 날아가므로, 화면이 달라지는 사건(시작·주소·프롬프트 등장·종료)에만 그린다.
+  const wipeButton = $("#wipe-all");
+  if (wipeButton) {
+    wipeButton.addEventListener("click", async () => {
+      if (!window.confirm(
+        "이 PC에 저장된 모든 로그인과 계정 정보를 지웁니다.\n" +
+        "Claude·Codex·Gemini(AGY) 세 CLI의 이 PC 로그인이 모두 지워집니다.\n" +
+        "다른 기기의 로그인은 그대로 남습니다. 되돌릴 수 없습니다.\n\n계속할까요?"
+      )) return;
+      setButtonBusy(wipeButton, true, "지우는 중…");
+      try {
+        const response = await api.wipeAll();
+        if (response?.data) {
+          state = response.data;
+          loginStates.clear();
+          renderAccounts();
+          renderUsage();
+        }
+        if (!response?.ok) throw new Error(responseError(response, "일부 계정을 지우지 못했습니다."));
+        showError("이 PC의 모든 로그인을 지웠습니다.");
+      } catch (error) {
+        showError(error.message || String(error));
+      } finally {
+        setButtonBusy(wipeButton, false);
+      }
+    });
+  }
   api.onAccountLogin?.((event) => {
     if (!event?.provider) return;
     const current = loginStates.get(event.provider) || {};

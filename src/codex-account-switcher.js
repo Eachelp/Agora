@@ -508,6 +508,42 @@ class CodexAccountSwitcher {
     return profile;
   }
 
+  // 이 PC에서 로그아웃한다. 라이브 ~/.codex/auth.json과 활성 표시를 지우고,
+  // 현재 활성 프로필 폴더도 지운다. 다른 기기 로그인은 건드리지 않는다.
+  logout() {
+    const live = fs.existsSync(this.targetAuthPath);
+    this.removePathIfInsideHome(this.targetAuthPath);
+    const activeKey = this.readActiveProfileKey();
+    this.removePathIfInsideHome(this.activePath);
+    let removedProfile = false;
+    if (activeKey) {
+      const dir = this.profileDir(activeKey);
+      if (fs.existsSync(dir)) {
+        this.removePathIfInsideHome(dir);
+        removedProfile = true;
+      }
+    }
+    return { live, removedProfile };
+  }
+
+  // 반납용: 라이브 auth.json과 이 PC의 Codex 계정 저장소(프로필·백업·활성 표시)를
+  // 통째로 지운다.
+  wipeAll() {
+    const live = fs.existsSync(this.targetAuthPath);
+    this.removePathIfInsideHome(this.targetAuthPath);
+    let removedProfiles = 0;
+    if (fs.existsSync(this.profilesRoot)) {
+      try {
+        removedProfiles = fs.readdirSync(this.profilesRoot, { withFileTypes: true })
+          .filter((entry) => entry.isDirectory() && !entry.name.startsWith(PENDING_PREFIX)).length;
+      } catch {
+        removedProfiles = 0;
+      }
+    }
+    this.removePathIfInsideHome(this.switchHome);
+    return { live, removedProfiles };
+  }
+
   // 저장된 프로필 auth를 live ~/.codex/auth.json으로 교체합니다. 실패하면 직전 백업으로 되돌립니다.
   switchToProfile(profileKey) {
     const profile = this.getProfile(profileKey);

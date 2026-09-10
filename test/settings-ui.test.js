@@ -82,7 +82,11 @@ test("설정 renderer는 안전한 DOM API를 쓰고 성공 카드를 남기지 
 test("계정 설정은 비활성 프로필 삭제를 확인하고 삭제 중 상태를 표시한다", () => {
   assert.match(settingsJs, /action: "delete", profileKey: account\.key/);
   assert.match(settingsJs, /window\.confirm/);
-  assert.match(settingsJs, /deleteButton\.disabled = account\.active/);
+  // 삭제 버튼은 비활성 계정 행에만 그린다(활성은 로그아웃). 예전엔 활성이면
+  // disabled로 두어 계정이 하나면 영영 못 지웠다.
+  assert.match(settingsJs, /if \(account\.active\) \{/);
+  assert.match(settingsJs, /\} else \{[\s\S]{0,400}createElement\("button", "button danger-button", "삭제"\)/);
+  assert.ok(!/deleteButton\.disabled = account\.active/.test(settingsJs), "활성 계정을 disabled 삭제로 막지 않는다");
   assert.match(settingsJs, /"삭제 중…"/);
   assert.match(settingsCss, /\.danger-button/);
 });
@@ -127,4 +131,23 @@ test("계정 추가는 터미널 대신 앱 안 로그인 패널로 진행한다
   assert.equal(fs.existsSync(path.join(__dirname, "..", "src", "unix-login.js")), false);
   // 로그인 주소는 그 로그인이 실제로 출력한 것만 연다.
   assert.match(accountSwitchingJs, /knowsUrl\(provider, url\)/);
+});
+
+// 활성 계정도 이 PC에서 지울 수 있어야 한다(로그아웃). 반납용 전체 지우기 버튼도.
+test("계정 화면은 활성 계정 로그아웃과 이 PC 전체 지우기를 제공한다", () => {
+  // 활성 계정 행: 비활성 삭제 버튼 대신 로그아웃.
+  assert.match(settingsJs, /account\.active/);
+  assert.match(settingsJs, /"로그아웃"/);
+  assert.match(settingsJs, /action: "logout"/);
+  // 전체 지우기 버튼과 IPC.
+  assert.match(settingsHtml, /id="wipe-all"/);
+  assert.match(settingsJs, /api\.wipeAll\(\)/);
+  const preload = source("src/settings-preload.js");
+  assert.match(preload, /settings:wipe-all/);
+  assert.match(preload, /wipeAll:/);
+  assert.match(mainJs, /"settings:wipe-all"/);
+  // 로그아웃·전체 지우기는 계정 경계 뒤에서 한다(라이브 인증 삭제).
+  assert.match(accountSwitchingJs, /async function logoutProvider\(provider\)/);
+  assert.match(accountSwitchingJs, /async function wipeAllAccounts\(\)/);
+  assert.match(accountSwitchingJs, /await installAccountBoundaryOrFail\(provider\)[\s\S]{0,200}switcher\.logout\(\)/);
 });

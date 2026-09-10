@@ -1585,3 +1585,21 @@ input[type="text"]:focus {
   overflow-wrap: anywhere;
   color: var(--ink-soft);
 }
+
+/* 이 PC 정리(반납용) — 저장된 모든 로그인 지우기. */
+.wipe-section {
+  margin-top: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.wipe-hint {
+  margin: 0 0 10px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+#wipe-all {
+  width: 100%;
+}

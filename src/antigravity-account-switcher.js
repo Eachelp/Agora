@@ -46,6 +46,45 @@ class AntigravityAccountSwitcher {
     return this.store.delete(key);
   }
 
+  // 이 PC에서 로그아웃한다. OS 자격 저장소의 인증(clear)과 로컬 계정 파일을 지우고,
+  // 저장된 현재 프로필도 지운다. 다른 기기 로그인은 건드리지 않는다.
+  async logout() {
+    let live = false;
+    try {
+      await this.clear();
+      live = true;
+    } catch {
+      // 저장소에 인증이 없으면 이미 로그아웃 상태다.
+    }
+    this.forgetAccountFile();
+    const removed = this.store.removeActive();
+    return { live, removedProfile: Boolean(removed) };
+  }
+
+  // 반납용: 라이브 인증 + 계정 파일 + 이 PC의 모든 저장 프로필을 지운다.
+  async wipeAll() {
+    let live = false;
+    try {
+      await this.clear();
+      live = true;
+    } catch {
+      // 없으면 이미 로그아웃 상태.
+    }
+    this.forgetAccountFile();
+    const removed = this.store.clearAll();
+    return { live, removedProfiles: removed };
+  }
+
+  // ~/.gemini/google_accounts.json(로컬 계정 캐시)을 지운다. 없으면 조용히 넘어간다.
+  forgetAccountFile() {
+    try {
+      require("node:fs").rmSync(this.accountFile, { force: true });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   currentAccountHint() {
     try {
       const current = JSON.parse(fs.readFileSync(this.accountFile, "utf8"));

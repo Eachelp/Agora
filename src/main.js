@@ -161,6 +161,8 @@ const {
   restoreCodexProxyMode,
   teardownCodexProxyOnQuit,
   startCodexLogin,
+  logoutProvider,
+  wipeAllAccounts,
   submitProviderLoginInput,
   cancelProviderLogin,
   openProviderLoginUrl,
@@ -336,6 +338,12 @@ function registerIpcHandlers() {
         return { ok: true, login: { running: isProviderLoginRunning(provider) } };
       }
 
+      if (action === "logout") {
+        // 라이브 인증(이 PC 로컬 복사본)을 지운다. 다른 기기 로그인은 그대로.
+        await logoutProvider(provider);
+        return { ok: true, data: await getSettingsData(), login: { running: false } };
+      }
+
       let succeeded = false;
       if (action === "login") {
         succeeded = provider === "codex" ? await startCodexLogin() : await startProviderLogin(provider);
@@ -362,6 +370,20 @@ function registerIpcHandlers() {
         data: await getSettingsData(),
         login: { running: isProviderLoginRunning(provider) },
       };
+    } catch (error) {
+      return { ok: false, error: error.message || String(error) };
+    }
+  });
+
+  // 반납용: 이 PC의 모든 CLI 로그인·저장 계정을 지운다. 되돌릴 수 없다.
+  ipcMain.handle("settings:wipe-all", async () => {
+    try {
+      const { failures } = await wipeAllAccounts();
+      const data = await getSettingsData();
+      if (failures.length > 0) {
+        return { ok: false, error: `일부 계정을 지우지 못했습니다:\n${failures.join("\n")}`, data };
+      }
+      return { ok: true, data };
     } catch (error) {
       return { ok: false, error: error.message || String(error) };
     }

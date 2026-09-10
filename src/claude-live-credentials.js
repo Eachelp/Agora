@@ -24,6 +24,15 @@ function createClaudeFileStore(home = os.homedir()) {
     write(secret) {
       atomicWrite(file, secret);
     },
+    // 이 PC에서 로그아웃 = 라이브 자격 증명 파일을 지운다. 없으면 조용히 넘어간다.
+    clear() {
+      try {
+        fs.rmSync(file, { force: true });
+        return true;
+      } catch {
+        return false;
+      }
+    },
   };
 }
 
@@ -98,6 +107,17 @@ function createClaudeKeychainStore() {
       if (JSON.stringify(readFromKeychain()) !== payload) {
         throw new Error("Keychain에 저장된 Claude 자격 증명이 원문과 일치하지 않습니다.");
       }
+    },
+    // 로그아웃 = Keychain 항목을 지운다. 항목이 없으면(status!=0) 이미 로그아웃 상태로 본다.
+    clear() {
+      cached = null;
+      cachedAt = 0;
+      const result = spawnSync(
+        "security",
+        ["delete-generic-password", "-s", CLAUDE_KEYCHAIN_SERVICE],
+        { encoding: "utf8", timeout: 10000 }
+      );
+      return result.status === 0;
     },
   };
 }

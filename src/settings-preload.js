@@ -6,6 +6,7 @@ const CHANNELS = Object.freeze({
   FONTS: "settings:fonts",
   ACCOUNT: "settings:account",
   ACCOUNT_LOGIN: "settings:account-login",
+  WIPE_ALL: "settings:wipe-all",
   USAGE: "settings:usage",
   APPEARANCE: "appearance:update",
   NAVIGATE: "settings:navigate",
@@ -16,6 +17,7 @@ contextBridge.exposeInMainWorld("settingsApi", {
   save: (value) => ipcRenderer.invoke(CHANNELS.SAVE, value),
   fonts: () => ipcRenderer.invoke(CHANNELS.FONTS),
   account: (value) => ipcRenderer.invoke(CHANNELS.ACCOUNT, value),
+  wipeAll: () => ipcRenderer.invoke(CHANNELS.WIPE_ALL),
   usage: () => ipcRenderer.invoke(CHANNELS.USAGE),
   onAppearance: (handler) => {
     if (typeof handler !== "function") return () => {};

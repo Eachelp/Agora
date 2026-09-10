@@ -709,6 +709,71 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
     return true;
   }
 
+  // 이 PC에서 로그아웃한다. 라이브 자격 증명(이 PC의 로컬 복사본)을 지우므로
+  // credential mutation이다 — 전환·로그인과 똑같이 계정 경계 뒤에서 한다.
+  // 진행 중이던 managed turn이 반쯤 지워진 자격 증명으로 이어지지 않게 막고,
+  // 로그아웃이 끝나면 경계를 닫는다. 다른 기기의 로그인 세션은 건드리지 않는다.
+  async function logoutProvider(provider) {
+    const switcher = provider === "codex"
+      ? codexAccountSwitcher
+      : provider === "agy"
+        ? antigravityAccountSwitcher
+        : provider === "claude"
+          ? claudeAccountSwitcher
+          : null;
+    if (!switcher) throw new Error("지원하지 않는 계정 유형입니다.");
+    const boundary = await installAccountBoundaryOrFail(provider);
+    let result;
+    try {
+      result = await switcher.logout();
+    } finally {
+      completeAccountBoundary(boundary, provider);
+    }
+    if (provider === "codex") invalidateProxyAccountsCache();
+    clearUsageCache(provider);
+    refreshTrayMenu();
+    return result;
+  }
+
+  // 반납용: 이 PC의 세 CLI 로그인과 저장 계정을 전부 지운다. provider마다 경계를
+  // 세우고(그 provider의 managed turn을 멈춘 뒤) 지운다. 한 provider가 실패해도
+  // 나머지는 계속 지우고, 실패는 모아서 알린다.
+  async function wipeAllAccounts() {
+    const providers = ["claude", "codex", "agy"];
+    const results = {};
+    const failures = [];
+    for (const provider of providers) {
+      try {
+        results[provider] = await logoutProviderWipe(provider);
+      } catch (error) {
+        failures.push(`${provider}: ${error?.message || String(error)}`);
+      }
+    }
+    refreshTrayMenu();
+    return { results, failures };
+  }
+
+  async function logoutProviderWipe(provider) {
+    const switcher = provider === "codex"
+      ? codexAccountSwitcher
+      : provider === "agy"
+        ? antigravityAccountSwitcher
+        : provider === "claude"
+          ? claudeAccountSwitcher
+          : null;
+    if (!switcher) throw new Error("지원하지 않는 계정 유형입니다.");
+    const boundary = await installAccountBoundaryOrFail(provider);
+    let result;
+    try {
+      result = await switcher.wipeAll();
+    } finally {
+      completeAccountBoundary(boundary, provider);
+    }
+    if (provider === "codex") invalidateProxyAccountsCache();
+    clearUsageCache(provider);
+    return result;
+  }
+
   function deleteProviderAccount(provider, profileKey) {
     if (typeof profileKey !== "string" || !profileKey) {
       throw new Error("올바르지 않은 계정 키입니다.");
@@ -1089,6 +1154,8 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
     restoreCodexProxyMode,
     teardownCodexProxyOnQuit,
     startCodexLogin,
+    logoutProvider,
+    wipeAllAccounts,
     submitProviderLoginInput,
     cancelProviderLogin,
     openProviderLoginUrl,

@@ -60,6 +60,22 @@ class ClaudeAccountSwitcher {
     return this.store.delete(key);
   }
 
+  // 이 PC에서 로그아웃한다. 라이브 자격 증명(파일/Keychain)을 지우고, 저장된
+  // 현재 프로필도 함께 지운다. 다른 기기의 로그인 세션은 건드리지 않는다.
+  // (라이브 자격 증명은 이 PC의 로컬 복사본일 뿐이다.)
+  logout() {
+    const live = typeof this.liveStore.clear === "function" ? this.liveStore.clear() : false;
+    const removed = this.store.removeActive();
+    return { live, removedProfile: Boolean(removed) };
+  }
+
+  // 반납용: 라이브 자격 증명 + 이 PC의 모든 저장 프로필을 지운다.
+  wipeAll() {
+    const live = typeof this.liveStore.clear === "function" ? this.liveStore.clear() : false;
+    const removed = this.store.clearAll();
+    return { live, removedProfiles: removed };
+  }
+
   // refreshToken 없이 이미 만료된 accessToken만 있는 프로필은 전환 대상이 될 수 없습니다.
   // 그대로 live 자격 증명에 덮어쓰면 갱신 경로가 없어 Claude 로그인이 깨집니다.
   static isProfileUsable(secret) {
