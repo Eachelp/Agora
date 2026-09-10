@@ -461,7 +461,7 @@ class CodexManagedAdapter extends HarnessAdapter {
           ok: false,
           rateLimited: true,
           stopReason: RATE_LIMITED_STOP_REASON,
-          error: rateLimitMessage(limit),
+          error: rateLimitMessage(limit, params.error && params.error.message),
           ...(ts.collector.deltaText.trim() ? { partialText: ts.collector.deltaText.trim() } : {}),
         });
       }
@@ -645,7 +645,7 @@ class CodexManagedAdapter extends HarnessAdapter {
       this._finalize(ts, {
         ok: false,
         ...(limit ? { rateLimited: true } : {}),
-        error: limit ? rateLimitMessage(limit) : detail,
+        error: limit ? rateLimitMessage(limit, detail) : detail,
         stopReason: limit ? RATE_LIMITED_STOP_REASON : "CODEX_TURN_FAILED",
         ...(ts.collector.deltaText.trim() ? { partialText: ts.collector.deltaText.trim() } : {}),
       });

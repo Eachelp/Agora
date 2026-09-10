@@ -46,8 +46,9 @@ function toSeconds(value, unit) {
 }
 
 function extractResetText(source) {
-  // "resets at 15:30" / "resets_at: 2026-09-10T15:30" 같은 시각 표기는 그대로 넘긴다.
-  const at = /resets?(?:_at)?\s*(?:at|:)\s*["']?([0-9T:\-\/ ]{4,25}(?:[AP]M)?)/i.exec(source);
+  // "resets at 5pm (Asia/Seoul)" 같은 시각+시간대, "15:30", ISO 조각을 모두 그대로 살린다.
+  // 긴 숫자/ISO 조각을 먼저 시도하고, 안 맞으면 "5pm"류 짧은 시각을 본다.
+  const at = /resets?(?:_at)?\s*(?:at|:)\s*["']?([0-9T:\-\/ ]{4,25}(?:[AP]M)?(?:\s*\([^)\n]{1,40}\))?|\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\.?)?(?:\s*\([^)\n]{1,40}\))?)/i.exec(source);
   return at ? at[1].trim() : null;
 }
 
@@ -75,13 +76,23 @@ function formatWait(seconds) {
   return rest ? `${hours}시간 ${rest}분` : `${hours}시간`;
 }
 
-// 사용자에게 보일 오류 문구. 누가 막혔는지는 말풍선(에이전트)이 이미 말하므로
-// 공급자 이름을 넣지 않는다.
-function rateLimitMessage(info = {}) {
+// 사용자에게 보일 오류 문구. 공급자가 이미 사람이 읽을 안내(Claude CLI의
+// "Your limit will reset at 5pm (Asia/Seoul)" 같은)를 줬으면 그 원문을 지우지
+// 않고 그대로 앞에 두고, 원문이 리셋을 말하지 않을 때만 계산한 대기 시간을
+// 덧붙인다. 원문이 JSON 조각처럼 구조화된 텍스트면 사람용 기본 문구로 바꾼다.
+// 누가 막혔는지는 말풍선(에이전트)이 이미 말하므로 공급자 이름을 넣지 않는다.
+const RESET_MENTIONED = /\b(?:try again in|resets? (?:at|in) |will reset|until)\b|리셋|후 다시|뒤 다시/i;
+const STRUCTURED_TEXT = /^[\[{]|"[A-Za-z_]+"\s*:/;
+
+function rateLimitMessage(info = {}, original = "") {
   const wait = formatWait(info.resetInSeconds);
-  let text = "사용 한도에 도달했습니다.";
-  if (wait) text += ` 약 ${wait} 후 다시 시도할 수 있습니다.`;
-  else if (info.resetText) text += ` (리셋: ${info.resetText})`;
+  const source = String(original || "").replace(/\s+/g, " ").trim().slice(0, 300);
+  const keepOriginal = Boolean(source) && !STRUCTURED_TEXT.test(source);
+  let text = keepOriginal ? source : "사용 한도에 도달했습니다.";
+  if (!/[.!?。]$/.test(text)) text += ".";
+  const resetKnown = keepOriginal && RESET_MENTIONED.test(source);
+  if (wait && !resetKnown) text += ` 약 ${wait} 후 다시 시도할 수 있습니다.`;
+  else if (!wait && !resetKnown && info.resetText) text += ` (리셋: ${info.resetText})`;
   text += " 다른 담당자에게 보내거나 리셋 후 다시 보내 주세요.";
   return text;
 }

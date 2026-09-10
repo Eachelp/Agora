@@ -382,7 +382,7 @@ function runAgentProcess({
             ok: false,
             rateLimited: true,
             stopReason: RATE_LIMITED_STOP_REASON,
-            error: rateLimitMessage(limit),
+            error: rateLimitMessage(limit, event.message),
             ...(deltaText.trim() ? { partialText: deltaText.trim() } : {}),
           });
           return;
@@ -634,7 +634,7 @@ function runAgentProcess({
             ok: false,
             rateLimited: true,
             stopReason: RATE_LIMITED_STOP_REASON,
-            error: rateLimitMessage(limit),
+            error: rateLimitMessage(limit, detail),
             ...(deltaText.trim() ? { partialText: deltaText.trim() } : {}),
             output: outputInfo,
           });

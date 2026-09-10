@@ -596,8 +596,10 @@ test("구조화 오류에 한도 문구가 오면 기다리지 않고 rateLimite
   assert.equal(result.ok, false);
   assert.equal(result.rateLimited, true);
   assert.equal(result.stopReason, "PROVIDER_RATE_LIMITED");
-  assert.match(result.error, /사용 한도/);
-  assert.match(result.error, /12분/);
+  // 공급자 원문은 지우지 않고 앞에 남기고, 탈출 안내만 덧붙인다(원문이 리셋을 말하니 대기 시간 중복 없음).
+  assert.match(result.error, /^Rate limit reached\. Please try again in 12 minutes\./);
+  assert.ok(!/약 12분/.test(result.error));
+  assert.match(result.error, /다른 담당자에게/);
   assert.equal(result.partialText, "부분");
   assert.ok(Date.now() - started < 15000, "타임아웃까지 기다리지 않는다");
 });

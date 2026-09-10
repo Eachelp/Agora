@@ -840,7 +840,8 @@ test("한도 오류 알림이 오면 turn/completed를 기다리지 않고 rateL
   assert.equal(r.ok, false);
   assert.equal(r.rateLimited, true);
   assert.equal(r.stopReason, "PROVIDER_RATE_LIMITED");
-  assert.match(r.error, /12분/);
+  assert.match(r.error, /^Rate limit reached, try again in 12 minutes/);
+  assert.match(r.error, /다른 담당자에게/);
   assert.equal(r.partialText, "부분");
   assert.equal(client.interrupts.length, 1, "재시도 루프를 끊기 위해 interrupt한다");
 });
@@ -855,5 +856,6 @@ test("turn/completed(failed)의 오류가 한도 문구면 rateLimited로 분류
   const r = await run.promise;
   assert.equal(r.ok, false);
   assert.equal(r.rateLimited, true);
-  assert.match(r.error, /사용 한도/);
+  assert.match(r.error, /^usage limit exceeded/);
+  assert.match(r.error, /다른 담당자에게/);
 });
