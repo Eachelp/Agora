@@ -1378,8 +1378,30 @@ test("모델 드롭다운은 저장된 노력 변형 id를 접힌 베이스+노�
   // 지금 목록에 없는 모델(그 CLI가 안 잡음)은 저장값을 임의로 바꾸지 않는다.
   assert.equal(fold("gemini-9-flash-high", "default"), "gemini-9-flash-high|default");
   assert.equal(fold("default", "default"), "default|default");
-  // 두 렌더 지점 모두 이 접기를 지난다(원시 변형이 "(현재 설정)"으로 새지 않게).
+  // 세 렌더 지점(프로젝트 기본 담당자·역할 담당자·레일 참가자 팝오버) 모두
+  // 이 접기를 지난다 — 원시 변형이 어느 드롭다운에서도 그대로 새지 않게.
   const renderer = src;
-  assert.match(renderer, /const savedFold = foldSavedModel\(modelOptions,/);
+  assert.equal((renderer.match(/foldSavedModel\(/g) || []).length >= 4, true, "세 렌더 지점 + 정의");
   assert.match(renderer, /const fold = foldSavedModel\(options, selectedModel, selectedEffort\)/);
+  assert.match(renderer, /const savedFold = foldSavedModel\(modelOptions, agent\.model, agent\.effort\)/);
+});
+
+// 접힐 베이스가 지금 목록에 없는 저장 변형은 원시 id 대신 접힌 라벨로 보여준다.
+test("목록에 없는 저장 노력 변형은 드롭다운에 접힌 라벨로 끼워 넣는다", () => {
+  const vm = require("node:vm");
+  const src = read("src/chat.js");
+  const context = {};
+  vm.createContext(context);
+  for (const name of ["effortVariantLabel", "strayModelLabel"]) {
+    const start = src.indexOf(`function ${name}(`);
+    const end = src.indexOf("\n}\n", start) + 2;
+    assert.ok(start > 0, `${name}를 찾지 못했습니다`);
+    vm.runInContext(src.slice(start, end), context);
+  }
+  assert.equal(context.effortVariantLabel("gemini-3.8-flash-high"), "gemini-3.8-flash (높음)");
+  assert.equal(context.effortVariantLabel("claude-opus-4-6-thinking"), null);
+  // 원시 접미사가 그대로 노출되지 않는다.
+  assert.equal(context.strayModelLabel("gemini-3.8-flash-high"), "gemini-3.8-flash (높음) · 현재 설정");
+  assert.equal(context.strayModelLabel("gemini-3.8-flash-high", "현재 설정 · 목록에 없음"), "gemini-3.8-flash (높음) · 현재 설정 · 목록에 없음");
+  assert.equal(context.strayModelLabel("some-model"), "some-model (현재 설정)");
 });

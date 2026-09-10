@@ -469,6 +469,22 @@ function foldSavedModel(options, savedModel, savedEffort = "default") {
   return { model: savedModel, effort: savedEffort };
 }
 
+// 노력 변형 id(gemini-3.8-flash-high)를 사람이 읽기 좋은 라벨로. 접힐 짝(베이스)이
+// 지금 목록에 없어 "저장된 값"으로 남을 때 원시 id 대신 이 라벨을 쓴다.
+function effortVariantLabel(id) {
+  const match = /^(.+)-(low|medium|high)$/.exec(String(id || ""));
+  if (!match) return null;
+  const ko = { low: "낮음", medium: "중간", high: "높음" }[match[2]];
+  return `${match[1]} (${ko})`;
+}
+
+// 목록에 없는 저장 모델을 드롭다운에 끼워 넣을 때의 라벨. 노력 변형이면 접힌
+// 모양으로, 아니면 id 그대로. 값(option.value)은 그대로 둬 실행에 쓰인다.
+function strayModelLabel(id, note = "현재 설정") {
+  const pretty = effortVariantLabel(id);
+  return pretty ? `${pretty} · ${note}` : `${id} (${note})`;
+}
+
 function roleConfigFromProject(project, roleId) {
   const raw = project?.defaultRoles?.[roleId];
   if (typeof raw === "string") return { agentId: raw, model: "", effort: "" };
@@ -1309,7 +1325,7 @@ function openProjectSettings(anchor, project) {
       const savedFold = foldSavedModel(modelOptions, saved.model || agent.model || "default", saved.effort || agent.effort || "default");
       const currentModel = savedFold.model;
       if (!modelOptions.some((option) => option.id === currentModel)) {
-        modelOptions.push({ id: currentModel, label: `${currentModel} (현재 설정)`, efforts: [] });
+        modelOptions.push({ id: currentModel, label: strayModelLabel(currentModel), efforts: [] });
       }
       for (const option of modelOptions) {
         const item = document.createElement("option");
@@ -1428,7 +1444,7 @@ function openProjectSettings(anchor, project) {
         selectedModel = fold.model;
         selectedEffort = fold.effort;
         if (selectedModel && !options.some((option) => option.id === selectedModel)) {
-          options.push({ id: selectedModel, label: `${selectedModel} (현재 설정)`, efforts: [] });
+          options.push({ id: selectedModel, label: strayModelLabel(selectedModel), efforts: [] });
         }
         for (const option of options) {
           const item = document.createElement("option");
@@ -2745,17 +2761,19 @@ function openAgentPopover(anchor, agentId) {
     // 모델 선택
     const modelSelect = document.createElement("select");
     const modelOptions = modelOptionsForProvider(provider);
+    // 저장된 노력 변형(gemini-3.8-flash-high)은 접힌 베이스로 옮겨 선택한다.
+    const savedFold = foldSavedModel(modelOptions, agent.model, agent.effort);
     for (const model of modelOptions) {
       const option = document.createElement("option");
       option.value = model.id;
       option.textContent = model.label || model.id;
       modelSelect.append(option);
     }
-    const currentModel = agent.model;
+    const currentModel = savedFold.model;
     if (!modelOptions.some((option) => option.id === currentModel)) {
       const legacyOption = document.createElement("option");
       legacyOption.value = currentModel;
-      legacyOption.textContent = `${currentModel} (현재 설정 · 목록에 없음)`;
+      legacyOption.textContent = strayModelLabel(currentModel, "현재 설정 · 목록에 없음");
       modelSelect.append(legacyOption);
     }
     modelSelect.value = currentModel;
@@ -2795,7 +2813,7 @@ function openAgentPopover(anchor, agentId) {
       effortSelect.value = efforts.includes(selected) ? selected : efforts[0] || "";
       effortSelect.disabled = !provider.available || efforts.length <= 1;
     }
-    populateEfforts(currentModel, agent.effort);
+    populateEfforts(currentModel, savedFold.effort || agent.effort);
     if (effortSelect.disabled && provider.status !== "cli") {
       effortSelect.title = "CLI 설치 후 사용할 수 있습니다";
     } else if (effortOptionsForModel(provider, currentModel).length === 0) {
