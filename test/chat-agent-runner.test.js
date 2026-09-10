@@ -583,3 +583,48 @@ test("승인 요청으로 끝나도 화면에 보였던 중간 출력을 보존�
   assert.equal(result.approvalRequired, true);
   assert.equal(result.partialText, "거의 다 만든 시안");
 });
+
+test("구조화 오류에 한도 문구가 오면 기다리지 않고 rateLimited로 즉시 끝낸다", async () => {
+  const script = [
+    "console.log(JSON.stringify({kind:'delta',text:'부분'}))",
+    "console.log(JSON.stringify({kind:'error',message:'Rate limit reached. Please try again in 12 minutes.'}))",
+    // 재시도 중인 것처럼 살아 있는다 — 러너가 죽이지 않으면 끝나지 않는다.
+    "setTimeout(()=>{},60000)",
+  ].join(";");
+  const started = Date.now();
+  const result = await runNode(script, { parseLine: (line) => JSON.parse(line), timeoutMs: 20000 }).promise;
+  assert.equal(result.ok, false);
+  assert.equal(result.rateLimited, true);
+  assert.equal(result.stopReason, "PROVIDER_RATE_LIMITED");
+  assert.match(result.error, /사용 한도/);
+  assert.match(result.error, /12분/);
+  assert.equal(result.partialText, "부분");
+  assert.ok(Date.now() - started < 15000, "타임아웃까지 기다리지 않는다");
+});
+
+test("stderr의 한도 문구와 비정상 종료도 rateLimited로 분류한다", async () => {
+  const script = "process.stderr.write('Error: You exceeded your current quota, resets_in_seconds: 300');process.exit(1)";
+  const result = await runNode(script).promise;
+  assert.equal(result.ok, false);
+  assert.equal(result.rateLimited, true);
+  assert.match(result.error, /5분/);
+});
+
+test("무음 시계는 상태 줄이 아니라 진전 이벤트로만 되감긴다", async () => {
+  // 자식 수명(≈1초)을 무음 창(400ms)보다 충분히 길게, 진전 간격(25ms)은 훨씬 짧게 둬
+  // 병렬 테스트 부하에서도 결과가 흔들리지 않게 한다. 첫 줄은 즉시 찍어 기동 지연을 덮는다.
+  const loop = (payload) =>
+    `const p=()=>console.log(JSON.stringify(${payload}));p();let n=0;const t=setInterval(()=>{p();if(++n>=40){clearInterval(t);console.log(JSON.stringify({kind:'final',text:'끝'}))}},25)`;
+  // 한도로 재시도 중인 CLI처럼 상태 줄만 계속 뿌리면 "응답 없음"이 떠야 한다.
+  const events = [];
+  await runNode(loop("{kind:'status',label:'retrying'}"), {
+    parseLine: (line) => JSON.parse(line), silenceWarningMs: 400, onEvent: (e) => events.push(e),
+  }).promise;
+  assert.ok(events.some((e) => e.kind === "status" && /응답 없음/.test(e.label)), "상태 줄만으로는 무음이 풀리지 않는다");
+  // delta가 계속 오면 진전이므로 "응답 없음"이 뜨지 않는다.
+  const events2 = [];
+  await runNode(loop("{kind:'delta',text:'x'}"), {
+    parseLine: (line) => JSON.parse(line), silenceWarningMs: 400, onEvent: (e) => events2.push(e),
+  }).promise;
+  assert.ok(!events2.some((e) => e.kind === "status" && /응답 없음/.test(e.label)), "진전이 있으면 무음 경고가 없다");
+});

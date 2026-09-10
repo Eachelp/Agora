@@ -12,6 +12,11 @@ const {
   createCodexTurnCollector,
 } = require("./codex-app-server-events");
 const { buildRunMetrics } = require("../../chat/chat-run-metrics");
+const { detectRateLimit, rateLimitMessage, RATE_LIMITED_STOP_REASON } = require("../../chat/rate-limit-signal");
+
+// 무음 시계를 되감는 "진전" 알림. 상태·토큰 카운트·한도 알림처럼 내용 없는 메시지는
+// 진전이 아니다 — 한도로 재시도 중일 때 그런 메시지가 계속 와 무음 감지를 눈멀게 했다.
+const PROGRESS_METHODS = new Set(["item/agentMessage/delta", "item/started", "item/completed"]);
 
 // Stage C-3 — CodexManagedAdapter
 //
@@ -154,6 +159,7 @@ class CodexManagedAdapter extends HarnessAdapter {
       silenceTimer: null,
       timeoutTimer: null,
       lastActivityAt: startedAt,
+      lastProgressAt: startedAt,
       resolve,
     };
     ts.collector = createCodexTurnCollector({ onEvent: invocation.onEvent });
@@ -194,7 +200,7 @@ class CodexManagedAdapter extends HarnessAdapter {
       if (ts.settled) return;
       const now = Date.now();
       if (now < nextSilenceAt) return;
-      const idleMinutes = Math.max(1, Math.round((now - ts.lastActivityAt) / 60000));
+      const idleMinutes = Math.max(1, Math.round((now - ts.lastProgressAt) / 60000));
       if (typeof invocation.onEvent === "function") {
         try { invocation.onEvent({ kind: "status", label: `${idleMinutes}분째 응답 없음` }); } catch {}
       }
@@ -423,6 +429,7 @@ class CodexManagedAdapter extends HarnessAdapter {
       }
       if (ts.cancelRequested && ts.turnId) this._interrupt(ts);
       this._noteActivity(ts, method, params);
+      ts.lastProgressAt = Date.now();
       return;
     }
     if (method === "turn/completed") {
@@ -434,9 +441,31 @@ class CodexManagedAdapter extends HarnessAdapter {
     }
     // per-turn event(item/*, error 등): turnId가 현재 active turn과 일치할 때만 수용.
     // 이전 turn의 지연 delta/evidence가 현재 turn에 유입되면 안 된다(BLOCKER 1-A).
-    if (this._correlateTurn(ts, params.turnId, false) !== "match") return;
+    // 스레드 수준 error(turnId 없음)는 그 스레드의 활성 턴 것으로 본다.
+    const correlation = method === "error" && !params.turnId
+      ? "match"
+      : this._correlateTurn(ts, params.turnId, false);
+    if (correlation !== "match") return;
     this._noteActivity(ts, method, params);
+    if (PROGRESS_METHODS.has(method)) ts.lastProgressAt = Date.now();
     ts.collector.ingest(method, params);
+    // 한도 오류는 turn/completed를 기다리지 않고 바로 끝낸다. app-server는 429에서
+    // 종료 알림 없이 재시도만 하기도 해, 여기서 끊지 않으면 "입력 중"이 영원히 남는다.
+    // timeout 경로와 같은 이유로 handle을 즉시 invalidate해 다음 턴의 스레드 선점 race를 막는다.
+    if (method === "error" && !ts.settled) {
+      const limit = detectRateLimit(params.error && params.error.message);
+      if (limit) {
+        this._invalidateHandle(ts.logicalHandle, RATE_LIMITED_STOP_REASON);
+        this._interrupt(ts);
+        this._finalize(ts, {
+          ok: false,
+          rateLimited: true,
+          stopReason: RATE_LIMITED_STOP_REASON,
+          error: rateLimitMessage(limit),
+          ...(ts.collector.deltaText.trim() ? { partialText: ts.collector.deltaText.trim() } : {}),
+        });
+      }
+    }
   }
 
   _respondSafely(id, result) {
@@ -494,6 +523,7 @@ class CodexManagedAdapter extends HarnessAdapter {
     ts.seenApprovalIds.add(rid);
     ts.pendingApprovals.set(rid, pending);
     this._noteActivity(ts, method, params);
+    ts.lastProgressAt = Date.now();
 
     let approved = false;
     try {
@@ -611,10 +641,12 @@ class CodexManagedAdapter extends HarnessAdapter {
     }
     if (status === "failed") {
       const detail = (turn && turn.error && turn.error.message) || ts.collector.lastError || "실행 실패";
+      const limit = detectRateLimit(detail);
       this._finalize(ts, {
         ok: false,
-        error: detail,
-        stopReason: "CODEX_TURN_FAILED",
+        ...(limit ? { rateLimited: true } : {}),
+        error: limit ? rateLimitMessage(limit) : detail,
+        stopReason: limit ? RATE_LIMITED_STOP_REASON : "CODEX_TURN_FAILED",
         ...(ts.collector.deltaText.trim() ? { partialText: ts.collector.deltaText.trim() } : {}),
       });
       return;

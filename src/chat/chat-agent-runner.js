@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const { StringDecoder } = require("node:string_decoder");
 const { buildRunMetrics } = require("./chat-run-metrics");
 const { isInternalToolError } = require("./chat-events");
+const { detectRateLimit, rateLimitMessage, RATE_LIMITED_STOP_REASON } = require("./rate-limit-signal");
 
 // 에이전트 작업은 며칠간 이어질 수도 있으므로 기본 실행 시간 제한을 두지 않습니다.
 // timeoutMs는 테스트나 명시적인 호출자가 양수를 전달한 경우에만 적용됩니다.
@@ -308,11 +309,19 @@ function runAgentProcess({
     // 무음 감지: stdout/stderr가 silenceWarningMs만큼 조용하면 실행은 그대로 두고
     // 상태 이벤트만 알립니다. 침묵이 계속되면 같은 간격으로 반복 알립니다.
     let lastActivityAt = Date.now();
-    let nextSilenceWarnAt = lastActivityAt + silenceWarningMs;
+    // 무음 시계는 "바이트가 왔는가"가 아니라 "진전 이벤트(delta·도구·파일·승인)가
+    // 왔는가"로 되감는다. 한도로 재시도 중인 CLI가 상태 줄만 계속 뿌리면 바이트
+    // 기준으로는 살아 있어 보여 "N분째 응답 없음"이 영영 뜨지 않았다.
+    let lastProgressAt = lastActivityAt;
+    let nextSilenceWarnAt = lastProgressAt + silenceWarningMs;
     const noteActivity = () => {
       lastActivityAt = Date.now();
-      nextSilenceWarnAt = lastActivityAt + silenceWarningMs;
     };
+    const noteProgress = () => {
+      lastProgressAt = Date.now();
+      nextSilenceWarnAt = lastProgressAt + silenceWarningMs;
+    };
+    let rateLimitInfo = null;
 
     const notifyExplorationStatus = () => {
       if (typeof parseLine?.getTelemetry !== "function") return;
@@ -345,15 +354,40 @@ function runAgentProcess({
         if (settled) return;
         const now = Date.now();
         if (now < nextSilenceWarnAt) return;
-        const idleMinutes = Math.max(1, Math.round((now - lastActivityAt) / 60000));
+        const idleMinutes = Math.max(1, Math.round((now - lastProgressAt) / 60000));
         emit({ kind: "status", label: `${idleMinutes}분째 응답 없음` });
         nextSilenceWarnAt = now + silenceWarningMs;
       }, Math.min(silenceWarningMs, SILENCE_CHECK_INTERVAL_MS));
       if (typeof silenceTimer.unref === "function") silenceTimer.unref();
     }
 
+    const PROGRESS_KINDS = new Set([
+      "delta", "text", "message", "final", "tool-started", "tool-finished",
+      "command-started", "command-finished", "command", "file", "image", "approval-required",
+    ]);
     const emit = (event) => {
       if (!event || settled) return;
+      if (PROGRESS_KINDS.has(event.kind)) noteProgress();
+      // 한도 문구가 오류로 오면 기다리지 않고 바로 끝낸다. 재시도 루프에 갇힌
+      // CLI를 그대로 두면 무음 감지도 큐 경고도 비켜가 "입력 중"이 영원히 남는다.
+      if (event.kind === "error" && !rateLimitInfo) {
+        const limit = detectRateLimit(event.message);
+        if (limit) {
+          rateLimitInfo = limit;
+          if (typeof onEvent === "function") {
+            try { onEvent({ kind: "status", label: "사용 한도 도달 — 실행을 멈춥니다" }); } catch {}
+          }
+          killTree(child, platform);
+          finish({
+            ok: false,
+            rateLimited: true,
+            stopReason: RATE_LIMITED_STOP_REASON,
+            error: rateLimitMessage(limit),
+            ...(deltaText.trim() ? { partialText: deltaText.trim() } : {}),
+          });
+          return;
+        }
+      }
       if (event.kind === "final") parsedFinal = event.text;
       // 재연결 과정에서는 여러 오류가 연속으로 옵니다. 첫 경고보다 마지막
       // turn.failed 원인이 사용자에게 더 유용하므로 최신 오류를 보존합니다.
@@ -593,6 +627,19 @@ function runAgentProcess({
       if (code !== 0 || parsedError) {
         const detail =
           parsedError || String(stderr || "").trim().split(/\r?\n/).slice(-3).join(" ");
+        // 종료 직전 stderr/오류에 한도 문구가 있으면 원인을 분명히 밝힌다.
+        const limit = rateLimitInfo || detectRateLimit(`${parsedError || ""}\n${stderr || ""}`);
+        if (limit) {
+          finish({
+            ok: false,
+            rateLimited: true,
+            stopReason: RATE_LIMITED_STOP_REASON,
+            error: rateLimitMessage(limit),
+            ...(deltaText.trim() ? { partialText: deltaText.trim() } : {}),
+            output: outputInfo,
+          });
+          return;
+        }
         finish({
           ok: false,
           error: detail || `종료 코드 ${code}`,

@@ -176,6 +176,10 @@ function extractAnswerOptions(text, question = "") {
 
 const DEFAULT_MENTION_CHAIN_LIMIT = 2;
 const LOST_TURN_STALL_SECONDS = 120;
+// 실행 중인 일반 턴이 이 시간 넘게 진전(delta·도구·파일)이 없으면 한 번 안내한다.
+// 큐 정체 경고는 "시작 못 한 턴"만 보고, 러너 무음 감지는 실행을 죽이지 않으므로,
+// 한도로 조용히 멈춘 실행에는 이 안내가 유일한 탈출 신호다.
+const PROGRESS_STALL_MINUTES = 10;
 
 let messageSeq = 0;
 function nextMessageId() {
@@ -245,6 +249,7 @@ class ChatRoom extends EventEmitter {
     this.deferredTurnQueue = [];
     this.pendingTurns = new Map();
     this.lostTurnNotified = new Set();
+    this.progressStallNotified = new Set();
     this.turnStartedAt = new Map();
     this.turnActive = false;
     // 지금 실행 중인 턴들. 독립 발언 묶음에서는 여러 개가 동시에 들어간다.
@@ -1059,6 +1064,49 @@ class ChatRoom extends EventEmitter {
     this.appendSystem("@" + item.agent.id + " 응답이 " + LOST_TURN_STALL_SECONDS + "초 넘게 시작되지 않고 있습니다. 응답이 유실됐을 수 있으니 기다리지 말고 다시 보내 주세요.");
   }
 
+  isFreeChatContext(context = {}) {
+    return !context.specialist && !context.discussion && !context.discussionSummary && !context.simplifyMeta && !context.consult;
+  }
+
+  // 실행 중인 일반 턴 뒤에서 기다리는 다른 에이전트들(이어 발언은 단일 큐라 함께 막힌다).
+  queuedAgentsBehind(agentId) {
+    const ids = [];
+    for (const item of [...this.turnQueue, ...this.deferredTurnQueue]) {
+      if (!this.isGeneralTurn(item)) continue;
+      const id = item.agent && item.agent.id;
+      if (id && id !== agentId && !ids.includes(id)) ids.push(id);
+    }
+    return ids;
+  }
+
+  // 러너가 "N분째 응답 없음"을 알리면, 한도로 멈췄을 수 있음을 한 번만 안내하고
+  // 뒤에 막힌 턴을 같이 보여 준다. 실행은 죽이지 않는다(긴 빌드·테스트일 수도 있다).
+  noteProgressStall(runId, agent, context, event) {
+    if (!event || event.kind !== "status" || !this.isFreeChatContext(context)) return;
+    const match = /^(\d+)분째 응답 없음$/.exec(String(event.label || ""));
+    if (!match || Number(match[1]) < PROGRESS_STALL_MINUTES) return;
+    if (this.progressStallNotified.has(runId)) return;
+    this.progressStallNotified.add(runId);
+    const behind = this.queuedAgentsBehind(agent.id);
+    const tail = behind.length > 0 ? ` 뒤에서 기다리는 턴: ${behind.map((id) => `@${id}`).join(", ")}.` : "";
+    this.appendSystem(
+      `@${agent.id} 응답이 ${match[1]}분째 진전이 없습니다. 사용량 한도로 멈춰 있을 수 있습니다 — 중지(■)한 뒤 다시 보내거나 다른 담당자에게 보내 주세요.${tail}`
+    );
+  }
+
+  // 한도로 끝난 실행 뒤에 기다리던 턴이 있으면, 그것들이 이제 이어진다는 것을 알린다.
+  noteRateLimitedRun(runId, agent, context) {
+    if (!this.isFreeChatContext(context)) return;
+    const key = `${runId}:limited`;
+    if (this.progressStallNotified.has(key)) return;
+    this.progressStallNotified.add(key);
+    const behind = this.queuedAgentsBehind(agent.id);
+    if (behind.length === 0) return;
+    this.appendSystem(
+      `@${agent.id}가 사용 한도로 멈춰 실행을 끝냈습니다. 기다리던 ${behind.map((id) => `@${id}`).join(", ")} 턴이 이어서 실행됩니다.`
+    );
+  }
+
   notifyLostTurn(item) {
     if (!this.isGeneralTurn(item)) return;
     if (this.lostTurnNotified.has(item.turnId)) return;
@@ -1356,6 +1404,7 @@ class ChatRoom extends EventEmitter {
       runId = `r${this.sessionId || "s"}-${this.runSeq}`;
       const emitEvent = (event) => {
         if (generation !== this.generation || !event) return;
+        this.noteProgressStall(runId, agent, context, event);
         this.emit("run-event", {
           runId,
           agentId: agent.id,
@@ -1421,6 +1470,7 @@ class ChatRoom extends EventEmitter {
       }
       if (generation !== this.generation || result?.cancelled) return;
       emitEvent({ kind: "run-end", ok: Boolean(result?.ok) });
+      if (result?.rateLimited) this.noteRateLimitedRun(runId, agent, context);
       if (!result?.approvalRequired || agent.autoApprove || approvedRetry) break;
       // 승인 재시도는 다음 실행에 자동 승인을 실어 보내는 것이고, 자동 승인은
       // workspace-write에서만 유효하다(chat-argv.js). 그 아래 권한에서 승인 카드를

@@ -826,3 +826,34 @@ test("49.10/49.11 Professional Claude/AGY는 각자 등록된 managed adapter로
   assert.equal(codex.calls.length, 0, "Codex managed 미사용");
   assert.equal(proc.calls.length, 0, "professional은 Process 미사용");
 });
+
+test("한도 오류 알림이 오면 turn/completed를 기다리지 않고 rateLimited로 끝내고 interrupt한다", async () => {
+  const { adapter, getClient } = makeAdapter();
+  const run = adapter.runTurn({ context: ctx(), invocation: inv({ requireFinal: false }), session: session("kLimit") });
+  await waitUntil(() => getClient() && countTurnStarts(getClient()) >= 1);
+  const client = getClient();
+  const { threadId, id: turnId } = client.turnsIssued[0];
+  client.emit("item/agentMessage/delta", { threadId, turnId, itemId: "m", delta: "부분" });
+  // app-server는 429에서 turn/completed 없이 재시도만 하기도 한다 — 여기서 끊어야 한다.
+  client.emit("error", { threadId, turnId, error: { message: "Rate limit reached, try again in 12 minutes" } });
+  const r = await run.promise;
+  assert.equal(r.ok, false);
+  assert.equal(r.rateLimited, true);
+  assert.equal(r.stopReason, "PROVIDER_RATE_LIMITED");
+  assert.match(r.error, /12분/);
+  assert.equal(r.partialText, "부분");
+  assert.equal(client.interrupts.length, 1, "재시도 루프를 끊기 위해 interrupt한다");
+});
+
+test("turn/completed(failed)의 오류가 한도 문구면 rateLimited로 분류한다", async () => {
+  const { adapter, getClient } = makeAdapter();
+  const run = adapter.runTurn({ context: ctx(), invocation: inv({ requireFinal: false }), session: session("kLimit2") });
+  await waitUntil(() => getClient() && countTurnStarts(getClient()) >= 1);
+  const client = getClient();
+  const { threadId, id: turnId } = client.turnsIssued[0];
+  client.emit("turn/completed", { threadId, turn: { id: turnId, status: "failed", error: { message: "usage limit exceeded" } } });
+  const r = await run.promise;
+  assert.equal(r.ok, false);
+  assert.equal(r.rateLimited, true);
+  assert.match(r.error, /사용 한도/);
+});

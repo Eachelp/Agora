@@ -4828,3 +4828,63 @@ test("단계별 실행 경로의 BLOCKED도 Run 기록(block.json)과 FSM 상태
   assert.equal(room.specialistBlocked, null);
   assert.equal(fs.readFileSync(path.join(ws, "a.txt"), "utf8").replace(/\r\n/g, "\n"), "half done\n");
 });
+
+async function untilTrue(pred, ms = 2000) {
+  const end = Date.now() + ms;
+  while (!pred()) {
+    if (Date.now() > end) throw new Error("조건을 기다리다 시간이 지났습니다");
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+}
+
+test("실행 중 턴이 10분째 진전이 없으면 한도 가능성과 뒤에 막힌 턴을 한 번만 안내한다", async () => {
+  let captured = null;
+  let resolveRun = null;
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: ({ agent, emitEvent }) => {
+      if (agent.id === "claude") {
+        captured = emitEvent;
+        return { promise: new Promise((resolve) => { resolveRun = resolve; }), cancel: () => {} };
+      }
+      return { promise: Promise.resolve({ ok: true, text: "codex 답" }), cancel: () => {} };
+    },
+  });
+  room.sendUserMessage("@claude 검토해줘");
+  await untilTrue(() => captured);
+  // claude가 도는 동안 codex 턴을 보내 큐에 세운다(이어 발언 = 단일 큐라 함께 막힌다).
+  room.sendUserMessage("@codex 이것도");
+  await new Promise((resolve) => setImmediate(resolve));
+  captured({ kind: "status", label: "5분째 응답 없음" });
+  captured({ kind: "status", label: "10분째 응답 없음" });
+  captured({ kind: "status", label: "15분째 응답 없음" });
+  const notes = room.messages.filter((message) => /진전이 없습니다/.test(message.text || ""));
+  assert.equal(notes.length, 1, "임계 이후 반복 경고에도 한 번만 안내한다");
+  assert.match(notes[0].text, /@claude 응답이 10분째/);
+  assert.match(notes[0].text, /한도/);
+  assert.match(notes[0].text, /중지/);
+  assert.match(notes[0].text, /@codex/);
+  resolveRun({ ok: true, text: "끝" });
+  await settle(room);
+});
+
+test("한도로 끝난 실행 뒤에 기다리던 턴이 있으면 이어서 실행됨을 알린다", async () => {
+  let resolveRun = null;
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: ({ agent }) => agent.id === "claude"
+      ? { promise: new Promise((resolve) => { resolveRun = resolve; }), cancel: () => {} }
+      : { promise: Promise.resolve({ ok: true, text: "codex 답" }), cancel: () => {} },
+  });
+  room.sendUserMessage("@claude 검토");
+  await untilTrue(() => resolveRun);
+  room.sendUserMessage("@codex 이것도");
+  await new Promise((resolve) => setImmediate(resolve));
+  resolveRun({ ok: false, rateLimited: true, stopReason: "PROVIDER_RATE_LIMITED", error: "사용 한도에 도달했습니다." });
+  await settle(room);
+  const note = room.messages.find((message) => /사용 한도로 멈춰/.test(message.text || ""));
+  assert.ok(note, "뒤에 막혔던 턴이 이어진다는 안내가 있다");
+  assert.match(note.text, /@codex/);
+  // 큐에 있던 codex는 실제로 이어서 실행됐다.
+  assert.ok(room.messages.some((message) => message.author === "codex" && message.text === "codex 답"));
+});
