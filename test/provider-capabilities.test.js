@@ -673,7 +673,7 @@ test("agy 모델 목록은 `agy models` 프로브로 갱신된다", async () => 
   // 캐시에도 모델 목록이 함께 저장된다.
   const cached = cacheStore.value[`agy:${agyPath}`];
   assert.ok(Array.isArray(cached.models));
-  assert.equal(cached.modelOptionsVersion, 5);
+  assert.equal(cached.modelOptionsVersion, 6);
   // CLI에 넘길 변형 id는 effortModels에 보존됩니다.
   assert.deepEqual(
     agy.modelOptions.find((option) => option.id === "gemini-3.6-flash").effortModels,
@@ -855,6 +855,28 @@ test("collapseEffortVariants: 자동 발견한 노력 변형(efforts 표기 없�
   });
   // 접미사가 하나뿐인 항목(고정 변형일 수 있음)은 접지 않고 그대로 둔다.
   assert.ok(ids.includes("gpt-oss-99b-medium"), "노력 변형이 하나뿐이면 접지 않는다");
+});
+
+test("collapseEffortVariants: 같은 계열이 이미 접혔으면 단일 변형(-high)도 접고 라벨은 베이스로 정리한다", () => {
+  // 사용자가 gemini-3.8-flash-high 하나만 추가해도, 같은 gemini-#-flash 계열의
+  // 다른 버전(3.7)이 노력으로 접혔으므로 그 계열은 노력을 쓴다는 근거가 된다.
+  const out = collapseEffortVariants([
+    { id: "gemini-3.7-flash-high", label: "Gemini 3.7 Flash (높음)", efforts: ["high"] },
+    { id: "gemini-3.7-flash-low", label: "Gemini 3.7 Flash (낮음)", efforts: ["low"] },
+    // 자동 발견/사용자 추가: 라벨이 id와 같고 형제도 없다.
+    { id: "gemini-3.8-flash-high", label: "gemini-3.8-flash-high", efforts: [] },
+    // 계열 근거가 없는 고정 변형은 그대로 raw로 남는다.
+    { id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (중간)", efforts: [] },
+  ]);
+  const ids = out.map((o) => o.id);
+  assert.ok(ids.includes("gemini-3.8-flash"), "계열 근거가 있으면 단일 변형도 베이스로 접힌다");
+  assert.equal(ids.includes("gemini-3.8-flash-high"), false, "원시 변형은 목록에서 사라진다");
+  const folded = out.find((o) => o.id === "gemini-3.8-flash");
+  assert.equal(folded.label, "gemini-3.8-flash", "라벨에 노력 접미사가 남지 않는다");
+  assert.deepEqual(folded.efforts, ["high"]);
+  assert.deepEqual(folded.effortModels, { high: "gemini-3.8-flash-high" });
+  // curated 고정 변형(계열 근거 없음)은 접지 않는다.
+  assert.ok(ids.includes("gpt-oss-120b-medium"), "계열 근거가 없는 고정 변형은 그대로 둔다");
 });
 
 test("자동 발견한 gemini-3.8-flash 노력 변형이 실제 probe 경로에서 한 모델로 접힌다", async () => {

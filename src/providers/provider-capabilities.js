@@ -157,10 +157,17 @@ const AGY_MODEL_OPTIONS = Object.freeze([
 ]);
 // 노력 변형을 접는 규칙이 바뀌면 올려서 저장된 capability 캐시를 무효화합니다.
 // v5: 자동 발견한 노력 변형(efforts 표기 없음)도 접미사로 접는다.
-const AGY_MODEL_OPTIONS_VERSION = 5;
+const AGY_MODEL_OPTIONS_VERSION = 6;
 
 const EFFORT_VARIANT_ID = /^(.+)-(low|medium|high)$/;
 const EFFORT_ORDER = Object.freeze(["low", "medium", "high"]);
+
+// 버전 숫자를 지운 계열 서명. gemini-3.8-flash → "gemini-#-flash".
+// 같은 계열의 다른 버전이 이미 노력 접미사로 접혔다면, 새 버전이 변형 하나만
+// 올라와도 그 계열은 노력을 쓴다는 근거가 되어 함께 접는다.
+function modelFamilyKey(baseId) {
+  return String(baseId || "").replace(/\d+(?:\.\d+)?/g, "#");
+}
 
 // "Gemini 3.7 Flash (높음)" → "Gemini 3.7 Flash".
 function baseModelLabel(label, baseId) {
@@ -182,7 +189,9 @@ function collapseEffortVariants(options) {
   // 신모델(gemini-3.8-flash-*)도 efforts 표기 없이 똑같이 접힌다 — 예전에는
   // efforts가 비었다는 이유로 접지 않아 별도 모델 3개로 늘어놨다.
   // 접미사가 하나뿐인 항목(gpt-oss-120b-medium처럼 고정 변형일 수 있음)은
-  // 접지 않고 그대로 둔다.
+  // 원칙적으로 접지 않는다. 다만 같은 계열(gemini-#-flash)의 다른 버전이 이미
+  // 노력 접미사로 접혔다면, 새 버전이 -high 하나만 올라와도 그 계열은 노력을
+  // 쓴다는 근거가 있으므로 함께 접는다(사용자가 gemini-3.8-flash-high만 추가한 경우).
   const effortsByBase = new Map();
   for (const option of options) {
     const match = EFFORT_VARIANT_ID.exec(option.id || "");
@@ -194,6 +203,16 @@ function collapseEffortVariants(options) {
   const foldBases = new Set(
     [...effortsByBase].filter(([, efforts]) => efforts.size >= 2).map(([baseId]) => baseId)
   );
+  // 노력을 쓴다고 이미 밝혀진 계열: 같은 베이스에 변형이 2개 이상 있거나,
+  // curated가 efforts를 명시한 항목의 계열 서명을 모은다.
+  const effortFamilies = new Set();
+  for (const option of options) {
+    const match = EFFORT_VARIANT_ID.exec(option.id || "");
+    if (!match) continue;
+    if (foldBases.has(match[1]) || (option.efforts || []).length > 0) {
+      effortFamilies.add(modelFamilyKey(match[1]));
+    }
+  }
 
   const collapsed = [];
   const byBase = new Map();
@@ -201,10 +220,15 @@ function collapseEffortVariants(options) {
   for (const option of options) {
     const match = EFFORT_VARIANT_ID.exec(option.id || "");
     // 접는 조건: (a) 같은 베이스의 노력 변형이 2개 이상(자동 발견 포함)이거나,
-    // (b) curated 목록이 노력을 아는 항목(efforts 있음). curated 변형이 한 개만
-    // 보고돼도 예전처럼 베이스로 접는다. 둘 다 아니면(접미사 하나뿐인 미지의
+    // (b) curated 목록이 노력을 아는 항목(efforts 있음)이거나, (c) 같은 계열의
+    // 다른 버전이 이미 노력으로 접힌 근거가 있는 경우. curated 변형이 한 개만
+    // 보고돼도 예전처럼 베이스로 접는다. 셋 다 아니면(계열 근거 없는 미지의
     // 고정 변형: gpt-oss-120b-medium 등) 그대로 둔다.
-    const foldable = match && (foldBases.has(match[1]) || (option.efforts || []).length > 0);
+    const foldable =
+      match &&
+      (foldBases.has(match[1]) ||
+        (option.efforts || []).length > 0 ||
+        effortFamilies.has(modelFamilyKey(match[1])));
     if (!foldable) {
       collapsed.push(option);
       continue;
@@ -212,10 +236,13 @@ function collapseEffortVariants(options) {
     const [, baseId, effort] = match;
     let entry = byBase.get(baseId);
     if (!entry) {
+      // 자동 발견 항목은 라벨이 id와 같다(gemini-3.8-flash-high). 그대로 두면
+      // 접힌 베이스 라벨에 노력 접미사가 남으니, 이럴 땐 베이스 id를 라벨로 쓴다.
+      const sourceLabel = option.label && option.label !== option.id ? option.label : baseId;
       entry = {
         ...option,
         id: baseId,
-        label: baseModelLabel(option.label, baseId),
+        label: baseModelLabel(sourceLabel, baseId),
         efforts: [],
         effortModels: {},
       };
