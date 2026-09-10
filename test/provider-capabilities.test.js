@@ -673,7 +673,7 @@ test("agy 모델 목록은 `agy models` 프로브로 갱신된다", async () => 
   // 캐시에도 모델 목록이 함께 저장된다.
   const cached = cacheStore.value[`agy:${agyPath}`];
   assert.ok(Array.isArray(cached.models));
-  assert.equal(cached.modelOptionsVersion, 4);
+  assert.equal(cached.modelOptionsVersion, 5);
   // CLI에 넘길 변형 id는 effortModels에 보존됩니다.
   assert.deepEqual(
     agy.modelOptions.find((option) => option.id === "gemini-3.6-flash").effortModels,
@@ -832,4 +832,59 @@ test("강제 새로고침이 겹쳐도 탐지는 한 번에 하나씩 돈다", a
   assert.deepEqual(b.find((record) => record.id === "codex").models, live);
   assert.deepEqual(a.find((record) => record.id === "codex").models, ["default", "gpt-1"]);
   assert.deepEqual(live, ["default", "gpt-2"]);
+});
+
+test("collapseEffortVariants: 자동 발견한 노력 변형(efforts 표기 없음)도 접미사로 접는다", () => {
+  // agy models가 아직 규칙에 없는 신모델을 노력마다 따로 보고하면(efforts 빈 채로
+  // 들어와도) 같은 베이스의 변형이 2개 이상이면 한 모델로 접어야 한다. 예전에는
+  // efforts가 비었다는 이유로 gemini-3.8-flash-high/-medium/-low가 별도 3줄로 떴다.
+  const out = collapseEffortVariants([
+    { id: "default", label: "AGY 기본값", efforts: [] },
+    { id: "gemini-3.8-flash-high", label: "gemini-3.8-flash-high", efforts: [] },
+    { id: "gemini-3.8-flash-medium", label: "gemini-3.8-flash-medium", efforts: [] },
+    { id: "gemini-3.8-flash-low", label: "gemini-3.8-flash-low", efforts: [] },
+    { id: "gpt-oss-99b-medium", label: "gpt-oss-99b-medium", efforts: [] },
+  ]);
+  const ids = out.map((o) => o.id);
+  assert.ok(ids.includes("gemini-3.8-flash"), "베이스 한 줄로 접힌다");
+  assert.equal(ids.includes("gemini-3.8-flash-high"), false, "원시 변형은 목록에서 사라진다");
+  const folded = out.find((o) => o.id === "gemini-3.8-flash");
+  assert.deepEqual(folded.efforts, ["low", "medium", "high"], "노력은 접미사에서 추론한다");
+  assert.deepEqual(folded.effortModels, {
+    high: "gemini-3.8-flash-high", medium: "gemini-3.8-flash-medium", low: "gemini-3.8-flash-low",
+  });
+  // 접미사가 하나뿐인 항목(고정 변형일 수 있음)은 접지 않고 그대로 둔다.
+  assert.ok(ids.includes("gpt-oss-99b-medium"), "노력 변형이 하나뿐이면 접지 않는다");
+});
+
+test("자동 발견한 gemini-3.8-flash 노력 변형이 실제 probe 경로에서 한 모델로 접힌다", async () => {
+  const agyPath = winPath.join(WIN_ENV.LOCALAPPDATA, "agy", "bin", "agy.exe");
+  const files = new Set([agyPath]);
+  const cacheStore = {};
+  const service = createCapabilityService({
+    platform: "win32",
+    env: WIN_ENV,
+    home: "C:\\Users\\u",
+    fs: { existsSync: (file) => files.has(file), statSync: () => ({ mtimeMs: 7, size: 8 }) },
+    runCommand: async (file, args) => {
+      if (file === agyPath && args[0] === "--version") return { ok: true, stdout: "agy 1.2.0\n", stderr: "" };
+      if (file === agyPath && args[0] === "models") {
+        return { ok: true, stdout: [
+          "gemini-3.8-flash-high     Gemini 3.8 Flash (High)",
+          "gemini-3.8-flash-medium   Gemini 3.8 Flash (Medium)",
+          "gemini-3.8-flash-low      Gemini 3.8 Flash (Low)",
+          "",
+        ].join("\n"), stderr: "" };
+      }
+      return { ok: false, stdout: "", stderr: "" };
+    },
+    cache: { get: () => cacheStore.value || null, set: (value) => { cacheStore.value = value; } },
+  });
+  const records = await service.discover();
+  const agy = records.find((record) => record.id === "agy");
+  assert.deepEqual(agy.models, ["default", "gemini-3.8-flash"], "목록은 접힌 한 줄이다");
+  const folded = agy.modelOptions.find((option) => option.id === "gemini-3.8-flash");
+  assert.deepEqual(folded.efforts, ["low", "medium", "high"]);
+  assert.equal(folded.effortModels.high, "gemini-3.8-flash-high");
+  assert.equal(agy.modelOptions.some((option) => option.id === "gemini-3.8-flash-high"), false);
 });

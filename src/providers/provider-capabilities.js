@@ -156,7 +156,8 @@ const AGY_MODEL_OPTIONS = Object.freeze([
   Object.freeze({ id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (중간)", efforts: Object.freeze([]) }),
 ]);
 // 노력 변형을 접는 규칙이 바뀌면 올려서 저장된 capability 캐시를 무효화합니다.
-const AGY_MODEL_OPTIONS_VERSION = 4;
+// v5: 자동 발견한 노력 변형(efforts 표기 없음)도 접미사로 접는다.
+const AGY_MODEL_OPTIONS_VERSION = 5;
 
 const EFFORT_VARIANT_ID = /^(.+)-(low|medium|high)$/;
 const EFFORT_ORDER = Object.freeze(["low", "medium", "high"]);
@@ -174,14 +175,37 @@ function baseModelLabel(label, baseId) {
 // 늘 비활성이 되고 같은 선택을 두 곳에서 하게 됩니다. 모델 한 줄로 접고 단계는
 // 노력 선택이 맡되, CLI에 넘길 실제 id는 effortModels에 남겨 둡니다.
 function collapseEffortVariants(options) {
+  // 같은 베이스를 공유하는 노력 접미사(-low/-medium/-high) 변형을 먼저 센다.
+  // agy가 한 모델을 노력마다 따로 보고하는 건 이 모양뿐이라, 같은 베이스에
+  // 서로 다른 노력 변형이 2개 이상이면 그 접미사 자체가 노력 지원의 증거다.
+  // curated 목록(gemini-3.7-flash-*)도 이 규칙으로 함께 접히고, 자동 발견한
+  // 신모델(gemini-3.8-flash-*)도 efforts 표기 없이 똑같이 접힌다 — 예전에는
+  // efforts가 비었다는 이유로 접지 않아 별도 모델 3개로 늘어놨다.
+  // 접미사가 하나뿐인 항목(gpt-oss-120b-medium처럼 고정 변형일 수 있음)은
+  // 접지 않고 그대로 둔다.
+  const effortsByBase = new Map();
+  for (const option of options) {
+    const match = EFFORT_VARIANT_ID.exec(option.id || "");
+    if (!match) continue;
+    const set = effortsByBase.get(match[1]) || new Set();
+    set.add(match[2]);
+    effortsByBase.set(match[1], set);
+  }
+  const foldBases = new Set(
+    [...effortsByBase].filter(([, efforts]) => efforts.size >= 2).map(([baseId]) => baseId)
+  );
+
   const collapsed = [];
   const byBase = new Map();
 
   for (const option of options) {
     const match = EFFORT_VARIANT_ID.exec(option.id || "");
-    // 모델 자체가 고정 변형인 항목(Claude Thinking·GPT-OSS Medium)과 아직 규칙을
-    // 모르는 새 모델(efforts 없음)은 접지 않고 그대로 둡니다.
-    if (!match || (option.efforts || []).length === 0) {
+    // 접는 조건: (a) 같은 베이스의 노력 변형이 2개 이상(자동 발견 포함)이거나,
+    // (b) curated 목록이 노력을 아는 항목(efforts 있음). curated 변형이 한 개만
+    // 보고돼도 예전처럼 베이스로 접는다. 둘 다 아니면(접미사 하나뿐인 미지의
+    // 고정 변형: gpt-oss-120b-medium 등) 그대로 둔다.
+    const foldable = match && (foldBases.has(match[1]) || (option.efforts || []).length > 0);
+    if (!foldable) {
       collapsed.push(option);
       continue;
     }
