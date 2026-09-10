@@ -451,6 +451,24 @@ function effortOptionsForModel(provider, modelId) {
   return efforts.filter((effort) => effort !== "default");
 }
 
+// 저장된 모델이 노력 변형 id(gemini-3.8-flash-high)면 목록에 있는 접힌 베이스
+// (gemini-3.8-flash) + 노력으로 옮긴다. 접기 전에 저장한 값이라 그대로 두면
+// 목록에 없는 모델로 취급돼 맨 위에 "…(현재 설정)" 원시 id가 튀어나온다.
+// 백엔드도 실행 시 같은 방식으로 되돌린다(effortModels). 베이스가 지금 목록에
+// 없으면(그 모델이 안 잡힘) 저장값을 그대로 둔다 — 사용자의 선택을 임의로 바꾸지 않는다.
+function foldSavedModel(options, savedModel, savedEffort = "default") {
+  if (!savedModel || savedModel === "default") return { model: savedModel || "default", effort: savedEffort };
+  if ((options || []).some((option) => option.id === savedModel)) return { model: savedModel, effort: savedEffort };
+  for (const option of options || []) {
+    const variants = option.effortModels || {};
+    const effort = Object.keys(variants).find((key) => variants[key] === savedModel);
+    if (effort) {
+      return { model: option.id, effort: savedEffort && savedEffort !== "default" ? savedEffort : effort };
+    }
+  }
+  return { model: savedModel, effort: savedEffort };
+}
+
 function roleConfigFromProject(project, roleId) {
   const raw = project?.defaultRoles?.[roleId];
   if (typeof raw === "string") return { agentId: raw, model: "", effort: "" };
@@ -1288,7 +1306,8 @@ function openProjectSettings(anchor, project) {
 
       const model = document.createElement("select");
       const modelOptions = modelOptionsForProvider(provider, true);
-      const currentModel = saved.model || agent.model || "default";
+      const savedFold = foldSavedModel(modelOptions, saved.model || agent.model || "default", saved.effort || agent.effort || "default");
+      const currentModel = savedFold.model;
       if (!modelOptions.some((option) => option.id === currentModel)) {
         modelOptions.push({ id: currentModel, label: `${currentModel} (현재 설정)`, efforts: [] });
       }
@@ -1322,7 +1341,7 @@ function openProjectSettings(anchor, project) {
         effort.value = options.includes(selected) ? selected : options[0];
         effort.disabled = !agent.available || options.length <= 1;
       };
-      populateDefaultEfforts(saved.effort || agent.effort || "default");
+      populateDefaultEfforts(savedFold.effort || "default");
       model.addEventListener("change", () => populateDefaultEfforts("default"));
       row.append(head, makeField("모델", model), makeField("추론", effort));
       defaultAgentSection.append(row);
@@ -1405,6 +1424,9 @@ function openProjectSettings(anchor, project) {
           return;
         }
         const options = modelOptionsForProvider(provider, true);
+        const fold = foldSavedModel(options, selectedModel, selectedEffort);
+        selectedModel = fold.model;
+        selectedEffort = fold.effort;
         if (selectedModel && !options.some((option) => option.id === selectedModel)) {
           options.push({ id: selectedModel, label: `${selectedModel} (현재 설정)`, efforts: [] });
         }

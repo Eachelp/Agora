@@ -1350,3 +1350,36 @@ test("중단된 전문 실행이 남아 있어도 일반 모드 입력창은 메
   assert.match(src, /professionalModeEnabled \|\| professionalRunBusy\(\)/);
   assert.ok(!/professionalModeEnabled \|\| professionalRunWasLive/.test(src), "노드 잔존만으로 메모로 만들면 안 됩니다");
 });
+
+// 저장된 노력 변형 id는 모델 드롭다운에서 접힌 베이스 + 노력으로 표시돼야 한다.
+// 접기 전에 gemini-3.8-flash-high를 저장했다면, 목록엔 접힌 gemini-3.8-flash만
+// 있으므로 그대로 두면 맨 위에 원시 id가 "…(현재 설정)"으로 튀어나온다.
+test("모델 드롭다운은 저장된 노력 변형 id를 접힌 베이스+노력으로 옮긴다", () => {
+  const vm = require("node:vm");
+  const src = read("src/chat.js");
+  const start = src.indexOf("function foldSavedModel(");
+  const end = src.indexOf("\n}\n", start) + 2;
+  assert.ok(start > 0 && end > start, "foldSavedModel를 찾지 못했습니다");
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(src.slice(start, end), context);
+  const options = [
+    { id: "default" },
+    { id: "gemini-3.8-flash", efforts: ["low", "medium", "high"], effortModels: { high: "gemini-3.8-flash-high", medium: "gemini-3.8-flash-medium", low: "gemini-3.8-flash-low" } },
+  ];
+  // vm 컨텍스트가 만든 객체는 프로토타입이 달라 strict deep-equal이 걸린다 — 값으로 비교한다.
+  const fold = (m, e) => { const r = context.foldSavedModel(options, m, e); return `${r.model}|${r.effort}`; };
+  // 저장된 원시 변형 → 접힌 베이스 + 그 노력.
+  assert.equal(fold("gemini-3.8-flash-high", "default"), "gemini-3.8-flash|high");
+  // 사용자가 따로 고른 노력이 있으면 그 값을 지킨다.
+  assert.equal(fold("gemini-3.8-flash-high", "low"), "gemini-3.8-flash|low");
+  // 이미 접힌 베이스는 그대로.
+  assert.equal(fold("gemini-3.8-flash", "high"), "gemini-3.8-flash|high");
+  // 지금 목록에 없는 모델(그 CLI가 안 잡음)은 저장값을 임의로 바꾸지 않는다.
+  assert.equal(fold("gemini-9-flash-high", "default"), "gemini-9-flash-high|default");
+  assert.equal(fold("default", "default"), "default|default");
+  // 두 렌더 지점 모두 이 접기를 지난다(원시 변형이 "(현재 설정)"으로 새지 않게).
+  const renderer = src;
+  assert.match(renderer, /const savedFold = foldSavedModel\(modelOptions,/);
+  assert.match(renderer, /const fold = foldSavedModel\(options, selectedModel, selectedEffort\)/);
+});
