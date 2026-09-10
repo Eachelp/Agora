@@ -80,6 +80,26 @@ function stripEmoticonTags(value) {
     .trim();
 }
 
+// 에이전트가 일반 채팅 턴을 "사용자에게 되질문"으로 끝냈는지 판정한다. 동시
+// 실행 중에는 이런 질문이 다른 에이전트 출력에 묻혀, 사용자가 자기 답을
+// 기다리는 에이전트를 놓치기 쉽다. 여기서 뽑은 질문은 '답변 대기' 배지에 쓴다.
+// - 다른 에이전트를 @멘션해 넘긴 턴(핸드오프)은 사용자 질문이 아니다.
+// - 마지막 비어있지 않은 줄이 물음표로 끝날 때만 질문으로 본다(중간의 수사적
+//   물음에 반응하지 않도록 "끝맺음"을 신호로 쓴다).
+function trailingUserQuestion(text, agents = [], selfId = null) {
+  const body = String(text || "").trim();
+  if (!body) return null;
+  const mentioned = parseMentions(body, agents).filter((id) => id !== selfId);
+  if (mentioned.length > 0) return null;
+  const lines = body.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const lastLine = lines[lines.length - 1] || "";
+  if (!/[?？]\s*$/.test(lastLine)) return null;
+  // 마지막 줄에서 물음표로 끝나는 마지막 문장만 질문 본문으로 뽑는다.
+  const sentences = lastLine.split(/(?<=[?？!。！.])\s+/).filter(Boolean);
+  const question = (sentences[sentences.length - 1] || lastLine).trim();
+  return question || null;
+}
+
 const DEFAULT_MENTION_CHAIN_LIMIT = 2;
 const LOST_TURN_STALL_SECONDS = 120;
 
@@ -327,6 +347,8 @@ class ChatRoom extends EventEmitter {
     this.specialistBlocked = this.rehydrateRecovery(initialRecovery);
     this.cancels = new Set();
     this.typingCounts = new Map();
+    // agentId → { question } : 되질문으로 턴을 끝내 사용자 답을 기다리는 에이전트.
+    this.awaitingUsers = new Map();
     this.activeRuns = 0;
     // activeRuns는 화면 busy 표시용이라 중지하면 즉시 0으로 되돌린다.
     // liveRuns는 "정말로 살아 있는 실행"이며, subprocess가 실제로 끝나야만
@@ -340,6 +362,13 @@ class ChatRoom extends EventEmitter {
 
   setAgents(agents) {
     this.agents = agents || [];
+    // 목록에서 빠진 에이전트의 대기 상태는 남겨 둘 이유가 없다.
+    if (this.awaitingUsers.size > 0) {
+      const live = new Set(this.agents.map((agent) => agent.id));
+      for (const agentId of [...this.awaitingUsers.keys()]) {
+        if (!live.has(agentId)) this.awaitingUsers.delete(agentId);
+      }
+    }
     this.emit("agents", this.publicAgents());
   }
 
@@ -365,7 +394,28 @@ class ChatRoom extends EventEmitter {
       effort: agent.effort || "default",
       version: agent.version || "",
       autoApprove: Boolean(agent.autoApprove),
+      // 되질문으로 턴을 끝내 사용자 답을 기다리는 상태. 동시 실행 중에도
+      // 화면이 "누가 나를 기다리는가"를 배지로 모아 보여줄 수 있게 낸다.
+      awaitingUser: this.awaitingUsers.has(agent.id),
+      awaitingQuestion: this.awaitingUsers.get(agent.id)?.question || null,
     }));
+  }
+
+  // 되질문으로 끝난 에이전트를 '답변 대기'로 세운다. 같은 질문이면 재방출하지
+  // 않아 렌더러가 불필요하게 다시 그리지 않는다.
+  setAwaitingUser(agentId, question) {
+    const trimmed = (question || "").trim() || null;
+    const prev = this.awaitingUsers.get(agentId);
+    if (prev && prev.question === trimmed) return;
+    this.awaitingUsers.set(agentId, { question: trimmed });
+    this.emit("agents", this.publicAgents());
+  }
+
+  // 사용자가 답했거나(그 에이전트가 새 턴을 시작), 대상이 사라지면 대기를 푼다.
+  clearAwaitingUser(agentId) {
+    if (!this.awaitingUsers.has(agentId)) return;
+    this.awaitingUsers.delete(agentId);
+    this.emit("agents", this.publicAgents());
   }
 
   state() {
@@ -1096,6 +1146,9 @@ class ChatRoom extends EventEmitter {
   }
 
   async respond(agent, context = {}, generation = this.generation) {
+    // 이 에이전트가 새 턴을 시작한다 = 직전 되질문에 대한 응답이 진행된다.
+    // 대기 배지를 먼저 내려, 답을 받는 동안 옛 질문이 남아 있지 않게 한다.
+    this.clearAwaitingUser(agent.id);
     if (!this.needsWorkspaceLease(context)) return this.runResponseTurn(agent, context, generation);
 
     // 병렬 그룹 안의 턴은 그룹이 이미 잡아 둔 소유권 안으로 중첩해 들어간다.
@@ -1502,6 +1555,14 @@ class ChatRoom extends EventEmitter {
         context.attachments || [],
         context.turnRootId
       );
+      // 일반 채팅 턴을 되질문으로 끝냈으면 '답변 대기'로 세운다. 지금은 산문
+      // 물음표 휴리스틱으로 잡고, ASK_USER 제어가 붙는 턴(향후 일반 모드 확장)은
+      // 그 질문 본문을 그대로 쓴다. 핸드오프(@멘션)한 턴은 대기로 보지 않는다.
+      const askedUser =
+        controlRequest?.action === "ASK_USER"
+          ? controlRequest.question || ""
+          : trailingUserQuestion(text, this.agents, agent.id);
+      if (askedUser !== null) this.setAwaitingUser(agent.id, askedUser);
     }
     return {
       ok: true,
@@ -2009,6 +2070,7 @@ class ChatRoom extends EventEmitter {
     if (this.specialistActive || this.specialistResume) this.cancelSpecialist("세션을 비우며 ");
     this.stopAllSilently();
     this.messages = [];
+    this.awaitingUsers.clear();
     this.emit("reset");
   }
 
@@ -2061,6 +2123,7 @@ module.exports = {
   DISCUSSION_TURN_BUDGET_MIN,
   DISCUSSION_TURN_BUDGET_MAX,
   clampDiscussionTurnBudget,
+  trailingUserQuestion,
 };
 
 

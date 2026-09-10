@@ -2,6 +2,7 @@
 const chatScroll = document.getElementById("chat-scroll");
 const messageList = document.getElementById("message-list");
 const typingRow = document.getElementById("typing-row");
+const awaitingRow = document.getElementById("awaiting-row");
 const agentChips = document.getElementById("agent-chips");
 const composerInput = document.getElementById("composer-input");
 const composerBox = document.getElementById("composer-box");
@@ -2408,17 +2409,79 @@ function renderAgents() {
     chip.style.setProperty("--agent-color", agent.color);
     if (!agent.available || !agent.enabled) chip.classList.add("is-unavailable");
     if (typingAgents.has(agent.id)) chip.classList.add("is-typing");
-    chip.title = agent.available
-      ? agent.enabled
-        ? "클릭해 모델/속도 설정"
-        : "이 세션에서 비활성화됨 · 클릭해 설정"
-      : agent.reason || "CLI를 찾지 못했습니다";
+    // 되질문으로 끝나 답을 기다리는 에이전트는 칩에도 표시해, 참여자 줄만 봐도
+    // 누가 대기 중인지 알 수 있게 한다(상세 질문은 아래 답변 대기 바에서).
+    if (agent.awaitingUser) chip.classList.add("is-awaiting");
+    chip.title = agent.awaitingUser
+      ? agent.awaitingQuestion
+        ? `답변 대기 — ${agent.awaitingQuestion}`
+        : "이 에이전트가 당신의 답을 기다립니다"
+      : agent.available
+        ? agent.enabled
+          ? "클릭해 모델/속도 설정"
+          : "이 세션에서 비활성화됨 · 클릭해 설정"
+        : agent.reason || "CLI를 찾지 못했습니다";
 
     const avatar = makeAgentAvatar(agent, "agent-avatar");
     chip.append(avatar, document.createTextNode(`@${agent.id}`));
+    if (agent.awaitingUser) {
+      const dot = document.createElement("span");
+      dot.className = "agent-chip-await-dot";
+      dot.setAttribute("aria-hidden", "true");
+      chip.append(dot);
+    }
     chip.addEventListener("click", () => openAgentPopover(chip, agent.id));
     agentChips.append(chip);
   }
+  renderAwaitingRow();
+}
+
+// 되질문으로 턴을 끝낸 에이전트를 composer 위 한 줄에 모아 보여준다. 각 알약을
+// 누르면 그 에이전트를 겨냥해 바로 답할 수 있게 입력창에 @id를 채운다.
+function renderAwaitingRow() {
+  if (!awaitingRow) return;
+  awaitingRow.textContent = "";
+  const waiting = agents.filter((agent) => agent.awaitingUser);
+  awaitingRow.hidden = waiting.length === 0;
+  if (waiting.length === 0) return;
+  const label = document.createElement("span");
+  label.className = "awaiting-label";
+  label.textContent = waiting.length > 1 ? `답변 대기 ${waiting.length}` : "답변 대기";
+  awaitingRow.append(label);
+  for (const agent of waiting) {
+    const pill = document.createElement("button");
+    pill.type = "button";
+    pill.className = "awaiting-pill";
+    pill.style.setProperty("--agent-color", agent.color);
+    pill.append(makeAgentAvatar(agent, "agent-avatar"));
+    const text = document.createElement("span");
+    text.className = "awaiting-pill-text";
+    text.textContent = agent.awaitingQuestion
+      ? `@${agent.id} · ${agent.awaitingQuestion}`
+      : `@${agent.id}`;
+    pill.append(text);
+    pill.title = agent.awaitingQuestion
+      ? `${agent.name}에게 답하기 — ${agent.awaitingQuestion}`
+      : `${agent.name}에게 답하기`;
+    pill.addEventListener("click", () => answerAwaitingAgent(agent.id));
+    awaitingRow.append(pill);
+  }
+}
+
+// 대기 중인 에이전트에게 곧장 답하도록 입력창에 @id를 채우고 포커스를 준다.
+function answerAwaitingAgent(agentId) {
+  if (!composerInput) return;
+  const mention = `@${agentId} `;
+  const current = composerInput.value || "";
+  if (!current.trimStart().startsWith(`@${agentId}`)) {
+    composerInput.value = mention + current;
+  }
+  composerInput.focus();
+  const caret = composerInput.value.length;
+  try {
+    composerInput.setSelectionRange(caret, caret);
+  } catch {}
+  autoresize();
 }
 
 function setRailActive(button) {
@@ -5605,6 +5668,13 @@ window.chatApi.onReset(({ sessionId }) => {
   renderAllMessages([]);
   chatMessages = [];
   typingAgents.clear();
+  // 세션 비우기 시 백엔드도 대기를 지웠지만 agents emit이 따로 오지 않을 수
+  // 있어, 화면의 대기 배지를 로컬에서도 즉시 내린다.
+  for (const agent of agents) {
+    agent.awaitingUser = false;
+    agent.awaitingQuestion = null;
+  }
+  renderAgents();
   roomTurnState = { current: null, running: [], queue: [], deferred: [] };
   // Stage C — 방 reset(중지/초기화) 시 남은 승인 카드를 모두 제거한다(late accept 방지 UX).
   approvalQueue.length = 0;

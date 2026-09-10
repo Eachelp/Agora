@@ -912,6 +912,72 @@ textarea:focus-visible {
   }
 }
 
+/* --- 답변 대기 (되질문으로 끝난 에이전트) --- */
+.agent-chip.is-awaiting {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.agent-chip-await-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-left: 2px;
+  animation: await-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes await-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.awaiting-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--accent);
+  background: var(--accent-soft);
+  border-radius: 12px;
+}
+
+.awaiting-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--accent-strong);
+  white-space: nowrap;
+}
+
+.awaiting-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 999px;
+  padding: 4px 11px 4px 4px;
+  font-size: 12px;
+  color: var(--ink-soft);
+  cursor: pointer;
+  text-align: left;
+}
+
+.awaiting-pill:hover {
+  border-color: var(--accent);
+}
+
+.awaiting-pill-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 320px;
+}
+
 /* --- 입력창 --- */
 .composer {
   flex: 0 1 auto;

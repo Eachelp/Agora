@@ -190,6 +190,9 @@
 
         <footer class="composer">
           <div class="mention-popup" id="mention-popup" role="listbox" hidden></div>
+          <!-- 되질문으로 턴을 끝내 사용자 답을 기다리는 에이전트. 동시 실행 중에도
+               누가 나를 기다리는지 여기에 모아 보여, 스크롤에 묻히지 않게 한다. -->
+          <div class="awaiting-row" id="awaiting-row" hidden aria-live="polite"></div>
           <div class="attachment-row" id="attachment-row" hidden></div>
           <div class="response-mode-bar" id="response-mode-bar">
             <span class="response-mode-label">@all 응답 방식:</span>

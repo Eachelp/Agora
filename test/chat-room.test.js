@@ -5,7 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { TaskManager } = require("../src/agora/task-manager");
 const turnCheckpoint = require("../src/agora/turn-checkpoint");
-const { ChatRoom } = require("../src/chat/chat-room");
+const { ChatRoom, trailingUserQuestion } = require("../src/chat/chat-room");
 const { createProfessionalRun } = require("../src/agora/professional-run");
 
 
@@ -72,6 +72,74 @@ test("멘션된 에이전트만 응답한다", async () => {
   assert.equal(agentMessages.length, 1);
   assert.equal(agentMessages[0].author, "codex");
   assert.equal(agentMessages[0].text, "네!");
+});
+
+test("trailingUserQuestion: 되질문으로 끝난 턴만 질문으로 잡고 핸드오프·평서문은 제외한다", () => {
+  const agents = [{ id: "claude", aliases: ["claude"] }, { id: "codex", aliases: ["codex"] }];
+  assert.equal(trailingUserQuestion("어느 것부터 파볼까요?", agents, "claude"), "어느 것부터 파볼까요?");
+  assert.equal(
+    trailingUserQuestion("좋습니다.\n그래서 어느 스키마를 먼저 잡을까요?", agents, "claude"),
+    "그래서 어느 스키마를 먼저 잡을까요?"
+  );
+  // 마침표로 끝나는 평서문은 대기가 아니다.
+  assert.equal(trailingUserQuestion("정리했습니다. 확인해 주세요.", agents, "claude"), null);
+  // 다른 에이전트를 @멘션해 넘긴 턴은 사용자 질문이 아니다.
+  assert.equal(trailingUserQuestion("@codex 이 부분 봐줄래?", agents, "claude"), null);
+  assert.equal(trailingUserQuestion("", agents, "claude"), null);
+});
+
+test("되질문으로 끝난 에이전트는 답변 대기로 표시되고 새 턴에서 풀린다", async () => {
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({
+      claude: [
+        { ok: true, text: "정리했습니다. 어느 것부터 파볼까요?" },
+        { ok: true, text: "네, 3번부터 하겠습니다." },
+      ],
+    }),
+  });
+  room.sendUserMessage("@claude 검토해줘");
+  await settle(room);
+  const afterAsk = room.publicAgents().find((agent) => agent.id === "claude");
+  assert.equal(afterAsk.awaitingUser, true);
+  assert.equal(afterAsk.awaitingQuestion, "어느 것부터 파볼까요?");
+
+  // 사용자가 그 에이전트에게 답하면(새 턴 시작) 대기가 먼저 풀리고,
+  // 평서문으로 끝난 이번 답변은 다시 대기로 세우지 않는다.
+  room.sendUserMessage("@claude 3번부터");
+  await settle(room);
+  const afterReply = room.publicAgents().find((agent) => agent.id === "claude");
+  assert.equal(afterReply.awaitingUser, false);
+  assert.equal(afterReply.awaitingQuestion, null);
+});
+
+test("평서문으로 끝난 일반 답변은 답변 대기가 아니고, 핸드오프한 에이전트도 대기가 아니다", async () => {
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({
+      codex: [{ ok: true, text: "@claude 이 부분만 봐줄래?" }],
+      claude: [{ ok: true, text: "확인했습니다. 문제없습니다." }],
+    }),
+  });
+  room.sendUserMessage("@codex 검토");
+  await settle(room);
+  const publicAgents = room.publicAgents();
+  // codex는 다른 에이전트로 넘겼으니 대기가 아니다.
+  assert.equal(publicAgents.find((agent) => agent.id === "codex").awaitingUser, false);
+  // 이어 응답한 claude도 평서문으로 끝나 대기가 아니다.
+  assert.equal(publicAgents.find((agent) => agent.id === "claude").awaitingUser, false);
+});
+
+test("세션 비우기(clear)는 남은 답변 대기를 모두 내린다", async () => {
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({ claude: [{ ok: true, text: "어느 것부터 할까요?" }] }),
+  });
+  room.sendUserMessage("@claude 검토");
+  await settle(room);
+  assert.equal(room.publicAgents().find((agent) => agent.id === "claude").awaitingUser, true);
+  room.clear();
+  assert.equal(room.publicAgents().find((agent) => agent.id === "claude").awaitingUser, false);
 });
 
 test("러너가 보고한 실제 모델(resolvedModel)은 응답의 agentMeta에 남는다", async () => {
