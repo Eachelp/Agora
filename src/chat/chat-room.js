@@ -100,6 +100,67 @@ function trailingUserQuestion(text, agents = [], selfId = null) {
   return question || null;
 }
 
+// 되질문 메시지에서 "보기"를 보수적으로 뽑는다. 에이전트마다 자유 산문이라
+// 확실한 모양만 잡고, 애매하면 빈 배열을 돌려 칩 없이 프리필로만 답하게 한다.
+// 클릭 시 자동 전송이 아니라 입력창에 채우므로, 조금 부정확해도 사용자가
+// 확인·수정할 수 있다. 라벨은 짧게 자르고 최대 5개까지만 낸다.
+const ANSWER_OPTION_MAX_LABEL = 28;
+const ANSWER_OPTION_MAX_COUNT = 5;
+// 불릿/번호/문자/원문자로 시작하는 목록 줄. 마커 뒤 본문을 그룹으로 잡는다.
+const LIST_ITEM_PATTERN =
+  /^\s*(?:[-*•◦·▪‣]|\d+[.)]|\(?[a-zA-Z][.)]|[①-⑳]|[❶-❿]|\d+\s*(?:번|순위)[.):]?)\s*(\S.*)?$/;
+
+function tidyOptionLabel(raw) {
+  let label = String(raw || "").trim();
+  if (!label) return "";
+  // 제목—설명 구조면 제목만. 구분자(— – : ()이 나오면 그 앞까지를 라벨로 본다.
+  const cut = label.search(/\s[—–]\s|\s[-]\s|:|\(|·\s/);
+  if (cut > 0) label = label.slice(0, cut);
+  // 강조/따옴표 기호는 벗겨 낸다.
+  label = label.replace(/[*_`"'“”‘’]/g, "").trim();
+  if (label.length > ANSWER_OPTION_MAX_LABEL) {
+    label = `${label.slice(0, ANSWER_OPTION_MAX_LABEL - 1).trim()}…`;
+  }
+  return label;
+}
+
+function dedupeOptions(labels) {
+  const seen = new Set();
+  const out = [];
+  for (const label of labels) {
+    const value = tidyOptionLabel(label);
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+    if (out.length >= ANSWER_OPTION_MAX_COUNT) break;
+  }
+  return out;
+}
+
+function extractAnswerOptions(text) {
+  const body = String(text || "");
+  if (!body.trim()) return [];
+  // 1순위: 불릿/번호 목록 줄이 2개 이상 연속으로 있으면 그 본문을 보기로 쓴다.
+  const items = [];
+  for (const line of body.split(/\r?\n/)) {
+    const match = LIST_ITEM_PATTERN.exec(line);
+    if (match && match[1]) items.push(match[1]);
+  }
+  if (items.length >= 2) {
+    const labels = dedupeOptions(items);
+    if (labels.length >= 2) return labels;
+  }
+  // 2순위: 괄호 안 슬래시 목록 "(A / B / C)" 하나. 2~4개, 각 항목이 짧을 때만.
+  for (const group of body.matchAll(/[(（]([^()（）\n]{2,}?)[)）]/g)) {
+    const parts = group[1].split(/\s*\/\s*/).map((part) => part.trim()).filter(Boolean);
+    if (parts.length >= 2 && parts.length <= 4 && parts.every((part) => part.length <= ANSWER_OPTION_MAX_LABEL)) {
+      const labels = dedupeOptions(parts);
+      if (labels.length >= 2) return labels;
+    }
+  }
+  return [];
+}
+
 const DEFAULT_MENTION_CHAIN_LIMIT = 2;
 const LOST_TURN_STALL_SECONDS = 120;
 
@@ -398,16 +459,25 @@ class ChatRoom extends EventEmitter {
       // 화면이 "누가 나를 기다리는가"를 배지로 모아 보여줄 수 있게 낸다.
       awaitingUser: this.awaitingUsers.has(agent.id),
       awaitingQuestion: this.awaitingUsers.get(agent.id)?.question || null,
+      // 산문에서 뽑은 보기(있으면). 화면이 클릭 가능한 칩으로 띄운다.
+      awaitingOptions: this.awaitingUsers.get(agent.id)?.options || [],
     }));
   }
 
-  // 되질문으로 끝난 에이전트를 '답변 대기'로 세운다. 같은 질문이면 재방출하지
-  // 않아 렌더러가 불필요하게 다시 그리지 않는다.
-  setAwaitingUser(agentId, question) {
+  // 되질문으로 끝난 에이전트를 '답변 대기'로 세운다. 질문·보기가 그대로면
+  // 재방출하지 않아 렌더러가 불필요하게 다시 그리지 않는다.
+  setAwaitingUser(agentId, question, options = []) {
     const trimmed = (question || "").trim() || null;
+    const opts = Array.isArray(options) ? options : [];
     const prev = this.awaitingUsers.get(agentId);
-    if (prev && prev.question === trimmed) return;
-    this.awaitingUsers.set(agentId, { question: trimmed });
+    if (
+      prev &&
+      prev.question === trimmed &&
+      (prev.options || []).join(" ") === opts.join(" ")
+    ) {
+      return;
+    }
+    this.awaitingUsers.set(agentId, { question: trimmed, options: opts });
     this.emit("agents", this.publicAgents());
   }
 
@@ -1562,7 +1632,9 @@ class ChatRoom extends EventEmitter {
         controlRequest?.action === "ASK_USER"
           ? controlRequest.question || ""
           : trailingUserQuestion(text, this.agents, agent.id);
-      if (askedUser !== null) this.setAwaitingUser(agent.id, askedUser);
+      if (askedUser !== null) {
+        this.setAwaitingUser(agent.id, askedUser, extractAnswerOptions(text));
+      }
     }
     return {
       ok: true,
@@ -2124,6 +2196,7 @@ module.exports = {
   DISCUSSION_TURN_BUDGET_MAX,
   clampDiscussionTurnBudget,
   trailingUserQuestion,
+  extractAnswerOptions,
 };
 
 

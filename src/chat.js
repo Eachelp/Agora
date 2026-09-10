@@ -2436,8 +2436,9 @@ function renderAgents() {
   renderAwaitingRow();
 }
 
-// 되질문으로 턴을 끝낸 에이전트를 composer 위 한 줄에 모아 보여준다. 각 알약을
-// 누르면 그 에이전트를 겨냥해 바로 답할 수 있게 입력창에 @id를 채운다.
+// 되질문으로 턴을 끝낸 에이전트를 composer 위에 모아 보여준다. 알약을 누르면
+// 그 에이전트에게 답하도록 @id를 채우고, 산문에서 뽑은 보기가 있으면 칩으로
+// 띄운다. 칩을 누르면 "@id <보기>"까지 채워 준다(자동 전송 X — 사용자가 확인).
 function renderAwaitingRow() {
   if (!awaitingRow) return;
   awaitingRow.textContent = "";
@@ -2449,6 +2450,9 @@ function renderAwaitingRow() {
   label.textContent = waiting.length > 1 ? `답변 대기 ${waiting.length}` : "답변 대기";
   awaitingRow.append(label);
   for (const agent of waiting) {
+    const group = document.createElement("div");
+    group.className = "awaiting-group";
+
     const pill = document.createElement("button");
     pill.type = "button";
     pill.className = "awaiting-pill";
@@ -2464,18 +2468,41 @@ function renderAwaitingRow() {
       ? `${agent.name}에게 답하기 — ${agent.awaitingQuestion}`
       : `${agent.name}에게 답하기`;
     pill.addEventListener("click", () => answerAwaitingAgent(agent.id));
-    awaitingRow.append(pill);
+    group.append(pill);
+
+    const options = Array.isArray(agent.awaitingOptions) ? agent.awaitingOptions : [];
+    if (options.length > 0) {
+      const optionRow = document.createElement("div");
+      optionRow.className = "awaiting-options";
+      for (const option of options) {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "awaiting-option";
+        chip.textContent = option;
+        chip.title = `@${agent.id} ${option} (으)로 답하기`;
+        chip.addEventListener("click", () => answerAwaitingAgent(agent.id, option));
+        optionRow.append(chip);
+      }
+      group.append(optionRow);
+    }
+    awaitingRow.append(group);
   }
 }
 
 // 대기 중인 에이전트에게 곧장 답하도록 입력창에 @id를 채우고 포커스를 준다.
-function answerAwaitingAgent(agentId) {
+// 보기(option)를 주면 "@id <보기>"까지 채운다. 전송은 하지 않아 사용자가
+// 문구를 다듬거나 다른 답으로 바꿀 수 있다.
+function answerAwaitingAgent(agentId, option = "") {
   if (!composerInput) return;
-  const mention = `@${agentId} `;
-  const current = composerInput.value || "";
+  let current = composerInput.value || "";
+  // @id가 앞에 없으면 붙인다(이미 그 에이전트를 겨냥해 쓰던 중이면 유지).
   if (!current.trimStart().startsWith(`@${agentId}`)) {
-    composerInput.value = mention + current;
+    current = `@${agentId} ${current.trimStart()}`;
   }
+  if (option) {
+    current = `${current.replace(/\s+$/, "")} ${option}`;
+  }
+  composerInput.value = current;
   composerInput.focus();
   const caret = composerInput.value.length;
   try {

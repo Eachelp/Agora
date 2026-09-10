@@ -84,29 +84,60 @@ test("답변 대기 에이전트가 없으면 대기 바는 숨겨진다", () =>
   assert.equal(row.children.length, 0);
 });
 
+// 대기 바 안의 에이전트 그룹들(각 그룹 = 알약 + 보기 칩)을 모은다.
+function groupsOf(row) {
+  return row.children.filter((child) => child.className === "awaiting-group");
+}
+function pillOf(group) {
+  return group.children.find((child) => child.className === "awaiting-pill");
+}
+function optionChips(group) {
+  const optRow = group.children.find((child) => child.className === "awaiting-options");
+  return optRow ? optRow.children.filter((child) => child.className === "awaiting-option") : [];
+}
+
 test("되질문한 에이전트 하나면 라벨과 질문이 담긴 알약 하나가 뜬다", () => {
   const row = runRender([
-    { id: "claude", name: "Claude", color: "#111", awaitingUser: true, awaitingQuestion: "어느 것부터 파볼까요?" },
-    { id: "codex", name: "Codex", color: "#222", awaitingUser: false, awaitingQuestion: null },
+    { id: "claude", name: "Claude", color: "#111", awaitingUser: true, awaitingQuestion: "어느 것부터 파볼까요?", awaitingOptions: [] },
+    { id: "codex", name: "Codex", color: "#222", awaitingUser: false, awaitingQuestion: null, awaitingOptions: [] },
   ]);
   assert.equal(row.hidden, false);
   const label = row.children.find((child) => child.className === "awaiting-label");
   assert.equal(label.textContent, "답변 대기");
-  const pills = row.children.filter((child) => child.className === "awaiting-pill");
-  assert.equal(pills.length, 1);
-  assert.match(pillText(pills[0]), /@claude · 어느 것부터 파볼까요\?/);
+  const groups = groupsOf(row);
+  assert.equal(groups.length, 1);
+  assert.match(pillText(pillOf(groups[0])), /@claude · 어느 것부터 파볼까요\?/);
+  // 보기가 없으면 칩도 없다.
+  assert.equal(optionChips(groups[0]).length, 0);
 });
 
-test("여러 에이전트가 대기하면 개수 라벨과 알약이 각각 뜬다", () => {
+test("보기가 있으면 알약 아래에 클릭 가능한 보기 칩이 뜬다", () => {
   const row = runRender([
-    { id: "claude", name: "Claude", color: "#111", awaitingUser: true, awaitingQuestion: "A?" },
-    { id: "codex", name: "Codex", color: "#222", awaitingUser: true, awaitingQuestion: null },
+    {
+      id: "claude",
+      name: "Claude",
+      color: "#111",
+      awaitingUser: true,
+      awaitingQuestion: "어느 것부터?",
+      awaitingOptions: ["실시요약 확보", "7문항 정답 보완", "풀이시간 정의"],
+    },
+  ]);
+  const groups = groupsOf(row);
+  assert.equal(groups.length, 1);
+  const chips = optionChips(groups[0]);
+  assert.deepEqual(chips.map((chip) => chip.textContent), ["실시요약 확보", "7문항 정답 보완", "풀이시간 정의"]);
+});
+
+test("여러 에이전트가 대기하면 개수 라벨과 그룹이 각각 뜬다", () => {
+  const row = runRender([
+    { id: "claude", name: "Claude", color: "#111", awaitingUser: true, awaitingQuestion: "A?", awaitingOptions: [] },
+    { id: "codex", name: "Codex", color: "#222", awaitingUser: true, awaitingQuestion: null, awaitingOptions: [] },
   ]);
   assert.equal(row.hidden, false);
   const label = row.children.find((child) => child.className === "awaiting-label");
   assert.equal(label.textContent, "답변 대기 2");
-  const pills = row.children.filter((child) => child.className === "awaiting-pill");
-  assert.equal(pills.length, 2);
+  const groups = groupsOf(row);
+  assert.equal(groups.length, 2);
   // 질문 본문이 없으면 @id만 보여 준다.
-  assert.equal(pillText(pills[1]), "@codex");
+  assert.equal(pillText(pillOf(groups[1])), "@codex");
 });

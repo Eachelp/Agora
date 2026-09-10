@@ -5,7 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { TaskManager } = require("../src/agora/task-manager");
 const turnCheckpoint = require("../src/agora/turn-checkpoint");
-const { ChatRoom, trailingUserQuestion } = require("../src/chat/chat-room");
+const { ChatRoom, trailingUserQuestion, extractAnswerOptions } = require("../src/chat/chat-room");
 const { createProfessionalRun } = require("../src/agora/professional-run");
 
 
@@ -88,6 +88,27 @@ test("trailingUserQuestion: 되질문으로 끝난 턴만 질문으로 잡고 �
   assert.equal(trailingUserQuestion("", agents, "claude"), null);
 });
 
+test("extractAnswerOptions: 괄호 슬래시·불릿·번호 목록에서만 보수적으로 보기를 뽑는다", () => {
+  // 괄호 안 슬래시 목록.
+  assert.deepEqual(
+    extractAnswerOptions("1~3번(실시요약 확보 / 7문항 정답 보완 / 풀이시간 정의)을 먼저 정해야 합니다. 어느 것부터?"),
+    ["실시요약 확보", "7문항 정답 보완", "풀이시간 정의"]
+  );
+  // 불릿 + 제목—설명: 제목만 라벨로.
+  assert.deepEqual(
+    extractAnswerOptions("실무적으로는:\n◦ 오늘 바로 — 명세서에 문의\n◦ 동시에 — 부서에 요청\n◦ 회신 대기 중 — 나머지 진행\n어느 쪽?"),
+    ["오늘 바로", "동시에", "회신 대기 중"]
+  );
+  // 번호 목록.
+  assert.deepEqual(
+    extractAnswerOptions("1. 실시요약 확보\n2. 7문항 정답 보완\n3. 풀이시간 정의\n어디부터?"),
+    ["실시요약 확보", "7문항 정답 보완", "풀이시간 정의"]
+  );
+  // 보기가 없으면 빈 배열(칩 없이 프리필로만 답).
+  assert.deepEqual(extractAnswerOptions("정리했습니다. 확인해 주세요."), []);
+  assert.deepEqual(extractAnswerOptions("이 방법이 (a)인지 (b)인지 궁금합니다. 어느 쪽?"), []);
+});
+
 test("되질문으로 끝난 에이전트는 답변 대기로 표시되고 새 턴에서 풀린다", async () => {
   const room = new ChatRoom({
     agents: makeAgents(),
@@ -111,6 +132,23 @@ test("되질문으로 끝난 에이전트는 답변 대기로 표시되고 새 �
   const afterReply = room.publicAgents().find((agent) => agent.id === "claude");
   assert.equal(afterReply.awaitingUser, false);
   assert.equal(afterReply.awaitingQuestion, null);
+});
+
+test("보기를 나열한 되질문은 publicAgents.awaitingOptions로 칩을 낸다", async () => {
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({
+      claude: [{
+        ok: true,
+        text: "실무적으로는:\n1. 실시요약 확보\n2. 7문항 정답 보완\n3. 풀이시간 정의\n어느 것부터 파볼까요?",
+      }],
+    }),
+  });
+  room.sendUserMessage("@claude 우선순위 정해줘");
+  await settle(room);
+  const claude = room.publicAgents().find((agent) => agent.id === "claude");
+  assert.equal(claude.awaitingUser, true);
+  assert.deepEqual(claude.awaitingOptions, ["실시요약 확보", "7문항 정답 보완", "풀이시간 정의"]);
 });
 
 test("평서문으로 끝난 일반 답변은 답변 대기가 아니고, 핸드오프한 에이전트도 대기가 아니다", async () => {

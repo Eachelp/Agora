@@ -978,6 +978,39 @@ textarea:focus-visible {
   max-width: 320px;
 }
 
+.awaiting-group {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.awaiting-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding-left: 4px;
+}
+
+.awaiting-option {
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  border-radius: 8px;
+  padding: 3px 9px;
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  cursor: pointer;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.awaiting-option:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
 /* --- 입력창 --- */
 .composer {
   flex: 0 1 auto;
