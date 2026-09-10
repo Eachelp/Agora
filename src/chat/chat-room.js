@@ -103,8 +103,14 @@ function trailingUserQuestion(text, agents = [], selfId = null) {
 // 되질문 메시지에서 "보기"를 보수적으로 뽑는다. 에이전트마다 자유 산문이라
 // 확실한 모양만 잡고, 애매하면 빈 배열을 돌려 칩 없이 프리필로만 답하게 한다.
 // 클릭 시 자동 전송이 아니라 입력창에 채우므로, 조금 부정확해도 사용자가
-// 확인·수정할 수 있다. 라벨은 짧게 자르고 최대 5개까지만 낸다.
-const ANSWER_OPTION_MAX_LABEL = 28;
+// 확인·수정할 수 있다.
+// - 목록이 보인다고 곧 보기가 아니다. "진행할까요?" 뒤의 불릿은 계획·상태
+//   나열이기 쉽다. 그래서 되질문이 "고르는 질문"일 때만 뽑는다.
+// - 라벨은 절대 자르지 않는다. 자르면 입력창에 잘린 뜻이 들어간다. 길이는
+//   "보기인가(짧은 명사구)"를 가르는 게이트로만 쓰고, 화면 말줄임은 CSS가 맡는다.
+// 산문 추출을 더 정교하게 만드는 데 투자하기보다, 공통 질문 계약(ASK_USER +
+// 보기)을 일반 채팅으로 넓히는 편이 낫다 — 그때는 검증된 보기라 즉시 전송도 안전하다.
+const ANSWER_OPTION_MAX_LABEL = 60;
 const ANSWER_OPTION_MAX_COUNT = 5;
 // 불릿/번호/문자/원문자로 시작하는 목록 줄. 마커 뒤 본문을 그룹으로 잡는다.
 const LIST_ITEM_PATTERN =
@@ -118,9 +124,9 @@ function tidyOptionLabel(raw) {
   if (cut > 0) label = label.slice(0, cut);
   // 강조/따옴표 기호는 벗겨 낸다.
   label = label.replace(/[*_`"'“”‘’]/g, "").trim();
-  if (label.length > ANSWER_OPTION_MAX_LABEL) {
-    label = `${label.slice(0, ANSWER_OPTION_MAX_LABEL - 1).trim()}…`;
-  }
+  // 이보다 길면 "보기"가 아니라 문장이다. 잘라서 뜻을 훼손하지 않고 아예 뺀다.
+  // (화면 말줄임은 CSS가 맡고, 입력창에는 늘 원문 전체가 들어간다.)
+  if (label.length > ANSWER_OPTION_MAX_LABEL) return "";
   return label;
 }
 
@@ -137,9 +143,16 @@ function dedupeOptions(labels) {
   return out;
 }
 
-function extractAnswerOptions(text) {
+// "고르는 질문"인지 가르는 단서. 목록이 있어도 "진행할까요?"처럼 고르라는
+// 질문이 아니면 그 목록은 보기가 아니라 계획·상태 나열일 가능성이 크다.
+const CHOICE_CUE_PATTERN =
+  /(어느|어떤|무엇|뭐|어디|누구|중에서|중\s|골라|고르|선택|택일|which|what|choose|pick|\bor\b)/i;
+
+function extractAnswerOptions(text, question = "") {
   const body = String(text || "");
   if (!body.trim()) return [];
+  // 고르는 질문이 아니면 보기를 뽑지 않는다(칩 없이 프리필만 제공).
+  if (!CHOICE_CUE_PATTERN.test(String(question || ""))) return [];
   // 1순위: 불릿/번호 목록 줄이 2개 이상 연속으로 있으면 그 본문을 보기로 쓴다.
   const items = [];
   for (const line of body.split(/\r?\n/)) {
@@ -473,7 +486,7 @@ class ChatRoom extends EventEmitter {
     if (
       prev &&
       prev.question === trimmed &&
-      (prev.options || []).join(" ") === opts.join(" ")
+      JSON.stringify(prev.options || []) === JSON.stringify(opts)
     ) {
       return;
     }
@@ -1633,7 +1646,8 @@ class ChatRoom extends EventEmitter {
           ? controlRequest.question || ""
           : trailingUserQuestion(text, this.agents, agent.id);
       if (askedUser !== null) {
-        this.setAwaitingUser(agent.id, askedUser, extractAnswerOptions(text));
+        // 보기는 되질문이 "고르는 질문"일 때만 뽑힌다(질문 본문을 함께 넘긴다).
+        this.setAwaitingUser(agent.id, askedUser, extractAnswerOptions(text, askedUser));
       }
     }
     return {

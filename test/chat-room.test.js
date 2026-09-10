@@ -88,25 +88,50 @@ test("trailingUserQuestion: 되질문으로 끝난 턴만 질문으로 잡고 �
   assert.equal(trailingUserQuestion("", agents, "claude"), null);
 });
 
-test("extractAnswerOptions: 괄호 슬래시·불릿·번호 목록에서만 보수적으로 보기를 뽑는다", () => {
-  // 괄호 안 슬래시 목록.
+test("extractAnswerOptions: 고르는 질문일 때만 괄호 슬래시·번호 목록에서 보기를 뽑는다", () => {
+  // 괄호 안 슬래시 목록 + "어느 것부터?"(고르는 질문).
   assert.deepEqual(
-    extractAnswerOptions("1~3번(실시요약 확보 / 7문항 정답 보완 / 풀이시간 정의)을 먼저 정해야 합니다. 어느 것부터?"),
+    extractAnswerOptions(
+      "1~3번(실시요약 확보 / 7문항 정답 보완 / 풀이시간 정의)을 먼저 정해야 합니다. 어느 것부터?",
+      "어느 것부터?"
+    ),
     ["실시요약 확보", "7문항 정답 보완", "풀이시간 정의"]
   );
-  // 불릿 + 제목—설명: 제목만 라벨로.
+  // 번호 목록 + "어디부터?"(고르는 질문).
   assert.deepEqual(
-    extractAnswerOptions("실무적으로는:\n◦ 오늘 바로 — 명세서에 문의\n◦ 동시에 — 부서에 요청\n◦ 회신 대기 중 — 나머지 진행\n어느 쪽?"),
-    ["오늘 바로", "동시에", "회신 대기 중"]
-  );
-  // 번호 목록.
-  assert.deepEqual(
-    extractAnswerOptions("1. 실시요약 확보\n2. 7문항 정답 보완\n3. 풀이시간 정의\n어디부터?"),
+    extractAnswerOptions("1. 실시요약 확보\n2. 7문항 정답 보완\n3. 풀이시간 정의\n어디부터?", "어디부터?"),
     ["실시요약 확보", "7문항 정답 보완", "풀이시간 정의"]
   );
   // 보기가 없으면 빈 배열(칩 없이 프리필로만 답).
-  assert.deepEqual(extractAnswerOptions("정리했습니다. 확인해 주세요."), []);
-  assert.deepEqual(extractAnswerOptions("이 방법이 (a)인지 (b)인지 궁금합니다. 어느 쪽?"), []);
+  assert.deepEqual(extractAnswerOptions("정리했습니다. 확인해 주세요.", "확인해 주세요."), []);
+  assert.deepEqual(
+    extractAnswerOptions("이 방법이 (a)인지 (b)인지 궁금합니다. 어느 쪽?", "어느 쪽?"),
+    []
+  );
+});
+
+test("extractAnswerOptions: 목록이 있어도 고르는 질문이 아니면 보기가 아니다(계획·상태 나열)", () => {
+  // "오늘 바로 / 동시에 / 회신 대기 중"은 고를 보기가 아니라 병행할 작업 나열이다.
+  // 뒤따르는 질문이 "진행할까요?"처럼 고르라는 게 아니면 칩을 내지 않는다.
+  const plan =
+    "실무적으로는:\n◦ 오늘 바로 — 명세서에 문의\n◦ 동시에 — 부서에 요청\n◦ 회신 대기 중 — 나머지 진행\n이렇게 진행할까요?";
+  assert.deepEqual(extractAnswerOptions(plan, "이렇게 진행할까요?"), []);
+  // 질문 본문이 비면(무엇을 묻는지 모름) 보기도 뽑지 않는다.
+  assert.deepEqual(extractAnswerOptions(plan, ""), []);
+});
+
+test("extractAnswerOptions: 라벨은 자르지 않고, 문장처럼 긴 항목은 보기에서 뺀다", () => {
+  // 28자를 넘는 제목도 잘리지 않고 원문 그대로 남는다(입력창에 잘린 뜻이 들어가면 안 된다).
+  const longTitle = "실시요약 확보 및 음원 스크립트 요청 후 검증 절차 정리";
+  assert.ok(longTitle.length > 28);
+  const out = extractAnswerOptions(`1. ${longTitle}\n2. 풀이시간 정의\n어느 것부터?`, "어느 것부터?");
+  assert.deepEqual(out, [longTitle, "풀이시간 정의"]);
+  assert.ok(out.every((label) => !label.endsWith("…")), "라벨에 말줄임이 붙지 않는다");
+  // 게이트(60자)를 넘는 항목은 보기가 아니라 문장이므로 제외되고, 남은 보기가 2개 미만이면 빈 배열.
+  const sentence =
+    "이 항목은 보기가 아니라 한 문장으로 길게 풀어 쓴 설명이라서, 사용자가 클릭해서 고를 만한 짧은 명사구가 아니며 그대로 칩에 올리면 오히려 혼란만 준다";
+  assert.ok(sentence.length > 60, `게이트 검증용 문장이 60자를 넘어야 한다(현재 ${sentence.length}자)`);
+  assert.deepEqual(extractAnswerOptions(`1. ${sentence}\n2. 풀이시간 정의\n어느 것부터?`, "어느 것부터?"), []);
 });
 
 test("되질문으로 끝난 에이전트는 답변 대기로 표시되고 새 턴에서 풀린다", async () => {
