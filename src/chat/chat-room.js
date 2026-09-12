@@ -964,8 +964,6 @@ class ChatRoom extends EventEmitter {
         return;
       }
     }
-    // 담당자별 폴더 계약이 지켜졌는지 보기 위해 실행 직전 상태를 찍어 둔다.
-    // 감시는 실행에 영향을 주지 않는다 — 실패하면 아무 말도 하지 않을 뿐이다.
     // 담당자별 폴더 계약이 지켜졌는지는 실행이 끝난 뒤에 본다. 시작 시각만
     // 기억해 두면 되므로 실행이 늦어지지 않는다.
     const startedAt = needsLease ? Date.now() : null;

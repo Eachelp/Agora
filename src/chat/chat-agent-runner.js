@@ -306,17 +306,12 @@ function runAgentProcess({
     const stdoutDecoder = new StringDecoder("utf8");
     const stderrDecoder = new StringDecoder("utf8");
 
-    // 무음 감지: stdout/stderr가 silenceWarningMs만큼 조용하면 실행은 그대로 두고
-    // 상태 이벤트만 알립니다. 침묵이 계속되면 같은 간격으로 반복 알립니다.
-    let lastActivityAt = Date.now();
-    // 무음 시계는 "바이트가 왔는가"가 아니라 "진전 이벤트(delta·도구·파일·승인)가
-    // 왔는가"로 되감는다. 한도로 재시도 중인 CLI가 상태 줄만 계속 뿌리면 바이트
-    // 기준으로는 살아 있어 보여 "N분째 응답 없음"이 영영 뜨지 않았다.
-    let lastProgressAt = lastActivityAt;
+    // 무음 감지: 진전 이벤트(delta·도구·파일·승인)가 silenceWarningMs만큼 없으면
+    // 실행은 그대로 두고 상태 이벤트만 알립니다. 침묵이 계속되면 같은 간격으로
+    // 반복 알립니다. "바이트가 왔는가"로 재면 한도로 재시도 중인 CLI가 상태 줄만
+    // 계속 뿌릴 때 살아 있어 보여 "N분째 응답 없음"이 영영 뜨지 않았습니다.
+    let lastProgressAt = Date.now();
     let nextSilenceWarnAt = lastProgressAt + silenceWarningMs;
-    const noteActivity = () => {
-      lastActivityAt = Date.now();
-    };
     const noteProgress = () => {
       lastProgressAt = Date.now();
       nextSilenceWarnAt = lastProgressAt + silenceWarningMs;
@@ -466,7 +461,6 @@ function runAgentProcess({
     };
 
     child.stdout.on("data", (chunk) => {
-      noteActivity();
       const text = stdoutDecoder.write(chunk);
       stdoutBytes += chunk.length;
 
@@ -500,7 +494,6 @@ function runAgentProcess({
       handleLines(text);
     });
     child.stderr.on("data", (chunk) => {
-      noteActivity();
       if (stderr.length < MAX_STDERR_BYTES) stderr += stderrDecoder.write(chunk);
     });
     child.on("error", (error) => {
