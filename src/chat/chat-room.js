@@ -1686,16 +1686,19 @@ class ChatRoom extends EventEmitter {
         context.attachments || [],
         context.turnRootId
       );
-      // 일반 채팅 턴을 되질문으로 끝냈으면 '답변 대기'로 세운다. 지금은 산문
-      // 물음표 휴리스틱으로 잡고, ASK_USER 제어가 붙는 턴(향후 일반 모드 확장)은
-      // 그 질문 본문을 그대로 쓴다. 핸드오프(@멘션)한 턴은 대기로 보지 않는다.
-      const askedUser =
-        controlRequest?.action === "ASK_USER"
-          ? controlRequest.question || ""
-          : trailingUserQuestion(text, this.agents, agent.id);
+      // 일반 채팅 턴을 되질문으로 끝냈으면 '답변 대기'로 세운다. ASK_USER 제어가
+      // 붙는 턴(향후 일반 모드 확장)은 그 질문 본문을 그대로 쓰고 늘 대기로 세운다.
+      // 산문 물음표 휴리스틱은 뜻을 못 읽어 "무엇을 도와드릴까요?" 같은 도움 제안
+      // 마무리까지 질문으로 오인하므로, 보기를 뽑아낸 "고르는 질문"일 때만 대기로
+      // 세운다. 사용자는 선택지 칩이나 아래 입력창의 직접 타이핑으로 답한다.
+      // 핸드오프(@멘션)한 턴은 대기로 보지 않는다.
+      const isAskUser = controlRequest?.action === "ASK_USER";
+      const askedUser = isAskUser
+        ? controlRequest.question || ""
+        : trailingUserQuestion(text, this.agents, agent.id);
       if (askedUser !== null) {
-        // 보기는 되질문이 "고르는 질문"일 때만 뽑힌다(질문 본문을 함께 넘긴다).
-        this.setAwaitingUser(agent.id, askedUser, extractAnswerOptions(text, askedUser));
+        const options = extractAnswerOptions(text, askedUser);
+        if (isAskUser || options.length > 0) this.setAwaitingUser(agent.id, askedUser, options);
       }
     }
     return {

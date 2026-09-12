@@ -139,7 +139,7 @@ test("되질문으로 끝난 에이전트는 답변 대기로 표시되고 새 �
     agents: makeAgents(),
     runAgent: fakeRunner({
       claude: [
-        { ok: true, text: "정리했습니다. 어느 것부터 파볼까요?" },
+        { ok: true, text: "정리했습니다.\n1. 스키마 정리\n2. 테스트 보강\n어느 것부터 파볼까요?" },
         { ok: true, text: "네, 3번부터 하겠습니다." },
       ],
     }),
@@ -157,6 +157,18 @@ test("되질문으로 끝난 에이전트는 답변 대기로 표시되고 새 �
   const afterReply = room.publicAgents().find((agent) => agent.id === "claude");
   assert.equal(afterReply.awaitingUser, false);
   assert.equal(afterReply.awaitingQuestion, null);
+});
+
+test("선택지 없이 물음표로만 끝난 되질문은 답변 대기로 세우지 않는다", async () => {
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({ claude: [{ ok: true, text: "무엇을 도와드릴까요?" }] }),
+  });
+  room.sendUserMessage("@claude 안녕");
+  await settle(room);
+  const claude = room.publicAgents().find((agent) => agent.id === "claude");
+  assert.equal(claude.awaitingUser, false);
+  assert.deepEqual(claude.awaitingOptions, []);
 });
 
 test("보기를 나열한 되질문은 publicAgents.awaitingOptions로 칩을 낸다", async () => {
@@ -196,7 +208,7 @@ test("평서문으로 끝난 일반 답변은 답변 대기가 아니고, 핸드
 test("세션 비우기(clear)는 남은 답변 대기를 모두 내린다", async () => {
   const room = new ChatRoom({
     agents: makeAgents(),
-    runAgent: fakeRunner({ claude: [{ ok: true, text: "어느 것부터 할까요?" }] }),
+    runAgent: fakeRunner({ claude: [{ ok: true, text: "1. 스키마\n2. 테스트\n어느 것부터 할까요?" }] }),
   });
   room.sendUserMessage("@claude 검토");
   await settle(room);
