@@ -575,6 +575,22 @@ test("기본값 frozen인 입력이 산출물이기도 하면 동결하지 않�
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+// 기획이 Inputs와 Deliverables에 같은 파일을 다른 표기로 적어도 같은 파일이다.
+// 표기 차이로 보정이 빗나가면 계약이 모순인 채로 남는다.
+test("표기가 달라도 같은 산출물이면 동결하지 않는다", () => {
+  const root = tempRoot();
+  const file = path.join(root, "greet.js");
+  fs.writeFileSync(file, "원본");
+
+  const binding = inputBinding.bindInputs(
+    [{ inputId: "IN-01", locator: "greet.js", kind: "path", mode: "frozen", modeDeclared: false }],
+    { root, deliverables: { items: [{ deliverableId: "DL-01", locator: file }] } }
+  );
+  assert.equal(binding.bindings[0].mode, "live");
+  assert.equal(binding.bindings[0].releasedAsDeliverable, true);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 // 기획이 명시적으로 (frozen)이라고 적었다면 저자의 판단이므로 덮지 않는다.
 // 그 계약은 실제로 모순이며 막히는 것이 맞다.
 test("명시적으로 선언된 frozen은 산출물이어도 그대로 둔다", () => {

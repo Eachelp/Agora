@@ -100,27 +100,39 @@ function fingerprintFile(absPath) {
 // 그래서 **기본값으로 frozen이 된 입력만** 산출물과 겹칠 때 풀어 준다. 기획이
 // 명시적으로 `(frozen)`이라고 적었다면 그것은 저자의 판단이므로 덮지 않는다 —
 // 그 경우는 계약이 실제로 모순이며, 막히는 것이 맞다.
-function deliverableLocators(deliverables) {
+// 경로 비교는 같은 파일의 isInside()와 같은 규칙을 쓴다 — win32에서는 대소문자를
+// 접고, 상대/절대 표기 차이는 root 기준으로 해소한다. 규칙이 갈리면 기획이
+// Inputs에 `D:\...\결과.MD`, Deliverables에 `결과.md`라고 적었을 때 보정이
+// 빗나가고, 계약이 모순인 채로 남아 어떤 실행도 통과하지 못한다.
+function comparableLocator(locator, root) {
+  const text = String(locator || "");
+  if (!text) return "";
+  const resolved = root ? path.resolve(root, text) : path.normalize(text);
+  const trimmed = resolved.replace(/[\\/]+$/, "");
+  return process.platform === "win32" ? trimmed.toLowerCase() : trimmed;
+}
+
+function deliverableLocators(deliverables, root) {
   const items = Array.isArray(deliverables) ? deliverables : (deliverables?.items || []);
   return new Set(
     items
       .map((item) => (typeof item === "string" ? item : item?.locator))
       .filter(Boolean)
-      .map((locator) => path.normalize(String(locator)).replace(/[\\/]+$/, ""))
+      .map((locator) => comparableLocator(locator, root))
   );
 }
 
-function isDeclaredDeliverable(input, locators) {
+function isDeclaredDeliverable(input, locators, root) {
   if (!locators || locators.size === 0) return false;
   if (input.kind === "url") return false;
-  return locators.has(path.normalize(String(input.locator)).replace(/[\\/]+$/, ""));
+  return locators.has(comparableLocator(input.locator, root));
 }
 
 // 승인·동결 시점의 입력 결합. frozen 입력만 지문을 뜬다.
 function bindInputs(inputs = [], context = {}) {
   const root = context.root ? realOrResolved(context.root) : null;
   const now = Number.isFinite(context.now) ? context.now : Date.now();
-  const deliverables = deliverableLocators(context.deliverables);
+  const deliverables = deliverableLocators(context.deliverables, root);
   const bindings = [];
 
   for (const input of inputs) {
@@ -128,7 +140,7 @@ function bindInputs(inputs = [], context = {}) {
     // 기본값으로 frozen이 된 산출물은 live로 본다(위 주석).
     const releasedAsDeliverable = input.mode === "frozen"
       && input.modeDeclared !== true
-      && isDeclaredDeliverable(input, deliverables);
+      && isDeclaredDeliverable(input, deliverables, root);
     const mode = releasedAsDeliverable ? "live" : input.mode;
     const base = {
       inputId: input.inputId,
