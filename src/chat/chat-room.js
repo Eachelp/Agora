@@ -116,14 +116,28 @@ const ANSWER_OPTION_MAX_COUNT = 5;
 const LIST_ITEM_PATTERN =
   /^\s*(?:[-*•◦·▪‣]|\d+[.)]|\(?[a-zA-Z][.)]|[①-⑳]|[❶-❿]|\d+\s*(?:번|순위)[.):]?)\s*(\S.*)?$/;
 
+// 끝에 붙은 괄호 설명 "제목 (설명)"만 떼어 낸다. 문장 중간의 괄호("호건(HDS) 등 …")는
+// 설명이 아니므로 그대로 둔다 — 거기서 자르면 문장이 짧은 조각이 되어 길이
+// 게이트를 통과하고, 잘린 조각이 칩으로 뜬다.
+function stripTrailingParenthetical(text) {
+  let label = text;
+  for (;;) {
+    const next = label.replace(/\s*[(（][^()（）]*[)）]$/, "").trim();
+    if (next === label) return label;
+    label = next;
+  }
+}
+
 function tidyOptionLabel(raw) {
   let label = String(raw || "").trim();
   if (!label) return "";
-  // 제목—설명 구조면 제목만. 구분자(— – : ()이 나오면 그 앞까지를 라벨로 본다.
-  const cut = label.search(/\s[—–]\s|\s[-]\s|:|\(|·\s/);
-  if (cut > 0) label = label.slice(0, cut);
   // 강조/따옴표 기호는 벗겨 낸다.
-  label = label.replace(/[*_`"'“”‘’]/g, "").trim();
+  label = stripTrailingParenthetical(label.replace(/[*_`"'“”‘’]/g, "").trim());
+  // 물음표로 끝나는 항목은 보기가 아니라 질문이다(에이전트가 "던질 질문"을 나열한 경우).
+  if (/[?？]$/.test(label)) return "";
+  // 제목—설명 구조면 제목만. 구분자(— – : ·)가 나오면 그 앞까지를 라벨로 본다.
+  const cut = label.search(/\s[—–]\s|\s[-]\s|:|·\s/);
+  if (cut > 0) label = stripTrailingParenthetical(label.slice(0, cut).trim());
   // 이보다 길면 "보기"가 아니라 문장이다. 잘라서 뜻을 훼손하지 않고 아예 뺀다.
   // (화면 말줄임은 CSS가 맡고, 입력창에는 늘 원문 전체가 들어간다.)
   if (label.length > ANSWER_OPTION_MAX_LABEL) return "";
@@ -157,7 +171,8 @@ function extractAnswerOptions(text, question = "") {
   const items = [];
   for (const line of body.split(/\r?\n/)) {
     const match = LIST_ITEM_PATTERN.exec(line);
-    if (match && match[1]) items.push(match[1]);
+    // 구분선(---, * * *)은 마커만 이어진 줄이라 목록 항목이 아니다.
+    if (match && match[1] && /[\p{L}\p{N}]/u.test(match[1])) items.push(match[1]);
   }
   if (items.length >= 2) {
     const labels = dedupeOptions(items);
