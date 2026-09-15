@@ -113,8 +113,10 @@ function trailingUserQuestion(text, agents = [], selfId = null) {
 const ANSWER_OPTION_MAX_LABEL = 60;
 const ANSWER_OPTION_MAX_COUNT = 5;
 // 불릿/번호/문자/원문자로 시작하는 목록 줄. 마커 뒤 본문을 그룹으로 잡는다.
+// `-`·`*`는 뒤에 공백이 와야 마커다 — `**굵은 소제목**`의 첫 `*`를 불릿으로 읽으면
+// 소제목이 통째로 보기가 된다.
 const LIST_ITEM_PATTERN =
-  /^\s*(?:[-*•◦·▪‣]|\d+[.)]|\(?[a-zA-Z][.)]|[①-⑳]|[❶-❿]|\d+\s*(?:번|순위)[.):]?)\s*(\S.*)?$/;
+  /^\s*(?:[-*]\s+|[•◦·▪‣]|\d+[.)]|\(?[a-zA-Z][.)]|[①-⑳]|[❶-❿]|\d+\s*(?:번|순위)[.):]?)\s*(\S.*)?$/;
 
 // 끝에 붙은 괄호 설명 "제목 (설명)"만 떼어 낸다. 문장 중간의 괄호("호건(HDS) 등 …")는
 // 설명이 아니므로 그대로 둔다 — 거기서 자르면 문장이 짧은 조각이 되어 길이
@@ -131,12 +133,17 @@ function stripTrailingParenthetical(text) {
 function tidyOptionLabel(raw) {
   let label = String(raw || "").trim();
   if (!label) return "";
-  // 강조/따옴표 기호는 벗겨 낸다.
-  label = stripTrailingParenthetical(label.replace(/[*_`"'“”‘’]/g, "").trim());
+  // 강조/따옴표/코드 기호는 벗겨 낸다. `_`는 낱말을 감싼 강조만 — 파일명 속
+  // `_`(LIFT_검사지_문항명세.md)는 라벨의 일부다.
+  label = stripTrailingParenthetical(
+    label.replace(/[*`"'“”‘’]/g, "").replace(/(^|\s)_+|_+(?=\s|$)/g, "$1").trim()
+  );
   // 물음표로 끝나는 항목은 보기가 아니라 질문이다(에이전트가 "던질 질문"을 나열한 경우).
   if (/[?？]$/.test(label)) return "";
   // 제목—설명 구조면 제목만. 구분자(— – : ·)가 나오면 그 앞까지를 라벨로 본다.
-  const cut = label.search(/\s[—–]\s|\s[-]\s|:|·\s/);
+  // 콜론은 뒤에 공백이 있을 때만 구분자다 — `D:\경로`·`https://`의 콜론에서 자르면
+  // "폴더가 D" 같은 조각이 남는다.
+  const cut = label.search(/\s[—–]\s|\s[-]\s|:\s|：|·\s/);
   if (cut > 0) label = stripTrailingParenthetical(label.slice(0, cut).trim());
   // 이보다 길면 "보기"가 아니라 문장이다. 잘라서 뜻을 훼손하지 않고 아예 뺀다.
   // (화면 말줄임은 CSS가 맡고, 입력창에는 늘 원문 전체가 들어간다.)
