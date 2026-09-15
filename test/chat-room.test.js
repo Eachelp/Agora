@@ -4531,6 +4531,59 @@ test("같은 사용자 메시지가 같은 담당자를 두 번 배정하지는 
   assert.deepEqual(runner.started.sort(), ["claude", "codex"]);
 });
 
+// 사용자가 생각을 나눠 보내면 아직 시작하지 않은 턴은 앞 조각만 보고 답하고,
+// 조각마다 턴이 하나씩 생겨 같은 담당자가 여러 번 답했다. 대기 턴은 새 메시지로
+// 갈아끼워 전체를 보고 한 번만 답한다. 실행 중인 턴은 그대로 둔다.
+test("연속 사용자 메시지는 대기 중인 턴을 갈아끼워 담당자마다 한 번만, 전체를 보고 답한다", async () => {
+  const calls = [];
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    random: () => 0.9,
+    runAgent: ({ agent, prompt, attachments }) => {
+      calls.push({ agentId: agent.id, prompt, attachments });
+      return { promise: gate.then(() => ({ ok: true, text: `${agent.id} 답` })), cancel: () => {} };
+    },
+  });
+  const first = room.sendUserMessage({
+    text: "표집 후 임시로 보낼 모의 HTML 결과표 같은 걸 만들 수도 있고",
+    attachments: [{ name: "표집.csv" }],
+  });
+  await tick();
+  assert.equal(calls.length, 1, "순차 실행이라 한 명만 시작합니다");
+  const running = calls[0].agentId;
+  const waiting = room.turnQueue[0].agent.id;
+  assert.notEqual(waiting, running);
+
+  const second = room.sendUserMessage("검사설계도 같은 것도 제작할 수 있겠고");
+  await tick();
+  const queued = room.turnQueue.map((item) => ({ agentId: item.agent.id, root: item.context.turnRootId }));
+  assert.deepEqual(
+    queued.filter((item) => item.agentId === waiting),
+    [{ agentId: waiting, root: second.id }],
+    "대기하던 담당자의 턴은 새 메시지 기준 하나로 갈아끼워집니다"
+  );
+  assert.deepEqual(
+    queued.filter((item) => item.agentId === running),
+    [{ agentId: running, root: second.id }],
+    "실행 중이던 담당자는 건드리지 않고 새 턴 하나만 뒤에 섭니다"
+  );
+  assert.ok(!room.turnQueue.some((item) => item.context.turnRootId === first.id), "첫 메시지 턴은 남지 않습니다");
+
+  release();
+  await settle(room);
+  assert.equal(calls.length, 3, "실행 중이던 1 + 갈아끼운 1 + 실행 중이던 담당자의 새 턴 1");
+  const superseded = calls.find((call) => call.agentId === waiting);
+  assert.match(superseded.prompt, /모의 HTML 결과표/);
+  assert.match(superseded.prompt, /검사설계도/);
+  assert.deepEqual(superseded.attachments, [{ name: "표집.csv" }], "앞 턴에 딸린 첨부를 이어받습니다");
+  assert.ok(
+    !room.messages.some((message) => message.authorType === "system" && /다시 보내/.test(message.text)),
+    "갈아끼우기는 유실이 아니므로 다시 보내라는 안내가 없어야 합니다"
+  );
+});
+
 // 중지는 subprocess 종료를 기다리지 않는다. 화면 표시용 카운터(activeRuns)는
 // 즉시 0이 되지만, 그 값으로 소유권을 정리하면 아직 살아서 파일을 쓰는 실행이
 // 있는데도 다른 대화에 폴더를 넘기게 된다.

@@ -659,8 +659,11 @@ class ChatRoom extends EventEmitter {
       this.pumpSuspended += 1;
       try {
         order.forEach((agent, index) => {
+          // 아직 시작하지 않은 이 담당자의 턴은 방금 온 메시지를 보지 못하므로
+          // 걷어내고 새로 잡는다. 앞 턴에 딸린 첨부는 새 턴이 이어받는다.
+          const carried = this.supersedeQueuedTurns(agent.id);
           this.scheduleResponse(agent, {
-            attachments,
+            attachments: carried.length > 0 ? [...carried, ...attachments] : attachments,
             turnRootId: entry.id,
             independent,
             ...(parallelGroupId ? { parallelGroupId, parallelTotal: order.length } : {}),
@@ -867,6 +870,33 @@ class ChatRoom extends EventEmitter {
       return true;
     }
     return false;
+  }
+
+  // 사용자 메시지에 뿌리를 둔 이 담당자의 대기 턴을 걷어내고, 그 턴에 딸려 있던
+  // 첨부를 돌려준다.
+  //
+  // 대기 턴은 예약 시점의 히스토리(promptLimit)를 붙들고 있어, 사용자가 생각을
+  // 나눠 보내면 앞 조각만 보고 답하고 조각마다 턴이 하나씩 생겨 같은 담당자가
+  // 여러 번 답했다. 새 메시지로 다시 잡으면 전체를 보고 한 번만 답한다. 실행
+  // 중인 턴은 이미 프롬프트가 들어갔으므로 건드리지 않고, 유실 안내도 내지
+  // 않는다 — 질문은 새 턴이 그대로 전달한다.
+  supersedeQueuedTurns(agentId) {
+    const carried = [];
+    for (const queue of [this.turnQueue, this.deferredTurnQueue]) {
+      for (let index = queue.length - 1; index >= 0; index -= 1) {
+        const item = queue[index];
+        if (item.agent.id !== agentId) continue;
+        if (!item.context.turnRootId || !this.isFreeChatContext(item.context)) continue;
+        queue.splice(index, 1);
+        if (item.dedupeKey && this.pendingTurns.get(item.dedupeKey) === item) {
+          this.pendingTurns.delete(item.dedupeKey);
+        }
+        this.turnStartedAt.delete(item.turnId);
+        if (Array.isArray(item.context.attachments)) carried.unshift(...item.context.attachments);
+        item.resolve(undefined);
+      }
+    }
+    return carried;
   }
 
   async pumpTurnQueue() {
