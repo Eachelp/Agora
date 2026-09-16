@@ -682,10 +682,13 @@ class ChatRoom extends EventEmitter {
       try {
         order.forEach((agent, index) => {
           // 아직 시작하지 않은 이 담당자의 턴은 방금 온 메시지를 보지 못하므로
-          // 걷어내고 새로 잡는다. 앞 턴에 딸린 첨부는 새 턴이 이어받는다.
-          const carried = this.supersedeQueuedTurns(agent.id);
+          // 걷어내고 새로 잡는다. 새 턴은 걷어낸 턴이 답하려던 메시지의 첨부까지
+          // 함께 받는다.
+          const superseded = this.supersedeQueuedTurns(agent.id);
           this.scheduleResponse(agent, {
-            attachments: carried.length > 0 ? [...carried, ...attachments] : attachments,
+            attachments: superseded.length > 0
+              ? this.attachmentsOfMessages([...superseded, entry.id])
+              : attachments,
             turnRootId: entry.id,
             independent,
             ...(parallelGroupId ? { parallelGroupId, parallelTotal: order.length } : {}),
@@ -908,8 +911,8 @@ class ChatRoom extends EventEmitter {
     return false;
   }
 
-  // 사용자 메시지에 뿌리를 둔 이 담당자의 대기 턴을 걷어내고, 그 턴에 딸려 있던
-  // 첨부를 돌려준다.
+  // 사용자 메시지에 뿌리를 둔 이 담당자의 대기 턴을 걷어내고, 걷어낸 턴들이
+  // 답하려던 사용자 메시지 id를 돌려준다.
   //
   // 대기 턴은 예약 시점의 히스토리(promptLimit)를 붙들고 있어, 사용자가 생각을
   // 나눠 보내면 앞 조각만 보고 답하고 조각마다 턴이 하나씩 생겨 같은 담당자가
@@ -917,18 +920,28 @@ class ChatRoom extends EventEmitter {
   // 중인 턴은 이미 프롬프트가 들어갔으므로 건드리지 않고, 유실 안내도 내지
   // 않는다 — 질문은 새 턴이 그대로 전달한다.
   supersedeQueuedTurns(agentId) {
-    const carried = [];
+    const roots = [];
     for (const queue of [this.turnQueue, this.deferredTurnQueue]) {
       for (let index = queue.length - 1; index >= 0; index -= 1) {
         const item = queue[index];
         if (item.agent.id !== agentId) continue;
         if (!item.context.turnRootId || !this.isFreeChatContext(item.context)) continue;
         queue.splice(index, 1);
-        if (Array.isArray(item.context.attachments)) carried.unshift(...item.context.attachments);
+        if (!roots.includes(item.context.turnRootId)) roots.push(item.context.turnRootId);
         this.retireTurn(item);
       }
     }
-    return carried;
+    return roots;
+  }
+
+  // 이 사용자 메시지들에 딸린 첨부를 대화 순서대로 모은다. 첨부는 턴 context로
+  // 러너에 전달되지만 원천은 메시지 엔트리다 — 턴을 갈아끼워도 여기서 다시 읽으면
+  // 된다.
+  attachmentsOfMessages(messageIds) {
+    const wanted = new Set(messageIds);
+    return this.messages
+      .filter((message) => wanted.has(message.id) && Array.isArray(message.attachments))
+      .flatMap((message) => message.attachments);
   }
 
   async pumpTurnQueue() {
