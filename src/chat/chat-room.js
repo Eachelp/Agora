@@ -44,8 +44,6 @@ const {
 } = require("../agora/discussion-protocol");
 // V1.5 Stage 5 — 역할 출력의 구조화 제어 행동(HANDOFF/COMPLETE/ASK_USER).
 const { parseControlOutput, stripControlOutput } = require("../agora/interaction-contract");
-// 되질문·보기 산문 추출. 계약(ASK_USER) 없이 끝난 일반 턴의 fallback이다.
-const { trailingUserQuestion, extractAnswerOptions } = require("./user-question");
 
 // 채팅방 오케스트레이션.
 // - 멘션이 없으면 세션 참가자 전체, 있으면 멘션된 참가자만 응답합니다.
@@ -1639,23 +1637,13 @@ class ChatRoom extends EventEmitter {
         context.attachments || [],
         context.turnRootId
       );
-      // 일반 채팅 턴을 되질문으로 끝냈으면 '답변 대기'로 세운다.
-      // - 계약(ASK_USER + OPTION)이 있으면 그것이 권위다. 질문·보기를 그대로 쓰고
-      //   보기가 없어도 대기로 세운다(산문 추출은 하지 않는다).
-      // - 계약이 없으면 산문 휴리스틱(user-question.js). 물음표 휴리스틱은 뜻을
-      //   못 읽어 "무엇을 도와드릴까요?" 같은 마무리까지 질문으로 오인하므로,
-      //   보기를 뽑아낸 "고르는 질문"일 때만 대기로 세운다. 핸드오프(@멘션)한
-      //   턴은 대기로 보지 않는다.
-      // 사용자는 선택지 칩이나 아래 입력창의 직접 타이핑으로 답한다.
-      const asked = controlRequest?.action === "ASK_USER" && !controlRequest.ambiguous ? controlRequest : null;
-      if (asked) {
-        this.setAwaitingUser(agent.id, asked.question || "", asked.options || []);
-      } else {
-        const askedUser = trailingUserQuestion(text, this.agents, agent.id);
-        if (askedUser !== null) {
-          const options = extractAnswerOptions(text, askedUser);
-          if (options.length > 0) this.setAwaitingUser(agent.id, askedUser, options);
-        }
+      // 일반 채팅 턴이 계약(ASK_USER + OPTION)으로 물었을 때만 '답변 대기'로
+      // 세운다. 산문의 물음표·목록을 읽는 휴리스틱은 쓰지 않는다 — 뜻을 못 읽어
+      // 도움 제안 마무리나 방향 메뉴까지 질문으로 오인했고, 계약이 있는 지금은
+      // 에이전트가 "사용자 답 없이는 못 간다"고 스스로 표시한 것만 세우는 편이
+      // 맞다. 사용자는 선택지 칩이나 입력창 타이핑으로 답하고, ×로 답 없이 지운다.
+      if (controlRequest?.action === "ASK_USER" && !controlRequest.ambiguous) {
+        this.setAwaitingUser(agent.id, controlRequest.question || "", controlRequest.options || []);
       }
     }
     return {

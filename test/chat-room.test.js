@@ -6,7 +6,6 @@ const path = require("node:path");
 const { TaskManager } = require("../src/agora/task-manager");
 const turnCheckpoint = require("../src/agora/turn-checkpoint");
 const { ChatRoom } = require("../src/chat/chat-room");
-const { trailingUserQuestion, extractAnswerOptions } = require("../src/chat/user-question");
 const { createProfessionalRun } = require("../src/agora/professional-run");
 
 
@@ -75,129 +74,13 @@ test("멘션된 에이전트만 응답한다", async () => {
   assert.equal(agentMessages[0].text, "네!");
 });
 
-test("trailingUserQuestion: 되질문으로 끝난 턴만 질문으로 잡고 핸드오프·평서문은 제외한다", () => {
-  const agents = [{ id: "claude", aliases: ["claude"] }, { id: "codex", aliases: ["codex"] }];
-  assert.equal(trailingUserQuestion("어느 것부터 파볼까요?", agents, "claude"), "어느 것부터 파볼까요?");
-  assert.equal(
-    trailingUserQuestion("좋습니다.\n그래서 어느 스키마를 먼저 잡을까요?", agents, "claude"),
-    "그래서 어느 스키마를 먼저 잡을까요?"
-  );
-  // 마침표로 끝나는 평서문은 대기가 아니다.
-  assert.equal(trailingUserQuestion("정리했습니다. 확인해 주세요.", agents, "claude"), null);
-  // 다른 에이전트를 @멘션해 넘긴 턴은 사용자 질문이 아니다.
-  assert.equal(trailingUserQuestion("@codex 이 부분 봐줄래?", agents, "claude"), null);
-  assert.equal(trailingUserQuestion("", agents, "claude"), null);
-});
-
-test("extractAnswerOptions: 고르는 질문일 때만 괄호 슬래시·번호 목록에서 보기를 뽑는다", () => {
-  // 괄호 안 슬래시 목록 + "어느 것부터?"(고르는 질문).
-  assert.deepEqual(
-    extractAnswerOptions(
-      "1~3번(실시요약 확보 / 7문항 정답 보완 / 풀이시간 정의)을 먼저 정해야 합니다. 어느 것부터?",
-      "어느 것부터?"
-    ),
-    ["실시요약 확보", "7문항 정답 보완", "풀이시간 정의"]
-  );
-  // 번호 목록 + "어디부터?"(고르는 질문).
-  assert.deepEqual(
-    extractAnswerOptions("1. 실시요약 확보\n2. 7문항 정답 보완\n3. 풀이시간 정의\n어디부터?", "어디부터?"),
-    ["실시요약 확보", "7문항 정답 보완", "풀이시간 정의"]
-  );
-  // 보기가 없으면 빈 배열(칩 없이 프리필로만 답).
-  assert.deepEqual(extractAnswerOptions("정리했습니다. 확인해 주세요.", "확인해 주세요."), []);
-  assert.deepEqual(
-    extractAnswerOptions("이 방법이 (a)인지 (b)인지 궁금합니다. 어느 쪽?", "어느 쪽?"),
-    []
-  );
-});
-
-test("extractAnswerOptions: 목록이 있어도 고르는 질문이 아니면 보기가 아니다(계획·상태 나열)", () => {
-  // "오늘 바로 / 동시에 / 회신 대기 중"은 고를 보기가 아니라 병행할 작업 나열이다.
-  // 뒤따르는 질문이 "진행할까요?"처럼 고르라는 게 아니면 칩을 내지 않는다.
-  const plan =
-    "실무적으로는:\n◦ 오늘 바로 — 명세서에 문의\n◦ 동시에 — 부서에 요청\n◦ 회신 대기 중 — 나머지 진행\n이렇게 진행할까요?";
-  assert.deepEqual(extractAnswerOptions(plan, "이렇게 진행할까요?"), []);
-  // 질문 본문이 비면(무엇을 묻는지 모름) 보기도 뽑지 않는다.
-  assert.deepEqual(extractAnswerOptions(plan, ""), []);
-});
-
-test("extractAnswerOptions: 라벨은 자르지 않고, 문장처럼 긴 항목은 보기에서 뺀다", () => {
-  // 28자를 넘는 제목도 잘리지 않고 원문 그대로 남는다(입력창에 잘린 뜻이 들어가면 안 된다).
-  const longTitle = "실시요약 확보 및 음원 스크립트 요청 후 검증 절차 정리";
-  assert.ok(longTitle.length > 28);
-  const out = extractAnswerOptions(`1. ${longTitle}\n2. 풀이시간 정의\n어느 것부터?`, "어느 것부터?");
-  assert.deepEqual(out, [longTitle, "풀이시간 정의"]);
-  assert.ok(out.every((label) => !label.endsWith("…")), "라벨에 말줄임이 붙지 않는다");
-  // 게이트(60자)를 넘는 항목은 보기가 아니라 문장이므로 제외되고, 남은 보기가 2개 미만이면 빈 배열.
-  const sentence =
-    "이 항목은 보기가 아니라 한 문장으로 길게 풀어 쓴 설명이라서, 사용자가 클릭해서 고를 만한 짧은 명사구가 아니며 그대로 칩에 올리면 오히려 혼란만 준다";
-  assert.ok(sentence.length > 60, `게이트 검증용 문장이 60자를 넘어야 한다(현재 ${sentence.length}자)`);
-  assert.deepEqual(extractAnswerOptions(`1. ${sentence}\n2. 풀이시간 정의\n어느 것부터?`, "어느 것부터?"), []);
-});
-
-// 긴 구조화 응답이 고르는 질문으로 끝나면, 구분선·문장 속 괄호 조각·따옴표 친
-// 질문까지 칩으로 뽑혔다. 실제 앱에서 "--", "호건", "전체 도입" 같은 칩이 떴다.
-test("extractAnswerOptions: 구분선·문장 속 괄호 조각·따옴표 친 질문은 보기가 아니다", () => {
-  const text = [
-    "맥락을 듣고 나니 방향이 명확해졌네요!",
-    "",
-    "---",
-    "",
-    "1. 현장 활용 시나리오 및 타깃 (수요 검증)",
-    '  ◦ "호건(HDS) 등 기존 진단을 쓰실 때 가장 만족스러웠던 점, 반대로 아쉬웠던 한계는 무엇인가요?"',
-    '  ◦ "왜 그런가요?"',
-    "2. 전체 도입(141문항) vs 한국형 단축형(48~64문항)",
-    "3. 왜곡 응답(사회적 바람직성)과 수용성 문제",
-    "4. 결과표 및 코칭 툴킷 구현 요건 (제품화 관점)",
-    "",
-    "이 중에서 무엇을 먼저 다듬을까요?",
-  ].join("\n");
-  assert.deepEqual(extractAnswerOptions(text, "이 중에서 무엇을 먼저 다듬을까요?"), [
-    "현장 활용 시나리오 및 타깃",
-    "전체 도입(141문항) vs 한국형 단축형",
-    "왜곡 응답(사회적 바람직성)과 수용성 문제",
-    "결과표 및 코칭 툴킷 구현 요건",
-  ]);
-  // "제목 (설명) — 긴 설명"과 "제목: 설명"은 제목만 남는다.
-  assert.deepEqual(
-    extractAnswerOptions("1. 실시요약 확보 (권장) — 먼저 해야 합니다\n2. 풀이시간 정의: 기준 정하기\n어느 것부터?", "어느 것부터?"),
-    ["실시요약 확보", "풀이시간 정의"]
-  );
-});
-
-// 굵게 쓴 소제목(**1. …**)의 첫 `*`가 불릿으로 읽혀 소제목이 통째로 칩으로 떴다.
-// 같은 응답에서 드라이브 문자(D:\…)의 콜론에서 잘린 조각("폴더가 D")과 파일명 속
-// `_`가 강조 기호로 벗겨지는 문제도 함께 잡는다.
-test("extractAnswerOptions: 굵은 소제목은 불릿이 아니고, 드라이브 콜론·파일명 `_`는 라벨을 해치지 않는다", () => {
-  const text = [
-    "**1. 보고서에 통째로 빠진 단계가 하나 있습니다**",
-    "",
-    "- **블로커 A** — 제한시간 수치가 원자료에 없음. 분 단위 표기가 없습니다.",
-    "- **블로커 B** — formE `풀이시간` 합계가 43분 35초. 총 40분 가정과 어긋납니다.",
-    "- **블로커 C** — 7개 문항에 선지·정답·해설 행이 통째로 없음 (`SMRM036/033/054`).",
-    "",
-    "**2. 이게 보고서에서 왜 문제냐면**",
-    "",
-    "- 폴더가 `D:\\에이전트용\\LIFT\\화면설계서 검토\\` 로 옮겨졌습니다. agy 보고서의 링크가 맞고, 그 이전 메시지들의 링크는 죽었습니다.",
-    "- `LIFT_성인용_체험데모_결과표연동_단일파일_260915.html` (9/15자)이 있는데 보고서 산출물 목록에 없습니다.",
-    "",
-    "어느 것부터 갈까요?",
-  ].join("\n");
-  assert.deepEqual(extractAnswerOptions(text, "어느 것부터 갈까요?"), ["블로커 A", "블로커 B", "블로커 C"]);
-  // 짧은 보기라면 드라이브 경로와 파일명은 원문 그대로 라벨이 된다.
-  assert.deepEqual(
-    extractAnswerOptions("1. D:\\작업\\결과.md\n2. LIFT_검사지_문항명세.md\n어느 쪽?", "어느 쪽?"),
-    ["D:\\작업\\결과.md", "LIFT_검사지_문항명세.md"]
-  );
-});
-
-test("되질문으로 끝난 에이전트는 답변 대기로 표시되고 새 턴에서 풀린다", async () => {
+test("계약으로 물은 에이전트는 답변 대기로 표시되고 새 턴에서 풀린다", async () => {
   const room = new ChatRoom({
     agents: makeAgents(),
     runAgent: fakeRunner({
       claude: [
-        { ok: true, text: "정리했습니다.\n1. 스키마 정리\n2. 테스트 보강\n어느 것부터 파볼까요?" },
-        { ok: true, text: "네, 3번부터 하겠습니다." },
+        { ok: true, text: "정리했습니다. 어느 것부터 파볼까요?\nASK_USER: 어느 것부터 파볼까요?\nOPTION: 스키마 정리\nOPTION: 테스트 보강" },
+        { ok: true, text: "네, 스키마부터 하겠습니다." },
       ],
     }),
   });
@@ -206,26 +89,57 @@ test("되질문으로 끝난 에이전트는 답변 대기로 표시되고 새 �
   const afterAsk = room.publicAgents().find((agent) => agent.id === "claude");
   assert.equal(afterAsk.awaitingUser, true);
   assert.equal(afterAsk.awaitingQuestion, "어느 것부터 파볼까요?");
+  assert.deepEqual(afterAsk.awaitingOptions, ["스키마 정리", "테스트 보강"]);
 
   // 사용자가 그 에이전트에게 답하면(새 턴 시작) 대기가 먼저 풀리고,
-  // 평서문으로 끝난 이번 답변은 다시 대기로 세우지 않는다.
-  room.sendUserMessage("@claude 3번부터");
+  // 계약 없이 끝난 이번 답변은 다시 대기로 세우지 않는다.
+  room.sendUserMessage("@claude 스키마부터");
   await settle(room);
   const afterReply = room.publicAgents().find((agent) => agent.id === "claude");
   assert.equal(afterReply.awaitingUser, false);
   assert.equal(afterReply.awaitingQuestion, null);
 });
 
-test("선택지 없이 물음표로만 끝난 되질문은 답변 대기로 세우지 않는다", async () => {
+// 산문의 물음표·목록은 더 이상 대기를 세우지 않는다. 뜻을 못 읽어 도움 제안
+// 마무리나 방향 메뉴까지 질문으로 오인했기 때문이다. 계약(ASK_USER)만 세운다.
+test("계약 없이 물음표·목록으로 끝난 답변은 답변 대기로 세우지 않는다", async () => {
   const room = new ChatRoom({
     agents: makeAgents(),
-    runAgent: fakeRunner({ claude: [{ ok: true, text: "무엇을 도와드릴까요?" }] }),
+    runAgent: fakeRunner({
+      claude: [{ ok: true, text: "정리했습니다.\n1. 스키마 정리\n2. 테스트 보강\n어느 것부터 파볼까요?" }],
+      codex: [{ ok: true, text: "무엇을 도와드릴까요?" }],
+    }),
   });
-  room.sendUserMessage("@claude 안녕");
+  room.sendUserMessage("@claude @codex 검토해줘");
   await settle(room);
-  const claude = room.publicAgents().find((agent) => agent.id === "claude");
-  assert.equal(claude.awaitingUser, false);
-  assert.deepEqual(claude.awaitingOptions, []);
+  for (const id of ["claude", "codex"]) {
+    const agent = room.publicAgents().find((entry) => entry.id === id);
+    assert.equal(agent.awaitingUser, false, `${id}는 계약 없이 물었으므로 대기가 아닙니다`);
+    assert.deepEqual(agent.awaitingOptions, []);
+  }
+});
+
+// ×(답변 대기 지우기)는 답하지 않고 그 에이전트의 대기만 내린다. 다른 에이전트의
+// 대기는 그대로다.
+test("clearAwaitingUser는 그 에이전트의 대기만 내리고 에이전트 목록을 다시 알린다", async () => {
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({
+      claude: [{ ok: true, text: "A?\nASK_USER: A?" }],
+      codex: [{ ok: true, text: "B?\nASK_USER: B?" }],
+    }),
+  });
+  room.sendUserMessage("@claude @codex 각자 물어봐");
+  await settle(room);
+  const emitted = [];
+  room.on("agents", (agents) => emitted.push(agents));
+  room.clearAwaitingUser("claude");
+  assert.equal(emitted.length, 1, "지운 뒤 에이전트 목록을 한 번 알립니다");
+  assert.equal(emitted[0].find((agent) => agent.id === "claude").awaitingUser, false);
+  assert.equal(emitted[0].find((agent) => agent.id === "codex").awaitingUser, true);
+  // 대기 중이 아닌 에이전트를 지우는 것은 아무 일도 하지 않는다.
+  room.clearAwaitingUser("claude");
+  assert.equal(emitted.length, 1);
 });
 
 // 공통 질문 계약. 에이전트가 ASK_USER + OPTION으로 명시적으로 물으면 산문 추출
@@ -279,23 +193,6 @@ test("일반 채팅에서 HANDOFF·COMPLETE 제어 줄은 무시하고 화면에
   assert.equal(room.messages.find((message) => message.authorType === "agent").text, "끝냈습니다.\nCOMPLETE");
 });
 
-test("보기를 나열한 되질문은 publicAgents.awaitingOptions로 칩을 낸다", async () => {
-  const room = new ChatRoom({
-    agents: makeAgents(),
-    runAgent: fakeRunner({
-      claude: [{
-        ok: true,
-        text: "실무적으로는:\n1. 실시요약 확보\n2. 7문항 정답 보완\n3. 풀이시간 정의\n어느 것부터 파볼까요?",
-      }],
-    }),
-  });
-  room.sendUserMessage("@claude 우선순위 정해줘");
-  await settle(room);
-  const claude = room.publicAgents().find((agent) => agent.id === "claude");
-  assert.equal(claude.awaitingUser, true);
-  assert.deepEqual(claude.awaitingOptions, ["실시요약 확보", "7문항 정답 보완", "풀이시간 정의"]);
-});
-
 test("평서문으로 끝난 일반 답변은 답변 대기가 아니고, 핸드오프한 에이전트도 대기가 아니다", async () => {
   const room = new ChatRoom({
     agents: makeAgents(),
@@ -316,7 +213,7 @@ test("평서문으로 끝난 일반 답변은 답변 대기가 아니고, 핸드
 test("세션 비우기(clear)는 남은 답변 대기를 모두 내린다", async () => {
   const room = new ChatRoom({
     agents: makeAgents(),
-    runAgent: fakeRunner({ claude: [{ ok: true, text: "1. 스키마\n2. 테스트\n어느 것부터 할까요?" }] }),
+    runAgent: fakeRunner({ claude: [{ ok: true, text: "어느 것부터 할까요?\nASK_USER: 어느 것부터 할까요?" }] }),
   });
   room.sendUserMessage("@claude 검토");
   await settle(room);

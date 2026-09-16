@@ -53,7 +53,10 @@ test("ASK_USER + OPTION 질문 계약 안내는 일반 채팅 턴에만 들어�
   const general = buildAgentPrompt(base);
   assert.match(general, /`ASK_USER: <질문 한 줄>`/);
   assert.match(general, /`OPTION: <보기>` 줄을 2~5개/);
-  assert.match(general, /마무리 인사에는 붙이지 마세요/);
+  // "막혀서 묻는 것"과 "방향 메뉴를 제안하며 마무리하는 것"을 가른다. 후자에
+  // 붙으면 답할 필요 없는 질문까지 답변 대기로 선다.
+  assert.match(general, /맡은 작업을 이어가려면 사용자의 결정이 꼭 필요할 때만/);
+  assert.match(general, /선택지를 제안하며 마무리하는 경우나 .*마무리 인사에는 붙이지 마세요/);
   const guidance = /`OPTION: <보기>`/;
   assert.doesNotMatch(buildAgentPrompt({ ...base, discussion: { turn: 1, maxTurns: 3 } }), guidance);
   assert.doesNotMatch(buildAgentPrompt({ ...base, consult: { role: "reviewer", label: "검수자" } }), guidance);
