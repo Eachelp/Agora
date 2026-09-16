@@ -44,6 +44,12 @@ test("펫/말풍선 설정 UI는 제거됐다", () => {
   assert.doesNotMatch(settingsJs, /petKey|petEnabled|activityBubbleMode|followMouse|bubbleBgColor|bubbleTextColor/);
   assert.doesNotMatch(mainJs, /petKey|petEnabled|activityBubbleMode|followMouse|bubbleBgColor|bubbleTextColor/);
   assert.match(settingsHtml, /id="autostart"/);
+  // '답변 대기 표시' 토글: 설정 화면 → settings:save → appearance payload → 채팅 화면.
+  assert.match(settingsHtml, /id="show-awaiting"/);
+  assert.match(settingsJs, /showAwaiting: \$\("#show-awaiting"\)\.checked/);
+  assert.match(settingsJs, /\$\("#show-awaiting"\)\.checked = state\.appearance\?\.showAwaiting !== false/);
+  assert.match(mainJs, /patch\.showAwaiting = next\.showAwaiting/);
+  assert.match(mainJs, /showAwaiting: settings\.showAwaiting !== false/);
 });
 
 test("설정 Footer는 짧은 창에서도 본문을 덮지 않고 글꼴 목록은 각 글꼴로 표시된다", () => {

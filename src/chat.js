@@ -3,6 +3,9 @@ const chatScroll = document.getElementById("chat-scroll");
 const messageList = document.getElementById("message-list");
 const typingRow = document.getElementById("typing-row");
 const awaitingRow = document.getElementById("awaiting-row");
+// 설정 '답변 대기 표시'. 끄면 대기 바와 참가자 칩의 대기 점을 그리지 않는다.
+// 대기 상태 자체는 방(main)이 계속 갖고 있어 다시 켜면 그대로 보인다.
+let showAwaiting = true;
 const agentChips = document.getElementById("agent-chips");
 const composerInput = document.getElementById("composer-input");
 const composerBox = document.getElementById("composer-box");
@@ -423,6 +426,12 @@ function applyAppearance(appearance) {
     } else {
       root.style.removeProperty(`--${key}`);
     }
+  }
+
+  const nextShowAwaiting = appearance?.showAwaiting !== false;
+  if (nextShowAwaiting !== showAwaiting) {
+    showAwaiting = nextShowAwaiting;
+    renderAgents();
   }
 }
 
@@ -2411,8 +2420,9 @@ function renderAgents() {
     if (typingAgents.has(agent.id)) chip.classList.add("is-typing");
     // 되질문으로 끝나 답을 기다리는 에이전트는 칩에도 표시해, 참여자 줄만 봐도
     // 누가 대기 중인지 알 수 있게 한다(상세 질문은 아래 답변 대기 바에서).
-    if (agent.awaitingUser) chip.classList.add("is-awaiting");
-    chip.title = agent.awaitingUser
+    const awaiting = showAwaiting && Boolean(agent.awaitingUser);
+    if (awaiting) chip.classList.add("is-awaiting");
+    chip.title = awaiting
       ? agent.awaitingQuestion
         ? `답변 대기 — ${agent.awaitingQuestion}`
         : "이 에이전트가 당신의 답을 기다립니다"
@@ -2424,7 +2434,7 @@ function renderAgents() {
 
     const avatar = makeAgentAvatar(agent, "agent-avatar");
     chip.append(avatar, document.createTextNode(`@${agent.id}`));
-    if (agent.awaitingUser) {
+    if (awaiting) {
       const dot = document.createElement("span");
       dot.className = "agent-chip-await-dot";
       dot.setAttribute("aria-hidden", "true");
@@ -2440,11 +2450,22 @@ function renderAgents() {
 function renderAwaitingRow() {
   awaitingView.renderAwaitingRow({
     container: awaitingRow,
-    agents,
+    agents: showAwaiting ? agents : [],
     document,
     makeAgentAvatar,
     onAnswer: answerAwaitingAgent,
+    onDismiss: dismissAwaitingAgent,
   });
+}
+
+// ×: 답하지 않고 그 에이전트의 대기만 지운다. 상태는 방(main)이 갖고 있으므로
+// IPC로 지우고, 갱신된 에이전트 목록(chat:agents)이 돌아오면 바가 다시 그려진다.
+async function dismissAwaitingAgent(agentId) {
+  try {
+    await window.chatApi.awaitingDismiss(activeSessionId, agentId);
+  } catch (error) {
+    console.error("답변 대기를 지우지 못했습니다.", error);
+  }
 }
 
 // 대기 중인 에이전트에게 곧장 답하도록 입력창에 @id를 채우고 포커스를 준다.

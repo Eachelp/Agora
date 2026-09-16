@@ -4,8 +4,9 @@
 (function attachAwaitingView(global) {
   // 되질문으로 턴을 끝낸 에이전트를 composer 위에 모아 보여준다. 알약을 누르면
   // 그 에이전트에게 답하도록 @id를 채우고, 보기가 있으면 칩으로 띄운다. 칩을
-  // 누르면 "@id <보기>"까지 채워 준다(자동 전송 X — 사용자가 확인).
-  function renderAwaitingRow({ container, agents, document, makeAgentAvatar, onAnswer }) {
+  // 누르면 "@id <보기>"까지 채워 준다(자동 전송 X — 사용자가 확인). ×는 답하지
+  // 않고 그 대기만 지운다 — 방향 제안처럼 답할 필요 없는 질문을 치우는 길이다.
+  function renderAwaitingRow({ container, agents, document, makeAgentAvatar, onAnswer, onDismiss }) {
     if (!container) return;
     container.textContent = "";
     const waiting = (agents || []).filter((agent) => agent.awaitingUser);
@@ -34,7 +35,20 @@
         ? `${agent.name}에게 답하기 — ${agent.awaitingQuestion}`
         : `${agent.name}에게 답하기`;
       pill.addEventListener("click", () => onAnswer(agent.id));
-      group.append(pill);
+      const head = document.createElement("div");
+      head.className = "awaiting-head";
+      head.append(pill);
+      const dismiss = document.createElement("button");
+      dismiss.type = "button";
+      dismiss.className = "awaiting-dismiss";
+      dismiss.textContent = "×";
+      dismiss.title = `@${agent.id} 답변 대기 지우기`;
+      dismiss.setAttribute("aria-label", `@${agent.id} 답변 대기 지우기`);
+      dismiss.addEventListener("click", () => {
+        if (typeof onDismiss === "function") onDismiss(agent.id);
+      });
+      head.append(dismiss);
+      group.append(head);
 
       const options = Array.isArray(agent.awaitingOptions) ? agent.awaitingOptions : [];
       if (options.length > 0) {

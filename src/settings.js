@@ -194,6 +194,7 @@ function renderGeneral({ resetAppearance = false } = {}) {
   }
   renderUiTheme(state.appearance.uiTheme);
   $("#autostart").checked = state.autoStart;
+  $("#show-awaiting").checked = state.appearance?.showAwaiting !== false;
 
   renderFonts();
 }
@@ -653,6 +654,7 @@ function registerAppearanceControls() {
         fontSize: selectedFontSize,
         autoStart: $("#autostart").checked,
         uiTheme: readUiTheme(),
+        showAwaiting: $("#show-awaiting").checked,
       });
       if (!response?.ok) throw new Error(responseError(response, "설정을 적용하지 못했습니다."));
       state = response.data;

@@ -38,7 +38,7 @@ function makeNode(tag = "div") {
   return node;
 }
 
-function runRender(agents, onAnswer = () => {}) {
+function runRender(agents, onAnswer = () => {}, onDismiss = () => {}) {
   const awaitingRow = makeNode("div");
   renderAwaitingRow({
     container: awaitingRow,
@@ -46,6 +46,7 @@ function runRender(agents, onAnswer = () => {}) {
     document: { createElement: (tag) => makeNode(tag) },
     makeAgentAvatar: () => makeNode("span"),
     onAnswer,
+    onDismiss,
   });
   return awaitingRow;
 }
@@ -61,8 +62,14 @@ function pillText(pill) {
 function groupsOf(row) {
   return row.children.filter((child) => child.className === "awaiting-group");
 }
+function headOf(group) {
+  return group.children.find((child) => child.className === "awaiting-head");
+}
 function pillOf(group) {
-  return group.children.find((child) => child.className === "awaiting-pill");
+  return headOf(group).children.find((child) => child.className === "awaiting-pill");
+}
+function dismissOf(group) {
+  return headOf(group).children.find((child) => child.className === "awaiting-dismiss");
 }
 function optionChips(group) {
   const optRow = group.children.find((child) => child.className === "awaiting-options");
@@ -121,6 +128,26 @@ test("알약과 보기 칩을 누르면 에이전트 id와 보기가 콜백으�
   pillOf(group).click();
   optionChips(group)[1].click();
   assert.deepEqual(answers, [["claude", undefined], ["claude", "B안"]]);
+});
+
+// ×는 답하지 않고 그 에이전트의 대기만 지운다. 답변 콜백과 섞이지 않는다.
+test("× 버튼을 누르면 답변 없이 그 에이전트의 대기를 지우는 콜백이 불린다", () => {
+  const answers = [];
+  const dismissed = [];
+  const row = runRender(
+    [
+      { id: "claude", name: "Claude", color: "#111", awaitingUser: true, awaitingQuestion: "A?", awaitingOptions: [] },
+      { id: "codex", name: "Codex", color: "#222", awaitingUser: true, awaitingQuestion: "B?", awaitingOptions: [] },
+    ],
+    (agentId, option) => answers.push([agentId, option]),
+    (agentId) => dismissed.push(agentId)
+  );
+  const groups = groupsOf(row);
+  assert.equal(dismissOf(groups[0]).textContent, "×");
+  assert.match(dismissOf(groups[1]).title, /@codex 답변 대기 지우기/);
+  dismissOf(groups[1]).click();
+  assert.deepEqual(dismissed, ["codex"]);
+  assert.deepEqual(answers, [], "×는 답변 콜백을 부르지 않습니다");
 });
 
 test("여러 에이전트가 대기하면 개수 라벨과 그룹이 각각 뜬다", () => {

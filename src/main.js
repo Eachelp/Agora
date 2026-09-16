@@ -307,6 +307,9 @@ function registerIpcHandlers() {
     if (Object.hasOwn(next, "uiTheme")) {
       patch.uiTheme = normalizeUiTheme(next.uiTheme);
     }
+    if (typeof next.showAwaiting === "boolean") {
+      patch.showAwaiting = next.showAwaiting;
+    }
     if (typeof next.autoStart === "boolean" && next.autoStart !== isAutoLaunchEnabled()) {
       toggleAutoLaunch();
     }
@@ -468,6 +471,8 @@ function getAppearancePayload() {
     fontFamily: settings.fontFamily || "",
     fontSize: normalizeFontSize(settings.fontSize),
     uiTheme: normalizeUiTheme(settings.uiTheme),
+    // '답변 대기 표시'. 저장된 적 없으면 켬.
+    showAwaiting: settings.showAwaiting !== false,
   };
 }
 
@@ -640,6 +645,7 @@ async function getSettingsData({ forceUsage = false } = {}) {
       fontFamily: settings.fontFamily || "",
       fontSize: normalizeFontSize(settings.fontSize),
       uiTheme: normalizeUiTheme(settings.uiTheme),
+      showAwaiting: settings.showAwaiting !== false,
     },
     autoStart: isAutoLaunchEnabled(),
     // 순서는 provider-capabilities/레일과 같은 Claude → Codex → AGY로 고정합니다.

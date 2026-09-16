@@ -26,6 +26,34 @@ test("Agora는 채팅으로 시작하고 CodePet 레거시가 남아 있지 않�
   }
 });
 
+// 답변 대기 ×는 렌더러 → preload → IPC → 방으로 이어진다. 채널 이름이 한 곳이라도
+// 어긋나면 버튼이 조용히 아무 일도 하지 않으므로 소스에서 맞춰 본다.
+test("답변 대기 × 버튼의 IPC 채널이 preload·main·렌더러에서 일치한다", () => {
+  const preload = read("src/chat-preload.js");
+  const ipc = read("src/chat/chat-ipc.js");
+  const renderer = read("src/chat.js");
+  const view = read("src/awaiting-view.js");
+  assert.match(preload, /AWAITING_DISMISS: "chat:awaiting:dismiss"/);
+  assert.match(
+    preload,
+    /awaitingDismiss: \(sessionId, agentId\) =>\s*ipcRenderer\.invoke\(INVOKE\.AWAITING_DISMISS, \{ sessionId, agentId \}\)/
+  );
+  assert.match(ipc, /ipcMain\.handle\(\s*"chat:awaiting:dismiss"[\s\S]*?clearAwaitingUser\(/);
+  assert.match(renderer, /chatApi\.awaitingDismiss\(activeSessionId, agentId\)/);
+  assert.match(renderer, /onDismiss: dismissAwaitingAgent/);
+  assert.match(view, /className = "awaiting-dismiss"/);
+});
+
+// 설정 '답변 대기 표시'를 끄면 채팅 화면은 대기 바와 칩의 대기 점을 그리지 않는다.
+// 상태는 방이 계속 갖고 있으므로 다시 켜면 그대로 보인다.
+test("채팅 화면은 appearance.showAwaiting으로 답변 대기 표시를 끄고 켠다", () => {
+  const renderer = read("src/chat.js");
+  assert.match(renderer, /let showAwaiting = true;/);
+  assert.match(renderer, /const nextShowAwaiting = appearance\?\.showAwaiting !== false;[\s\S]*?renderAgents\(\);/);
+  assert.match(renderer, /const awaiting = showAwaiting && Boolean\(agent\.awaitingUser\);/);
+  assert.match(renderer, /agents: showAwaiting \? agents : \[\],/);
+});
+
 test("채팅 화면의 설정 버튼이 기존 설정 창을 연다", () => {
   const html = read("src/chat.html");
   const preload = read("src/chat-preload.js");

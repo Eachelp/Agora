@@ -105,6 +105,22 @@ test("트리 사이드바용 sessionsByProject는 모든 프로젝트의 채팅�
   );
 });
 
+// 답변 대기 ×(chat:awaiting:dismiss)는 세션의 방에 대기 해제를 전달한다. 대기 중이
+// 아닌 에이전트라도 오류 없이 끝난다(렌더러가 재시도할 일이 없다). 없는 세션은 거부.
+test("IPC chat:awaiting:dismiss는 세션의 답변 대기를 지우고, 없는 세션은 거부한다", async () => {
+  const root = makeRoot();
+  const feature = makeFeature(root);
+  const created = await feature.invoke("chat:projects:create", { name: "대기 프로젝트" });
+  const withNew = await feature.invoke("chat:sessions:create", { projectId: created.activeProjectId });
+  const result = await feature.invoke("chat:awaiting:dismiss", {
+    sessionId: withNew.activeSessionId,
+    agentId: "claude",
+  });
+  assert.equal(result.ok, true);
+  const missing = await feature.invoke("chat:awaiting:dismiss", { sessionId: "없는-세션", agentId: "claude" });
+  assert.equal(missing.ok, false);
+});
+
 test("IPC는 프로젝트를 만들고 기존 채팅을 다른 프로젝트로 옮긴다", async () => {
   const root = makeRoot();
   const feature = makeFeature(root);

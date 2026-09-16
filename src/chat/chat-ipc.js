@@ -2194,6 +2194,17 @@ function roomMeta(meta) {
       })
     );
 
+    // 답변 대기 ×. 답하지 않고 그 에이전트의 대기만 지운다. 방이 갱신된
+    // 에이전트 목록(chat:agents)을 밀어 주므로 렌더러는 그걸로 다시 그린다.
+    ipcMain.handle(
+      "chat:awaiting:dismiss",
+      wrap(async ({ sessionId, agentId }) => {
+        requireSession(sessionId);
+        getRoom(sessionId).clearAwaitingUser(String(agentId || ""));
+        return {};
+      })
+    );
+
     ipcMain.handle(
       "chat:discussion:start",
       wrap(async ({ sessionId, agentIds, turnBudget, presetId, cycleBudget, roleAssignments }) => {
