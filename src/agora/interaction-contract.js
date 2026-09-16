@@ -378,6 +378,9 @@ const HANDOFF_LINE_PATTERN = /^[ \t]*HANDOFF:[ \t]*@?([\p{L}\p{N}_-]+)[ \t]*$/gi
 // ("COMPLETE the task ...")은 산문이지 제어 마커가 아니다.
 const COMPLETE_LINE_PATTERN = /^[ \t]*COMPLETE(?::[ \t]*([^\r\n]*?))?[ \t]*$/gim;
 const ASK_USER_LINE_PATTERN = /^[ \t]*ASK_USER:[ \t]*([^\r\n]+?)[ \t]*$/gim;
+// ASK_USER의 보기. 고르는 질문일 때 질문 아래 줄마다 하나씩 적는다. ASK_USER
+// 없이 OPTION만 있으면 제어가 아니다(REASON이 HANDOFF 없이 의미 없는 것과 같다).
+const OPTION_LINE_PATTERN = /^[ \t]*OPTION:[ \t]*([^\r\n]+?)[ \t]*$/gim;
 const PURPOSE_LINE_PATTERN = /^[ \t]*PURPOSE:[ \t]*([^\r\n]+?)[ \t]*$/im;
 const REASON_LINE_PATTERN = /^[ \t]*REASON:[ \t]*([^\r\n]+?)[ \t]*$/im;
 
@@ -387,6 +390,7 @@ const CONTROL_LINE_PATTERNS = Object.freeze([
   /^[ \t]*HANDOFF:[ \t]*@?[\p{L}\p{N}_-]+[ \t]*$/iu,
   /^[ \t]*COMPLETE(?::[ \t]*[^\r\n]*?)?[ \t]*$/i,
   /^[ \t]*ASK_USER:[ \t]*[^\r\n]+?[ \t]*$/i,
+  /^[ \t]*OPTION:[ \t]*[^\r\n]+?[ \t]*$/i,
   /^[ \t]*PURPOSE:[ \t]*[^\r\n]+?[ \t]*$/i,
   /^[ \t]*REASON:[ \t]*[^\r\n]+?[ \t]*$/i,
 ]);
@@ -498,9 +502,14 @@ function parseControlOutput(text) {
     // 모델이 한 줄로 다시 묻게 한다.
     const questions = [...new Set(asks.map((match) => (match[1] || "").trim()))];
     if (questions.length > 1) {
-      return { action: "ASK_USER", question: null, ambiguous: true };
+      return { action: "ASK_USER", question: null, options: [], ambiguous: true };
     }
-    return { action: "ASK_USER", question: questions[0] || null, ambiguous: false };
+    // 보기는 적힌 순서를 지키고 같은 줄 반복만 접는다. 검증된 보기이므로 소비
+    // 지점(답변 대기 칩)이 산문 추출 없이 그대로 쓴다.
+    const options = [...new Set(
+      [...source.matchAll(OPTION_LINE_PATTERN)].map((match) => (match[1] || "").trim()).filter(Boolean)
+    )];
+    return { action: "ASK_USER", question: questions[0] || null, options, ambiguous: false };
   }
 
   const distinct = [...new Set(handoffTargets)];

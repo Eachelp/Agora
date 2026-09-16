@@ -1557,10 +1557,13 @@ class ChatRoom extends EventEmitter {
     // 소비자가 붙은 턴(controlOutputs:true — auto/full 결정 지점)에서만
     // 추출한다. step mode처럼 소비자가 없는 specialist 턴에서 parse/strip을
     // 하면 화면에서 지워지고 HANDOFF_REQUESTED만 남는 ghost 요청이 생긴다.
+    // 일반 채팅 턴도 같은 계약을 읽되 ASK_USER만 받는다. HANDOFF·COMPLETE는
+    // 역할 실행의 제어라 여기서는 산문으로 남긴다(strip도 하지 않는다).
     let controlRequest = null;
-    if (context.specialist?.controlOutputs === true) {
+    const freeChat = this.isFreeChatContext(context);
+    if (context.specialist?.controlOutputs === true || freeChat) {
       const parsed = parseControlOutput(rawText);
-      if (parsed) {
+      if (parsed && (!freeChat || parsed.action === "ASK_USER")) {
         controlRequest = parsed;
         // 모호한 제어(질문 2개, ASK_USER+HANDOFF 혼합 등)는 소비 지점에서
         // CONTROL_AMBIGUOUS로 거부된다. 그때 strip까지 하면 질문 전부가
@@ -1636,19 +1639,23 @@ class ChatRoom extends EventEmitter {
         context.attachments || [],
         context.turnRootId
       );
-      // 일반 채팅 턴을 되질문으로 끝냈으면 '답변 대기'로 세운다. ASK_USER 제어가
-      // 붙는 턴(향후 일반 모드 확장)은 그 질문 본문을 그대로 쓰고 늘 대기로 세운다.
-      // 산문 물음표 휴리스틱은 뜻을 못 읽어 "무엇을 도와드릴까요?" 같은 도움 제안
-      // 마무리까지 질문으로 오인하므로, 보기를 뽑아낸 "고르는 질문"일 때만 대기로
-      // 세운다. 사용자는 선택지 칩이나 아래 입력창의 직접 타이핑으로 답한다.
-      // 핸드오프(@멘션)한 턴은 대기로 보지 않는다.
-      const isAskUser = controlRequest?.action === "ASK_USER";
-      const askedUser = isAskUser
-        ? controlRequest.question || ""
-        : trailingUserQuestion(text, this.agents, agent.id);
-      if (askedUser !== null) {
-        const options = extractAnswerOptions(text, askedUser);
-        if (isAskUser || options.length > 0) this.setAwaitingUser(agent.id, askedUser, options);
+      // 일반 채팅 턴을 되질문으로 끝냈으면 '답변 대기'로 세운다.
+      // - 계약(ASK_USER + OPTION)이 있으면 그것이 권위다. 질문·보기를 그대로 쓰고
+      //   보기가 없어도 대기로 세운다(산문 추출은 하지 않는다).
+      // - 계약이 없으면 산문 휴리스틱(user-question.js). 물음표 휴리스틱은 뜻을
+      //   못 읽어 "무엇을 도와드릴까요?" 같은 마무리까지 질문으로 오인하므로,
+      //   보기를 뽑아낸 "고르는 질문"일 때만 대기로 세운다. 핸드오프(@멘션)한
+      //   턴은 대기로 보지 않는다.
+      // 사용자는 선택지 칩이나 아래 입력창의 직접 타이핑으로 답한다.
+      const asked = controlRequest?.action === "ASK_USER" && !controlRequest.ambiguous ? controlRequest : null;
+      if (asked) {
+        this.setAwaitingUser(agent.id, asked.question || "", asked.options || []);
+      } else {
+        const askedUser = trailingUserQuestion(text, this.agents, agent.id);
+        if (askedUser !== null) {
+          const options = extractAnswerOptions(text, askedUser);
+          if (options.length > 0) this.setAwaitingUser(agent.id, askedUser, options);
+        }
       }
     }
     return {

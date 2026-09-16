@@ -228,6 +228,57 @@ test("선택지 없이 물음표로만 끝난 되질문은 답변 대기로 세�
   assert.deepEqual(claude.awaitingOptions, []);
 });
 
+// 공통 질문 계약. 에이전트가 ASK_USER + OPTION으로 명시적으로 물으면 산문 추출
+// 없이 그 질문·보기로 대기가 서고, 제어 줄은 화면 텍스트에서 사라진다.
+test("계약(ASK_USER + OPTION)으로 끝난 일반 턴은 그 질문·보기로 답변 대기가 서고 제어 줄은 화면에서 사라진다", async () => {
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({
+      claude: [{
+        ok: true,
+        text: "정리했습니다. 어느 쪽으로 갈까요?\n\nASK_USER: 어느 쪽으로 갈까요?\nOPTION: A안\nOPTION: B안",
+      }],
+    }),
+  });
+  room.sendUserMessage("@claude 정리해줘");
+  await settle(room);
+  const claude = room.publicAgents().find((agent) => agent.id === "claude");
+  assert.equal(claude.awaitingUser, true);
+  assert.equal(claude.awaitingQuestion, "어느 쪽으로 갈까요?");
+  assert.deepEqual(claude.awaitingOptions, ["A안", "B안"]);
+  const reply = room.messages.find((message) => message.authorType === "agent");
+  assert.equal(reply.text, "정리했습니다. 어느 쪽으로 갈까요?");
+});
+
+// 산문 휴리스틱과 달리 계약 ASK_USER는 보기가 없어도 대기로 선다 — 에이전트가
+// 명시적으로 물었기 때문이다.
+test("계약 ASK_USER는 보기가 없어도 답변 대기로 선다", async () => {
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({ claude: [{ ok: true, text: "확인 부탁드립니다.\nASK_USER: 이대로 진행할까요?" }] }),
+  });
+  room.sendUserMessage("@claude 확인");
+  await settle(room);
+  const claude = room.publicAgents().find((agent) => agent.id === "claude");
+  assert.equal(claude.awaitingUser, true);
+  assert.equal(claude.awaitingQuestion, "이대로 진행할까요?");
+  assert.deepEqual(claude.awaitingOptions, []);
+  assert.equal(room.messages.find((message) => message.authorType === "agent").text, "확인 부탁드립니다.");
+});
+
+// HANDOFF·COMPLETE는 역할 실행의 제어다. 일반 채팅에서는 실행도 strip도 하지 않는다.
+test("일반 채팅에서 HANDOFF·COMPLETE 제어 줄은 무시하고 화면에도 그대로 남긴다", async () => {
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    runAgent: fakeRunner({ claude: [{ ok: true, text: "끝냈습니다.\nCOMPLETE" }] }),
+  });
+  room.sendUserMessage("@claude 마무리");
+  await settle(room);
+  const claude = room.publicAgents().find((agent) => agent.id === "claude");
+  assert.equal(claude.awaitingUser, false);
+  assert.equal(room.messages.find((message) => message.authorType === "agent").text, "끝냈습니다.\nCOMPLETE");
+});
+
 test("보기를 나열한 되질문은 publicAgents.awaitingOptions로 칩을 낸다", async () => {
   const room = new ChatRoom({
     agents: makeAgents(),

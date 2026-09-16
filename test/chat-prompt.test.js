@@ -46,6 +46,20 @@ test("@멘션은 실제 호출이고 이름만 쓰면 언급이라는 규칙이 
   assert.doesNotMatch(prompt, /자동으로 호출되지는 않습니다/);
 });
 
+// 공통 질문 계약 안내는 chat-room이 계약을 읽는 일반 채팅 턴에만 붙는다. 토론·
+// 상담·전문 실행 턴에 붙으면 모델이 안내받은 제어를 Runtime이 읽지 않는다.
+test("ASK_USER + OPTION 질문 계약 안내는 일반 채팅 턴에만 들어간다", () => {
+  const base = { agent: AGENTS[0], agents: AGENTS, messages: [message("user", "안녕", "user")] };
+  const general = buildAgentPrompt(base);
+  assert.match(general, /`ASK_USER: <질문 한 줄>`/);
+  assert.match(general, /`OPTION: <보기>` 줄을 2~5개/);
+  assert.match(general, /마무리 인사에는 붙이지 마세요/);
+  const guidance = /`OPTION: <보기>`/;
+  assert.doesNotMatch(buildAgentPrompt({ ...base, discussion: { turn: 1, maxTurns: 3 } }), guidance);
+  assert.doesNotMatch(buildAgentPrompt({ ...base, consult: { role: "reviewer", label: "검수자" } }), guidance);
+  assert.doesNotMatch(buildAgentPrompt({ ...base, specialist: { stage: "planner" } }), guidance);
+});
+
 test("긴 대화는 최근 메시지만 남기고 생략 안내를 넣는다", () => {
   const messages = Array.from({ length: 50 }, (_, index) =>
     message("user", `메시지 ${index}`, "user")

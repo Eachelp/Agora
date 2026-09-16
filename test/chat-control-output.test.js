@@ -171,7 +171,7 @@ test("parseControlOutput: 인라인 백틱 안 내용이 질문·요약·REASON 
   // ASK_USER 재노출이 아예 발동하지 않았다.
   assert.deepEqual(
     parseControlOutput("본문\nSTATUS: NEEDS_DECISION\n\nASK_USER: `strict` 모드를 켤까요, 아니면 `loose`로 갈까요?"),
-    { action: "ASK_USER", question: "`strict` 모드를 켤까요, 아니면 `loose`로 갈까요?", ambiguous: false }
+    { action: "ASK_USER", question: "`strict` 모드를 켤까요, 아니면 `loose`로 갈까요?", options: [], ambiguous: false }
   );
   assert.equal(parseControlOutput("STATUS: NEEDS_DECISION\n\nASK_USER: `foo`").question, "`foo`");
   assert.equal(parseControlOutput("VERDICT: PASS\n\nCOMPLETE: `auth` 모듈 검수 통과").summary, "`auth` 모듈 검수 통과");

@@ -556,8 +556,27 @@ test("parseControlOutput: COMPLETE와 ASK_USER 행동을 파싱한다", () => {
   assert.deepEqual(parseControlOutput("ASK_USER: 배포 대상 환경이 스테이징인가요?"), {
     action: "ASK_USER",
     question: "배포 대상 환경이 스테이징인가요?",
+    options: [],
     ambiguous: false,
   });
+});
+
+// 고르는 질문은 ASK_USER 아래 OPTION 줄로 보기를 준다. 소비 지점(답변 대기 칩)이
+// 산문 추출 없이 그대로 쓰는 검증된 보기다.
+test("parseControlOutput: ASK_USER 아래 OPTION 줄을 보기로 읽고, OPTION만 있으면 제어가 아니다", () => {
+  const { stripControlOutput } = require("../src/agora/interaction-contract");
+  const text =["정리했습니다. 어느 쪽으로 갈까요?", "", "ASK_USER: 어느 쪽으로 갈까요?", "OPTION: A안", "OPTION: B안", "OPTION: A안"].join("\n");
+  assert.deepEqual(parseControlOutput(text), {
+    action: "ASK_USER",
+    question: "어느 쪽으로 갈까요?",
+    options: ["A안", "B안"],
+    ambiguous: false,
+  });
+  // OPTION 줄도 꼬리 제어 블록의 일부라 표시 텍스트에서 함께 사라진다.
+  assert.equal(stripControlOutput(text), "정리했습니다. 어느 쪽으로 갈까요?");
+  // ASK_USER 없이 OPTION만 있으면 제어가 아니고, 산문으로 남는다.
+  const lone = ["둘 중 하나입니다.", "OPTION: A안", "OPTION: B안"].join("\n");
+  assert.equal(parseControlOutput(lone), null);
 });
 
 test("parseControlOutput: 서로 다른 ASK_USER 질문이 여럿이면 ambiguous", () => {

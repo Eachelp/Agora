@@ -307,6 +307,17 @@ function buildAgentPrompt({
     } else if (others.length > 0) {
       lines.push("- 이번 턴에는 다른 참가자를 추가 호출할 수 없습니다. 다른 참가자를 언급하려면 @ 없이 이름만 쓰세요.");
     }
+    // 공통 질문 계약(interaction-contract의 ASK_USER + OPTION). 일반 채팅 턴에서만
+    // 안내한다 — chat-room이 같은 조건(isFreeChatContext)에서만 이 계약을 읽고,
+    // 전문 실행은 자기 제어 안내(=== 다음 역할 요청 ===)를 따로 받는다.
+    if (!discussion && !isSpecialist && !consult) {
+      lines.push(
+        "- 사용자의 답이 있어야 다음으로 갈 수 있을 때만, 응답 **맨 끝**에 `ASK_USER: <질문 한 줄>`을 붙이세요. 고르는 질문이면 그 아래 `OPTION: <보기>` 줄을 2~5개 이어 붙이세요(짧은 명사구). 제어 줄은 응답 마지막의 연속된 줄이어야 합니다(뒤에 다른 문장 금지)."
+      );
+      lines.push(
+        "- 제어 줄은 화면에 보이지 않고 '답변 대기' 표시와 선택 버튼으로 바뀝니다. 질문은 본문에도 자연스럽게 적으세요. \"더 도울 일이 있을까요?\" 같은 마무리 인사에는 붙이지 마세요."
+      );
+    }
   }
   lines.push(permissionRule(permissionMode));
   if (!isBuilder) {
