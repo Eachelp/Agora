@@ -877,17 +877,31 @@ class ChatRoom extends EventEmitter {
     return { dropped, interrupted };
   }
 
+  // 큐를 떠나는 턴의 장부 정리. 실행되든 버려지든 반드시 거친다 — dedupe 키가
+  // 남으면 같은 요청을 다시 보낼 수 없고, 대기 타이머가 남으면 이미 끝난 턴에
+  // "유실됐을 수 있다" 안내가 뜬다.
+  releaseQueuedTurn(item) {
+    if (item.dedupeKey && this.pendingTurns.get(item.dedupeKey) === item) {
+      this.pendingTurns.delete(item.dedupeKey);
+    }
+    this.turnStartedAt.delete(item.turnId);
+  }
+
+  // 실행 없이 끝나는 턴. lost면 사용자에게 다시 보내라고 안내한다(중지·취소).
+  // 갈아끼우기처럼 질문이 새 턴으로 그대로 전달되는 경우는 안내하지 않는다.
+  retireTurn(item, outcome, { lost = false } = {}) {
+    this.releaseQueuedTurn(item);
+    item.resolve(outcome);
+    if (lost) this.notifyLostTurn(item);
+  }
+
   // 발언 큐 UI에서 대기 중인 턴 하나를 콕 집어 취소합니다.
   cancelTurn(turnId) {
     for (const queue of [this.turnQueue, this.deferredTurnQueue]) {
       const index = queue.findIndex((item) => item.turnId === turnId);
       if (index < 0) continue;
       const [item] = queue.splice(index, 1);
-      if (item.dedupeKey && this.pendingTurns.get(item.dedupeKey) === item) {
-        this.pendingTurns.delete(item.dedupeKey);
-      }
-      item.resolve(undefined);
-      this.notifyLostTurn(item);
+      this.retireTurn(item, undefined, { lost: true });
       this.emitTurnState();
       return true;
     }
@@ -910,12 +924,8 @@ class ChatRoom extends EventEmitter {
         if (item.agent.id !== agentId) continue;
         if (!item.context.turnRootId || !this.isFreeChatContext(item.context)) continue;
         queue.splice(index, 1);
-        if (item.dedupeKey && this.pendingTurns.get(item.dedupeKey) === item) {
-          this.pendingTurns.delete(item.dedupeKey);
-        }
-        this.turnStartedAt.delete(item.turnId);
         if (Array.isArray(item.context.attachments)) carried.unshift(...item.context.attachments);
-        item.resolve(undefined);
+        this.retireTurn(item);
       }
     }
     return carried;
@@ -953,18 +963,14 @@ class ChatRoom extends EventEmitter {
   }
 
   async runQueuedTurn(item, { parentToken = null } = {}) {
-    if (item.dedupeKey && this.pendingTurns.get(item.dedupeKey) === item) {
-      this.pendingTurns.delete(item.dedupeKey);
-    }
     if (item.generation !== this.generation) {
-      item.resolve(undefined);
-      this.notifyLostTurn(item);
+      this.retireTurn(item, undefined, { lost: true });
       this.emitTurnState();
       return;
     }
+    this.releaseQueuedTurn(item);
     this.runningTurns.add(item);
     this.syncCurrentTurn();
-    this.turnStartedAt.delete(item.turnId);
     this.emitTurnState();
     let outcome;
     try {
@@ -1003,14 +1009,7 @@ class ChatRoom extends EventEmitter {
       if (!lease.ok) {
         this.appendSystem(lease.error);
         for (const item of batch) {
-          // 단일 턴 경로(runQueuedTurn)가 시작할 때 하는 정리를 여기서도 한다.
-          // 빠뜨리면 dedupe 키가 남아 같은 요청을 다시 보낼 수 없고, 대기 타이머도
-          // 살아 있어 이미 끝난 턴에 "유실됐을 수 있다" 안내가 뜬다.
-          if (item.dedupeKey && this.pendingTurns.get(item.dedupeKey) === item) {
-            this.pendingTurns.delete(item.dedupeKey);
-          }
-          this.turnStartedAt.delete(item.turnId);
-          item.resolve({ ok: false, stopReason: "WORKSPACE_BUSY", error: lease.error });
+          this.retireTurn(item, { ok: false, stopReason: "WORKSPACE_BUSY", error: lease.error });
         }
         this.emitTurnState();
         return;
@@ -2266,8 +2265,7 @@ class ChatRoom extends EventEmitter {
   stopAllSilently() {
     this.generation += 1;
     for (const item of [...this.turnQueue, ...this.deferredTurnQueue]) {
-      item.resolve(undefined);
-      this.notifyLostTurn(item);
+      this.retireTurn(item, undefined, { lost: true });
     }
     this.turnQueue = [];
     this.deferredTurnQueue = [];
