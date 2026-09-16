@@ -1,30 +1,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
-const vm = require("node:vm");
+const { renderAwaitingRow } = require("../src/awaiting-view");
 
-const ROOT = path.join(__dirname, "..");
-const renderer = fs.readFileSync(path.join(ROOT, "src/chat.js"), "utf8");
-
-// chat.js에서 top-level 함수 하나의 소스를 중괄호 깊이로 잘라 낸다.
-function sliceFunction(source, name) {
-  const start = source.indexOf(`function ${name}(`);
-  assert.ok(start >= 0, `${name}를 찾지 못했습니다`);
-  const open = source.indexOf("{", start);
-  let depth = 0;
-  for (let i = open; i < source.length; i += 1) {
-    const ch = source[i];
-    if (ch === "{") depth += 1;
-    else if (ch === "}") {
-      depth -= 1;
-      if (depth === 0) return source.slice(start, i + 1);
-    }
-  }
-  throw new Error(`${name}의 끝을 찾지 못했습니다`);
-}
-
-// 최소 DOM 노드: className/textContent/title/hidden/append/setProperty 등만 흉내.
+// 최소 DOM 노드: className/textContent/title/hidden/append/setProperty/click만 흉내.
 function makeNode(tag = "div") {
   const node = {
     tagName: tag,
@@ -34,9 +12,15 @@ function makeNode(tag = "div") {
     hidden: false,
     children: [],
     dataset: {},
+    listeners: {},
     style: { setProperty() {} },
     setAttribute() {},
-    addEventListener() {},
+    addEventListener(type, handler) {
+      this.listeners[type] = handler;
+    },
+    click() {
+      if (typeof this.listeners.click === "function") this.listeners.click();
+    },
     append(...items) {
       for (const item of items) this.children.push(item);
     },
@@ -54,18 +38,15 @@ function makeNode(tag = "div") {
   return node;
 }
 
-function runRender(agents) {
+function runRender(agents, onAnswer = () => {}) {
   const awaitingRow = makeNode("div");
-  const document = { createElement: (tag) => makeNode(tag) };
-  const context = {
-    awaitingRow,
+  renderAwaitingRow({
+    container: awaitingRow,
     agents,
-    document,
+    document: { createElement: (tag) => makeNode(tag) },
     makeAgentAvatar: () => makeNode("span"),
-    answerAwaitingAgent: () => {},
-  };
-  const src = sliceFunction(renderer, "renderAwaitingRow");
-  vm.runInNewContext(`${src}\nrenderAwaitingRow();`, context);
+    onAnswer,
+  });
   return awaitingRow;
 }
 
@@ -75,14 +56,6 @@ function pillText(pill) {
     .map((child) => (typeof child._text === "string" ? child._text : ""))
     .join("");
 }
-
-test("답변 대기 에이전트가 없으면 대기 바는 숨겨진다", () => {
-  const row = runRender([
-    { id: "claude", name: "Claude", color: "#111", awaitingUser: false, awaitingQuestion: null },
-  ]);
-  assert.equal(row.hidden, true);
-  assert.equal(row.children.length, 0);
-});
 
 // 대기 바 안의 에이전트 그룹들(각 그룹 = 알약 + 보기 칩)을 모은다.
 function groupsOf(row) {
@@ -95,6 +68,14 @@ function optionChips(group) {
   const optRow = group.children.find((child) => child.className === "awaiting-options");
   return optRow ? optRow.children.filter((child) => child.className === "awaiting-option") : [];
 }
+
+test("답변 대기 에이전트가 없으면 대기 바는 숨겨진다", () => {
+  const row = runRender([
+    { id: "claude", name: "Claude", color: "#111", awaitingUser: false, awaitingQuestion: null },
+  ]);
+  assert.equal(row.hidden, true);
+  assert.equal(row.children.length, 0);
+});
 
 test("되질문한 에이전트 하나면 라벨과 질문이 담긴 알약 하나가 뜬다", () => {
   const row = runRender([
@@ -126,6 +107,20 @@ test("보기가 있으면 알약 아래에 클릭 가능한 보기 칩이 뜬다
   assert.equal(groups.length, 1);
   const chips = optionChips(groups[0]);
   assert.deepEqual(chips.map((chip) => chip.textContent), ["실시요약 확보", "7문항 정답 보완", "풀이시간 정의"]);
+});
+
+// 알약은 @id만, 칩은 @id와 보기를 함께 넘긴다. 전송은 chat.js(answerAwaitingAgent)가
+// 입력창 프리필로만 처리하므로 여기서는 콜백 인자만 본다.
+test("알약과 보기 칩을 누르면 에이전트 id와 보기가 콜백으로 넘어간다", () => {
+  const answers = [];
+  const row = runRender(
+    [{ id: "claude", name: "Claude", color: "#111", awaitingUser: true, awaitingQuestion: "어느 쪽?", awaitingOptions: ["A안", "B안"] }],
+    (agentId, option) => answers.push([agentId, option])
+  );
+  const group = groupsOf(row)[0];
+  pillOf(group).click();
+  optionChips(group)[1].click();
+  assert.deepEqual(answers, [["claude", undefined], ["claude", "B안"]]);
 });
 
 test("여러 에이전트가 대기하면 개수 라벨과 그룹이 각각 뜬다", () => {

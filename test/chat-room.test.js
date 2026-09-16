@@ -5,7 +5,8 @@ const os = require("node:os");
 const path = require("node:path");
 const { TaskManager } = require("../src/agora/task-manager");
 const turnCheckpoint = require("../src/agora/turn-checkpoint");
-const { ChatRoom, trailingUserQuestion, extractAnswerOptions } = require("../src/chat/chat-room");
+const { ChatRoom } = require("../src/chat/chat-room");
+const { trailingUserQuestion, extractAnswerOptions } = require("../src/chat/user-question");
 const { createProfessionalRun } = require("../src/agora/professional-run");
 
 
