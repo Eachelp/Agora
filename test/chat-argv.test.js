@@ -52,14 +52,16 @@ test("전문 단계 권한 cap은 세션 권한보다 높아지지 않는다", (
   assert.equal(specialistPermissionMode("unknown", "workspace-write"), null);
 });
 
-test("claude chat 모드: 도구 전면 차단 + strict mcp + stream-json", () => {
+// 대화 모드는 파일·셸 도구를 전부 막되, 스킬 지시문을 불러오는 Skill 도구만 연다.
+// grill-me처럼 대화만으로 도는 스킬을 "X 스킬 써 줘"로 부를 수 있어야 한다.
+test("claude chat 모드: Skill 외 도구 차단 + strict mcp + stream-json", () => {
   const result = build("claude");
   assert.equal(result.ok, true);
   assert.equal(result.cwd, CHAT_CWD);
   const argv = result.argv;
   const toolsIndex = argv.indexOf("--tools");
   assert.ok(toolsIndex >= 0);
-  assert.equal(argv[toolsIndex + 1], "");
+  assert.equal(argv[toolsIndex + 1], "Skill");
   assert.ok(argv.includes("--strict-mcp-config"));
   assert.ok(argv.includes("--no-session-persistence"));
   assert.deepEqual(argv.slice(argv.indexOf("--output-format"), argv.indexOf("--output-format") + 2), [
@@ -77,13 +79,13 @@ test("일반 채팅 provider invocation은 Professional 단계 cap 없이 기존
   assert.ok(!result.argv.some((arg) => /dangerously|bypass|full-access|full-auto/i.test(arg)));
 });
 
-test("claude workspace-read: 읽기 도구만 + add-dir", () => {
+test("claude workspace-read: 읽기 도구 + Skill만 + add-dir", () => {
   const result = build("claude", { permissionMode: "workspace-read", workspace: WORKSPACE });
   assert.equal(result.ok, true);
   assert.equal(result.cwd, WORKSPACE);
   const argv = result.argv;
   const toolsIndex = argv.indexOf("--tools");
-  assert.equal(argv[toolsIndex + 1], "Read,Grep,Glob");
+  assert.equal(argv[toolsIndex + 1], "Read,Grep,Glob,Skill");
   assert.ok(!argv.includes("--permission-mode"));
   const addDirIndex = argv.indexOf("--add-dir");
   assert.equal(argv[addDirIndex + 1], WORKSPACE);

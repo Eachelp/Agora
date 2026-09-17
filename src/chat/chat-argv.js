@@ -113,13 +113,17 @@ function claudeArgv({ permissionMode, workspace, model, effort, attachmentsDir, 
   if (model) argv.push("--model", model);
   if (effort) argv.push("--effort", effort);
 
+  // Skill은 사용자 스킬(~/.claude/skills·플러그인)의 지시문을 불러오는 도구다.
+  // 파일·셸에 닿지 않으므로 대화 모드에서도 허용한다 — grill-me처럼 대화만으로
+  // 도는 스킬을 "X 스킬 써 줘"로 부를 수 있게. 스킬 안에서 Read·Bash 등을
+  // 쓰려는 단계는 아래 도구 목록에 없으면 여전히 막힌다.
   if (permissionMode === "chat") {
-    // 도구 전면 차단: 파일/셸 접근이 불가능한 순수 대화 모드.
-    argv.push("--tools", "", "--strict-mcp-config");
+    // 파일/셸 접근이 불가능한 순수 대화 모드.
+    argv.push("--tools", "Skill", "--strict-mcp-config");
     return argv;
   }
   if (permissionMode === "workspace-read") {
-    argv.push("--tools", "Read,Grep,Glob", "--strict-mcp-config");
+    argv.push("--tools", "Read,Grep,Glob,Skill", "--strict-mcp-config");
     argv.push("--add-dir", workspace);
     if (hasPathDeliveries && attachmentsDir) argv.push("--add-dir", attachmentsDir);
     return argv;
