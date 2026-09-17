@@ -361,7 +361,11 @@ const PROVIDER_DEFS = Object.freeze([
     loginCommand: "codex login",
     // 모델 이름 목록은 CLI에서 열람할 수 없어 기본값 + 직접 입력만 제공합니다.
     models: Object.freeze(["default"]),
-    efforts: Object.freeze(["default", "minimal", "low", "medium", "high", "xhigh"]),
+    // 모델별 노력은 app-server 탐색이 알려 주고(supportedReasoningEfforts), 이 목록은
+    // 탐색이 실패했을 때 쓰는 대비책입니다. max·ultra는 최신 모델만 받는 단계라
+    // 탐색이 되는 환경에서는 모델별 목록이 알아서 가립니다. 지원하지 않는 모델에
+    // 넘어가도 Codex가 한 단계 낮춰 돌 뿐 실행이 실패하지는 않습니다.
+    efforts: Object.freeze(["default", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]),
     allowCustomModel: false,
     modelCatalogProbe: "codex-app-server",
     supportsImages: "native",

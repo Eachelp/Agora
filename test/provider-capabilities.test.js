@@ -532,6 +532,9 @@ test("claude 검증된 모델/노력 옵션이 노출된다", async () => {
   const codex = records.find((record) => record.id === "codex");
   assert.deepEqual(codex.models, ["default"]);
   assert.equal(codex.allowCustomModel, false);
+  // 탐색 실패 시 쓰는 대비책 목록. 최신 모델의 상위 단계(max·ultra)까지 고를 수
+  // 있어야 한다 — 탐색이 되는 환경에서는 모델별 목록이 알아서 가린다.
+  assert.deepEqual(codex.efforts, ["default", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
   const agy = records.find((record) => record.id === "agy");
   assert.equal(agy.permissions["workspace-write"].supported, true);
   assert.equal(agy.permissions.chat.enforcement, "sandbox");
