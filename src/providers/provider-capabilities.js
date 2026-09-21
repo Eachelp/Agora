@@ -22,7 +22,7 @@ const CATALOG_RETRY_BACKOFF_MS = 5 * 60 * 1000;
 // 저장된 카탈로그의 형식 버전. 파서가 바뀌면(예: `claude --help`의 전체 이름 예시를
 // 더 이상 모델로 읽지 않게 된 변경) 예전 형식으로 저장된 목록은 그대로 쓰면 안 된다.
 // 버전이 다르면 캐시가 없는 것으로 보고 지금 다시 조회한다.
-const CATALOG_SCHEMA_VERSION = 2;
+const CATALOG_SCHEMA_VERSION = 3;
 
 function probeCodexModelCatalog(commandPath, needsShell, timeoutMs = 8000, deps = {}) {
   return new Promise((resolve) => {
@@ -386,7 +386,18 @@ function parseClaudeHelpModels(helpText) {
   const aliases = [...aliasSection.matchAll(/'([A-Za-z0-9][A-Za-z0-9._:/-]{1,63})'/g)]
     .map((match) => match[1])
     .filter((id) => !/^claude-/i.test(id));
-  return aliases.length > 0 ? ["default", ...new Set(aliases)] : null;
+  if (aliases.length === 0) return null;
+  // 도움말은 별칭을 **예시로** 들 뿐 전체 목록을 약속하지 않습니다. claude 2.1.x
+  // 도움말은 fable/opus/sonnet 셋만 적어 haiku가 빠지는데, 파싱 결과를 그대로
+  // 목록으로 쓰면 haiku를 골라 둔 사용자가 resolvedModel의 계열 폴백에 걸려
+  // 아무 안내 없이 fable로 옮겨 갑니다 — 아래 폴백 목록 주석이 경고하는 바로 그
+  // 상황이 조회 실패가 아니라 조회 성공 경로에서 벌어집니다. 그래서 우리가 아는
+  // 별칭은 순서까지 그대로 두고, 도움말이 새로 알려 준 별칭만 뒤에 더합니다.
+  const known = CLAUDE_MODEL_OPTIONS
+    .map((option) => option.id)
+    .filter((id) => id !== "default");
+  const discovered = aliases.filter((alias) => !known.includes(alias));
+  return ["default", ...known, ...discovered];
 }
 
 // 모델/노력 옵션은 설치된 CLI --help에서 검증된 플래그에만 연결됩니다.

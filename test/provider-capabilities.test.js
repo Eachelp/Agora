@@ -155,7 +155,10 @@ test("모델 카탈로그는 같은 CLI 버전이면 캐시를 쓰고, 버전은
   const cached = cacheStore.value[`claude:${claudePath}`];
   assert.equal(cached.version, "2.1.198");
   assert.equal(cached.probedAt, clock);
-  assert.deepEqual(firstRecords.find((record) => record.id === "claude").models, ["default", "fable", "opus", "sonnet"]);
+  assert.deepEqual(
+    firstRecords.find((record) => record.id === "claude").models,
+    ["default", "fable", "opus", "sonnet", "haiku"]
+  );
 
   // 앱 재시작: 버전은 다시 확인하지만(--version 1회) 카탈로그(--help)는 캐시를 쓴다.
   clock += 60 * 1000;
@@ -415,11 +418,21 @@ for (const discoveryOptions of [{ force: true }, { recheck: true }]) {
 }
 
 test("claude --help의 별칭만 모델 목록에 올리고 전체 이름 예시는 제외한다", () => {
-  assert.deepEqual(parseClaudeHelpModels(CLAUDE_HELP), ["default", "fable", "opus", "sonnet"]);
+  // 도움말이 예시로 든 별칭 밖의 알려진 별칭(haiku)도 목록에 남는다 — 빠지면
+  // haiku를 골라 둔 사용자가 조용히 fable로 옮겨 간다.
+  assert.deepEqual(
+    parseClaudeHelpModels(CLAUDE_HELP),
+    ["default", "fable", "opus", "sonnet", "haiku"]
+  );
   // 도움말 문구가 바뀌어 "full name" 구절이 없어도 claude- 전체 이름은 예시로 본다.
   assert.deepEqual(
     parseClaudeHelpModels("  --model <model>  Provide 'opus' or 'sonnet' (e.g. 'claude-opus-4-1').\n  --effort <e>  x"),
-    ["default", "opus", "sonnet"]
+    ["default", "fable", "opus", "sonnet", "haiku"]
+  );
+  // 도움말이 알려 준 새 별칭은 알려진 별칭 뒤에 더한다.
+  assert.deepEqual(
+    parseClaudeHelpModels("  --model <model>  Provide 'opus' or 'cosmo'.\n  --effort <e>  x"),
+    ["default", "fable", "opus", "sonnet", "haiku", "cosmo"]
   );
   assert.equal(parseClaudeHelpModels("  --model <model>  Model.\n  --effort <e>  x"), null);
   assert.equal(parseClaudeHelpModels(""), null);
@@ -434,8 +447,8 @@ test("Claude 별칭은 최신 괄호 없이 계열명만 기본 표시한다", a
     helpText: { [claudePath]: CLAUDE_HELP },
   });
   const claude = (await service.discover()).find((record) => record.id === "claude");
-  // 도움말이 알려 준 별칭만 담는다(haiku는 이 도움말에 없다).
-  assert.deepEqual(claude.models, ["default", "fable", "opus", "sonnet"]);
+  // 도움말이 예시로 들지 않은 haiku도 알려진 별칭이라 목록에 남는다.
+  assert.deepEqual(claude.models, ["default", "fable", "opus", "sonnet", "haiku"]);
   assert.deepEqual(
     claude.modelOptions.map((option) => [option.id, option.label]),
     [
@@ -443,6 +456,7 @@ test("Claude 별칭은 최신 괄호 없이 계열명만 기본 표시한다", a
       ["fable", "Fable"],
       ["opus", "Opus"],
       ["sonnet", "Sonnet"],
+      ["haiku", "Haiku"],
     ]
   );
   assert.ok(claude.modelOptions.every((option) => option.efforts.includes("max")));
@@ -522,6 +536,8 @@ test("Claude firstParty auth 정보는 내부 표시 힌트에만 쓰고 public 
       ["fable", "Fable 5.1"],
       ["opus", "Opus 5"],
       ["sonnet", "Sonnet 5"],
+      // haiku는 CLI 버전만으로 가리키는 버전을 단정하지 않아 계열명만 붙는다.
+      ["haiku", "Haiku"],
     ]
   );
   assert.ok(!JSON.stringify(claude).includes("firstParty"));
