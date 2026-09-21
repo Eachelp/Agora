@@ -22,7 +22,7 @@ const CATALOG_RETRY_BACKOFF_MS = 5 * 60 * 1000;
 // 저장된 카탈로그의 형식 버전. 파서가 바뀌면(예: `claude --help`의 전체 이름 예시를
 // 더 이상 모델로 읽지 않게 된 변경) 예전 형식으로 저장된 목록은 그대로 쓰면 안 된다.
 // 버전이 다르면 캐시가 없는 것으로 보고 지금 다시 조회한다.
-const CATALOG_SCHEMA_VERSION = 2;
+const CATALOG_SCHEMA_VERSION = 3;
 
 function probeCodexModelCatalog(commandPath, needsShell, timeoutMs = 8000, deps = {}) {
   return new Promise((resolve) => {
@@ -286,17 +286,38 @@ function modelOptionsFor(def, models) {
 }
 
 const CLAUDE_EFFORTS = Object.freeze(["default", "low", "medium", "high", "xhigh", "max"]);
+const CLAUDE_ALIAS_LABELS = Object.freeze({
+  fable: "Fable",
+  opus: "Opus",
+  sonnet: "Sonnet",
+  haiku: "Haiku",
+});
 // Claude는 모델을 별칭(fable/opus/sonnet)으로 고릅니다. 별칭은 설치된 CLI가 아는
-// 그 계열의 최신 모델을 가리키므로 목록에서도 "최신"으로 적어, 같은 계열의 전체
-// 이름(claude-fable-5 같은 고정 버전)과 헷갈리지 않게 합니다. 실제로 어떤 모델로
-// 풀렸는지는 실행 뒤 응답 헤더(stream-json init의 model)가 보여 줍니다.
+// 그 계열의 최신 모델을 가리키므로 실행 id는 그대로 유지합니다. UI는 GPT/Gemini와
+// 맞춰 계열명만 기본 표시하고, 실제 실행에서 확인한 resolved model이 있으면
+// Fable 5.1 / Opus 5 / Sonnet 4.6처럼 버전을 덧붙입니다.
 const CLAUDE_MODEL_OPTIONS = Object.freeze([
   Object.freeze({ id: "default", label: "Claude 기본값 (CLI 설정 따름)", efforts: CLAUDE_EFFORTS }),
-  Object.freeze({ id: "fable", label: "Fable (최신)", efforts: CLAUDE_EFFORTS }),
-  Object.freeze({ id: "opus", label: "Opus (최신)", efforts: CLAUDE_EFFORTS }),
-  Object.freeze({ id: "sonnet", label: "Sonnet (최신)", efforts: CLAUDE_EFFORTS }),
-  Object.freeze({ id: "haiku", label: "Haiku (최신)", efforts: CLAUDE_EFFORTS }),
+  Object.freeze({ id: "fable", label: "Fable", efforts: CLAUDE_EFFORTS }),
+  Object.freeze({ id: "opus", label: "Opus", efforts: CLAUDE_EFFORTS }),
+  Object.freeze({ id: "sonnet", label: "Sonnet", efforts: CLAUDE_EFFORTS }),
+  Object.freeze({ id: "haiku", label: "Haiku", efforts: CLAUDE_EFFORTS }),
 ]);
+
+// Claude의 최신 별칭은 고정 버전으로 바꾸지 않습니다. 대신 stream-json init에서
+// 실제로 보고된 모델 id를 사람이 읽는 표시명으로만 바꿉니다.
+// 날짜 suffix(예: claude-opus-5-20260901)는 버전으로 오인하지 않도록 minor는
+// 1~2자리 숫자일 때만 붙입니다.
+function claudeResolvedModelLabel(alias, resolvedModel) {
+  const family = String(alias || "").trim().toLowerCase();
+  const familyLabel = CLAUDE_ALIAS_LABELS[family];
+  if (!familyLabel) return null;
+  const match = String(resolvedModel || "").trim().match(
+    new RegExp(`^claude-${family}-(\\d+)(?:-(\\d{1,2}))?(?:-|$)`, "i")
+  );
+  if (!match) return null;
+  return `${familyLabel} ${match[1]}${match[2] ? `.${match[2]}` : ""}`;
+}
 
 // `claude --help`의 --model 설명에서 모델 별칭을 뽑습니다. 도움말은
 //   "alias for the latest model (e.g. 'fable', 'opus', or 'sonnet') or a model's
@@ -960,6 +981,7 @@ module.exports = {
   collapseEffortVariants,
   resolveEffortVariant,
   parseClaudeHelpModels,
+  claudeResolvedModelLabel,
   probeCodexModelCatalog,
   probeAgyModelCatalog,
   cliCandidates,
