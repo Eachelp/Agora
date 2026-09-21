@@ -1310,13 +1310,16 @@ function roomMeta(meta) {
         // 실행 id는 계속 fable/opus/sonnet 별칭을 쓰고, 표시명만 방금 확인한 실제
         // 버전으로 갱신합니다. 모델 카탈로그 자체가 바뀐 것은 아니므로 알림 토스트는
         // 띄우지 않습니다.
-        void Promise.resolve(ensureCapabilityService().discover())
-          .then((records) => {
-            if (!shuttingDown) publishProviders(records);
-          })
-          .catch((error) => {
-            console.warn("[agora] Claude 모델 표시명 갱신 실패:", error?.message || error);
-          });
+        const service = ensureCapabilityService();
+        if (typeof service?.discover === "function") {
+          void Promise.resolve(service.discover())
+            .then((records) => {
+              if (!shuttingDown) publishProviders(records);
+            })
+            .catch((error) => {
+              console.warn("[agora] Claude 모델 표시명 갱신 실패:", error?.message || error);
+            });
+        }
       }
     });
     room.on("typing", (payload) => broadcast("chat:typing", { sessionId, ...payload }));
