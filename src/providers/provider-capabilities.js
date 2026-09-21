@@ -319,6 +319,59 @@ function claudeResolvedModelLabel(alias, resolvedModel) {
   return `${familyLabel} ${match[1]}${match[2] ? `.${match[2]}` : ""}`;
 }
 
+const CLAUDE_DEFAULT_MODEL_ENV = Object.freeze({
+  fable: "ANTHROPIC_DEFAULT_FABLE_MODEL",
+  opus: "ANTHROPIC_DEFAULT_OPUS_MODEL",
+  sonnet: "ANTHROPIC_DEFAULT_SONNET_MODEL",
+  haiku: "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+});
+
+function parseClaudeCliVersion(version) {
+  const match = String(version || "").match(/(?:^|\\b)(\\d+)\\.(\\d+)\\.(\\d+)(?:\\b|$)/);
+  return match ? match.slice(1, 4).map(Number) : null;
+}
+
+function claudeCliAtLeast(version, minimum) {
+  const actual = parseClaudeCliVersion(version);
+  if (!actual) return false;
+  for (let i = 0; i < 3; i += 1) {
+    if (actual[i] > minimum[i]) return true;
+    if (actual[i] < minimum[i]) return false;
+  }
+  return true;
+}
+
+function stripClaudeContextSuffix(model) {
+  return String(model || "").trim().replace(/\\[[^\\]]+\\]$/, "");
+}
+
+// Claude Code는 alias가 가리키는 버전을 provider와 CLI 버전에 따라 바꿉니다.
+// 실제 실행에서 system/init이 보고한 resolved model이 가장 정확하므로 이 값은
+// "아직 그 alias를 실행하지 않은 경우"의 표시용 힌트로만 씁니다.
+// 사용자/조직이 ANTHROPIC_DEFAULT_*_MODEL로 별칭을 덮어썼다면 그 값을 최우선합니다.
+function claudeAliasFallbackLabel(alias, { version, apiProvider, env = {} } = {}) {
+  const family = String(alias || "").trim().toLowerCase();
+  const envKey = CLAUDE_DEFAULT_MODEL_ENV[family];
+  if (!envKey) return null;
+
+  const overridden = stripClaudeContextSuffix(env[envKey]);
+  const overriddenLabel = claudeResolvedModelLabel(family, overridden);
+  if (overriddenLabel) return overriddenLabel;
+
+  // provider별 alias 매핑이 다르므로 firstParty 외에는 추측하지 않습니다.
+  if (String(apiProvider || "").toLowerCase() !== "firstparty") return null;
+
+  let resolved = null;
+  if (family === "fable" && claudeCliAtLeast(version, [2, 1, 257])) {
+    resolved = "claude-fable-5-1";
+  } else if (family === "opus" && claudeCliAtLeast(version, [2, 1, 219])) {
+    resolved = "claude-opus-5";
+  } else if (family === "sonnet" && claudeCliAtLeast(version, [2, 1, 197])) {
+    resolved = "claude-sonnet-5";
+  }
+  return claudeResolvedModelLabel(family, resolved);
+}
+
 // `claude --help`의 --model 설명에서 모델 별칭을 뽑습니다. 도움말은
 //   "alias for the latest model (e.g. 'fable', 'opus', or 'sonnet') or a model's
 //    full name (e.g. 'claude-fable-5')"
@@ -568,6 +621,7 @@ function createCapabilityService(options = {}) {
         authReason: `${def.name} 로그인이 필요합니다.`,
       };
     }
+    let authApiProvider = null;
     if (def.id === "claude") {
       try {
         const parsed = JSON.parse(String(result.stdout || ""));
@@ -577,9 +631,15 @@ function createCapabilityService(options = {}) {
             authReason: `${def.name} 로그인이 필요합니다.`,
           };
         }
+        const provider = typeof parsed.apiProvider === "string" ? parsed.apiProvider.trim() : "";
+        if (/^[A-Za-z0-9._-]{1,40}$/.test(provider)) authApiProvider = provider;
       } catch {}
     }
-    return { authStatus: "authenticated", authReason: "" };
+    return {
+      authStatus: "authenticated",
+      authReason: "",
+      ...(authApiProvider ? { authApiProvider } : {}),
+    };
   }
 
   // 모델 목록을 CLI 스스로 보고할 수 있는 경우(`agy models`) 프로브로 갱신합니다.
@@ -669,6 +729,20 @@ function createCapabilityService(options = {}) {
     record.status = "cli";
     record.reason = "";
     Object.assign(record, await probeAuth(def, commandPath, record.needsShell));
+    if (def.id === "claude") {
+      record.claudeAliasLabels = Object.fromEntries(
+        Object.keys(CLAUDE_ALIAS_LABELS)
+          .map((alias) => [
+            alias,
+            claudeAliasFallbackLabel(alias, {
+              version: record.version,
+              apiProvider: record.authApiProvider,
+              env,
+            }),
+          ])
+          .filter(([, label]) => Boolean(label))
+      );
+    }
 
     const cachedCatalog = catalogFromCache(def, cached);
     if (!force && cachedCatalog && catalogIsFresh(cached, stat, version)) {
@@ -956,7 +1030,12 @@ function toPublicProvider(record) {
     reason: record.reason || "",
     version: record.version,
     models: record.models,
-    modelOptions: record.modelOptions,
+    modelOptions: record.id === "claude" && record.claudeAliasLabels
+      ? (record.modelOptions || []).map((option) => ({
+          ...option,
+          label: record.claudeAliasLabels[option.id] || option.label,
+        }))
+      : record.modelOptions,
     efforts: record.efforts,
     allowCustomModel: record.allowCustomModel,
     supportsImages: record.supportsImages,
@@ -982,6 +1061,7 @@ module.exports = {
   resolveEffortVariant,
   parseClaudeHelpModels,
   claudeResolvedModelLabel,
+  claudeAliasFallbackLabel,
   probeCodexModelCatalog,
   probeAgyModelCatalog,
   cliCandidates,
