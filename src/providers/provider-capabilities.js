@@ -22,7 +22,7 @@ const CATALOG_RETRY_BACKOFF_MS = 5 * 60 * 1000;
 // 저장된 카탈로그의 형식 버전. 파서가 바뀌면(예: `claude --help`의 전체 이름 예시를
 // 더 이상 모델로 읽지 않게 된 변경) 예전 형식으로 저장된 목록은 그대로 쓰면 안 된다.
 // 버전이 다르면 캐시가 없는 것으로 보고 지금 다시 조회한다.
-const CATALOG_SCHEMA_VERSION = 3;
+const CATALOG_SCHEMA_VERSION = 2;
 
 function probeCodexModelCatalog(commandPath, needsShell, timeoutMs = 8000, deps = {}) {
   return new Promise((resolve) => {
