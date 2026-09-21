@@ -4442,12 +4442,6 @@ function renderTextWithMentions(container, text) {
   renderMathIfAvailable(container);
 }
 
-function formatBytes(size) {
-  if (size < 1024) return `${size}B`;
-  if (size < 1024 * 1024) return `${Math.round(size / 1024)}KB`;
-  return `${(size / 1024 / 1024).toFixed(1)}MB`;
-}
-
 function makeAttachmentIcon(attachment) {
   const icon = document.createElement("span");
   icon.className = "attachment-icon";
