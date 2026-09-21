@@ -11,6 +11,7 @@ const {
   createCapabilityService,
   parseClaudeHelpModels,
   claudeResolvedModelLabel,
+  claudeAliasFallbackLabel,
   resolveEffortVariant,
   toPublicProviders,
 } = require("../src/providers/provider-capabilities");
@@ -459,6 +460,72 @@ test("Claude 실제 모델 id를 GPT/Gemini식 버전 표시명으로 바꾼다"
   // 다른 계열/별칭이 아닌 값은 표시명 근거로 쓰지 않는다.
   assert.equal(claudeResolvedModelLabel("fable", "claude-opus-5"), null);
   assert.equal(claudeResolvedModelLabel("unknown", "claude-unknown-1"), null);
+});
+
+test("Claude firstParty alias는 CLI 버전 기준으로 아직 안 쓴 모델도 버전을 표시한다", () => {
+  const context = { version: "2.1.272 (Claude Code)", apiProvider: "firstParty", env: {} };
+  assert.equal(claudeAliasFallbackLabel("fable", context), "Fable 5.1");
+  assert.equal(claudeAliasFallbackLabel("opus", context), "Opus 5");
+  assert.equal(claudeAliasFallbackLabel("sonnet", context), "Sonnet 5");
+  assert.equal(claudeAliasFallbackLabel("haiku", context), null);
+});
+
+test("Claude alias 표시 힌트는 환경변수 override를 최우선하고 타 provider는 추측하지 않는다", () => {
+  assert.equal(
+    claudeAliasFallbackLabel("sonnet", {
+      version: "2.1.272",
+      apiProvider: "firstParty",
+      env: { ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4-6[1m]" },
+    }),
+    "Sonnet 4.6"
+  );
+  assert.equal(
+    claudeAliasFallbackLabel("sonnet", { version: "2.1.272", apiProvider: "bedrock", env: {} }),
+    null
+  );
+});
+
+test("Claude firstParty auth 정보는 내부 표시 힌트에만 쓰고 public provider에는 노출하지 않는다", async () => {
+  const claudePath = "C:\\Users\\u\\.local\\bin\\claude.exe";
+  const files = new Set([claudePath]);
+  const service = createCapabilityService({
+    platform: "win32",
+    env: WIN_ENV,
+    home: "C:\\Users\\u",
+    fs: {
+      existsSync: (file) => files.has(file),
+      statSync: () => ({ mtimeMs: 1, size: 2 }),
+    },
+    runCommand: async (file, args) => {
+      if (file === claudePath && args[0] === "--version") {
+        return { ok: true, stdout: "2.1.272 (Claude Code)\\n", stderr: "" };
+      }
+      if (file === claudePath && args[0] === "auth") {
+        return {
+          ok: true,
+          stdout: JSON.stringify({ loggedIn: true, apiProvider: "firstParty", email: "private@example.com" }),
+          stderr: "",
+        };
+      }
+      if (file === claudePath && args[0] === "--help") {
+        return { ok: true, stdout: CLAUDE_HELP, stderr: "" };
+      }
+      return { ok: false, stdout: "", stderr: "" };
+    },
+    cache: { get: () => null, set: () => {} },
+  });
+  const claude = toPublicProviders(await service.discover()).find((record) => record.id === "claude");
+  assert.deepEqual(
+    claude.modelOptions.map((option) => [option.id, option.label]),
+    [
+      ["default", "Claude 기본값 (CLI 설정 따름)"],
+      ["fable", "Fable 5.1"],
+      ["opus", "Opus 5"],
+      ["sonnet", "Sonnet 5"],
+    ]
+  );
+  assert.ok(!JSON.stringify(claude).includes("firstParty"));
+  assert.ok(!JSON.stringify(claude).includes("private@example.com"));
 });
 
 test("Claude 로그인 상태는 공개 진단 값으로만 노출되고 계정 정보는 버린다", async () => {
