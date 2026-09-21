@@ -10,6 +10,7 @@ const {
   guiEvidencePaths,
   createCapabilityService,
   parseClaudeHelpModels,
+  claudeResolvedModelLabel,
   resolveEffortVariant,
   toPublicProviders,
 } = require("../src/providers/provider-capabilities");
@@ -423,7 +424,7 @@ test("claude --help의 별칭만 모델 목록에 올리고 전체 이름 예시
   assert.equal(parseClaudeHelpModels(""), null);
 });
 
-test("claude 별칭에는 최신 모델임을 알리는 표시 이름이 붙는다", async () => {
+test("Claude 별칭은 최신 괄호 없이 계열명만 기본 표시한다", async () => {
   const claudePath = "C:\\Users\\u\\.local\\bin\\claude.exe";
   const files = new Set([claudePath]);
   const { service } = makeService({
@@ -438,14 +439,26 @@ test("claude 별칭에는 최신 모델임을 알리는 표시 이름이 붙는�
     claude.modelOptions.map((option) => [option.id, option.label]),
     [
       ["default", "Claude 기본값 (CLI 설정 따름)"],
-      ["fable", "Fable (최신)"],
-      ["opus", "Opus (최신)"],
-      ["sonnet", "Sonnet (최신)"],
+      ["fable", "Fable"],
+      ["opus", "Opus"],
+      ["sonnet", "Sonnet"],
     ]
   );
   assert.ok(claude.modelOptions.every((option) => option.efforts.includes("max")));
   // 전체 이름 예시는 별칭과 같은 계열이 두 줄로 보이지 않도록 목록에 없다.
   assert.equal(claude.modelOptions.some((option) => /^claude-/.test(option.id)), false);
+});
+
+test("Claude 실제 모델 id를 GPT/Gemini식 버전 표시명으로 바꾼다", () => {
+  assert.equal(claudeResolvedModelLabel("fable", "claude-fable-5-1"), "Fable 5.1");
+  assert.equal(claudeResolvedModelLabel("opus", "claude-opus-5"), "Opus 5");
+  assert.equal(claudeResolvedModelLabel("sonnet", "claude-sonnet-4-6"), "Sonnet 4.6");
+  assert.equal(claudeResolvedModelLabel("haiku", "claude-haiku-4-5-20260901"), "Haiku 4.5");
+  // 날짜만 붙는 id는 날짜를 minor 버전으로 오인하지 않는다.
+  assert.equal(claudeResolvedModelLabel("opus", "claude-opus-5-20260901"), "Opus 5");
+  // 다른 계열/별칭이 아닌 값은 표시명 근거로 쓰지 않는다.
+  assert.equal(claudeResolvedModelLabel("fable", "claude-opus-5"), null);
+  assert.equal(claudeResolvedModelLabel("unknown", "claude-unknown-1"), null);
 });
 
 test("Claude 로그인 상태는 공개 진단 값으로만 노출되고 계정 정보는 버린다", async () => {
