@@ -23,6 +23,7 @@ const { TaskManager } = require("../agora/task-manager");
 const { resolveTaskFileBoundary } = require("../agora/task-file-boundary");
 const {
   createCapabilityService,
+  claudeResolvedModelLabel,
   toPublicProviders,
 } = require("../providers/provider-capabilities");
 const { toDiagnostics } = require("../providers/provider-diagnostics");
@@ -331,10 +332,86 @@ function createChatFeature(options) {
     },
   });
 
+  const CLAUDE_MODEL_ALIASES = Object.freeze(["fable", "opus", "sonnet", "haiku"]);
+
+  function normalizeClaudeResolvedModels(value) {
+    const result = {};
+    if (!value || typeof value !== "object" || Array.isArray(value)) return result;
+    for (const alias of CLAUDE_MODEL_ALIASES) {
+      const entry = value[alias];
+      const resolvedModel = typeof entry === "string" ? entry : entry?.model;
+      if (claudeResolvedModelLabel(alias, resolvedModel)) {
+        result[alias] = {
+          model: resolvedModel,
+          observedAt: Number.isFinite(entry?.observedAt) ? entry.observedAt : 0,
+        };
+      }
+    }
+    return result;
+  }
+
+  // v1.1 계열부터 Claude 응답에는 실제 resolved model이 저장됩니다. 기존 사용자도
+  // 업데이트 직후 버전 표기를 바로 볼 수 있도록 최근 대화에서 alias별 마지막 관측값을
+  // 한 번 복구해 config에 넣습니다. 이후에는 새 Claude 응답이 올 때 증분 갱신합니다.
+  function hydrateClaudeResolvedModels(chatStore) {
+    if (!chatStore) return {};
+    const config = chatStore.getConfig() || {};
+    const current = normalizeClaudeResolvedModels(config.claudeResolvedModels);
+    // 기존 transcript 전체 스캔은 업데이트 뒤 딱 한 번만 합니다. 사용하지 않은 alias가
+    // 영원히 비어 있다고 매 시작마다 모든 대화를 다시 읽으면 시작 시간이 계속 늘어납니다.
+    if (config.claudeResolvedModelsHydrated !== 1) {
+      const missing = new Set(CLAUDE_MODEL_ALIASES.filter((alias) => !current[alias]));
+      for (const session of chatStore.listSessions()) {
+        const messages = chatStore.readMessages(session.id);
+        for (let i = messages.length - 1; i >= 0 && missing.size > 0; i -= 1) {
+          const message = messages[i];
+          if (message?.authorType !== "agent" || message?.author !== "claude") continue;
+          const alias = String(message.agentMeta?.model || "").trim().toLowerCase();
+          const resolvedModel = String(message.agentMeta?.resolvedModel || "").trim();
+          if (!missing.has(alias) || !claudeResolvedModelLabel(alias, resolvedModel)) continue;
+          current[alias] = { model: resolvedModel, observedAt: Number(message.ts) || 0 };
+          missing.delete(alias);
+        }
+        if (missing.size === 0) break;
+      }
+      if (!chatStore.readOnly) {
+        chatStore.patchConfig({
+          claudeResolvedModels: current,
+          claudeResolvedModelsHydrated: 1,
+        });
+      }
+    }
+    return current;
+  }
+
+  function rememberClaudeResolvedModel(message) {
+    if (!store || message?.authorType !== "agent" || message?.author !== "claude") return false;
+    const alias = String(message.agentMeta?.model || "").trim().toLowerCase();
+    const resolvedModel = String(message.agentMeta?.resolvedModel || "").trim();
+    if (!claudeResolvedModelLabel(alias, resolvedModel)) return false;
+    const current = normalizeClaudeResolvedModels(store.getConfig()?.claudeResolvedModels);
+    if (current[alias]?.model === resolvedModel) return false;
+    current[alias] = { model: resolvedModel, observedAt: Number(message.ts) || Date.now() };
+    if (!store.readOnly) store.patchConfig({ claudeResolvedModels: current });
+    return true;
+  }
+
+  function applyClaudeResolvedLabels(publicProviders) {
+    const resolved = normalizeClaudeResolvedModels(store?.getConfig()?.claudeResolvedModels);
+    const claude = (publicProviders || []).find((provider) => provider.id === "claude");
+    if (!claude || !Array.isArray(claude.modelOptions)) return publicProviders;
+    claude.modelOptions = claude.modelOptions.map((option) => {
+      const label = claudeResolvedModelLabel(option.id, resolved[option.id]?.model);
+      return label ? { ...option, label } : option;
+    });
+    return publicProviders;
+  }
+
   function ensureStore() {
     if (store || storeError) return store;
     try {
       store = new ChatStore({ root: options.storeRoot }).init();
+      hydrateClaudeResolvedModels(store);
     } catch (error) {
       storeError = error?.message || String(error);
       console.warn("[agora] 채팅 저장소 초기화 실패:", storeError);
@@ -394,7 +471,10 @@ function createChatFeature(options) {
   }
 
   function providersPayload(records) {
-    return { providers: toPublicProviders(records), diagnostics: toDiagnostics(records) };
+    return {
+      providers: applyClaudeResolvedLabels(toPublicProviders(records)),
+      diagnostics: toDiagnostics(records),
+    };
   }
 
   // 모델 목록이 바뀌면 방 참가자의 모델 해석(fable → 실제 옵션 등)도 다시 계산하고
@@ -1224,12 +1304,28 @@ function roomMeta(meta) {
 
     room.on("message", (message) => {
       store.appendEvent(sessionId, { kind: "message", message });
+      const claudeLabelChanged = rememberClaudeResolvedModel(message);
       // renderer로는 첨부 내부 레코드(fileName/sha256)를 제거한 사본만 보냅니다.
       const outbound = message.attachments
         ? { ...message, attachments: message.attachments.map(publicAttachment) }
         : message;
       broadcast("chat:message", { sessionId, message: outbound });
       broadcast("chat:sessions-changed", sessionsPayload());
+      if (claudeLabelChanged) {
+        // 실행 id는 계속 fable/opus/sonnet 별칭을 쓰고, 표시명만 방금 확인한 실제
+        // 버전으로 갱신합니다. 모델 카탈로그 자체가 바뀐 것은 아니므로 알림 토스트는
+        // 띄우지 않습니다.
+        const service = ensureCapabilityService();
+        if (typeof service?.discover === "function") {
+          void Promise.resolve(service.discover())
+            .then((records) => {
+              if (!shuttingDown) publishProviders(records);
+            })
+            .catch((error) => {
+              console.warn("[agora] Claude 모델 표시명 갱신 실패:", error?.message || error);
+            });
+        }
+      }
     });
     room.on("typing", (payload) => broadcast("chat:typing", { sessionId, ...payload }));
     room.on("turn-state", (payload) => broadcast("chat:turn-state", { sessionId, ...payload }));
