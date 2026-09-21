@@ -327,7 +327,7 @@ const CLAUDE_DEFAULT_MODEL_ENV = Object.freeze({
 });
 
 function parseClaudeCliVersion(version) {
-  const match = String(version || "").match(/(?:^|\\b)(\\d+)\\.(\\d+)\\.(\\d+)(?:\\b|$)/);
+  const match = String(version || "").match(/\b(\d+)\.(\d+)\.(\d+)\b/);
   return match ? match.slice(1, 4).map(Number) : null;
 }
 
@@ -341,8 +341,9 @@ function claudeCliAtLeast(version, minimum) {
   return true;
 }
 
+// ANTHROPIC_DEFAULT_*_MODEL 값 끝의 컨텍스트 표시(예: [1m])는 모델 id가 아니다.
 function stripClaudeContextSuffix(model) {
-  return String(model || "").trim().replace(/\\[[^\\]]+\\]$/, "");
+  return String(model || "").trim().replace(/\[[^\]]+\]$/, "");
 }
 
 // Claude Code는 alias가 가리키는 버전을 provider와 CLI 버전에 따라 바꿉니다.
