@@ -355,9 +355,12 @@ function createChatFeature(options) {
   // 한 번 복구해 config에 넣습니다. 이후에는 새 Claude 응답이 올 때 증분 갱신합니다.
   function hydrateClaudeResolvedModels(chatStore) {
     if (!chatStore) return {};
-    const current = normalizeClaudeResolvedModels(chatStore.getConfig()?.claudeResolvedModels);
-    const missing = new Set(CLAUDE_MODEL_ALIASES.filter((alias) => !current[alias]));
-    if (missing.size > 0) {
+    const config = chatStore.getConfig() || {};
+    const current = normalizeClaudeResolvedModels(config.claudeResolvedModels);
+    // 기존 transcript 전체 스캔은 업데이트 뒤 딱 한 번만 합니다. 사용하지 않은 alias가
+    // 영원히 비어 있다고 매 시작마다 모든 대화를 다시 읽으면 시작 시간이 계속 늘어납니다.
+    if (config.claudeResolvedModelsHydrated !== 1) {
+      const missing = new Set(CLAUDE_MODEL_ALIASES.filter((alias) => !current[alias]));
       for (const session of chatStore.listSessions()) {
         const messages = chatStore.readMessages(session.id);
         for (let i = messages.length - 1; i >= 0 && missing.size > 0; i -= 1) {
@@ -371,10 +374,12 @@ function createChatFeature(options) {
         }
         if (missing.size === 0) break;
       }
-    }
-    const saved = normalizeClaudeResolvedModels(chatStore.getConfig()?.claudeResolvedModels);
-    if (JSON.stringify(saved) !== JSON.stringify(current) && !chatStore.readOnly) {
-      chatStore.patchConfig({ claudeResolvedModels: current });
+      if (!chatStore.readOnly) {
+        chatStore.patchConfig({
+          claudeResolvedModels: current,
+          claudeResolvedModelsHydrated: 1,
+        });
+      }
     }
     return current;
   }
