@@ -2930,9 +2930,11 @@ textarea:focus-visible {
 }
 
 .project-item.is-active {
-  background: var(--surface);
-  border-color: var(--line-strong);
-  box-shadow: var(--shadow);
+  /* 프로젝트는 "묶음 머리"다. 상자로 그리면 안에 든 채팅 행·새 채팅 버튼과
+     같은 형태가 되어 층이 사라진다. 상자 대신 왼쪽 막대와 옅은 바탕만 준다. */
+  background: var(--accent-soft);
+  border-color: transparent;
+  box-shadow: none;
 }
 
 .project-select {
@@ -3883,13 +3885,16 @@ textarea:focus-visible {
 
 .project-new-chat-button {
   width: 100%;
-  padding: 5px 8px;
-  border: 1px dashed var(--line-strong);
-  border-radius: var(--radius-md);
+  /* 동작은 내용과 다른 형태여야 한다. 예전에는 테두리 친 알약이라 바로 아래
+     채팅 행과 크기·모양이 같았고, 누르기 전에는 둘을 구분할 수 없었다.
+     테두리를 걷고 작은 흐린 글씨로 낮춰 "줄"이 아니라 "링크"로 읽히게 한다. */
+  padding: 3px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
   background: transparent;
-  color: var(--accent);
-  font-size: 12px;
-  font-weight: 600;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
   text-align: left;
   cursor: pointer;
 }
@@ -3897,6 +3902,7 @@ textarea:focus-visible {
 .project-new-chat-button:hover,
 .project-new-chat-button:focus-visible {
   background: var(--accent-soft);
+  color: var(--accent);
 }
 
 /* 프로젝트 아래 중첩된 채팅 목록: 자체 스크롤 없이 트리 흐름에 붙습니다.
@@ -3931,6 +3937,26 @@ textarea:focus-visible {
   font-size: 10px;
 }
 
+/* 채팅 행: 지금 보고 있는 채팅만 통째로 색을 깔고 왼쪽에 막대를 세운다.
+   테두리 친 상자로 표시하면 위의 프로젝트 상자·아래 새 채팅 알약과 형태가
+   겹쳐 셋이 같은 것으로 보였다. 형태를 나눠야 종류가 나뉜다. */
+.project-sessions .session-item.is-active {
+  background: var(--accent-soft);
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.project-sessions .session-item.is-active::before {
+  content: "";
+  position: absolute;
+  left: -9px;
+  top: 3px;
+  bottom: 3px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+}
+
 .project-sessions-empty {
   color: var(--muted);
   opacity: 0.7;
@@ -3942,6 +3968,17 @@ textarea:focus-visible {
 /* 프로젝트끼리는 옅은 구분선으로 나눠 하나의 덩어리로 보이지 않게 합니다. */
 .project-item {
   border-radius: 8px;
+}
+
+/* 프로젝트 이름은 묶음 머리답게 채팅 행보다 확실히 크고 굵게. 예전에는 12px/700,
+   채팅 행이 11.5px/400이라 차이가 0.5px뿐이어서 위계가 읽히지 않았다. */
+.project-row .project-name {
+  font-size: 13px;
+  letter-spacing: -0.1px;
+}
+
+.project-item.is-active > .project-row .project-name {
+  color: var(--accent);
 }
 
 .project-tree > .project-item + .project-item {

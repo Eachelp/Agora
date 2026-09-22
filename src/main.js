@@ -33,15 +33,14 @@ if (!gotLock) {
   app.quit();
 } else {
   app.on("second-instance", () => {
-    // 이미 열린 채팅 창이 있으면 앞으로 가져옵니다.
+    // 창을 여는 규칙은 chat-ipc의 openWindow 한 곳에만 둔다. 예전에는 여기서
+    // focus()만 따로 불렀는데, 숨겨진 창에 focus()는 아무 일도 하지 않는다.
+    // 그래서 트레이에 상주한 상태에서 바탕화면 아이콘을 눌러도 두 번째
+    // 인스턴스만 조용히 끝나고 창은 뜨지 않는 것처럼 보였다. openWindow는
+    // show() + focus()를 하고, 창이 없으면 새로 만든다.
     const chatWindow = chatFeature?.getWindow?.();
-    if (chatWindow && !chatWindow.isDestroyed()) {
-      if (chatWindow.isMinimized()) chatWindow.restore();
-      chatWindow.focus();
-    } else {
-      // 창이 없으면 새로 엽니다.
-      openChatWindow();
-    }
+    if (chatWindow?.isMinimized()) chatWindow.restore();
+    openChatWindow();
   });
 }
 

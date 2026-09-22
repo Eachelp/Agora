@@ -242,8 +242,10 @@
       </section>
     </div>
 
-    <script src="./vendor/katex/katex.min.js"></script>
-    <script src="./vendor/katex/auto-render.min.js"></script>
+    <!-- KaTeX는 265KB인데 첫 화면에는 필요 없다. defer로 빼 두면 창이 그만큼
+         빨리 그려지고, 수식은 renderMathIfAvailable이 준비됐을 때만 그린다. -->
+    <script defer src="./vendor/katex/katex.min.js"></script>
+    <script defer src="./vendor/katex/auto-render.min.js"></script>
     <script src="./chat-markdown.js"></script>
     <script src="./usage-view.js"></script>
     <script src="./awaiting-view.js"></script>
