@@ -3626,122 +3626,6 @@ textarea:focus-visible {
   border-radius: 14px 8px 14px 14px;
 }
 
-/* --- Showcase shell: functional quick rail + existing workspace --- */
-.app-rail {
-  width: 68px;
-  flex: none;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 7px 11px;
-  background: var(--accent);
-  color: #ffffff;
-  border-right: 0;
-}
-
-.app-rail-button {
-  width: 54px;
-  min-height: 54px;
-  display: inline-flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  border: 1px solid transparent;
-  border-radius: 9px;
-  background: transparent;
-  color: rgba(255, 255, 255, 0.74);
-  font-size: 10.5px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: background-color 120ms ease-out, color 120ms ease-out;
-}
-
-.app-rail-button:hover,
-.app-rail-button:focus-visible,
-.app-rail-button.is-active {
-  background: rgba(255, 255, 255, 0.18);
-  color: #ffffff;
-}
-
-.app-rail-button:focus-visible {
-  outline: 2px solid rgba(255, 255, 255, 0.82);
-  outline-offset: 1px;
-}
-
-/* 설치되지 않았거나 이 세션에서 꺼진 참가자. 헤더 칩(.agent-chip.is-unavailable)과 같은 정도로 흐리게. */
-.app-rail-button.is-unavailable {
-  opacity: 0.45;
-}
-
-.app-rail-button.is-unavailable img,
-.app-rail-button.is-unavailable .app-rail-glyph {
-  filter: grayscale(0.8);
-}
-
-.app-rail-button img,
-.app-rail-glyph {
-  width: 28px;
-  height: 28px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 8px;
-  background: #ffffff;
-  color: var(--accent);
-  object-fit: contain;
-  padding: 4px;
-  font-size: 18px;
-  font-weight: 800;
-}
-
-.app-rail-divider {
-  width: 38px;
-  height: 1px;
-  margin: 2px 0;
-  background: rgba(255, 255, 255, 0.24);
-}
-
-.app-rail-spacer { flex: 1; }
-
-.app-rail-settings {
-  min-height: 50px;
-}
-
-.app-rail-settings svg {
-  width: 24px;
-  height: 24px;
-}
-
-/* 설정의 실제 DOM/이벤트는 기존 위치에 보존하고, 화면에는 레일의 단일 진입점만 노출합니다. */
-.sidebar-foot .foot-button-icon {
-  display: none;
-}
-
-@media (max-width: 760px) {
-  .app-rail {
-    width: 56px;
-    padding-left: 4px;
-    padding-right: 4px;
-  }
-
-  .app-rail-button {
-    width: 48px;
-    min-height: 48px;
-  }
-
-  .app-rail-button img,
-  .app-rail-glyph {
-    width: 25px;
-    height: 25px;
-    font-size: 16px;
-  }
-
-  .app-rail-label { display: none; }
-}
-
 .foot-button {
   display: inline-flex;
   align-items: center;
@@ -3930,12 +3814,6 @@ textarea:focus-visible {
 .project-item.is-active .project-name,
 .session-item.is-active .session-name {
   color: var(--accent);
-}
-
-/* 레일 활성 항목에 스크린리더용 현재 위치 표시가 붙었을 때도 대비를 유지합니다. */
-.app-rail-button[aria-current="page"] {
-  background: rgba(255, 255, 255, 0.2);
-  color: #ffffff;
 }
 
 /* 사이드바 섹션 제목을 시안처럼 작은 회색 라벨로 통일합니다.

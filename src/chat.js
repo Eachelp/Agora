@@ -69,12 +69,6 @@ const storeWarning = document.getElementById("store-warning");
 const popover = document.getElementById("popover");
 const popoverBackdrop = document.getElementById("popover-backdrop");
 const appEl = document.querySelector(".app");
-const railAgentButtons = new Map([
-  ["claude", document.getElementById("rail-claude")],
-  ["codex", document.getElementById("rail-codex")],
-  ["agy", document.getElementById("rail-agy")],
-]);
-const railSettingsButton = document.getElementById("rail-settings");
 const sidebarEl = document.getElementById("sidebar");
 const sidebarResizer = document.getElementById("sidebar-resizer");
 const sidebarToggle = document.getElementById("sidebar-toggle");
@@ -2406,9 +2400,17 @@ function renderProfessionalBlocked() {
   }
 }
 
+// 참가자 칩 툴팁. 칩 본문은 @id라 이름이 드러나지 않으므로, 세로 레일이 들고
+// 있던 "이름 + 못 쓰는 이유"를 이 자리로 옮긴다. 레일을 지우면서 그 정보가
+// 사라지지 않게 하는 유일한 자리다.
+function agentChipHint(agent) {
+  const name = agent?.name || `@${agent?.id ?? ""}`;
+  const unavailable = agentUnavailableReason(agent);
+  return unavailable ? `${name} · ${unavailable}` : `${name} 담당 모델·추론 설정`;
+}
+
 // --- 에이전트 칩 + 팝오버 ---
 function renderAgents() {
-  renderRailLabels();
   agentChips.textContent = "";
   for (const agent of agents) {
     const chip = document.createElement("button");
@@ -2426,11 +2428,8 @@ function renderAgents() {
       ? agent.awaitingQuestion
         ? `답변 대기 — ${agent.awaitingQuestion}`
         : "이 에이전트가 당신의 답을 기다립니다"
-      : agent.available
-        ? agent.enabled
-          ? "클릭해 모델/속도 설정"
-          : "이 세션에서 비활성화됨 · 클릭해 설정"
-        : agent.reason || "CLI를 찾지 못했습니다";
+      : agentChipHint(agent);
+    chip.setAttribute("aria-label", chip.title);
 
     const avatar = makeAgentAvatar(agent, "agent-avatar");
     chip.append(avatar, document.createTextNode(`@${agent.id}`));
@@ -2490,52 +2489,6 @@ function answerAwaitingAgent(agentId, option = "") {
   autoresize();
 }
 
-function setRailActive(button) {
-  document.querySelectorAll(".app-rail-button").forEach((item) => {
-    item.classList.remove("is-active");
-    item.removeAttribute("aria-current");
-  });
-  if (button) {
-    button.classList.add("is-active");
-    button.setAttribute("aria-current", "page");
-  }
-}
-
-// 레일 라벨·툴팁을 참가자 이름에서 채운다. HTML에 이름을 또 박으면 개명할 때마다
-// provider-capabilities와 chat.html이 어긋난다. 이름을 아직 못 받았으면 HTML의
-// 초기값을 그대로 둔다.
-function renderRailLabels() {
-  for (const [agentId, button] of railAgentButtons) {
-    const agent = agentById(agentId);
-    const name = agent?.name;
-    if (!button || !name) continue;
-    const label = button.querySelector(".app-rail-label");
-    if (label) label.textContent = name;
-    // 헤더의 참가자 칩은 못 쓰는 참가자를 흐리게 보여 주는데 레일은 그러지
-    // 않아, 설치되지 않은 AI가 설치된 것과 똑같이 켜져 보였다. 같은 기준을 쓴다.
-    const unavailable = agentUnavailableReason(agent);
-    button.classList.toggle("is-unavailable", Boolean(unavailable));
-    const hint = unavailable ? `${name} · ${unavailable}` : `${name} 담당 모델·추론 설정`;
-    button.title = hint;
-    button.setAttribute("aria-label", hint);
-  }
-}
-
-function openRailAgentSettings(agentId, button) {
-  if (!agentById(agentId) || !providerById(agentId)) {
-    flashNotice(`@${agentId} 담당 설정을 찾지 못했습니다.`);
-    return;
-  }
-  setRailActive(button);
-  openAgentPopover(button, agentId);
-}
-
-for (const [agentId, button] of railAgentButtons) {
-  button?.addEventListener("click", () => openRailAgentSettings(agentId, button));
-}
-
-railSettingsButton?.addEventListener("click", () => document.getElementById("btn-settings")?.click());
-
 const POPOVER_VARIANTS = ["is-project-settings", "is-new-project", "is-workflow", "plan-preview-popover", "is-menu", "is-usage"];
 
 function closePopover() {
@@ -2544,8 +2497,6 @@ function closePopover() {
   popover.classList.remove(...POPOVER_VARIANTS);
   popoverBackdrop.hidden = true;
   usagePopoverOpen = false;
-  // 레일 버튼은 팝오버를 여는 순간에만 강조합니다. 상시 "현재 페이지"가 아닙니다.
-  setRailActive(null);
 }
 
 // 버튼 대신 커서 좌표에도 띄울 수 있도록 위치 계산을 rect 기준으로 분리했습니다.

@@ -185,17 +185,20 @@ test("사용량 스트립은 접기/펼치기이고 접힌 동안 조회하지 �
   assert.match(renderer, /if \(usageOpen \|\| usagePopoverOpen\) void refreshUsageIfStale\(\)/);
 });
 
-test("Showcase 레일은 기존 에이전트 설정과 설정 창으로 연결된다", () => {
+// 모델·추론 설정 진입점은 대화방 참가자 칩 하나다. 예전에는 왼쪽 세로 레일에도
+// 같은 팝오버를 여는 버튼이 있었는데, 68px를 아이콘 세 개에 쓰면서 대화 폭을
+// 깎았고 같은 기능의 입구가 둘이라 어느 쪽이 정본인지도 흐렸다.
+test("모델 설정 진입점은 대화방 참가자 칩 하나다", () => {
   const html = read("src/chat.html");
   const renderer = read("src/chat.js");
-  for (const id of ["app-rail", "rail-claude", "rail-codex", "rail-agy", "rail-settings"]) {
-    assert.match(html, new RegExp(`id="${id}"`));
-  }
-  // 앱이 Agora 하나뿐이라 앱 전환기 모양의 "아고라" 버튼은 두지 않습니다.
-  assert.doesNotMatch(html, /id="rail-agora"/);
-  assert.match(renderer, /openRailAgentSettings\(agentId, button\)/);
-  assert.match(renderer, /openAgentPopover\(button, agentId\)/);
-  assert.match(renderer, /railSettingsButton[\s\S]*?btn-settings[\s\S]*?click\(\)/);
+  // 세로 레일의 흔적이 마크업·렌더러 어디에도 남지 않아야 한다.
+  assert.doesNotMatch(html, /app-rail|id="rail-/);
+  assert.doesNotMatch(renderer, /railAgentButtons|renderRailLabels|setRailActive|openRailAgentSettings/);
+  // 칩이 유일한 입구다.
+  assert.match(html, /id="agent-chips"/);
+  assert.match(renderer, /chip\.addEventListener\("click", \(\) => openAgentPopover\(chip, agent\.id\)\)/);
+  // 앱 설정은 사이드바 하단 버튼 하나만 남는다(레일 버튼이 이것을 대신 눌렀었다).
+  assert.match(html, /id="btn-settings"/);
 });
 
 test("Agora 채팅 화면은 기능 라벨을 간결하게 유지한다", () => {
@@ -218,14 +221,14 @@ test("사이드바 2열부터 메인 대화까지 얇은 색 테두리의 둥근
   assert.match(css, /\.workspace-shell \{[^}]*border-radius: 10px/);
   assert.match(css, /\.app \{\s*background: var\(--accent\)/);
   assert.match(css, /\.chat-main \{[^}]*margin: 0/);
-  assert.match(css, /\.app-rail \{[^}]*border-right: 0/);
-  assert.match(css, /\.app-rail \{[^}]*width: 68px/);
-  assert.match(css, /\.app-rail-button \{[^}]*font-size: 10\.5px/);
-  assert.match(css, /\.app-rail-button img,[\s\S]*?\.app-rail-glyph \{[^}]*width: 28px/);
-  assert.match(css, /\.app-rail-settings svg \{[^}]*width: 24px/);
+  // 세로 레일을 걷어냈으므로 레일 치수 규칙도 남기지 않는다.
+  assert.doesNotMatch(css, /app-rail/);
+  // 레일이 가리던 사이드바 설정 버튼을 다시 드러낸다.
+  assert.doesNotMatch(css, /\.sidebar-foot \.foot-button-icon \{[^}]*display: none/);
   assert.match(html, /class="room-actions"[\s\S]*id="btn-workflow"[\s\S]*id="btn-discussion"[\s\S]*id="btn-specialist"/);
-  assert.match(html, /id="agent-chips"[^>]*hidden/);
-  assert.match(renderer, /function openRailAgentSettings\(agentId, button\)[\s\S]*?openAgentPopover\(button, agentId\)/);
+  // 칩은 CSS가 display:flex로 켜 두는 자리라 hidden 표기를 달지 않는다.
+  assert.doesNotMatch(html, /id="agent-chips"[^>]*hidden/);
+  assert.match(renderer, /function agentChipHint\(agent\)/);
   // 화면에 뜨지 않는 라벨(display:none)과 만드는 코드가 없는 단계 번호 뱃지는
   // 마크업·CSS에서 지웠다. 다시 들어오면 "보이지 않는 요소를 위한 규칙"이 쌓인다.
   assert.ok(!html.includes("professional-actions-label"), "숨겨진 라벨 요소는 남기지 않습니다");
@@ -634,20 +637,17 @@ test("실행 중에도 일반 모드로 내려 메모를 남길 수 있다", () 
   );
 });
 
-// 레일 라벨을 HTML에만 박으면 참가자 이름을 바꿀 때 provider-capabilities와
-// chat.html이 어긋난다. 이름을 받으면 renderAgents가 덮어쓰고, HTML 값은 첫 페인트용
-// 기본값으로만 남는다.
-test("레일 라벨은 참가자 이름에서 채워지고 HTML은 기본값만 갖는다", () => {
+// 참가자 이름은 provider-capabilities 한 곳에서만 온다. HTML에 이름을 또 박으면
+// 개명할 때마다 어긋나는데, 레일을 지우면서 그 중복이 함께 사라졌다.
+test("참가자 이름은 HTML에 박지 않고 렌더러가 채운다", () => {
   const renderer = read("src/chat.js");
   const html = read("src/chat.html");
-  assert.ok(renderer.includes("function renderRailLabels()"), "레일 라벨 갱신 함수가 있어야 합니다");
-  // 호출부 4곳에 흩지 않고 renderAgents 안에서 한 번에 맞춘다.
-  assert.match(renderer, /function renderAgents\(\) \{\s*\n\s*renderRailLabels\(\);/);
-  // 첫 페인트 기본값도 새 이름이어야 잠깐 옛 이름이 보이지 않는다.
-  assert.ok(html.includes('<span class="app-rail-label">GPT</span>'), "레일 기본값이 옛 이름입니다");
-  assert.ok(html.includes('<span class="app-rail-label">Gemini</span>'), "레일 기본값이 옛 이름입니다");
-  assert.ok(!html.includes('<span class="app-rail-label">Codex</span>'));
-  assert.ok(!html.includes('<span class="app-rail-label">AGY</span>'));
+  // 칩 본문은 @id뿐이고 사람이 읽는 이름은 툴팁이 맡는다.
+  assert.ok(renderer.includes("function agentChipHint(agent)"), "칩 툴팁 함수가 있어야 합니다");
+  assert.match(renderer, /chip\.title = awaiting[\s\S]*?agentChipHint\(agent\);/);
+  assert.match(renderer, /chip\.setAttribute\("aria-label", chip\.title\);/);
+  // 참가자 이름(Claude/GPT/Gemini)을 마크업에 고정해 두지 않는다.
+  assert.doesNotMatch(html, /app-rail-label/);
 });
 
 // ---- 전문 실행 상태 표시: node만이 아니라 status와 대기 사유까지 본다 ----
@@ -1143,44 +1143,32 @@ test("부를 수 없는 멘션 대상에는 이유가 붙는다", () => {
 });
 
 
-// 왼쪽 레일도 헤더 칩과 같은 기준으로 못 쓰는 참가자를 흐리게 표시해야 한다.
-// 실제 renderRailLabels를 스텁 버튼 위에서 돌린다.
-test("레일은 설치되지 않았거나 꺼진 참가자를 흐리게 표시하고 이유를 툴팁에 둔다", () => {
+// 칩 툴팁은 "이름 + 못 쓰는 이유"를 말해야 한다. 칩 본문은 @id뿐이라 설치되지
+// 않았거나 꺼진 참가자의 사정이 툴팁 말고는 드러날 자리가 없다.
+// 실제 agentChipHint를 격리해 돌린다.
+test("참가자 칩 툴팁은 이름과 못 쓰는 이유를 말한다", () => {
   const vm = require("node:vm");
   const src = read("src/chat.js");
-  const start = src.indexOf("function renderRailLabels() {");
+  const start = src.indexOf("function agentChipHint(agent) {");
   const end = src.indexOf("\n}\n", start) + 3;
   const reasonStart = src.indexOf("function agentUnavailableReason(agent) {");
   const reasonEnd = src.indexOf("\n}\n", reasonStart) + 3;
-  assert.ok(start > 0 && reasonStart > 0, "레일 코드를 찾지 못했습니다");
-  const fakeButton = () => {
-    const el = { classes: new Set(), attrs: {}, title: "", label: { textContent: "" } };
-    el.classList = { toggle: (c, on) => { if (on) el.classes.add(c); else el.classes.delete(c); } };
-    el.setAttribute = (k, v) => { el.attrs[k] = v; };
-    el.querySelector = () => el.label;
-    return el;
-  };
-  const buttons = { claude: fakeButton(), codex: fakeButton(), agy: fakeButton() };
+  assert.ok(start > 0 && reasonStart > 0, "칩 툴팁 코드를 찾지 못했습니다");
   const agents = {
     claude: { id: "claude", name: "Claude", available: true, enabled: true },
     codex: { id: "codex", name: "GPT", available: false, enabled: true, reason: "Codex CLI가 필요합니다." },
     agy: { id: "agy", name: "Gemini", available: true, enabled: false },
   };
-  const context = {
-    railAgentButtons: new Map(Object.entries(buttons)),
-    agentById: (id) => agents[id] || null,
-  };
+  const context = {};
   vm.createContext(context);
   vm.runInContext(src.slice(reasonStart, reasonEnd) + src.slice(start, end), context);
-  context.renderRailLabels();
+  const hint = (id) => context.agentChipHint(agents[id]);
 
-  assert.equal(buttons.claude.classes.has("is-unavailable"), false);
-  assert.match(buttons.claude.title, /담당 모델·추론 설정/);
-  assert.equal(buttons.codex.classes.has("is-unavailable"), true, "설치되지 않은 참가자는 흐리게");
-  assert.match(buttons.codex.title, /Codex CLI가 필요/, "이유는 툴팁에");
-  assert.equal(buttons.agy.classes.has("is-unavailable"), true, "세션에서 꺼진 참가자도 흐리게");
-  assert.match(buttons.agy.title, /꺼져 있음/);
-  assert.equal(buttons.codex.label.textContent, "GPT", "이름 갱신은 그대로");
+  assert.match(hint("claude"), /^Claude 담당 모델·추론 설정$/, "쓸 수 있으면 이름과 용도만");
+  assert.match(hint("codex"), /^GPT · /, "이름이 앞에 선다");
+  assert.match(hint("codex"), /Codex CLI가 필요/, "설치되지 않은 이유는 툴팁에");
+  assert.match(hint("agy"), /^Gemini · /);
+  assert.match(hint("agy"), /꺼져 있음/, "세션에서 꺼진 이유도 툴팁에");
 });
 
 // 막힘 처리 선택지는 실행이 멈춘 자리(상태 줄 바로 아래)에 펼쳐 둔다. 안내 문구가
