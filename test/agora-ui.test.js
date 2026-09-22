@@ -83,6 +83,31 @@ test("창을 닫아도 트레이 앱은 다음 실행에서 채팅창을 다시 
   assert.match(main, /app\.on\("before-quit"[\s\S]*?chatFeature\.shutdown\(\)/);
 });
 
+test("중복 실행이면 quit 이후 채팅 기능도 트레이도 세우지 않는다", () => {
+  const vm = require("node:vm");
+  const Module = require("node:module");
+  const filename = path.join(ROOT, "src", "main.js");
+  let quits = 0;
+  const unexpected = () => { throw new Error("중복 인스턴스가 초기화를 계속했습니다"); };
+  const fakeRequire = (id) => {
+    if (id === "electron") {
+      return { app: {
+        setName() {}, setAppUserModelId() {}, requestSingleInstanceLock: () => false,
+        quit: () => { quits += 1; }, on: unexpected, whenReady: unexpected,
+        getPath: unexpected, commandLine: { appendSwitch: unexpected },
+      } };
+    }
+    if (id === "./chat/chat-ipc") return { createChatFeature: unexpected };
+    if (id === "./agora/account-switching") return { createAccountSwitching: unexpected };
+    if (id.startsWith("node:")) return require(id);
+    return {};
+  };
+  const entry = new vm.Script(Module.wrap(read("src/main.js")), { filename })
+    .runInNewContext({ console, process: { platform: "win32", argv: ["electron", "."], env: {}, on() {} } });
+  entry({}, fakeRequire, { exports: {} }, filename, path.dirname(filename));
+  assert.equal(quits, 1);
+});
+
 test("Agora 화면 재배치는 기존 채팅 제어 연결을 유지한다", () => {
   const html = read("src/chat.html");
   for (const id of [
@@ -253,6 +278,18 @@ test("작업공간은 창 전체를 쓰고 상단 줄은 역할별로 한 줄씩
   assert.match(css, /\.professional-auto-options \{[^}]*order: 2/);
   assert.match(css, /\.chat-scroll \{\s*background: var\(--surface\)/);
   assert.match(css, /\.composer \{\s*background: var\(--surface\)/);
+});
+
+test("좁은 창에서도 상단 줄의 칸 이름이 어긋나지 않는다", () => {
+  const css = read("src/chat.css");
+  // 자식이 찾는 칸 이름이 격자에 없으면 그 자식은 이름 없는 칸을 새로 만들어
+  // 격자 밖으로 흘러 나간다. 넓은 창과 좁은 창이 같은 이름을 쓰는지 본다.
+  const templates = [...css.matchAll(/\.room-bar \{[^}]*grid-template-areas:([^;]+);/g)]
+    .map((match) => [...new Set(match[1].match(/[a-z-]+/g))].sort());
+  assert.ok(templates.length >= 2, "넓은 창과 좁은 창의 배치가 모두 있어야 합니다");
+  for (const areas of templates) {
+    assert.deepEqual(areas, ["buttons", "chips", "controls", "info"]);
+  }
 });
 
 test("저장된 UI 테마가 채팅 화면의 색상 변수에 적용된다", () => {

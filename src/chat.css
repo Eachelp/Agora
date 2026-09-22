@@ -2797,19 +2797,18 @@ textarea:focus-visible {
     grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
       "info"
-      "actions"
-      "controls";
+      "buttons"
+      "controls"
+      "chips";
     padding: 16px;
   }
 
-  .room-actions,
-  .agent-chips {
+  /* 넓은 창의 두 줄을 한 칸씩 풀어 네 줄로 쌓는다. 예전에는 여기에 없어진
+     "actions" 칸만 남아 있어서, chips·buttons 칸을 찾는 자식이 격자 밖으로
+     밀려났다. 좁은 창에서는 오른쪽 고정도 함께 푼다. */
+  .agent-chips,
+  .room-controls-actions {
     justify-content: flex-start;
-  }
-
-  /* 좁은 화면에서는 두 묶음을 위아래로 쌓고 오른쪽 고정을 풉니다. */
-  .room-controls {
-    grid-template-columns: minmax(0, 1fr);
   }
 
   .room-controls-actions {

@@ -31,6 +31,9 @@ if (process.platform === "win32" && typeof app.setAppUserModelId === "function")
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
+  // quit()은 실행을 그 자리에서 멈추지 않는다. 여기서 돌아가지 않으면 두 번째
+  // 인스턴스가 채팅 기능·트레이·IPC까지 다 세운 뒤에야 끝난다.
+  return;
 } else {
   app.on("second-instance", () => {
     // 창을 여는 규칙은 chat-ipc의 openWindow 한 곳에만 둔다. 예전에는 여기서
