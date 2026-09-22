@@ -1195,12 +1195,14 @@ textarea:focus-visible {
   min-height: 0;
   display: flex;
   overflow: hidden;
-  margin: 4px 4px 4px 0;
-  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line));
-  border-left: 0;
-  border-radius: 10px;
+  /* 예전에는 왼쪽 세로 레일에 맞붙는 둥근 패널이라 3면에 강조색 테두리를
+     둘렀다. 레일이 사라진 지금은 그 테두리가 창 가장자리에 파란 선으로만
+     남아 아무것도 구분해 주지 않는다. 화면 전체를 쓰고 테두리는 없앤다. */
+  margin: 0;
+  border: 0;
+  border-radius: 0;
   background: var(--surface);
-  box-shadow: 0 2px 8px rgba(16, 42, 67, 0.08);
+  box-shadow: none;
 }
 
 /* 둥근 작업공간 바깥은 상단바·레일과 같은 Agora 프레임 색으로 채웁니다. */
@@ -2275,9 +2277,14 @@ textarea:focus-visible {
 
 .room-bar {
   display: grid;
+  /* 참가자 칩·동작 버튼·작업공간을 한 줄에 몰아넣으니 창이 좁아질 때마다
+     칩이 제멋대로 접혀 두 줄 세 줄이 됐다. 줄마다 역할을 하나씩 맡겨
+     위에서 아래로 읽히게 한다: 제목+동작 / 참가자 / 작업공간·권한.
+     .room-actions는 display:contents로 껍데기만 걷어 자식이 직접 칸을 잡는다. */
   grid-template-columns: minmax(0, 1fr) auto;
   grid-template-areas:
-    "info actions"
+    "info buttons"
+    "chips chips"
     "controls controls";
   gap: 12px 20px;
   padding: 20px 24px 14px;
@@ -2298,16 +2305,14 @@ textarea:focus-visible {
 }
 
 .room-actions {
-  grid-area: actions;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 9px;
+  display: contents;
 }
 
 .agent-chips {
+  grid-area: chips;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  justify-content: flex-start;
+  align-items: center;
 }
 
 .agent-chip {
@@ -2335,6 +2340,7 @@ textarea:focus-visible {
 /* 실행 버튼 묶음은 항상 오른쪽 끝에 고정합니다.
    왼쪽 "적용 방식" 안내 문구 길이가 바뀌어도 버튼이 밀려다니지 않도록 합니다. */
 .room-controls-actions {
+  grid-area: buttons;
   margin-left: auto;
   display: flex;
   align-items: center;

@@ -210,16 +210,20 @@ test("Agora 채팅 화면은 기능 라벨을 간결하게 유지한다", () => 
   assert.match(css, /\.titlebar-btn\.btn-settings svg[\s\S]*?width: 16px/);
 });
 
-test("사이드바 2열부터 메인 대화까지 얇은 색 테두리의 둥근 패널로 이어진다", () => {
+test("작업공간은 창 전체를 쓰고 상단 줄은 역할별로 한 줄씩 쌓인다", () => {
   const html = read("src/chat.html");
   const css = read("src/chat.css");
   const renderer = read("src/chat.js");
   assert.match(html, /class="workspace-shell"[^>]*>[\s\S]*id="sidebar"[\s\S]*id="chat-scroll"/);
-  assert.match(css, /\.workspace-shell \{[^}]*margin: 4px 4px 4px 0/);
-  assert.match(css, /\.workspace-shell \{[^}]*border: 1px solid color-mix/);
-  assert.match(css, /\.workspace-shell \{[^}]*border-left: 0/);
-  assert.match(css, /\.workspace-shell \{[^}]*border-radius: 10px/);
-  assert.match(css, /\.app \{\s*background: var\(--accent\)/);
+  // 레일을 걷어낸 뒤로 강조색 테두리는 창 가장자리 파란 선으로만 남았다.
+  assert.match(css, /\.workspace-shell \{[^}]*margin: 0/);
+  assert.match(css, /\.workspace-shell \{[^}]*border: 0/);
+  assert.match(css, /\.workspace-shell \{[^}]*border-radius: 0/);
+  // 상단 줄은 제목+동작 / 참가자 / 작업공간·권한 세 줄로 쌓는다.
+  assert.match(css, /grid-template-areas:\s*\n\s*"info buttons"\s*\n\s*"chips chips"\s*\n\s*"controls controls"/);
+  assert.match(css, /\.room-actions \{\s*display: contents;/);
+  assert.match(css, /\.agent-chips \{[^}]*grid-area: chips/);
+  assert.match(css, /\.room-controls-actions \{[^}]*grid-area: buttons/);
   assert.match(css, /\.chat-main \{[^}]*margin: 0/);
   // 세로 레일을 걷어냈으므로 레일 치수 규칙도 남기지 않는다.
   assert.doesNotMatch(css, /app-rail/);
