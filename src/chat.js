@@ -1184,18 +1184,9 @@ function renderProjects() {
     if (open) {
       const list = document.createElement("ul");
       list.className = "session-list project-sessions";
-      // 펼친 프로젝트마다 늘 보이는 '새 채팅' 줄. 행 우측의 흐린 +만으로는
-      // 자주 쓰는 동작이 눈에 띄지 않았다(상단의 선명한 버튼은 프로젝트를 만든다).
-      const newChat = document.createElement("li");
-      newChat.className = "project-new-chat";
-      const newChatButton = document.createElement("button");
-      newChatButton.type = "button";
-      newChatButton.className = "project-new-chat-button";
-      newChatButton.textContent = "＋ 새 채팅";
-      newChatButton.title = `${project.name}에 새 채팅 (Ctrl/⌘+N)`;
-      newChatButton.addEventListener("click", () => { void createChatIn(project.id); });
-      newChat.append(newChatButton);
-      list.append(newChat);
+      // 새 채팅은 프로젝트 행 우측의 +가 맡는다. 예전에는 목록 맨 위에도 같은
+      // 동작의 '＋ 새 채팅' 줄을 뒀는데, 채팅 행과 자리·들여쓰기가 같아 목록의
+      // 한 줄로 읽혔다. 입구를 하나로 줄이고 그 +를 눈에 띄게 만든다.
       const entries = sessionsByProject[project.id] || [];
       for (const entry of entries) list.append(buildSessionItem(entry));
       item.append(list);

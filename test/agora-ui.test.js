@@ -119,7 +119,9 @@ test("사이드바는 프로젝트 토글 트리 하나로 통합된다", () => 
   // 그 프로젝트에 세션을 만들고 입력창에 포커스를 준다.
   assert.match(renderer, /createChatIn\(project\.id\)/);
   assert.match(renderer, /sessionsCreate\(projectId\)/);
-  assert.match(renderer, /project-new-chat-button/);
+  // 새 채팅 입구는 프로젝트 행의 + 하나다. 목록 맨 위의 같은 동작 줄은 없앴다.
+  assert.doesNotMatch(renderer, /project-new-chat/);
+  assert.doesNotMatch(read("src/chat.css"), /project-new-chat/);
   // 선택된 채팅이 접힌 프로젝트 안에 숨지 않도록 항상 드러냅니다.
   assert.match(renderer, /function revealActiveSession/);
   // 백엔드는 프로젝트별 세션 목록을 내려주고, 새 채팅은 대상 프로젝트를 지정할 수 있습니다.
@@ -219,8 +221,8 @@ test("작업공간은 창 전체를 쓰고 상단 줄은 역할별로 한 줄씩
   assert.match(css, /\.workspace-shell \{[^}]*margin: 0/);
   assert.match(css, /\.workspace-shell \{[^}]*border: 0/);
   assert.match(css, /\.workspace-shell \{[^}]*border-radius: 0/);
-  // 상단 줄은 제목+동작 / 참가자 / 작업공간·권한 세 줄로 쌓는다.
-  assert.match(css, /grid-template-areas:\s*\n\s*"info buttons"\s*\n\s*"chips chips"\s*\n\s*"controls controls"/);
+  // 상단 줄은 두 줄로 고정한다: 제목+동작 / 작업공간·권한+참가자.
+  assert.match(css, /grid-template-areas:\s*\n\s*"info buttons"\s*\n\s*"controls chips"/);
   assert.match(css, /\.room-actions \{\s*display: contents;/);
   assert.match(css, /\.agent-chips \{[^}]*grid-area: chips/);
   assert.match(css, /\.room-controls-actions \{[^}]*grid-area: buttons/);

@@ -2277,15 +2277,15 @@ textarea:focus-visible {
 
 .room-bar {
   display: grid;
-  /* 참가자 칩·동작 버튼·작업공간을 한 줄에 몰아넣으니 창이 좁아질 때마다
-     칩이 제멋대로 접혀 두 줄 세 줄이 됐다. 줄마다 역할을 하나씩 맡겨
-     위에서 아래로 읽히게 한다: 제목+동작 / 참가자 / 작업공간·권한.
+  /* 참가자 칩·동작 버튼·작업공간을 한 칸에 몰아넣으니 창이 좁아질 때마다
+     칩이 제멋대로 접혀 줄 수가 들쭉날쭉했다. 두 줄로 고정하고 칸마다 역할을
+     하나씩 맡긴다: 1행은 제목과 동작 버튼, 2행은 작업공간·권한과 참가자 칩.
+     참가자는 "지금 이 방에 누가 있나"라 작업공간·권한과 같은 줄이 맞다.
      .room-actions는 display:contents로 껍데기만 걷어 자식이 직접 칸을 잡는다. */
   grid-template-columns: minmax(0, 1fr) auto;
   grid-template-areas:
     "info buttons"
-    "chips chips"
-    "controls controls";
+    "controls chips";
   gap: 12px 20px;
   padding: 20px 24px 14px;
   background: var(--surface);
@@ -2311,7 +2311,7 @@ textarea:focus-visible {
 .agent-chips {
   grid-area: chips;
   flex-wrap: wrap;
-  justify-content: flex-start;
+  justify-content: flex-end;
   align-items: center;
 }
 
@@ -3934,31 +3934,24 @@ textarea:focus-visible {
   transform: translateY(-50%);
 }
 
-/* 펼친 프로젝트 목록 맨 위의 '새 채팅' 줄. 늘 보이되 채팅 항목보다 조용하게. */
-.project-new-chat {
-  list-style: none;
-}
-
-.project-new-chat-button {
-  width: 100%;
-  /* 동작은 내용과 다른 형태여야 한다. 예전에는 테두리 친 알약이라 바로 아래
-     채팅 행과 크기·모양이 같았고, 누르기 전에는 둘을 구분할 수 없었다.
-     테두리를 걷고 작은 흐린 글씨로 낮춰 "줄"이 아니라 "링크"로 읽히게 한다. */
-  padding: 3px 8px;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 500;
-  text-align: left;
-  cursor: pointer;
-}
-
-.project-new-chat-button:hover,
-.project-new-chat-button:focus-visible {
-  background: var(--accent-soft);
+/* 새 채팅 입구는 프로젝트 행의 + 하나다. 목록 맨 위에 같은 동작의 줄을 또
+   두면 채팅 항목과 자리·들여쓰기가 같아 "목록의 한 줄"로 읽힌다. 입구를
+   하나로 줄인 대신 그 +를 조용한 ⋯과 다르게 강조색으로 세운다. */
+.project-action[aria-label$="새 채팅"] {
   color: var(--accent);
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.project-action[aria-label$="새 채팅"]:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* 프로젝트 행의 동작 아이콘은 늘 또렷하게 — 흐려 두면 새 채팅 입구가 하나뿐인
+   지금 구조에서 그 하나를 못 찾는다. */
+.project-actions {
+  opacity: 1;
 }
 
 /* 프로젝트 아래 중첩된 채팅 목록: 자체 스크롤 없이 트리 흐름에 붙습니다.
