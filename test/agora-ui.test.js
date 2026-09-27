@@ -2,6 +2,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const vm = require("node:vm");
 
 const ROOT = path.join(__dirname, "..");
 const read = (file) => fs.readFileSync(path.join(ROOT, file), "utf8");
@@ -164,6 +165,78 @@ test("창 blur 시 composer focus를 실제로 놓고 복귀 시 되돌린다", 
   assert.ok(renderer.includes("requestAnimationFrame"), "복귀 후 다음 프레임에 focus를 돌려줘야 합니다");
   // 사용자가 복귀 후 다른 곳을 눌렀다면 focus를 빼앗지 않는다.
   assert.ok(renderer.includes("active !== document.body"), "다른 요소의 focus를 빼앗지 않아야 합니다");
+});
+
+test("자동 승인은 패널에서 명시적으로 확인한 뒤에만 저장한다", async () => {
+  const source = read("src/chat.js");
+  const start = source.indexOf('    const autoApproveToggle = document.createElement("input");');
+  const end = source.indexOf('\n    if (provider.status === "gui-only"', start);
+  assert.ok(start > 0 && end > start);
+  const calls = [];
+  function element() {
+    return { hidden: false, append() {}, focus() {}, addEventListener(type, handler) { this[type] = handler; } };
+  }
+  const context = vm.createContext({
+    document: { createElement: element }, root: element(), makeField: () => element(),
+    agent: { name: "Claude" }, agentId: "claude", provider: { available: true },
+    config: { autoApprove: true }, sessionMeta: { permissionMode: "workspace-write" }, activeSessionId: "session-a",
+    configureAgent: async (id, patch) => { calls.push(patch.autoApprove); return { meta: {} }; },
+    window: { confirm() { throw new Error("Native confirm must not open"); } },
+  });
+  vm.runInContext(source.slice(start, end), context);
+  await vm.runInContext('autoApproveToggle.checked = false; autoApproveToggle.change()', context);
+  assert.deepEqual(calls, [false]);
+  vm.runInContext('autoApproveToggle.checked = true; autoApproveToggle.change()', context);
+  assert.equal(vm.runInContext('autoApproveToggle.checked', context), false);
+  assert.equal(vm.runInContext('autoApproveConfirmation.hidden', context), false);
+  assert.deepEqual(calls, [false]);
+  vm.runInContext('cancelAutoApprove.click()', context);
+  assert.equal(vm.runInContext('autoApproveConfirmation.hidden', context), true);
+  assert.deepEqual(calls, [false]);
+  vm.runInContext('autoApproveToggle.checked = true; autoApproveToggle.change()', context);
+  await vm.runInContext('confirmAutoApprove.click()', context);
+  assert.deepEqual(calls, [false, true]);
+  assert.equal(vm.runInContext('autoApproveToggle.checked', context), true);
+  vm.runInContext('activeSessionId = "session-b"', context);
+  await vm.runInContext('saveAutoApprove(false)', context);
+  assert.deepEqual(calls, [false, true]);
+});
+
+test("모델 설정을 닫는 첫 클릭이 입력칸에 그대로 전달된다", () => {
+  const renderer = read("src/chat.js");
+  const css = read("src/chat.css");
+  assert.match(css, /\.popover-backdrop\.is-pass-through\s*\{\s*pointer-events:\s*none;/);
+  const agentPopover = renderer.slice(renderer.indexOf("function openAgentPopover("), renderer.indexOf("async function configureAgent("));
+  assert.match(agentPopover, /root\.classList\.add\("is-agent"\);[\s\S]*?popoverBackdrop\.classList\.add\("is-pass-through"\);/);
+
+  const start = renderer.indexOf('document.addEventListener("pointerdown", (event) => {');
+  const end = renderer.indexOf('\nwindow.addEventListener("keydown"', start);
+  assert.ok(start >= 0 && end > start);
+  let onPointerDown;
+  let closed = 0;
+  let blurred = 0;
+  const composerInput = { blur() { blurred++; } };
+  const popover = {
+    hidden: false,
+    classList: { contains: (name) => name === "is-agent" },
+    contains: (target) => target === popover,
+  };
+  const document = {
+    activeElement: composerInput,
+    addEventListener(type, handler, capture) {
+      assert.equal(type, "pointerdown");
+      assert.equal(capture, true);
+      onPointerDown = handler;
+    },
+  };
+  vm.runInNewContext(renderer.slice(start, end), {
+    document, popover, composerInput, closePopover: () => { closed++; },
+  });
+  onPointerDown({ target: popover });
+  assert.equal(closed, 0);
+  onPointerDown({ target: composerInput });
+  assert.equal(closed, 1);
+  assert.equal(blurred, 1);
 });
 
 // 사이드바 행은 VS Code / Slack처럼 한 줄이다. 연결 폴더와 시각은 줄바꿈 없이

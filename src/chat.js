@@ -2480,13 +2480,14 @@ function answerAwaitingAgent(agentId, option = "") {
   autoresize();
 }
 
-const POPOVER_VARIANTS = ["is-project-settings", "is-new-project", "is-workflow", "plan-preview-popover", "is-menu", "is-usage"];
+const POPOVER_VARIANTS = ["is-project-settings", "is-new-project", "is-workflow", "plan-preview-popover", "is-menu", "is-usage", "is-agent"];
 
 function closePopover() {
   popover.hidden = true;
   popover.textContent = "";
   popover.classList.remove(...POPOVER_VARIANTS);
   popoverBackdrop.hidden = true;
+  popoverBackdrop.classList.remove("is-pass-through");
   usagePopoverOpen = false;
 }
 
@@ -2495,6 +2496,7 @@ function closePopover() {
 function openPopoverAt(rect, build) {
   popover.textContent = "";
   popover.classList.remove(...POPOVER_VARIANTS);
+  popoverBackdrop.classList.remove("is-pass-through");
   build(popover);
   popover.hidden = false;
   popoverBackdrop.hidden = false;
@@ -2567,6 +2569,13 @@ function buildPopoverMenu(target, items) {
 }
 
 popoverBackdrop.addEventListener("click", closePopover);
+// 모델 팝오버는 바깥 클릭이 실제 입력창까지 닿게 한다. 배경막에서 focus()만
+// 호출하면 Windows IME가 실제 클릭으로 포커스를 바꾼 것으로 인식하지 못할 수 있다.
+document.addEventListener("pointerdown", (event) => {
+  if (popover.hidden || !popover.classList.contains("is-agent") || popover.contains(event.target)) return;
+  if (event.target === composerInput && document.activeElement === composerInput) composerInput.blur();
+  closePopover();
+}, true);
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !popover.hidden) closePopover();
   // Ctrl/⌘+N — 지금 프로젝트에 새 채팅. 이름을 고치는 중에는 그 편집이 우선이다.
@@ -2741,6 +2750,8 @@ function openAgentPopover(anchor, agentId) {
   const config = sessionMeta?.agents?.[agentId] || {};
 
   openPopover(anchor, (root) => {
+    root.classList.add("is-agent");
+    popoverBackdrop.classList.add("is-pass-through");
     const head = document.createElement("div");
     head.className = "popover-head";
     const dot = makeAgentAvatar(agent, "popover-avatar");
@@ -2847,16 +2858,49 @@ function openAgentPopover(anchor, agentId) {
     autoApproveToggle.title = autoApproveToggle.disabled
       ? "워크스페이스 쓰기 권한에서만 사용할 수 있습니다"
       : "이 에이전트가 요청하는 도구 권한을 개별 확인 없이 승인합니다";
-    autoApproveToggle.addEventListener("change", async () => {
-      if (autoApproveToggle.checked) {
-        const confirmed = window.confirm(
-          `${agent.name}의 도구 자동 승인을 켤까요?\n명령 실행과 파일 변경이 개별 확인 없이 진행됩니다. 신뢰하는 워크스페이스에서만 사용하세요.`
-        );
-        if (!confirmed) { autoApproveToggle.checked = false; return; }
-      }
-      await configureAgent(agentId, { autoApprove: autoApproveToggle.checked });
-    });
     root.append(makeField("도구 자동 승인", autoApproveToggle));
+    // Windows의 동기 confirm 창에서 돌아오면 DOM focus와 키보드 focus가
+    // 어긋날 수 있다. 같은 패널 안에서 명시적으로 확인받는다.
+    const autoApproveConfirmation = document.createElement("div");
+    autoApproveConfirmation.hidden = true;
+    const warning = document.createElement("p");
+    warning.className = "popover-hint";
+    warning.textContent = `${agent.name}의 명령 실행과 파일 변경이 개별 확인 없이 진행됩니다. 신뢰하는 워크스페이스에서만 자동 승인을 켜세요.`;
+    const confirmationActions = document.createElement("div");
+    confirmationActions.className = "popover-actions";
+    const cancelAutoApprove = document.createElement("button");
+    cancelAutoApprove.type = "button";
+    cancelAutoApprove.textContent = "취소";
+    const confirmAutoApprove = document.createElement("button");
+    confirmAutoApprove.type = "button";
+    confirmAutoApprove.textContent = "자동 승인 켜기";
+    confirmationActions.append(cancelAutoApprove, confirmAutoApprove);
+    autoApproveConfirmation.append(warning, confirmationActions);
+    root.append(autoApproveConfirmation);
+    const configuredSessionId = activeSessionId;
+    async function saveAutoApprove(enabled) {
+      autoApproveConfirmation.hidden = true;
+      if (configuredSessionId !== activeSessionId) return;
+      autoApproveToggle.disabled = true;
+      try {
+        const result = await configureAgent(agentId, { autoApprove: enabled });
+        if (result?.meta) autoApproveToggle.checked = enabled;
+      } finally {
+        autoApproveToggle.disabled = !provider.available || sessionMeta?.permissionMode !== "workspace-write";
+      }
+    }
+    autoApproveToggle.addEventListener("change", () => {
+      const enable = autoApproveToggle.checked;
+      // 저장 성공 전까지 체크는 현재 설정을 나타낸다.
+      autoApproveToggle.checked = !enable;
+      if (enable) autoApproveConfirmation.hidden = false;
+      else return saveAutoApprove(false);
+    });
+    cancelAutoApprove.addEventListener("click", () => {
+      autoApproveConfirmation.hidden = true;
+      autoApproveToggle.focus();
+    });
+    confirmAutoApprove.addEventListener("click", () => saveAutoApprove(true));
 
     if (provider.status === "gui-only" || provider.status === "absent") {
       const hint = document.createElement("p");
@@ -2876,6 +2920,7 @@ async function configureAgent(agentId, patch) {
     sessionMeta = result.meta;
     renderHeader();
   }
+  return result;
 }
 
 const WORKFLOW_STATUS_LABELS = Object.freeze({

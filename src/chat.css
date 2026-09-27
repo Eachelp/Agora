@@ -1980,6 +1980,11 @@ textarea:focus-visible {
   z-index: 40;
 }
 
+/* 모델 설정 팝오버에서는 바깥 클릭을 실제 입력칸에 전달한다. */
+.popover-backdrop.is-pass-through {
+  pointer-events: none;
+}
+
 .popover-backdrop[hidden],
 .popover[hidden] {
   display: none;
