@@ -709,27 +709,19 @@ test("사용자가 골라야 진행되는 지점에는 실제 선택 버튼이 �
   assert.match(preload, /SPECIALIST_RESUME, \{ sessionId, action, expectedRunId \}/);
 });
 
-// professionalModeEnabled는 화면 로컬 값이라 토글을 눌러야만 바뀌었다. 그래서
-// BLOCKED 모달에서 재기획을 시작하거나 앱을 다시 열어 실행이 복원되면, 실행은
-// 돌아가는데 화면은 일반 모드에 머물러 PLAN·실행 버튼이 보이지 않았다.
-test("살아 있는 전문 실행은 조작 버튼을 스스로 드러낸다", () => {
+// 예전에는 실행 기록이 "살아나는" 순간 전문 모드를 켰다. 중단된 기획 기록만
+// 있어도 켜졌고, 켜진 값이 다른 방까지 따라가 일반 질문이 메모로 저장됐다.
+// 모드는 사용자가 방마다 고른 값이고, 실행 상태는 그 값을 바꾸지 않는다.
+test("실행 상태는 일반/전문 모드를 바꾸지 않는다", () => {
   const renderer = read("src/chat.js");
   const setter = renderer.slice(renderer.indexOf("function setSpecialistState"));
   const body = setter.slice(0, setter.indexOf("\nfunction "));
-  assert.ok(body.includes("professionalModeEnabled = true"), "실행이 살아나면 켜져야 합니다");
-  assert.ok(
-    body.includes('specialistNode === "COMPLETED" && specialistStatus === "COMPLETED"'),
-    "끝난 실행까지 켜지 않아야 합니다"
-  );
-  // **살아나는 순간에만** 켠다. 매 이벤트마다 켜면 사용자가 내린 토글을 계속
-  // 덮어써, 실행 중에 일반 대화로 빠져나가 기획자에게 말할 수가 없어진다.
-  assert.ok(
-    body.includes("if (runLive && !professionalRunWasLive) professionalModeEnabled = true;"),
-    "전이 시점에만 켜야 사용자의 토글이 유지됩니다"
-  );
-  assert.ok(body.includes("professionalRunWasLive = runLive;"), "직전 상태를 기억해야 합니다");
-  // 끄지는 않는다 — 숨기는 것은 사용자의 선택으로 남긴다.
-  assert.ok(!body.includes("professionalModeEnabled = false"), "자동으로 끄면 사용자의 선택을 덮습니다");
+  assert.doesNotMatch(body, /professionalModeEnabled\s*=|setProfessionalMode\(/, "상태 갱신이 모드를 바꾸면 안 됩니다");
+  assert.doesNotMatch(renderer, /professionalRunWasLive/, "실행 기록으로 모드를 켜던 경로가 남으면 안 됩니다");
+  // 모드를 바꾸는 곳은 사용자의 토글·'전문 실행 보기'(setProfessionalMode)와
+  // 방 전환 시 그 방에 저장된 값 복원뿐이다.
+  const assignments = renderer.match(/^\s+professionalModeEnabled = /gm) || [];
+  assert.equal(assignments.length, 2);
 });
 
 // "실행 중 → 일반 모드 → 메모"가 계약인데, 토글이 실행 중에 잠기고 입력창도
@@ -948,7 +940,7 @@ test("모드 토글은 라벨대로 전환만 하고 입력창을 함께 갱신�
   const body = handler.slice(0, handler.indexOf("});"));
   // 예전에는 BLOCKED일 때만 몰래 막힘 모달을 열어 라벨과 동작이 어긋났다.
   assert.ok(!body.includes("openSpecialistDialog()"), "토글은 전환만 합니다");
-  assert.ok(body.includes("professionalModeEnabled = !professionalModeEnabled"), "전환은 그대로 유지합니다");
+  assert.ok(body.includes("setProfessionalMode(!professionalModeEnabled)"), "고른 모드를 이 방에 기억해야 합니다");
   assert.ok(body.includes("syncComposerLock()"), "전환 직후 입력창 잠금·문구를 갱신해야 합니다");
   // 실행을 취소하거나 상태를 초기화하지 않는다.
   assert.ok(!/specialistCancel|setSpecialistState/.test(body), "전환이 실행 상태를 건드리면 안 됩니다");
@@ -1123,7 +1115,6 @@ function loadComposerLock(state = {}) {
     sendButton: { disabled: false, textContent: "" },
     attachButton: { disabled: false },
     professionalModeEnabled: true,
-    professionalRunWasLive: false,
     specialistNeedsInput: false,
     specialistStopReason: null,
     specialistNode: null,
@@ -1318,7 +1309,6 @@ test("막힘 안내는 선택지가 실제로 있는 자리를 가리킨다", ()
     specialistNode: "IMPLEMENTING",
     specialistBlockedAvailable: true,
     professionalModeEnabled: false,
-    professionalRunWasLive: true,
     locked: false,
   });
   assert.match(memo.placeholder, /메모/);
@@ -1460,7 +1450,6 @@ test("중단된 전문 실행이 남아 있어도 일반 모드 입력창은 메
   // 입력창: 중단된 실행이 남은 일반 모드 → 보통 대화 입력.
   const idle = loadComposerLock({
     professionalModeEnabled: false,
-    professionalRunWasLive: true,
     specialistNode: "IMPLEMENTING",
     specialistStopReason: "EXECUTION_INTERRUPTED",
     locked: false,
@@ -1470,7 +1459,6 @@ test("중단된 전문 실행이 남아 있어도 일반 모드 입력창은 메
   // 실행 대기(READY, 재개 상태 있음)인 일반 모드 → 기획자 메모.
   const waiting = loadComposerLock({
     professionalModeEnabled: false,
-    professionalRunWasLive: true,
     specialistNode: "READY",
     specialistResumeAvailable: true,
     locked: false,
@@ -1480,7 +1468,6 @@ test("중단된 전문 실행이 남아 있어도 일반 모드 입력창은 메
 
   // 전송 경로도 같은 기준으로 메모 여부를 정한다(백엔드 recordOnly의 입력).
   assert.match(src, /professionalModeEnabled \|\| professionalRunBusy\(\)/);
-  assert.ok(!/professionalModeEnabled \|\| professionalRunWasLive/.test(src), "노드 잔존만으로 메모로 만들면 안 됩니다");
 });
 
 // 저장된 노력 변형 id는 모델 드롭다운에서 접힌 베이스 + 노력으로 표시돼야 한다.

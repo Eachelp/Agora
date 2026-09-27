@@ -77,6 +77,10 @@ const approvalSummary = document.getElementById("approval-summary");
 const approvalDetail = document.getElementById("approval-detail");
 const approvalApprove = document.getElementById("approval-approve");
 const approvalDeny = document.getElementById("approval-deny");
+const confirmBackdrop = document.getElementById("confirm-backdrop");
+const confirmMessage = document.getElementById("confirm-message");
+const confirmOk = document.getElementById("confirm-ok");
+const confirmCancel = document.getElementById("confirm-cancel");
 const doctorBackdrop = document.getElementById("doctor-backdrop");
 const doctorList = document.getElementById("doctor-list");
 const doctorSummary = document.getElementById("doctor-summary");
@@ -155,9 +159,17 @@ let specialistApprovalsBusy = false;
 let specialistBlockInfo = null;
 let specialistBlockFetch = "idle";
 let professionalModeEnabled = false;
-// 직전 상태에서 전문 실행이 살아 있었는지. "살아나는 순간"에만 전문 모드를 켜기
-// 위한 것이며, 매 이벤트마다 켜서 사용자의 토글을 덮어쓰지 않기 위해 둔다.
-let professionalRunWasLive = false;
+// 일반/전문 선택은 방마다 기억하고 앱을 다시 켜도 유지한다. 실행 상태는 이 값을
+// 바꾸지 않는다. 예전에는 실행 기록이 남은 방에 들어가면 저절로 켜지고, 켜진 채
+// 다른 방까지 따라가 일반 질문이 응답 없는 메모로 저장됐다.
+const PROFESSIONAL_MODE_ROOMS_KEY = "agora.chat.professionalModeRooms";
+const professionalModeRooms = readProfessionalModeRooms();
+// 방마다 쓰던 입력 초안. 방을 옮겨도 쓰던 글이 따라가거나 사라지지 않게 한다.
+const composerDrafts = new Map();
+// 방 설정(sessionMeta)을 바꾸는 요청의 순번. 늦게 온 응답이 최신 설정을 덮지 않게 한다.
+let sessionMetaRequest = 0;
+// 창 안 확인창이 열려 있으면 그 결과를 돌려줄 함수.
+let confirmResolve = null;
 // 기획안 미리보기 폭. 사용자가 조절한 값을 기억한다(popover는 열 때마다 재생성된다).
 const PLAN_PREVIEW_WIDTH_KEY = "agora.chat.planPreviewWidth";
 let planPreviewResizeObserver = null;
@@ -550,21 +562,75 @@ function setSpecialistState(state = {}) {
     specialistBlockFetch = "idle";
     renderProfessionalBlocked();
   }
-  // 전문 실행이 **새로 살아날 때** 그 조작 버튼을 한 번 드러낸다.
-  //
-  // professionalModeEnabled는 화면 로컬 값이라 사용자가 토글을 눌러야만 바뀌었다.
-  // 그래서 앱을 다시 열어 실행이 복원되면 실행은 돌아가는데 화면은 일반 모드에
-  // 머물러 PLAN·실행 버튼이 보이지 않았다.
-  //
-  // 다만 매 상태 이벤트마다 켜면 사용자가 내린 토글을 계속 덮어써, 실행 중에
-  // 일반 대화로 빠져나가 말할 수가 없다. 기획자는 대화를 읽는 유일한 역할이므로
-  // 그 길이 막히면 진행 방향을 다시 일러 줄 수단이 사라진다.
-  // 그래서 "죽어 있다 → 살아났다"로 바뀌는 순간에만 켜고, 그 뒤 사용자가 끈 것은
-  // 존중한다. 끄는 일은 어느 경우에도 코드가 하지 않는다.
-  const runLive = Boolean(specialistNode)
-    && !(specialistNode === "COMPLETED" && specialistStatus === "COMPLETED");
-  if (runLive && !professionalRunWasLive) professionalModeEnabled = true;
-  professionalRunWasLive = runLive;
+  // 일반/전문 모드는 여기서 바꾸지 않는다. 실행이 돌거나 사용자를 기다리는 동안
+  // 일반 모드에서는 입력창 위 줄이 그 사실과 '전문 실행 보기' 버튼을 보여 준다.
+}
+
+function readProfessionalModeRooms() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PROFESSIONAL_MODE_ROOMS_KEY) || "[]");
+    return new Set(Array.isArray(saved) ? saved.filter((id) => typeof id === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function persistProfessionalModeRooms() {
+  try {
+    localStorage.setItem(PROFESSIONAL_MODE_ROOMS_KEY, JSON.stringify([...professionalModeRooms]));
+  } catch {}
+}
+
+// 사용자가 고른 모드를 지금 방에 기록한다. 모드를 바꾸는 길은 이것뿐이다.
+function setProfessionalMode(enabled) {
+  professionalModeEnabled = Boolean(enabled);
+  if (!activeSessionId) return;
+  if (professionalModeEnabled) professionalModeRooms.add(activeSessionId);
+  else professionalModeRooms.delete(activeSessionId);
+  persistProfessionalModeRooms();
+}
+
+// 방을 옮길 때 그 방에 묶인 화면 상태를 함께 바꾼다. 쓰던 글은 방별로 보관하고,
+// 모드는 그 방에서 마지막으로 고른 값으로 되돌린다. 이전 방의 팝오버·확인창·
+// 승인 목록은 닫는다. 남겨 두면 그 조작이 새 방에 적용된다.
+function switchActiveSession(nextId) {
+  if (activeSessionId === nextId) return;
+  if (activeSessionId) {
+    if (composerInput.value) composerDrafts.set(activeSessionId, composerInput.value);
+    else composerDrafts.delete(activeSessionId);
+  }
+  resetSpecialistApprovals();
+  renderSpecialistApprovals();
+  closeSpecialistDialog();
+  closePopover();
+  closeMentionPopup();
+  settleConfirm(false);
+  // 이전 방에서 시작 요청을 보낸 표시다. 새 방의 버튼을 막지 않게 내린다.
+  specialistRunning = false;
+  activeSessionId = nextId;
+  professionalModeEnabled = Boolean(nextId) && professionalModeRooms.has(nextId);
+  composerInput.value = (nextId && composerDrafts.get(nextId)) || "";
+  autoresize();
+}
+
+// 삭제한 방의 초안과 모드 기록을 지운다.
+function forgetRoom(sessionId) {
+  composerDrafts.delete(sessionId);
+  if (professionalModeRooms.delete(sessionId)) persistProfessionalModeRooms();
+}
+
+// 전송이 실패하면 보냈던 글을 그 방의 입력칸으로 되돌린다. 그사이 다른 방으로
+// 옮겼으면 그 방의 초안에 넣어 두고, 같은 방에서 새로 쓴 글이 있으면 그 앞에
+// 붙여 둘 다 남긴다.
+function restoreFailedDraft(sessionId, draftText) {
+  if (!draftText) return;
+  const join = (current) => (current.trim() ? `${draftText}\n${current}` : draftText);
+  if (sessionId === activeSessionId) {
+    composerInput.value = join(composerInput.value);
+    autoresize();
+    return;
+  }
+  composerDrafts.set(sessionId, join(composerDrafts.get(sessionId) || ""));
 }
 
 // 전문 실행이 실제로 돌거나 사용자 입력을 기다리는 중인가 — 백엔드의
@@ -610,29 +676,53 @@ const SPECIALIST_CHOICES = {
 // "아래에서 선택해 주세요"라는 안내와 실제 위치가 정반대였다. 선택지 자체는
 // 모달이 이미 잘 설명하고 있으므로 여는 길만 안내한 자리에 만든다.
 function specialistChoicesNow() {
+  const choices = [];
   // 막힘 처리는 상태 줄 아래(#professional-blocked)에 펼쳐 둔다. 입력창 옆에
   // "다음 처리 선택" 칩을 또 두면 같은 일을 하는 자리가 둘이 되고, 실행이 멈춘
   // 그 순간 사용자가 봐야 할 곳이 갈린다. 일반 모드로 내려온 동안에는 위 영역이
   // 숨으므로 여기서 대신 보여 준다(고를 방법이 사라지면 안 된다).
   if (specialistBlockedAvailable) {
-    if (professionalModeEnabled) return null;
-    return [{
+    if (!professionalModeEnabled) choices.push({
       label: "다음 처리 선택",
       title: "구현이 막혔습니다. 변경 유지·복원·재기획·지시서 수정 중에서 고릅니다",
       run: () => { openSpecialistDialog(); return Promise.resolve(null); },
-    }];
+    });
+  } else if (specialistNeedsInput && SPECIALIST_CHOICES[specialistStopReason]) {
+    choices.push(...SPECIALIST_CHOICES[specialistStopReason]);
   }
-  return specialistNeedsInput ? SPECIALIST_CHOICES[specialistStopReason] : null;
+  // 일반 모드에서는 전문 실행 영역이 숨는다. 실행이 돌거나 사용자를 기다리는
+  // 동안에는 돌아갈 길을 여기 남긴다. 모드는 사용자가 누를 때만 바뀐다.
+  if (!professionalModeEnabled && professionalRunBusy()) {
+    choices.push({
+      label: "전문 실행 보기",
+      title: "전문 모드로 전환해 PLAN·실행 버튼과 진행 상태를 봅니다. 실행은 그대로 진행됩니다",
+      run: () => {
+        setProfessionalMode(true);
+        renderHeader();
+        syncComposerLock();
+        return Promise.resolve(null);
+      },
+    });
+  }
+  return choices.length > 0 ? choices : null;
+}
+
+// 입력창 위 줄의 머리말. 일반 모드에서 전문 실행이 진행·대기 중이면 그 상태를 말한다.
+function specialistChoiceLabel() {
+  if (professionalModeEnabled || !professionalRunBusy()) return "다음 처리:";
+  const headline = specialistStatusView().headline;
+  return headline ? `전문 실행 · ${headline}` : "전문 실행이 진행 중입니다.";
 }
 
 function renderSpecialistChoice() {
   const choices = specialistChoicesNow();
   specialistChoiceBar.replaceChildren();
   specialistChoiceBar.hidden = !choices;
+  specialistChoiceBar.classList.toggle("is-run-status", !professionalModeEnabled && professionalRunBusy());
   if (!choices) return;
   const label = document.createElement("span");
   label.className = "response-mode-label";
-  label.textContent = "다음 처리:";
+  label.textContent = specialistChoiceLabel();
   specialistChoiceBar.append(label);
   for (const choice of choices) {
     const button = document.createElement("button");
@@ -641,9 +731,13 @@ function renderSpecialistChoice() {
     button.textContent = choice.label;
     button.title = choice.title;
     button.addEventListener("click", async () => {
-      if (choice.confirm && !window.confirm(choice.confirm)) return;
+      const sessionId = activeSessionId;
+      if (choice.confirm && !(await confirmInApp(choice.confirm))) return;
+      if (sessionId !== activeSessionId) return;
       specialistChoiceBar.hidden = true;
       const result = await call(choice.run());
+      // 응답을 기다리는 사이 방을 옮겼으면 새 방 화면은 이미 그려져 있다.
+      if (sessionId !== activeSessionId) return;
       if (!result) {
         renderSpecialistChoice();
         return;
@@ -727,7 +821,10 @@ async function resolveApproval(criterionId, approved, context = specialistApprov
   if (!item) return;
   if (!approved) {
     const label = item?.statement ? `\n\n${item.statement}` : "";
-    if (!window.confirm(`이 항목을 거부할까요? 거부하면 이 실행은 완료로 처리되지 않습니다.${label}`)) return;
+    if (!(await confirmInApp(`이 항목을 거부할까요? 거부하면 이 실행은 완료로 처리되지 않습니다.${label}`))) return;
+    // 확인을 기다리는 사이 상태가 바뀌었으면 거부하지 않는다.
+    if (!isCurrentApprovalContext(context) || !awaitingHumanApproval()
+      || specialistApprovalsBusy || specialistApprovalsLoading) return;
   }
   specialistApprovalRequest += 1;
   specialistApprovalsBusy = true;
@@ -813,7 +910,8 @@ function renderSpecialistApprovals() {
       cancel.disabled = specialistApprovalsBusy;
       cancel.addEventListener("click", async () => {
         if (!isCurrentApprovalContext(context)) return;
-        if (!window.confirm("이 전문 실행을 취소할까요? 구현자가 만든 파일 변경은 그대로 남습니다.")) return;
+        if (!(await confirmInApp("이 전문 실행을 취소할까요? 구현자가 만든 파일 변경은 그대로 남습니다."))) return;
+        if (!isCurrentApprovalContext(context)) return;
         const sessionId = context.sessionId;
         const result = await call(window.chatApi.specialistCancel(sessionId));
         if (sessionId !== activeSessionId) return;
@@ -1549,7 +1647,7 @@ function openProjectSettings(anchor, project) {
       remove.className = "button button-danger";
       remove.textContent = "프로젝트 삭제";
       remove.addEventListener("click", async () => {
-        const yes = window.confirm(
+        const yes = await confirmInApp(
           `"${project.name}" 프로젝트를 삭제할까요?\n포함된 대화는 분류되지 않음으로 이동합니다.`
         );
         if (!yes) return;
@@ -1785,12 +1883,15 @@ function startHeaderRename() {
 }
 
 async function deleteSession(entry) {
-  const yes = window.confirm(
+  const yes = await confirmInApp(
     `"${entry.title}" 세션을 휴지통으로 옮길까요?\n첨부 사본도 함께 이동하며 30일 후 정리됩니다.`
   );
   if (!yes) return;
   const result = await call(window.chatApi.sessionsDelete(entry.id));
-  if (result) applyFullState(result);
+  if (!result) return;
+  applyFullState(result);
+  // 방을 옮기며 보관한 초안까지 지우도록 상태를 적용한 뒤에 정리한다.
+  forgetRoom(entry.id);
 }
 
 function openSessionMenu(rect, entry) {
@@ -2569,6 +2670,43 @@ function buildPopoverMenu(target, items) {
 }
 
 popoverBackdrop.addEventListener("click", closePopover);
+
+// 운영체제 확인창(window.confirm) 대신 쓰는 창 안 확인. Windows에서 네이티브
+// 확인창을 닫고 돌아오면 입력칸에 파란 테두리는 보이는데 키 입력이 들어가지
+// 않는 상태가 남을 수 있다(도구 자동 승인 재체크에서 겪은 증상). 사용자가
+// 창 밖을 한 번 눌렀다 돌아와야 풀렸으므로, 채팅 창의 확인은 모두 이 창으로 받는다.
+function confirmInApp(message) {
+  settleConfirm(false);
+  const returnFocus = document.activeElement;
+  confirmMessage.textContent = message;
+  confirmBackdrop.hidden = false;
+  confirmCancel.focus();
+  return new Promise((resolve) => {
+    confirmResolve = (value) => {
+      confirmResolve = null;
+      confirmBackdrop.hidden = true;
+      if (returnFocus?.isConnected && !returnFocus.disabled && typeof returnFocus.focus === "function") {
+        returnFocus.focus();
+      }
+      resolve(value);
+    };
+  });
+}
+
+function settleConfirm(value) {
+  confirmResolve?.(value);
+}
+
+confirmOk.addEventListener("click", () => settleConfirm(true));
+confirmCancel.addEventListener("click", () => settleConfirm(false));
+confirmBackdrop.addEventListener("click", (event) => {
+  if (event.target === confirmBackdrop) settleConfirm(false);
+});
+// Escape는 확인만 닫는다. 창 전체 단축키(팝오버 닫기·새 채팅)까지 전달하지 않는다.
+confirmBackdrop.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") settleConfirm(false);
+  event.stopPropagation();
+});
 // 모델 팝오버는 바깥 클릭이 실제 입력창까지 닿게 한다. 배경막에서 focus()만
 // 호출하면 Windows IME가 실제 클릭으로 포커스를 바꾼 것으로 인식하지 못할 수 있다.
 document.addEventListener("pointerdown", (event) => {
@@ -2915,9 +3053,19 @@ function openAgentPopover(anchor, agentId) {
 }
 
 async function configureAgent(agentId, patch) {
-  const result = await call(window.chatApi.agentConfigure(activeSessionId, agentId, patch));
-  if (result?.meta) {
-    sessionMeta = result.meta;
+  return requestSessionMeta((sessionId) => window.chatApi.agentConfigure(sessionId, agentId, patch));
+}
+
+// 방 설정(참가자 모델·권한)을 바꾸고 응답을 화면에 적용한다. 기다리는 사이 방을
+// 옮겼거나 더 나중 요청을 보냈으면 이 응답은 화면에 쓰지 않는다. 늦게 온 응답이
+// 다른 방이나 더 최신 설정을 덮지 않게 하기 위해서다. 저장 성공 여부는 호출한
+// 쪽이 알 수 있게 결과를 그대로 돌려준다.
+async function requestSessionMeta(send) {
+  const sessionId = activeSessionId;
+  const request = ++sessionMetaRequest;
+  const result = await call(send(sessionId));
+  if (sessionId === activeSessionId && request === sessionMetaRequest) {
+    if (result?.meta) sessionMeta = result.meta;
     renderHeader();
   }
   return result;
@@ -3310,7 +3458,7 @@ function openWorkflowPopover(anchor) {
       remove.className = "button button-danger button-small";
       remove.textContent = "삭제";
       remove.addEventListener("click", async () => {
-        if (!window.confirm("이 결정을 삭제할까요?")) return;
+        if (!(await confirmInApp("이 결정을 삭제할까요?"))) return;
         const result = await call(window.chatApi.decisionsDelete(project.id, decision.id));
         if (!result) return;
         applyFullState(result);
@@ -3646,7 +3794,7 @@ function openWorkflowPopover(anchor) {
       remove.className = "button button-danger button-small";
       remove.textContent = "삭제";
       remove.addEventListener("click", async () => {
-        if (!window.confirm("이 작업을 삭제할까요?")) return;
+        if (!(await confirmInApp("이 작업을 삭제할까요?"))) return;
         const result = await call(window.chatApi.tasksDelete(project.id, task.id));
         if (!result) return;
         applyFullState(result);
@@ -3720,7 +3868,8 @@ specialistButton.addEventListener("click", () => {
   // 이 버튼은 일반/전문 화면 전환만 한다. 예전에는 막힘(BLOCKED) 상태에서만
   // 몰래 막힘 처리 모달을 열어, 라벨("전환")과 실제 동작이 어긋났다. 막힘 처리는
   // 전문 모드에서는 상태 줄 아래 패널이, 일반 모드에서는 입력창 옆 칩이 맡는다.
-  professionalModeEnabled = !professionalModeEnabled;
+  // 고른 모드는 이 방에 기억해 다른 방으로 옮겨 가지 않고, 다시 켜도 유지된다.
+  setProfessionalMode(!professionalModeEnabled);
   // 모드가 바뀌면 입력창의 잠금·안내 문구·전송 버튼 라벨도 같은 순간에 바뀌어야
   // 한다. renderHeader만 부르면 화면은 전문 모드인데 입력창은 이전 모드의
   // 문구를 그대로 들고 있었다. 작성 중인 입력은 건드리지 않는다.
@@ -3816,26 +3965,31 @@ function currentProfessionalPolicy() {
 
 async function runProfessionalAction(action) {
   if (!activeSessionId || specialistRunning || specialistActive) return;
+  const sessionId = activeSessionId;
   // 대기 중인 실행이 있는데 기획을 새로 시작하면 그 실행과 작업 전 백업이 사라진다.
   // 되돌릴 수 없으므로 한 번 확인받는다.
   if ((action === "plan" || action === "full") && (specialistBlockedAvailable || specialistResumeAvailable)) {
     const keptChanges = "구현자가 만든 파일 변경은 그대로 남습니다.";
-    if (!window.confirm(
+    if (!(await confirmInApp(
       `진행 중이던 전문 실행을 버리고 기획부터 다시 시작할까요?\n\n작업 전 백업(checkpoint)과 대기 중인 답변 요청이 사라집니다. ${keptChanges}`
-    )) {
+    ))) {
       return;
     }
+    if (sessionId !== activeSessionId || specialistRunning || specialistActive) return;
   }
   specialistRunning = true;
   specialistActive = true;
   renderHeader();
   syncComposerLock();
   const result = await call(
-    window.chatApi.specialistStart(activeSessionId, {
+    window.chatApi.specialistStart(sessionId, {
       action,
       ...currentProfessionalPolicy(),
     })
   );
+  // 기다리는 사이 다른 방으로 옮겼으면 이 응답은 그 방의 것이 아니다. 새 방의
+  // 모드·입력 잠금·실행 표시를 바꾸지 않는다(돌아오면 방 상태를 새로 받는다).
+  if (sessionId !== activeSessionId) return;
   if (result) {
     const labels = {
       plan: "PLAN을 시작했습니다.",
@@ -3933,12 +4087,13 @@ function renderBlockedActions(root, details = null) {
 }
 
 async function replanBlocked(workspaceAction) {
+  const sessionId = activeSessionId;
   if (workspaceAction === "restore") {
-    if (!window.confirm("작업 전 상태로 복원 후 재기획하시겠습니까? 구현자가 만든 변경은 사라집니다. (실행 전부터 있던 변경은 보존됩니다)")) {
+    if (!(await confirmInApp("작업 전 상태로 복원 후 재기획하시겠습니까? 구현자가 만든 변경은 사라집니다. (실행 전부터 있던 변경은 보존됩니다)"))) {
       return;
     }
+    if (sessionId !== activeSessionId) return;
   }
-  const sessionId = activeSessionId;
   const result = await call(window.chatApi.specialistReplanBlocked(sessionId, workspaceAction));
   if (sessionId !== activeSessionId) return;
   if (!result) {
@@ -3960,13 +4115,14 @@ async function replanBlocked(workspaceAction) {
 
 // 선택한 후속 처리를 백엔드에 전달합니다.
 async function resolveBlocked(action) {
+  const sessionId = activeSessionId;
   if (action === "discard" || action === "restore") {
     const label = action === "discard" ? "작업을 폐기" : "작업 전 상태로 복원";
-    if (!window.confirm(`${label}하시겠습니까? 구현자가 만든 변경은 사라집니다. (실행 전부터 있던 변경은 보존됩니다)`)) {
+    if (!(await confirmInApp(`${label}하시겠습니까? 구현자가 만든 변경은 사라집니다. (실행 전부터 있던 변경은 보존됩니다)`))) {
       return;
     }
+    if (sessionId !== activeSessionId) return;
   }
-  const sessionId = activeSessionId;
   const result = await call(window.chatApi.specialistResolveBlocked(sessionId, action));
   if (sessionId !== activeSessionId) return;
   if (!result) {
@@ -4242,21 +4398,17 @@ workspaceButton.addEventListener("click", () => {
   else flashNotice("워크스페이스는 프로젝트 설정(⋯)에서 변경할 수 있습니다.");
 });
 
-permissionSelect.addEventListener("change", async () => {
-  const result = await call(window.chatApi.permissionSet(activeSessionId, permissionSelect.value));
-  if (result?.meta) {
-    sessionMeta = result.meta;
-  }
-  renderHeader();
+permissionSelect.addEventListener("change", () => {
+  const mode = permissionSelect.value;
+  void requestSessionMeta((sessionId) => window.chatApi.permissionSet(sessionId, mode));
 });
 
 permissionWarning.addEventListener("click", async () => {
-  const result = await call(window.chatApi.permissionSet(activeSessionId, "workspace-write"));
-  if (result?.meta) {
-    sessionMeta = result.meta;
+  const sessionId = activeSessionId;
+  const result = await requestSessionMeta((id) => window.chatApi.permissionSet(id, "workspace-write"));
+  if (result?.meta && sessionId === activeSessionId) {
     flashNotice("이 채팅을 워크스페이스 쓰기 권한으로 바꿨습니다.", false);
   }
-  renderHeader();
 });
 
 // --- 메시지 렌더링 (모든 텍스트는 textContent로만 삽입) ---
@@ -5344,42 +5496,29 @@ function autoresize() {
 }
 
 async function sendCurrentMessage() {
+  // 응답은 보낸 방에만 적용한다. 기다리는 사이 다른 방으로 옮기면 그 방의 입력칸·
+  // 첨부·모드를 건드리지 않는다.
+  const sessionId = activeSessionId;
   const text = composerInput.value.trim();
-  // 기획 답변·기획 수정은 전문 모드의 조작이다. 사용자가 일반 모드를 골랐으면
-  // 그 발화는 실행을 건드리지 않고 "다음 기획용 메모"로만 남는다(아래 send 경로).
-  if (specialistNeedsInput && professionalModeEnabled) {
+  // 기획 답변(질문 대기)과 기획 수정(READY 상태의 텍스트)은 전문 모드의 조작이다.
+  // 사용자가 일반 모드를 골랐으면 그 발화는 실행을 건드리지 않고 "다음 기획용
+  // 메모"로만 남는다(아래 send 경로).
+  const planAnswer = professionalModeEnabled
+    && (specialistNeedsInput || (specialistNode === "READY" && !specialistActive && text));
+  if (planAnswer) {
     if (!text) return;
     const draftText = composerInput.value;
     composerInput.value = "";
     closeMentionPopup();
     autoresize();
-    const result = await call(window.chatApi.specialistPlanAnswer(activeSessionId, text));
+    const result = await call(window.chatApi.specialistPlanAnswer(sessionId, text));
     if (!result) {
-      composerInput.value = draftText;
-      autoresize();
-    } else {
+      restoreFailedDraft(sessionId, draftText);
+    } else if (sessionId === activeSessionId) {
       if (result.meta) sessionMeta = result.meta;
       if (result.specialist) setSpecialistState(result.specialist);
     }
-    syncComposerLock();
-    renderHeader();
-    composerInput.focus();
-    return;
-  }
-  // READY 상태에서 텍스트 입력은 기획 수정으로 라우팅한다(전문 모드일 때만).
-  if (specialistNode === "READY" && !specialistActive && text && professionalModeEnabled) {
-    const draftText = composerInput.value;
-    composerInput.value = "";
-    closeMentionPopup();
-    autoresize();
-    const result = await call(window.chatApi.specialistPlanAnswer(activeSessionId, text));
-    if (!result) {
-      composerInput.value = draftText;
-      autoresize();
-    } else {
-      if (result.meta) sessionMeta = result.meta;
-      if (result.specialist) setSpecialistState(result.specialist);
-    }
+    if (sessionId !== activeSessionId) return;
     syncComposerLock();
     renderHeader();
     composerInput.focus();
@@ -5393,41 +5532,41 @@ async function sendCurrentMessage() {
   const attachmentIds = pendingAttachments.map((attachment) => attachment.id);
   // 전송 실패 시 작성 중이던 내용을 복원하기 위해 보관해 둔다.
   const draftText = composerInput.value;
-  const draftAttachments = pendingAttachments;
+  // 보낸 순간의 모드로 메모 여부와 안내를 정한다.
+  const professionalDraft = professionalModeEnabled || professionalRunBusy();
+  const professionalNotice = professionalModeEnabled;
   composerInput.value = "";
   closeMentionPopup();
   autoresize();
   const independent = isIndependentResponseMode;
   const result = await call(
     window.chatApi.send(
-      activeSessionId,
+      sessionId,
       text,
       attachmentIds,
       independent,
       // 전문 실행이 실제로 돌거나 입력을 기다리는 동안에는 일반 모드에서도
       // 메모로만 남긴다. 그러지 않으면 참가자 전원이 응답해 실행 맥락에 일반
       // 대화가 섞인다. 중단된 실행의 노드가 남은 것만으로는 메모로 만들지 않는다.
-      professionalModeEnabled || professionalRunBusy(),
+      professionalDraft,
       // `@팀 실행`이 버튼과 같은 자동 보완 정책을 쓰도록 토글 값을 함께 보낸다.
       currentProfessionalPolicy()
     )
   );
-  if (result) {
-    pendingAttachments = [];
+  if (!result) {
+    // 첨부는 전송 전까지 목록에서 빼지 않았으므로 글만 되돌린다.
+    restoreFailedDraft(sessionId, draftText);
+  } else if (sessionId === activeSessionId) {
+    // 보낸 첨부만 뺀다. 기다리는 사이 새로 붙인 첨부는 남긴다.
+    pendingAttachments = pendingAttachments.filter((attachment) => !attachmentIds.includes(attachment.id));
     renderPendingAttachments();
     // 역할 멘션이 상담(CONSULT)으로 라우팅된 전송은 메모가 아니다 — 곧 역할
     // 담당자의 답이 오므로 "기록했습니다" 안내를 띄우지 않는다.
-    if (professionalModeEnabled && !result.consult) {
+    if (professionalNotice && !result.consult) {
       flashNotice("작업 요청을 기록했습니다. PLAN 또는 전체 실행을 선택하세요.", false);
     }
-  } else {
-    // 실패 시 작성 중이던 내용을 그대로 복원한다.
-    composerInput.value = draftText;
-    pendingAttachments = draftAttachments;
-    renderPendingAttachments();
-    autoresize();
   }
-  composerInput.focus();
+  if (sessionId === activeSessionId) composerInput.focus();
 }
 
 composerInput.addEventListener("input", () => {
@@ -5580,14 +5719,7 @@ function applyFullState(full) {
   applyProjectAutoRevisions(projectsChanged && activeProjectId === autoRevisionsProjectId);
   if (full.sessions) sessions = full.sessions;
   if (full.sessionsByProject) sessionsByProject = full.sessionsByProject;
-  if (Object.hasOwn(full, "activeSessionId")) {
-    if (activeSessionId !== full.activeSessionId) {
-      resetSpecialistApprovals();
-      renderSpecialistApprovals();
-      closeSpecialistDialog();
-    }
-    activeSessionId = full.activeSessionId;
-  }
+  if (Object.hasOwn(full, "activeSessionId")) switchActiveSession(full.activeSessionId);
 
   if (full.session) {
     sessionMeta = full.session.meta;
@@ -5682,14 +5814,7 @@ window.chatApi.onSessionsChanged((payload) => {
   // 초기 chat:state(CLI 탐지 포함)가 느릴 때 이 이벤트가 먼저 도착합니다.
   // 트리 데이터를 함께 받지 않으면 그 사이 사이드바가 "채팅 없음"으로 그려집니다.
   if (payload.sessionsByProject) sessionsByProject = payload.sessionsByProject;
-  if (Object.hasOwn(payload, "activeSessionId")) {
-    if (activeSessionId !== payload.activeSessionId) {
-      resetSpecialistApprovals();
-      renderSpecialistApprovals();
-      closeSpecialistDialog();
-    }
-    activeSessionId = payload.activeSessionId;
-  }
+  if (Object.hasOwn(payload, "activeSessionId")) switchActiveSession(payload.activeSessionId);
   renderProjects();
   const entry = activeSessionEntry();
   if (entry && sessionMeta && entry.title !== sessionMeta.title) {

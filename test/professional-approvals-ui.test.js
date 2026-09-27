@@ -61,14 +61,15 @@ function loadUI() {
     specialistPendingApprovals: [], specialistApprovalContext: null,
     specialistApprovalRequest: 0, specialistApprovalsLoading: false,
     specialistApprovalsError: "", specialistApprovalsBusy: false,
-    professionalModeEnabled: false, professionalRunWasLive: false,
+    professionalModeEnabled: false,
     // 막힘 선택지 패널(상태 줄 아래)은 이 테스트의 관심사가 아니다 — DOM 없이 돌린다.
     specialistBlockInfo: null, specialistBlockFetch: "idle",
     refreshBlockInfo: () => {}, renderProfessionalBlocked: () => {},
     specialistApprovalsBar: new Element("div"),
     document: { createElement: (tag) => new Element(tag) },
+    confirmInApp: async () => true,
     window: {
-      confirm: () => true,
+      confirm: () => { throw new Error("운영체제 확인창을 열면 안 됩니다"); },
       chatApi: {
         specialistPendingApprovals: (sessionId) => {
           const request = deferred();
@@ -213,19 +214,15 @@ test("마지막 항목을 거부하면 승인 패널 대신 기존 복구 선택
   reads[0].resolve({ runId: "run-a", pending: [item("V1")] });
   await settle();
   const rejected = buttons()[1].listeners.click();
+  // 거부는 창 안 확인을 거친 뒤에 요청을 보낸다.
+  await settle();
   resolutions[0].resolve({ pending: [], resumable: false, specialist: waiting({
     blocked: true, status: "BLOCKED", stopReason: "ASSURANCE_BLOCKED", available: false, resumePhase: null,
   }) });
   await rejected;
   assert.equal(resumes.length, 0);
   assert.equal(ui.specialistApprovalsBar.hidden, true);
-  // 복구 선택은 전문 모드에서는 상태 줄 아래 패널(#professional-blocked)이, 일반
-  // 모드에서는 입력창 옆 칩이 맡는다. 실행이 살아나면 화면이 전문 모드로 켜지므로
-  // 여기서는 패널 쪽이다 — 칩은 일반 모드로 내려왔을 때만 나타난다.
-  assert.equal(ui.specialistBlockedAvailable, true);
-  assert.equal(ui.specialistChoicesNow(), null, "전문 모드에서는 칩 대신 상태 줄 아래 패널이 맡는다");
-  ui.professionalModeEnabled = false;
-  assert.equal(ui.specialistChoicesNow()[0].label, "다음 처리 선택");
+  assertBlockedChoices(ui);
 });
 
 test("실행이 바뀐 조회 응답과 조회 실패는 승인 대신 다시 불러오기를 제공한다", async () => {
@@ -259,11 +256,27 @@ test("재기획 응답이 다시 막힌 상태면 화면이 복구 선택을 지
   } });
   await ui.replanBlocked("keep");
   assert.equal(ui.specialistBlockedAvailable, true);
-  // 복구 선택은 전문 모드에서는 상태 줄 아래 패널(#professional-blocked)이, 일반
-  // 모드에서는 입력창 옆 칩이 맡는다. 실행이 살아나면 화면이 전문 모드로 켜지므로
-  // 여기서는 패널 쪽이다 — 칩은 일반 모드로 내려왔을 때만 나타난다.
+  assertBlockedChoices(ui);
+});
+
+// 막힌 상태가 들어와도 사용자가 고른 일반 모드는 그대로다. 복구 선택은 전문
+// 모드에서는 상태 줄 아래 패널(#professional-blocked)이, 일반 모드에서는 입력창
+// 위 칩이 맡고, 일반 모드에는 전문 화면으로 돌아갈 버튼이 함께 있다.
+function assertBlockedChoices(ui) {
   assert.equal(ui.specialistBlockedAvailable, true);
+  assert.equal(ui.professionalModeEnabled, false, "막힘 상태가 모드를 켜면 안 됩니다");
+  const plain = Array.from(ui.specialistChoicesNow(), (choice) => choice.label);
+  assert.deepEqual(plain, ["다음 처리 선택", "전문 실행 보기"]);
+  ui.professionalModeEnabled = true;
   assert.equal(ui.specialistChoicesNow(), null, "전문 모드에서는 칩 대신 상태 줄 아래 패널이 맡는다");
-  ui.professionalModeEnabled = false;
-  assert.equal(ui.specialistChoicesNow()[0].label, "다음 처리 선택");
+}
+
+test("일반 모드에서 쉬고 있는 실행 기록은 입력창 위 줄을 띄우지 않는다", () => {
+  const { ui } = loadUI();
+  ui.setSpecialistState({ node: "PLANNING", status: "INTERRUPTED", stopReason: "USER_INTERRUPTED" });
+  assert.equal(ui.professionalModeEnabled, false);
+  assert.equal(ui.specialistChoicesNow(), null);
+  ui.setSpecialistState({ node: "IMPLEMENTING", status: "RUNNING", active: true });
+  assert.equal(ui.professionalModeEnabled, false, "실행이 돌아도 모드는 사용자가 바꾼다");
+  assert.deepEqual(Array.from(ui.specialistChoicesNow(), (choice) => choice.label), ["전문 실행 보기"]);
 });

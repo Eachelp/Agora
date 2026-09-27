@@ -1878,6 +1878,28 @@ textarea:focus-visible {
   color: var(--muted);
 }
 
+/* 일반 모드의 전문 실행 안내는 문장이 길다. 좁은 창에서는 버튼을 다음 줄로 넘긴다. */
+#specialist-choice-bar {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
+#specialist-choice-bar .mode-chip {
+  flex: none;
+}
+
+/* 일반 모드에서 전문 실행이 돌고 있다는 안내는 @all 응답 방식 줄보다 눈에 띄어야 한다. */
+#specialist-choice-bar.is-run-status .response-mode-label {
+  color: var(--ink-soft);
+  font-weight: 600;
+}
+
+#specialist-choice-bar.is-run-status .mode-chip:last-child {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .mode-chip {
   border: 1px solid var(--line);
   background: var(--surface);
@@ -2165,6 +2187,10 @@ textarea:focus-visible {
 .approval-dialog pre { max-height: 180px; overflow: auto; white-space: pre-wrap; font-size: 11px; background: var(--bg); padding: 10px; border-radius: 8px; }
 .approval-warning { color: #92400e; }
 .approval-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+/* 막힘 처리 창(60) 위에서도 열리므로 한 층 위에 둔다. 메시지의 줄바꿈을 살린다. */
+.confirm-backdrop { z-index: 70; }
+.confirm-dialog { width: min(440px, 100%); }
+.confirm-dialog p { margin: 0; font-size: 13px; line-height: 1.55; white-space: pre-line; overflow-wrap: anywhere; }
 
 .specialist-backdrop[hidden] { display: none; }
 .specialist-backdrop {

@@ -241,6 +241,17 @@
         </div>
       </section>
     </div>
+    <!-- window.confirm 대신 쓰는 창 안 확인. 네이티브 확인창을 닫은 뒤 입력칸에
+         키 입력이 들어가지 않던 문제 때문에 채팅 창의 확인은 모두 여기서 받는다. -->
+    <div class="approval-backdrop confirm-backdrop" id="confirm-backdrop" hidden>
+      <section class="approval-dialog confirm-dialog" role="alertdialog" aria-modal="true" aria-describedby="confirm-message">
+        <p id="confirm-message"></p>
+        <div class="approval-actions">
+          <button class="button" id="confirm-cancel" type="button">취소</button>
+          <button class="button button-primary" id="confirm-ok" type="button">확인</button>
+        </div>
+      </section>
+    </div>
 
     <!-- KaTeX는 265KB인데 첫 화면에는 필요 없다. defer로 빼 두면 창이 그만큼
          빨리 그려지고, 수식은 renderMathIfAvailable이 준비됐을 때만 그린다. -->
