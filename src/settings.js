@@ -37,6 +37,26 @@ function createElement(tagName, className, text) {
   return element;
 }
 
+// 계정·사용량 카드의 공급자 표시. 채팅 창과 같은 공식 로고를 쓰고, 로고가 없는
+// 공급자만 이름 첫 글자로 대신한다(예전에는 셋 다 "C · C · A" 글자 상자였다).
+const PROVIDER_LOGOS = Object.freeze({
+  claude: "./chat-assets/agent-claude.svg",
+  codex: "./chat-assets/agent-codex.svg",
+  agy: "./chat-assets/agent-agy.png",
+});
+
+function createProviderMark(provider) {
+  const logo = PROVIDER_LOGOS[provider?.id];
+  if (!logo) return createElement("span", "provider-mark", String(provider?.label || "?").slice(0, 1));
+  const mark = createElement("span", "provider-mark");
+  const image = document.createElement("img");
+  image.src = logo;
+  image.alt = "";
+  image.draggable = false;
+  mark.appendChild(image);
+  return mark;
+}
+
 function quoteFontFamily(fontFamily) {
   if (!fontFamily) return null;
   const escaped = String(fontFamily)
@@ -355,7 +375,7 @@ function createProviderGroup(provider) {
   const heading = createElement("header", "provider-heading");
   const title = createElement("div", "provider-title");
   title.append(
-    createElement("span", "provider-mark", provider.label.slice(0, 1)),
+    createProviderMark(provider),
     createElement("h2", "", provider.label)
   );
 
@@ -478,7 +498,7 @@ function renderUsage() {
     const card = createElement("article", "usage-card");
     const heading = createElement("header", "usage-card-heading");
     heading.append(
-      createElement("span", "provider-mark", item.label.slice(0, 1)),
+      createProviderMark(item),
       createElement("h2", "", item.label)
     );
     card.appendChild(heading);

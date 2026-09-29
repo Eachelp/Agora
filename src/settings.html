@@ -29,10 +29,7 @@
       <aside class="sidebar">
         <div class="brand-lockup" aria-label="Ἀγορά 설정">
           <img class="brand-mark" src="../build/icon.png" alt="" aria-hidden="true" />
-          <span>
-            <strong>Ἀγορά</strong>
-            <small>WORKSPACE COMPANION</small>
-          </span>
+          <strong>Ἀγορά</strong>
         </div>
 
         <nav class="settings-nav" aria-label="설정 섹션" role="tablist">
@@ -46,7 +43,11 @@
             data-section="general"
             data-label="일반 및 모양"
           >
-            <span class="nav-index">01</span>
+            <svg class="nav-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M2.5 5h6.5M12.5 5h1M2.5 11h1.5M7 11h6.5" />
+              <circle cx="10.75" cy="5" r="1.75" />
+              <circle cx="5.5" cy="11" r="1.75" />
+            </svg>
             <span>일반 및 모양</span>
           </button>
           <button
@@ -60,7 +61,10 @@
             data-label="계정"
             tabindex="-1"
           >
-            <span class="nav-index">02</span>
+            <svg class="nav-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <circle cx="8" cy="5.5" r="2.75" />
+              <path d="M2.75 13.5c.6-2.5 2.7-4 5.25-4s4.65 1.5 5.25 4" />
+            </svg>
             <span>계정</span>
           </button>
           <button
@@ -74,7 +78,10 @@
             data-label="사용량"
             tabindex="-1"
           >
-            <span class="nav-index">03</span>
+            <svg class="nav-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M2.5 13.5h11" />
+              <path d="M4.5 10.5v-3M8 10.5V4M11.5 10.5V6" />
+            </svg>
             <span>사용량</span>
           </button>
         </nav>
@@ -85,9 +92,11 @@
       </aside>
 
       <main class="workspace">
+        <!-- 지금 연 섹션의 이름은 이 줄이 맡는다. 예전에는 "SETTINGS / 일반 및 모양"
+             브레드크럼 아래에 영문 eyebrow와 큰 표어 제목이 또 있어 같은 말을 세 번 했다. -->
         <header class="workspace-bar">
-          <p>SETTINGS <span>/</span> <strong id="section-label">일반 및 모양</strong></p>
-          <span class="local-badge"><i></i> 이 PC에 저장</span>
+          <h1 class="workspace-title" id="section-label">일반 및 모양</h1>
+          <span class="local-badge">이 PC에만 저장됩니다</span>
         </header>
 
         <div class="toast" id="toast" role="alert" aria-live="assertive" hidden></div>
@@ -99,11 +108,6 @@
           aria-labelledby="nav-general"
           tabindex="0"
         >
-          <header class="panel-heading">
-            <p class="eyebrow">APPEARANCE &amp; BEHAVIOR</p>
-            <h1>내 화면, 내 방식대로</h1>
-          </header>
-
           <fieldset class="setting-section color-section ui-theme-section">
             <legend>앱 화면 색상</legend>
             <p class="section-help">채팅과 설정 화면의 주요 색상을 직접 지정합니다.</p>
@@ -201,9 +205,9 @@
               </div>
 
               <div class="font-preview" id="font-preview" aria-live="polite">
-                <span class="preview-label">LIVE PREVIEW</span>
-                <strong>오늘의 작업을<br />편안하게.</strong>
-                <p>Ἀγορά가 작업 흐름을 알려드려요.</p>
+                <span class="preview-label">미리보기</span>
+                <strong>다람쥐 헌 쳇바퀴에 타고파</strong>
+                <p>가나다라마바사 ABCDEFG abcdefg 0123456789</p>
                 <span class="preview-meta" id="font-preview-name">시스템 기본</span>
               </div>
             </div>
@@ -252,11 +256,6 @@
           tabindex="0"
           hidden
         >
-          <header class="panel-heading">
-            <p class="eyebrow">PROVIDERS</p>
-            <h1>계정</h1>
-          </header>
-
           <section class="setting-section" aria-labelledby="provider-list-title">
             <div class="section-title-row">
               <h2 id="provider-list-title">연결된 계정</h2>
@@ -285,11 +284,6 @@
           tabindex="0"
           hidden
         >
-          <header class="panel-heading">
-            <p class="eyebrow">LIMITS</p>
-            <h1>사용량</h1>
-          </header>
-
           <section class="setting-section" aria-labelledby="usage-list-title">
             <div class="section-title-row">
               <h2 id="usage-list-title">한도</h2>
