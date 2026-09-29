@@ -30,33 +30,70 @@
     <div class="app">
       <div class="workspace-shell" id="workspace-shell">
         <aside class="sidebar" id="sidebar">
-        <div class="sidebar-head project-head">
-          <span class="sidebar-heading">
-            <span class="sidebar-title">프로젝트</span>
-          </span>
-          <button class="button button-small" id="btn-new-project" type="button">+ 프로젝트</button>
+        <div class="sidebar-head">
+          <span class="sidebar-title">프로젝트</span>
+          <button class="button button-small" id="btn-new-project" type="button" title="새 프로젝트" aria-label="새 프로젝트">
+            <span aria-hidden="true">+</span><span class="new-project-label">프로젝트</span>
+          </button>
+          <!-- 접기는 사이드바 머리줄 오른쪽 끝에 둔다. 예전에는 사이드바와 대화 사이
+               경계선 위에 걸쳐 떠 있어서, 목록 위를 가리고 접으면 창 끝에 반쯤 잘렸다.
+               접힌 뒤 다시 펼치는 버튼은 대화 제목 앞(#sidebar-open)에 나타난다. -->
+          <button
+            class="sidebar-toggle"
+            id="sidebar-toggle"
+            type="button"
+            aria-controls="sidebar"
+            aria-expanded="true"
+            aria-label="사이드바 접기"
+            title="사이드바 접기"
+          >
+            <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="4" width="14" height="12" rx="2.5" />
+              <path d="M8 4v12" />
+            </svg>
+          </button>
         </div>
         <ul class="project-list project-tree" id="project-list" aria-label="프로젝트와 채팅 목록"></ul>
+        <!-- 하단은 아이콘 칸·이름 칸·끝 칸이 모든 줄에서 같은 자리에 오는 세로 목록이다.
+             진단·재탐지는 문제가 생겼을 때 찾는 버튼이라 메뉴에 숨기지 않고 여기 둔다. -->
         <div class="sidebar-foot">
-          <button class="usage-fold-toggle" id="btn-usage-fold" type="button" aria-expanded="false" title="남은 사용량 접기/펼치기">
-            <span class="usage-fold-label">사용량</span>
-            <span class="usage-fold-chevron" aria-hidden="true">›</span>
+          <button class="foot-button usage-fold-toggle" id="btn-usage-fold" type="button" aria-expanded="false" aria-controls="btn-usage" title="남은 사용량 접기/펼치기">
+            <svg class="foot-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M2.5 13.5h11" />
+              <path d="M4.5 10.5v-3M8 10.5V4M11.5 10.5V6" />
+            </svg>
+            <span class="foot-label">사용량</span>
+            <svg class="usage-fold-chevron" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M6 3.5 10.5 8 6 12.5" />
+            </svg>
           </button>
           <button class="usage-strip" id="btn-usage" type="button" hidden title="남은 사용량 자세히 보기" aria-label="남은 사용량 자세히 보기">
             <span class="usage-strip-items" id="usage-strip-items">
               <span class="usage-strip-empty">사용량 확인 중…</span>
             </span>
           </button>
-          <div class="sidebar-foot-actions">
-            <button class="foot-button" id="btn-doctor" type="button" title="설치와 로그인 상태를 확인합니다">환경 진단</button>
-            <button class="foot-button" id="btn-refresh-providers" type="button" title="설치된 CLI를 다시 탐지합니다">CLI 다시 탐지</button>
-            <button class="foot-button foot-button-icon" id="btn-settings" type="button" title="앱 설정" aria-label="앱 설정">
-              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="8" cy="8" r="2.2" />
-                <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4" />
+          <div class="foot-row">
+            <button class="foot-button" id="btn-doctor" type="button" title="설치와 로그인 상태를 확인합니다">
+              <svg class="foot-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M1.5 8.5h2.8L6 4l3.2 8 1.6-3.5h3.7" />
+              </svg>
+              <span class="foot-label">환경 진단</span>
+            </button>
+            <button class="foot-action" id="btn-refresh-providers" type="button" title="설치된 CLI를 다시 탐지합니다" aria-label="CLI 다시 탐지">
+              <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M13.2 6.2A5.5 5.5 0 1 0 13.5 9" />
+                <path d="M13.5 2.8v3.6H9.9" />
               </svg>
             </button>
           </div>
+          <button class="foot-button" id="btn-settings" type="button" title="앱 설정">
+            <svg class="foot-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M2.5 5h6.5M12.5 5h1M2.5 11h1.5M7 11h6.5" />
+              <circle cx="10.75" cy="5" r="1.75" />
+              <circle cx="5.5" cy="11" r="1.75" />
+            </svg>
+            <span class="foot-label">설정</span>
+          </button>
         </div>
         </aside>
         <div
@@ -66,20 +103,26 @@
           aria-label="대화 사이드바 너비 조절"
           aria-orientation="vertical"
           tabindex="0"
-        >
-          <button
-            class="sidebar-toggle"
-            id="sidebar-toggle"
-            type="button"
-            aria-label="대화 사이드바 접기"
-            aria-expanded="true"
-            title="사이드바 접기"
-          >‹</button>
-        </div>
+        ></div>
 
       <div class="chat-main">
         <header class="room-bar">
           <div class="room-info">
+            <button
+              class="sidebar-open"
+              id="sidebar-open"
+              type="button"
+              aria-controls="sidebar"
+              aria-expanded="true"
+              aria-label="사이드바 펼치기"
+              title="사이드바 펼치기"
+              hidden
+            >
+              <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="4" width="14" height="12" rx="2.5" />
+                <path d="M8 4v12" />
+              </svg>
+            </button>
             <button class="room-title-button" id="session-title" type="button" title="클릭해서 이름 바꾸기 (F2)">세션</button>
           </div>
           <div class="room-actions">
@@ -173,9 +216,12 @@
           <div class="awaiting-row" id="awaiting-row" hidden aria-live="polite"></div>
           <div class="attachment-row" id="attachment-row" hidden></div>
           <div class="response-mode-bar" id="response-mode-bar">
-            <span class="response-mode-label">@all 응답 방식:</span>
-            <button class="mode-chip is-active" id="btn-mode-sequential" type="button" title="이어 발언: 앞선 AI의 답변을 순차적으로 전달하여 참고합니다">이어 발언</button>
-            <button class="mode-chip" id="btn-mode-independent" type="button" title="독립 발언: 같은 턴의 다른 AI 답변을 서로 전달하지 않고 독립 응답을 받습니다">독립 발언</button>
+            <span class="response-mode-label" id="response-mode-label">@all 응답 방식</span>
+            <!-- 둘 중 하나만 고르는 값이라 떨어진 칩 두 개가 아니라 붙은 한 묶음으로 보인다. -->
+            <span class="segmented" role="group" aria-labelledby="response-mode-label">
+              <button class="mode-chip is-active" id="btn-mode-sequential" type="button" title="이어 발언: 앞선 AI의 답변을 순차적으로 전달하여 참고합니다">이어 발언</button>
+              <button class="mode-chip" id="btn-mode-independent" type="button" title="독립 발언: 같은 턴의 다른 AI 답변을 서로 전달하지 않고 독립 응답을 받습니다">독립 발언</button>
+            </span>
           </div>
           <!-- 완료 전에 사용자가 직접 확인해야 하는 항목(HUMAN_APPROVAL). 검수자가
                대신 해소할 수 없으므로 이 목록이 없으면 실행이 영영 대기에 남는다. -->
@@ -184,7 +230,11 @@
                composer가 "선택 대기"로 잠긴 채 고를 방법이 없어진다. -->
           <div class="response-mode-bar" id="specialist-choice-bar" hidden></div>
           <div class="composer-box" id="composer-box">
-            <button class="icon-button" id="btn-attach" type="button" title="파일 첨부 (이미지·문서, 최대 20MiB)">＋</button>
+            <button class="icon-button" id="btn-attach" type="button" title="파일 첨부 (이미지·문서, 최대 20MiB)" aria-label="파일 첨부">
+              <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="m13.2 7.6-5.4 5.4a3.2 3.2 0 0 1-4.6-4.6l5.8-5.8a2.1 2.1 0 0 1 3 3L6.3 11.3a1 1 0 0 1-1.5-1.5l5.1-5.1" />
+              </svg>
+            </button>
             <textarea
               id="composer-input"
               rows="1"

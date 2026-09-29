@@ -155,6 +155,50 @@ test("사이드바는 프로젝트 토글 트리 하나로 통합된다", () => 
   assert.match(ipc, /createSessionForProject\(projectId \? requireProject\(projectId\)\.id : undefined\)/);
 });
 
+// 접기 버튼이 사이드바와 대화 사이 경계선 위에 떠 있으면 목록을 가리고, 접었을 때
+// 창 왼쪽 끝에 반쯤 잘렸다. 접기는 사이드바 머리줄에, 펼치기는 대화 제목 앞에 둔다.
+test("사이드바 접기는 머리줄에, 펼치기는 대화 제목 앞에 있다", () => {
+  const html = read("src/chat.html");
+  const renderer = read("src/chat.js");
+  const css = read("src/chat.css");
+  const head = html.slice(html.indexOf('class="sidebar-head"'), html.indexOf('id="project-list"'));
+  assert.match(head, /id="sidebar-toggle"/, "접기 버튼은 사이드바 머리줄에 있어야 합니다");
+  const resizer = html.slice(html.indexOf('id="sidebar-resizer"'), html.indexOf('class="chat-main"'));
+  assert.doesNotMatch(resizer, /<button/, "경계선 손잡이 안에 버튼을 두지 않습니다");
+  assert.match(html, /class="room-info">\s*<button\s+class="sidebar-open"\s+id="sidebar-open"[^>]*hidden/);
+  const setter = renderer.slice(renderer.indexOf("function setSidebarCollapsed"));
+  const body = setter.slice(0, setter.indexOf("\n}\n"));
+  // 접힌 사이드바는 폭만 0이라 inert로 막지 않으면 Tab이 보이지 않는 버튼으로 들어간다.
+  assert.match(body, /sidebarEl\.inert = collapsed/);
+  assert.match(body, /sidebarOpenButton\.hidden = !collapsed/);
+  assert.match(css, /\.app\.is-sidebar-collapsed \.sidebar-resizer \{\s*display: none;/);
+});
+
+// 하단은 사용량 · 환경 진단 · 설정이 같은 아이콘 칸과 이름 칸을 쓰는 세로 목록이다.
+// 예전에는 가운데 정렬 버튼 셋이 한 줄에 끼어 위 "사용량"과 왼쪽 끝선이 어긋났다.
+test("사이드바 하단은 아이콘·이름 칸이 맞는 세로 목록이다", () => {
+  const html = read("src/chat.html");
+  const renderer = read("src/chat.js");
+  const foot = html.slice(html.indexOf('class="sidebar-foot"'), html.indexOf("</aside>"));
+  for (const id of ["btn-usage-fold", "btn-doctor", "btn-settings"]) {
+    const start = foot.indexOf(`id="${id}"`);
+    const button = foot.slice(start, foot.indexOf("</button>", start));
+    assert.match(button, /class="foot-icon"/, `${id}에 아이콘 칸이 있어야 합니다`);
+    assert.match(button, /class="foot-label"/, `${id}에 이름 칸이 있어야 합니다`);
+  }
+  // 재탐지는 진단 줄 끝 칸의 아이콘 버튼이라 이름은 aria-label이 맡고, 도는 동안 aria-busy다.
+  assert.match(foot, /class="foot-action" id="btn-refresh-providers"[^>]*aria-label="CLI 다시 탐지"/);
+  assert.match(renderer, /refreshProvidersButton\.setAttribute\("aria-busy", "true"\)/);
+});
+
+// 배지·버튼 문구의 이모지(📊 📋 🗂 💡 ⚡ ⚠ 📄 📦)는 같은 줄의 다른 배지와 크기·색이
+// 맞지 않아 눈에 거슬렸고, 파일 아이콘 두 가지로는 PDF와 ZIP도 구분되지 않았다.
+test("메시지 배지·버튼 문구에 이모지를 쓰지 않는다", () => {
+  const renderer = read("src/chat.js");
+  assert.doesNotMatch(renderer, /textContent = [`"'][^`"'\n]*(📊|📋|🗂|💡|⚡|⚠|📄|📦|\\u\{1F4A1\})/u);
+  assert.match(renderer, /extension\.toUpperCase\(\)/, "첨부는 확장자로 표시합니다");
+});
+
 // Windows 한국어 IME: 창 blur 동안 composer가 activeElement로 남으면 복귀 후
 // 클릭해도 focus 전환이 없어 IME 입력 컨텍스트가 갱신되지 않는다(계측으로 확인).
 // blur 시 실제로 focus를 놓고 복귀 시 다음 프레임에 되돌려 준다.
@@ -249,8 +293,13 @@ test("사이드바 행은 한 줄이고 부차 정보가 먼저 줄어든다", (
   // 시각은 별도 줄(metaLine)이 아니라 제목줄에 붙는다.
   assert.ok(renderer.includes("titleLine.append(time)"), "시각은 제목과 같은 줄이어야 합니다");
   assert.ok(!renderer.includes("main.append(titleLine, metaLine)"), "두 줄 구성이 남아 있으면 안 됩니다");
-  // 이름보다 부차 정보가 먼저 말줄임된다(shrink 계수).
-  assert.ok(css.includes("flex: 0 100 auto"), "부차 정보가 먼저 줄어들어야 합니다");
+  // 이름보다 부차 정보가 먼저 물러난다. 예전 shrink 계수(flex: 0 100 auto)는 이름도
+  // 1px 미만으로 함께 줄여 자리가 넉넉한데도 이름 끝이 말줄임됐다. 폴더명은 basis 0이라
+  // 이름을 다 쓰고 남는 자리만 받고, 최소 폭도 못 받으면 둘째 줄로 넘어가 가려진다.
+  assert.match(css, /\.project-meta \{[^}]*flex: 1 1 0/, "폴더명은 이름이 쓰고 남는 자리만 받아야 합니다");
+  assert.match(css, /\.project-select \{[^}]*flex-wrap: wrap[^}]*overflow: hidden/, "자리가 모자라면 폴더명은 가려져야 합니다");
+  // 채팅 시각("방금")은 짧아서 자르면 읽을 수 없으니 줄이지 않고, 제목이 먼저 말줄임된다.
+  assert.match(css, /\.session-meta \{[^}]*flex: none/, "채팅 시각은 줄지 않아야 합니다");
 });
 
 // 토론에는 Run이 없다. 전문 실행 Recorder 단계로 보내면 run 권한과 Professional
@@ -594,7 +643,8 @@ test("채팅 화면 컨트롤은 인라인 스타일 없이 공통 크기 토큰
   assert.doesNotMatch(html, /onmouseover=/);
   assert.doesNotMatch(html, /onmouseout=/);
   assert.doesNotMatch(html, /<button[^>]*id="btn-settings"[^>]*style=/);
-  assert.match(html, /class="foot-button foot-button-icon" id="btn-settings"/);
+  // 설정은 사이드바 하단 목록의 한 줄(아이콘 + "설정")이다.
+  assert.match(html, /class="foot-button" id="btn-settings"/);
 
   // 진단·재탐지는 문제가 생겼을 때 찾는 버튼이라 사이드바 하단에 그대로 둡니다.
   // (메뉴 안에 숨기면 연결이 끊겼을 때 복구 경로가 멀어집니다)

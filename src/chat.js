@@ -72,6 +72,7 @@ const appEl = document.querySelector(".app");
 const sidebarEl = document.getElementById("sidebar");
 const sidebarResizer = document.getElementById("sidebar-resizer");
 const sidebarToggle = document.getElementById("sidebar-toggle");
+const sidebarOpenButton = document.getElementById("sidebar-open");
 const approvalBackdrop = document.getElementById("approval-backdrop");
 const approvalSummary = document.getElementById("approval-summary");
 const approvalDetail = document.getElementById("approval-detail");
@@ -311,25 +312,36 @@ function applySidebarWidth(value, persist = true) {
   if (persist) localStorage.setItem(SIDEBAR_WIDTH_KEY, String(width));
 }
 
+// 접기 버튼은 사이드바 머리줄에, 펼치기 버튼은 대화 제목 앞에 있다. 접힌 사이드바는
+// 폭만 0일 뿐 DOM에 남아 있어서 inert로 막지 않으면 Tab이 보이지 않는 목록 버튼으로
+// 들어간다.
 function setSidebarCollapsed(collapsed, persist = true) {
   appEl.classList.toggle("is-sidebar-collapsed", collapsed);
-  sidebarToggle.textContent = collapsed ? "›" : "‹";
-  sidebarToggle.setAttribute("aria-expanded", String(!collapsed));
-  sidebarToggle.setAttribute("aria-label", collapsed ? "세션 사이드바 펼치기" : "세션 사이드바 접기");
-  sidebarToggle.title = collapsed ? "사이드바 펼치기" : "사이드바 접기";
+  sidebarEl.inert = collapsed;
+  sidebarOpenButton.hidden = !collapsed;
+  for (const button of [sidebarToggle, sidebarOpenButton]) {
+    button.setAttribute("aria-expanded", String(!collapsed));
+  }
   if (persist) localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed));
 }
 
 applySidebarWidth(localStorage.getItem(SIDEBAR_WIDTH_KEY), false);
 setSidebarCollapsed(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true", false);
 
-sidebarToggle.addEventListener("click", (event) => {
-  event.stopPropagation();
-  setSidebarCollapsed(!appEl.classList.contains("is-sidebar-collapsed"));
+// 누른 버튼은 곧 사라지므로 초점을 반대편 버튼으로 넘긴다. 그러지 않으면 키보드
+// 사용자의 초점이 body로 떨어져 처음부터 다시 Tab을 눌러야 한다.
+sidebarToggle.addEventListener("click", () => {
+  setSidebarCollapsed(true);
+  sidebarOpenButton.focus();
+});
+
+sidebarOpenButton.addEventListener("click", () => {
+  setSidebarCollapsed(false);
+  sidebarToggle.focus();
 });
 
 sidebarResizer.addEventListener("pointerdown", (event) => {
-  if (event.target === sidebarToggle || appEl.classList.contains("is-sidebar-collapsed")) return;
+  if (appEl.classList.contains("is-sidebar-collapsed")) return;
   event.preventDefault();
   sidebarResizer.setPointerCapture(event.pointerId);
   appEl.classList.add("is-resizing");
@@ -349,16 +361,17 @@ function finishSidebarResize(event) {
 }
 sidebarResizer.addEventListener("pointerup", finishSidebarResize);
 sidebarResizer.addEventListener("pointercancel", finishSidebarResize);
+// 접힌 동안 리사이저는 숨는다(펼치기는 #sidebar-open이 맡는다). 그래서 여기서는
+// 펼친 상태만 다룬다.
 sidebarResizer.addEventListener("keydown", (event) => {
-  if (event.target === sidebarToggle) return;
   if (event.key === "Enter" || event.key === " ") {
     event.preventDefault();
-    setSidebarCollapsed(!appEl.classList.contains("is-sidebar-collapsed"));
+    setSidebarCollapsed(true);
+    sidebarOpenButton.focus();
     return;
   }
   if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
   event.preventDefault();
-  if (appEl.classList.contains("is-sidebar-collapsed")) setSidebarCollapsed(false);
   const current = parseFloat(getComputedStyle(appEl).getPropertyValue("--sidebar-width"));
   applySidebarWidth(current + (event.key === "ArrowRight" ? 12 : -12));
 });
@@ -4581,10 +4594,13 @@ function renderTextWithMentions(container, text) {
   renderMathIfAvailable(container);
 }
 
+// 그림 대신 확장자를 적는다. 📄/📦 두 가지로는 PDF와 ZIP이 구분되지 않았다.
 function makeAttachmentIcon(attachment) {
   const icon = document.createElement("span");
   icon.className = "attachment-icon";
-  icon.textContent = attachment.kind === "text" ? "📄" : "📦";
+  const extension = /\.([a-z0-9]{1,5})$/i.exec(String(attachment.name || ""))?.[1];
+  icon.textContent = extension ? extension.toUpperCase() : attachment.kind === "text" ? "TXT" : "FILE";
+  icon.setAttribute("aria-hidden", "true");
   return icon;
 }
 function makeAttachmentPill(attachment, { removable = false } = {}) {
@@ -4726,7 +4742,7 @@ function renderMessage(message) {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "discussion-summary-button";
-      btn.textContent = "📊 결론 종합하기";
+      btn.textContent = "결론 종합하기";
       btn.title = "원하는 AI를 선택해 토론 결론을 요약 카드로 정리합니다";
       btn.addEventListener("click", (event) => {
         event.stopPropagation();
@@ -4802,7 +4818,7 @@ function renderMessage(message) {
       const taskChip = document.createElement("span");
       taskChip.className = "meta-chip frozen-task-chip";
       const hashShort = taskHash ? `@${String(taskHash).slice(0, 7)}` : "";
-      taskChip.textContent = `📋 ${taskId || "TASK"}${hashShort}`;
+      taskChip.textContent = `${taskId || "TASK"}${hashShort}`;
       taskChip.title = `불변 스냅샷 실행 계약: ${taskId || "TASK"}${hashShort}`;
       meta.append(taskChip);
     }
@@ -4812,7 +4828,7 @@ function renderMessage(message) {
     if (summaryMeta) {
       const summaryBadge = document.createElement("span");
       summaryBadge.className = "role-badge role-discussion-summary";
-      summaryBadge.textContent = summaryMeta.record ? "🗂 토론 기록" : "📊 토론 종합";
+      summaryBadge.textContent = summaryMeta.record ? "토론 기록" : "토론 종합";
       summaryBadge.title = summaryMeta.record
         ? "토론 내용을 프로젝트 기억 초안으로 남긴 기록입니다"
         : "이전 토론을 종합한 요약 카드입니다";
@@ -4822,7 +4838,7 @@ function renderMessage(message) {
     if (message.simplifyMeta || agentMeta.simplifyMeta) {
       const simplifyBadge = document.createElement("span");
       simplifyBadge.className = "role-badge role-simplify-summary";
-      simplifyBadge.textContent = "💡 쉬운 설명";
+      simplifyBadge.textContent = "쉬운 설명";
       simplifyBadge.title = "복잡한 기술 용어를 비개발자도 이해하기 쉬운 말로 깔끔하게 풀어주는 요약본입니다";
       meta.append(simplifyBadge);
     }
@@ -4858,11 +4874,11 @@ function renderMessage(message) {
   if (usage && (usage.promptTokens || usage.completionTokens || usage.totalTokens)) {
     const usageEl = document.createElement("div");
     usageEl.className = "message-usage";
-    const prompt = usage.promptTokens ? `입력: ${usage.promptTokens.toLocaleString()}` : "";
-    const completion = usage.completionTokens ? `출력: ${usage.completionTokens.toLocaleString()}` : "";
-    const total = usage.totalTokens ? `총계: ${usage.totalTokens.toLocaleString()}` : "";
+    const prompt = usage.promptTokens ? `입력 ${usage.promptTokens.toLocaleString()}` : "";
+    const completion = usage.completionTokens ? `출력 ${usage.completionTokens.toLocaleString()}` : "";
+    const total = usage.totalTokens ? `합계 ${usage.totalTokens.toLocaleString()}` : "";
     const details = [prompt, completion, total].filter(Boolean).join(" · ");
-    usageEl.textContent = `⚡ 토큰 사용량 ${details}`;
+    usageEl.textContent = `토큰 ${details}`;
     bubble.append(usageEl);
   }
 
@@ -4872,7 +4888,7 @@ function renderMessage(message) {
     if (failed.length > 0) {
       const badge = document.createElement("div");
       badge.className = "delivery-badge";
-      badge.textContent = `⚠ 첨부 ${failed.length}개는 이 에이전트에 전달되지 않았습니다`;
+      badge.textContent = `첨부 ${failed.length}개는 이 에이전트에 전달되지 않았습니다`;
       bubble.append(badge);
     }
   }
@@ -4896,7 +4912,7 @@ function renderMessage(message) {
     const simplifyBtn = document.createElement("button");
     simplifyBtn.type = "button";
     simplifyBtn.className = "message-simplify-button";
-    simplifyBtn.textContent = "\u{1F4A1} 쉽게 설명";
+    simplifyBtn.textContent = "쉽게 설명";
     // 같은 저자 + 같은 모델 고정 계약: 원문 작성 에이전트만 수행할 수 있고
     // 다른 에이전트로 대체하지 않습니다. 실제 구체적 모델 정보가 없거나 사용할 수 없으면 버튼을 비활성화합니다.
     const simplifyAuthor = agentById(message.author);
@@ -5091,7 +5107,7 @@ function renderFailedMessage(bubble, message) {
   const label = FAILURE_LABELS[message.failureKind] || FAILURE_LABELS.error;
   const headline = document.createElement("div");
   headline.className = "failure-headline";
-  headline.textContent = `⚠ ${label}`;
+  headline.textContent = label;
   bubble.append(headline);
 
   const detail = document.createElement("div");
@@ -5663,14 +5679,22 @@ newProjectButton.addEventListener("click", async () => {
   openNewProjectPopover(newProjectButton);
 });
 
+// 재탐지 버튼은 글자 없는 아이콘이라, 도는 동안 aria-busy로 아이콘을 돌려
+// 눌렸다는 것과 아직 끝나지 않았다는 것을 보여 주고 중복 실행을 막는다.
 refreshProvidersButton.addEventListener("click", async () => {
-  const result = await call(window.chatApi.providersRefresh());
-  if (result?.providers) {
-    providers = result.providers;
-    diagnostics = result.diagnostics || diagnostics;
-    flashNotice("CLI 탐지를 새로 고쳤습니다.", false);
-    renderHeader();
-    if (!doctorBackdrop.hidden) renderDoctor();
+  if (refreshProvidersButton.getAttribute("aria-busy") === "true") return;
+  refreshProvidersButton.setAttribute("aria-busy", "true");
+  try {
+    const result = await call(window.chatApi.providersRefresh());
+    if (result?.providers) {
+      providers = result.providers;
+      diagnostics = result.diagnostics || diagnostics;
+      flashNotice("CLI 탐지를 새로 고쳤습니다.", false);
+      renderHeader();
+      if (!doctorBackdrop.hidden) renderDoctor();
+    }
+  } finally {
+    refreshProvidersButton.removeAttribute("aria-busy");
   }
 });
 

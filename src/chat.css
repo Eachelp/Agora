@@ -14,12 +14,22 @@
   --surface-muted: color-mix(in srgb, var(--surface) 70%, var(--page));
   --danger: #ef4444;
   --danger-soft: #fef2f2;
+  --danger-ink: #b91c1c;
   --shadow: 0 1px 3px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.02);
+  /* 테마 7색만으로 만든 중립 톤. hover 바탕·옅은 면·떠 있는 줄을 파란색 고정값이 아니라
+     글자색(ink)을 얇게 깔아 만들기 때문에 차콜·에메랄드 테마에서도 같은 무게로 읽힌다. */
+  --hover: color-mix(in srgb, var(--ink) 6%, transparent);
+  --hover-strong: color-mix(in srgb, var(--ink) 10%, transparent);
+  --fill-subtle: color-mix(in srgb, var(--ink) 4%, var(--surface));
+  --shadow-raised:
+    0 1px 2px color-mix(in srgb, var(--ink) 12%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--ink) 6%, transparent);
   /* 화면 전체가 같은 리듬을 갖도록 컨트롤 높이와 모서리를 한곳에서 정합니다. */
   --control-h: 32px;
   --control-h-sm: 26px;
   --radius-sm: 8px;
   --radius-md: 10px;
+  --radius-lg: 12px;
   --radius-pill: 999px;
   --font-body: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
   --font-display: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
@@ -63,6 +73,32 @@ button:focus-visible,
 textarea:focus-visible {
   outline: 1.5px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* 창 안 스크롤바. 기본 스크롤바는 위아래 화살표와 회색 홈이 붙어 목록·대화 옆에
+   굵은 막대로 남았다. 손잡이만 얇게 두고, 색은 글자색에서 만들어 테마를 따른다. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--ink) 18%, transparent) padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--ink) 30%, transparent);
+}
+
+::-webkit-scrollbar-button {
+  display: none;
 }
 
 /* --- 타이틀바 (설정창과 동일 스타일) --- */
@@ -149,20 +185,13 @@ textarea:focus-visible {
 }
 
 /* --- 방 헤더 --- */
-.room-bar {
-  flex: none;
+/* 제목 칸. 사이드바가 접히면 제목 앞에 펼치기 버튼(#sidebar-open)이 선다.
+   격자 칸 이름은 아래 .room-bar가 정한다. */
+.room-info {
+  grid-area: info;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 16px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--line);
-}
-
-.room-info {
-  display: grid;
-  gap: 1px;
+  gap: 10px;
   min-width: 0;
 }
 
@@ -177,15 +206,22 @@ textarea:focus-visible {
   background: transparent;
   padding: 2px 8px 2px 6px;
   margin-left: -6px;
+  color: var(--ink);
   font-family: var(--font-display);
-  font-size: 14px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.015em;
   text-align: left;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   transition: background 120ms ease-out;
+}
+
+/* 펼치기 버튼 바로 뒤에서는 제목을 왼쪽으로 당기지 않는다(hover 바탕이 버튼에 붙는다). */
+.sidebar-open:not([hidden]) + .room-title-button {
+  margin-left: 0;
 }
 
 /* 이름을 바꿀 수 있다는 신호. 평소엔 숨어 있다가 hover·포커스에서 드러납니다. */
@@ -200,7 +236,7 @@ textarea:focus-visible {
 }
 
 .room-title-button:hover {
-  background: var(--accent-soft);
+  background: var(--hover);
 }
 
 .room-title-button:hover::after,
@@ -210,54 +246,37 @@ textarea:focus-visible {
 
 /* 제목을 편집할 때는 버튼 자리에 input이 들어옵니다. */
 .room-info .session-rename-input {
-  font-size: 17px;
-  font-weight: 700;
+  min-width: 0;
+  flex: 1;
+  font-size: 18px;
+  font-weight: 600;
   padding: 3px 8px;
 }
 
-.room-hint {
-  font-size: 11.5px;
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.room-hint code {
-  font-family: Consolas, monospace;
-  background: var(--accent-soft);
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  padding: 0 4px;
-  font-size: 10.5px;
-}
-
-.room-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex: none;
-}
-
-.agent-chips {
-  display: flex;
-  gap: 6px;
-}
-
+/* 참가자 칩: 누르면 그 에이전트의 모델·추론 설정이 열린다. 옆의 작업공간·권한 칸과
+   같은 높이·모서리를 써서 한 줄의 컨트롤로 읽힌다. */
 .agent-chip {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  min-height: 40px;
-  padding: 4px 10px 4px 5px;
-  border: 1px solid var(--line-strong);
-  border-radius: 999px;
+  gap: 6px;
+  min-height: 30px;
+  padding: 3px 10px 3px 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
   background: var(--surface);
-  font-size: 11.5px;
   color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 500;
   user-select: none;
+  transition: border-color 120ms ease-out, background-color 120ms ease-out;
 }
 
+.agent-chip:hover {
+  border-color: var(--line-strong);
+  background: var(--fill-subtle);
+}
+
+/* 아바타는 칩·팝오버·메시지 모두 둥근 사각형이다. 공급자 로고가 옅은 바탕 위에 선다. */
 .agent-avatar,
 .popover-avatar {
   position: relative;
@@ -265,11 +284,11 @@ textarea:focus-visible {
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
   background: var(--agent-bg, var(--agent-color, var(--muted)));
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent);
   flex: none;
   isolation: isolate;
 }
@@ -314,6 +333,7 @@ textarea:focus-visible {
 .popover-avatar {
   width: 34px;
   height: 34px;
+  border-radius: 9px;
 }
 
 .agent-chip.is-unavailable {
@@ -324,8 +344,15 @@ textarea:focus-visible {
   filter: grayscale(0.8);
 }
 
+/* 답을 쓰는 중인 에이전트. 예전처럼 아바타를 1.6배로 부풀리면 칩 줄 전체가 출렁였다. */
 .agent-chip.is-typing .agent-avatar {
-  animation: chip-pulse 1s ease-in-out infinite;
+  animation: avatar-breathe 1.2s ease-in-out infinite;
+}
+
+@keyframes avatar-breathe {
+  50% {
+    opacity: 0.45;
+  }
 }
 
 @keyframes chip-pulse {
@@ -351,114 +378,185 @@ textarea:focus-visible {
 
 /* --- 메시지 목록 --- */
 .chat-scroll {
+  background: var(--surface);
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 16px 16px 8px;
+  padding: 24px 28px 12px;
 }
 
 .message-list {
   list-style: none;
   margin: 0 auto;
   padding: 0;
-  max-width: 760px;
+  max-width: 820px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 20px;
 }
 
 .message {
   display: flex;
-  gap: 10px;
+  gap: 12px;
   align-items: flex-start;
 }
 
+/* 흰 사각형 안의 공급자 로고. 칩·팝오버 아바타와 같은 둥근 사각형이다. */
 .message .avatar {
   position: relative;
   flex: none;
-  width: 46px;
-  height: 46px;
-  border-radius: 15px;
+  width: 34px;
+  height: 34px;
+  margin-top: 1px;
+  padding: 5px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
-  font-weight: 700;
-  color: #ffffff;
-  background: var(--agent-bg, var(--agent-color, var(--accent)));
   overflow: hidden;
   isolation: isolate;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08), 0 2px 6px rgba(0, 0, 0, 0.08);
-  margin-top: 2px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #ffffff;
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.message .avatar::before {
+  background: #ffffff;
+}
+
+.message .avatar .agent-logo {
+  width: 100%;
+  height: 100%;
 }
 
 .message .body {
   min-width: 0;
   max-width: 82%;
   display: grid;
-  gap: 3px;
+  gap: 4px;
 }
 
-.message-handoff-button {
-  justify-self: start;
-  border: 1px solid var(--line);
-  background: transparent;
+.message .meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
   color: var(--muted);
-  border-radius: 6px;
-  padding: 2px 8px;
   font-size: 11px;
-  cursor: pointer;
-  transition: border-color 0.15s, color 0.15s, opacity 0.15s;
 }
 
-.message-handoff-button:hover:not(:disabled) {
-  color: var(--ink-soft);
-  border-color: var(--accent);
+.message .meta .name {
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 600;
 }
 
-.message-handoff-button:disabled,
-.message-handoff-button.is-disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-  border-color: var(--line);
-}
-
-.message-simplify-button {
-  justify-self: start;
-  border: 1px solid var(--line);
-  background: transparent;
+/* 모델·노력 표시. 테두리 없이 옅은 바탕만 둬 이름보다 한 단계 뒤로 물러난다. */
+.meta-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--hover);
   color: var(--muted);
-  border-radius: 6px;
-  padding: 2px 8px;
-  font-size: 11px;
-  cursor: pointer;
-  transition: border-color 0.15s, color 0.15s, opacity 0.15s;
+  font-size: 10.5px;
+  line-height: 18px;
 }
 
-.message-simplify-button:hover:not(:disabled) {
+/* 역할 배지(기획·구현·검토·기록). 예전에는 역할마다 파랑·초록·보라·주황을 따로 칠해
+   메타 줄 하나에 색이 다섯 가지였다. 이름이 이미 역할을 말하므로 강조색 하나로 둔다. */
+.role-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+/* 요약 배지(토론 종합·토론 기록·쉬운 설명)는 역할이 아니라 글의 종류라 중립색이다. */
+.role-badge.role-discussion-summary,
+.role-badge.role-simplify-summary {
+  background: var(--hover);
   color: var(--ink-soft);
-  border-color: var(--accent);
 }
 
-.message-simplify-button:disabled,
-.message-simplify-button.is-disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-  border-color: var(--line);
+/* 불변 실행 계약(TASK@해시). 식별자라 고정폭 글꼴로 둔다. */
+.meta-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  border-radius: 4px;
+  font-family: Consolas, "D2Coding", monospace;
+  font-size: 10.5px;
+  line-height: 18px;
 }
 
-/* 말풍선 단위 복사 버튼 (마크다운 원본 / 서식 없이) */
+.frozen-task-chip {
+  background: var(--hover);
+  color: var(--ink-soft);
+}
+
+/* 말풍선. 에이전트는 글자색을, 사용자는 강조색을 얇게 깐 면이다. 예전에는 테두리 +
+   그림자 + 흰 바탕 카드라 대화가 카드 더미로 보였다. 테두리 자리(1px)는 남겨 둬
+   초안(점선)·오류(붉은 선)가 같은 크기로 그려진다. */
+.message .bubble {
+  /* .message가 flex라 기본 min-width:auto가 축소를 막으면, 줄바꿈되지 않는 표·긴
+     코드 줄이 말풍선째로 대화 영역을 가로로 밀어낸다. */
+  min-width: 0;
+  padding: 10px 14px;
+  border: 1px solid transparent;
+  border-radius: 4px var(--radius-lg) var(--radius-lg) var(--radius-lg);
+  background: var(--fill-subtle);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.message.is-user {
+  flex-direction: row-reverse;
+}
+
+.message.is-user .body {
+  justify-items: end;
+}
+
+.message.is-user .bubble {
+  border-radius: var(--radius-lg) 4px var(--radius-lg) var(--radius-lg);
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+.message.is-error .bubble {
+  background: var(--danger-soft);
+  border-color: #fecaca;
+  color: #991b1b;
+}
+
+.message-usage {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 말풍선 아래 동작 줄(복사 · 서식 없이 복사 · 쉽게 설명 · 다른 AI에게 전달).
+   평소엔 숨기고 마우스를 올리거나 키보드 포커스가 들어왔을 때만 보여 대화를
+   조용하게 둔다. 자리는 그대로 두어(visibility) 나타날 때 레이아웃이 흔들리지 않는다. */
 .message-actions {
   justify-self: start;
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 2px;
   align-items: center;
 }
 
-/* 말풍선 액션(복사·전달)은 평소엔 숨기고, 마우스를 올리거나 키보드 포커스가
-   들어왔을 때만 보여 대화 화면을 조용하게 유지합니다.
-   자리는 그대로 두어(visibility) 나타날 때 레이아웃이 흔들리지 않게 합니다. */
 .message .message-actions {
   visibility: hidden;
   opacity: 0;
@@ -471,63 +569,7 @@ textarea:focus-visible {
   opacity: 1;
 }
 
-/* 워크스페이스 폴더 아이콘 */
-.workspace-icon {
-  flex: none;
-  opacity: 0.75;
-}
-
-/* --- 전문 모드 실행 방식 카드 ---
-   설명과 버튼이 흩어져 어느 설명이 어느 버튼 것인지 헷갈리던 문제를 없애기 위해
-   각 실행 방식을 하나의 카드(제목 · 흐름 · 설명 · 버튼)로 묶습니다. */
-.mode-card-list {
-  display: grid;
-  gap: 8px;
-  margin-top: 4px;
-}
-
-.mode-card {
-  display: grid;
-  gap: 5px;
-  padding: 10px 11px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface);
-}
-
-.mode-card:hover {
-  border-color: var(--line-strong);
-}
-
-.mode-card-title {
-  font-size: 13px;
-  color: var(--ink);
-}
-
-.mode-card-flow {
-  margin: 0;
-  font-size: 11px;
-  color: var(--accent);
-  font-weight: 600;
-}
-
-.mode-card-desc {
-  margin: 0;
-  font-size: 11.5px;
-  line-height: 1.5;
-  color: var(--muted);
-}
-
-.mode-card-field {
-  margin: 3px 0 1px;
-}
-
-.mode-card .button {
-  margin-top: 3px;
-  width: 100%;
-}
-
-/* 마우스 오버가 없는 환경(터치 등)에서는 항상 보이게 둡니다. */
+/* 마우스 오버가 없는 환경(터치 등)에서는 항상 보이게 둔다. */
 @media (hover: none) {
   .message .message-actions {
     visibility: visible;
@@ -539,128 +581,44 @@ textarea:focus-visible {
   justify-self: end;
 }
 
-.message-copy-button {
+/* 테두리 버튼 네 개가 줄지어 있으면 말풍선보다 버튼이 먼저 보였다. 글자 버튼으로 둔다. */
+.message-copy-button,
+.message-simplify-button,
+.message-handoff-button {
   justify-self: start;
-  border: 1px solid var(--line);
+  min-height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
   background: transparent;
   color: var(--muted);
-  border-radius: 6px;
-  padding: 2px 8px;
-  font-size: 11px;
-  cursor: pointer;
-  transition: border-color 0.15s, color 0.15s;
+  font-size: 11.5px;
+  transition: background-color 120ms ease-out, color 120ms ease-out, opacity 120ms ease-out;
 }
 
-.message-copy-button:hover {
-  color: var(--ink-soft);
-  border-color: var(--accent);
+.message-copy-button:hover,
+.message-simplify-button:hover:not(:disabled),
+.message-handoff-button:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--ink);
 }
 
 .message-copy-button.is-copied {
   color: var(--accent);
-  border-color: var(--accent);
 }
 
-.message .meta {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  font-size: 11px;
-  color: var(--muted);
+.message-simplify-button:disabled,
+.message-simplify-button.is-disabled,
+.message-handoff-button:disabled,
+.message-handoff-button.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
-.message .meta .name {
-  font-weight: 700;
-  color: var(--ink-soft);
-  font-size: 12px;
-}
-
-.role-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 1px 7px;
-  border-radius: 10px;
-  font-size: 10.5px;
-  font-weight: 600;
-  line-height: 1.3;
-}
-
-.role-badge.role-planning,
-.role-badge.role-planner,
-.role-badge.role-design {
-  background: rgba(59, 130, 246, 0.12);
-  color: #2563eb;
-  border: 1px solid rgba(59, 130, 246, 0.25);
-}
-
-.role-badge.role-implementation,
-.role-badge.role-builder {
-  background: rgba(16, 185, 129, 0.12);
-  color: #059669;
-  border: 1px solid rgba(16, 185, 129, 0.25);
-}
-
-.role-badge.role-review,
-.role-badge.role-reviewer {
-  background: rgba(139, 92, 246, 0.12);
-  color: #7c3aed;
-  border: 1px solid rgba(139, 92, 246, 0.25);
-}
-
-.role-badge.role-recorder {
-  background: rgba(245, 158, 11, 0.12);
-  color: #d97706;
-  border: 1px solid rgba(245, 158, 11, 0.25);
-}
-
-.role-badge.role-discussion-summary {
-  background: rgba(14, 165, 233, 0.12);
-  color: #0284c7;
-  border: 1px solid rgba(14, 165, 233, 0.25);
-}
-
-.role-badge.role-simplify-summary {
-  background: rgba(16, 185, 129, 0.12);
-  color: #059669;
-  border: 1px solid rgba(16, 185, 129, 0.25);
-}
-
-.meta-pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: var(--page);
-  border: 1px solid var(--line);
-  font-size: 10px;
-  color: var(--muted);
-}
-
-.meta-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 1px 6px;
-  border-radius: 4px;
-  font-size: 10.5px;
-  font-weight: 500;
-  font-family: monospace;
-}
-
-.frozen-task-chip {
-  background: rgba(99, 102, 241, 0.08);
-  color: #4f46e5;
-  border: 1px solid rgba(99, 102, 241, 0.2);
-}
-
-.message-usage {
-  margin-top: 6px;
-  padding-top: 6px;
-  border-top: 1px dashed var(--line);
-  font-size: 10.5px;
-  color: var(--muted);
-  font-family: monospace;
+/* 워크스페이스 폴더 아이콘 */
+.workspace-icon {
+  flex: none;
+  opacity: 0.75;
 }
 
 .blocked-actions-container {
@@ -702,54 +660,32 @@ textarea:focus-visible {
   min-width: 140px;
 }
 
-.message .bubble {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 4px 14px 14px 14px;
-  box-shadow: var(--shadow);
-  padding: 9px 13px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  user-select: text;
-}
-
-.message.is-user {
-  flex-direction: row-reverse;
-}
-
-.message.is-user .body {
-  justify-items: end;
-}
-
-.message.is-user .bubble {
-  background: var(--accent);
-  color: #fafafa;
-  border-color: var(--accent);
-  border-radius: 14px 4px 14px 14px;
-}
-
-.message.is-error .bubble {
-  background: var(--danger-soft);
-  border-color: #fecaca;
-  color: #991b1b;
-}
-
 .message.is-system {
   justify-content: center;
 }
 
-/* 알림이 몰릴 때 대화가 밀려나지 않도록 간격을 좁힙니다. */
+/* 알림이 몰릴 때 대화가 밀려나지 않도록 간격을 좁힌다. */
 .message.is-system + .message.is-system {
   margin-top: -8px;
 }
 
-/* 접힌 알림은 "이전 알림 N개 보기"를 누르면 다시 펼쳐집니다. */
+/* 접힌 알림은 "이전 알림 N개 보기"를 누르면 다시 펼쳐진다. */
 .message.is-collapsed {
   display: none;
 }
 
 .message-list.show-system-history .message.is-collapsed {
   display: flex;
+}
+
+.message.is-system .bubble {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: var(--muted);
+  font-size: 11.5px;
+  text-align: center;
+  padding: 0;
 }
 
 .system-toggle-button {
@@ -762,12 +698,22 @@ textarea:focus-visible {
 }
 
 .system-toggle-button:hover {
-  border-color: var(--accent);
+  border-color: var(--line-strong);
   color: var(--ink);
 }
 
+.system-count {
+  margin-left: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--hover);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 0 5px;
+}
+
 .discussion-summary-actions {
-  margin-top: 6px;
+  margin-top: 8px;
   display: flex;
   justify-content: center;
 }
@@ -775,24 +721,21 @@ textarea:focus-visible {
 .discussion-summary-button {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 3px 10px;
-  font-size: 11.5px;
-  font-weight: 600;
-  border-radius: var(--radius-pill);
+  min-height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
   background: var(--surface);
-  border: 1px solid var(--line);
   color: var(--ink-soft);
-  cursor: pointer;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
-  transition: border-color 0.15s, color 0.15s, background-color 0.15s, box-shadow 0.15s;
+  font-size: 12px;
+  font-weight: 600;
+  transition: border-color 120ms ease-out, color 120ms ease-out, background-color 120ms ease-out;
 }
 
 .discussion-summary-button:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
   background: var(--accent-soft);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+  color: var(--accent);
 }
 
 .discussion-summary-button:disabled {
@@ -800,7 +743,7 @@ textarea:focus-visible {
   cursor: not-allowed;
 }
 
-/* 파일 경로 칩: 이동하지 않고, 읽을 수 있는 이름만 보여 주고 클릭하면 경로를 복사합니다. */
+/* 파일 경로 칩: 이동하지 않고, 읽을 수 있는 이름만 보여 주고 클릭하면 경로를 복사한다. */
 .file-chip {
   display: inline-flex;
   align-items: center;
@@ -809,7 +752,7 @@ textarea:focus-visible {
   vertical-align: baseline;
   border: 1px solid var(--line-strong);
   border-radius: 6px;
-  background: var(--surface-muted);
+  background: var(--surface);
   color: var(--ink-soft);
   font-size: 0.92em;
   padding: 0 6px;
@@ -829,43 +772,23 @@ textarea:focus-visible {
 }
 
 .file-chip:hover {
-  border-color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
   background: var(--accent-soft);
   color: var(--ink);
 }
 
-.system-count {
-  margin-left: 6px;
-  border-radius: var(--radius-pill);
-  background: var(--surface-muted);
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 700;
-  padding: 0 5px;
-}
-
-.message.is-system .bubble {
-  background: transparent;
-  border: none;
-  box-shadow: none;
-  color: var(--muted);
-  font-size: 11.5px;
-  text-align: center;
-  padding: 0;
-}
-
 .bubble .mention {
-  color: #1d4ed8;
+  color: var(--accent);
   font-weight: 600;
 }
 
 .message.is-user .bubble .mention {
-  color: #bfdbfe;
+  color: var(--accent-strong);
 }
 
 /* --- 타이핑 표시 --- */
 .typing-row {
-  max-width: 760px;
+  max-width: 820px;
   margin: 10px auto 0;
   display: flex;
   gap: 8px;
@@ -1037,41 +960,57 @@ textarea:focus-visible {
 
 /* --- 입력창 --- */
 .composer {
+  background: var(--surface);
   flex: 0 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
   position: relative;
-  padding: 10px 16px 14px;
-  background: var(--page);
+  padding: 10px 28px 18px;
   border-top: none;
 }
 
+/* 입력창 위에 붙는 줄들(답변 대기 · 첨부 · 응답 방식 · 확인 항목)은 입력창과 같은
+   폭으로 가운데 선다. 예전에는 760px·전체 폭이 섞여 왼쪽 끝선이 줄마다 달랐다. */
+.awaiting-row,
+.attachment-row,
+.response-mode-bar,
+.specialist-approvals {
+  width: 100%;
+  max-width: 820px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* 입력창은 테두리 없이 그림자로 뜬 면이다. 초점이 들어오면 강조색 테두리 대신
+   강조색 고리가 생긴다(:focus-within). */
 .composer-box {
   flex: none;
   width: 100%;
-  max-width: 760px;
+  max-width: 820px;
   margin: 0 auto;
   display: flex;
   align-items: flex-end;
-  gap: 8px;
+  gap: 6px;
   background: var(--surface);
   border: none;
-  border-radius: 14px;
-  padding: 8px 8px 8px 14px;
+  border-radius: var(--radius-lg);
+  padding: 8px 8px 8px 8px;
   box-shadow:
-    0 5px 12px rgba(0, 0, 0, 0.09),
-    0 16px 34px rgba(0, 0, 0, 0.08);
-  transition: box-shadow 150ms ease-out, transform 150ms ease-out;
+    0 1px 3px color-mix(in srgb, var(--ink) 10%, transparent),
+    0 8px 24px color-mix(in srgb, var(--ink) 8%, transparent);
+  transition: box-shadow 150ms ease-out;
 }
 
 .composer-box:focus-within {
   box-shadow:
-    0 7px 17px rgba(0, 0, 0, 0.11),
-    0 20px 42px rgba(0, 0, 0, 0.1);
-  transform: translateY(-1px);
+    0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent),
+    0 0 0 4px color-mix(in srgb, var(--accent) 14%, transparent),
+    0 8px 24px color-mix(in srgb, var(--ink) 8%, transparent);
 }
 
+/* 한 줄 입력일 때 줄 높이 20px + 위아래 6px = 32px로 옆 버튼과 같은 높이가 되어
+   글자가 가운데로 읽힌다. */
 #composer-input {
   flex: 1;
   border: none;
@@ -1079,7 +1018,9 @@ textarea:focus-visible {
   resize: none;
   background: transparent;
   max-height: 132px;
-  padding: 4px 0;
+  min-height: 32px;
+  padding: 6px 0;
+  line-height: 20px;
 }
 
 .button {
@@ -1187,6 +1128,7 @@ textarea:focus-visible {
   min-height: 0;
   display: flex;
   --sidebar-width: 220px;
+  background: var(--surface);
 }
 
 .workspace-shell {
@@ -1205,11 +1147,6 @@ textarea:focus-visible {
   box-shadow: none;
 }
 
-/* 둥근 작업공간 바깥은 상단바·레일과 같은 Agora 프레임 색으로 채웁니다. */
-.app {
-  background: var(--accent);
-}
-
 .chat-main {
   flex: 1;
   min-width: 0;
@@ -1217,24 +1154,36 @@ textarea:focus-visible {
   flex-direction: column;
 }
 
+/* --- 사이드바 ---
+   머리줄(제목 · 새 프로젝트 · 접기) / 프로젝트 트리 / 하단 목록 세 층이다.
+   예전에는 같은 선택자를 대여섯 번 덮어써서 최종값을 알려면 파일 끝까지 읽어야
+   했다. 사이드바 규칙은 이 절에만 둔다. */
 .sidebar {
+  /* 사용자가 끌어서 바꾸는 폭에 맞춰 안쪽 배치를 바꾸도록 컨테이너로 둔다. */
+  container: sidebar / inline-size;
   width: var(--sidebar-width);
   flex: none;
-  background: var(--sidebar);
-  border-right: 1px solid var(--line);
   display: flex;
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
+  background: var(--sidebar);
+  border-right: 1px solid var(--line);
   transition: width 160ms ease-out, border-color 160ms ease-out;
 }
 
+/* 폭 0에서도 테두리 1px가 남아 창 왼쪽 끝에 사이드바 색 줄이 보였다. */
+.app.is-sidebar-collapsed .sidebar {
+  width: 0;
+  border-right-width: 0;
+}
+
+/* 경계선 위의 보이지 않는 손잡이. 끌면 폭이 바뀌고, hover·포커스에서만 선이 보인다. */
 .sidebar-resizer {
   position: relative;
   width: 8px;
   flex: none;
-  margin-left: -4px;
-  margin-right: -4px;
+  margin: 0 -4px;
   z-index: 8;
   cursor: col-resize;
   touch-action: none;
@@ -1246,7 +1195,7 @@ textarea:focus-visible {
   position: absolute;
   inset: 0 3px;
   background: transparent;
-  transition: background 120ms ease-out;
+  transition: background-color 120ms ease-out;
 }
 
 .sidebar-resizer:hover::before,
@@ -1255,47 +1204,9 @@ textarea:focus-visible {
   background: color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
-.sidebar-toggle {
-  position: absolute;
-  top: 12px;
-  left: 50%;
-  z-index: 2;
-  width: 32px;
-  height: 40px;
-  transform: translateX(-50%);
-  border: none;
-  border-radius: 10px;
-  background: var(--surface);
-  color: var(--muted);
-  font-size: 20px;
-  line-height: 1;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.07), 0 3px 10px rgba(0, 0, 0, 0.09);
-  opacity: 0.58;
-  transition: opacity 120ms ease-out, color 120ms ease-out, box-shadow 120ms ease-out;
-}
-
-.sidebar-resizer:hover .sidebar-toggle,
-.sidebar-resizer:focus-within .sidebar-toggle,
-.sidebar-toggle:focus-visible,
-.app.is-sidebar-collapsed .sidebar-toggle {
-  opacity: 1;
-}
-
-.sidebar-toggle:hover,
-.sidebar-toggle:focus-visible {
-  color: var(--ink);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent), 0 4px 12px rgba(0, 0, 0, 0.11);
-  outline: none;
-}
-
-.app.is-sidebar-collapsed .sidebar {
-  width: 0;
-  border-right-color: transparent;
-}
-
+/* 접힌 동안에는 끌 대상이 없다. 펼치기는 대화 제목 앞 버튼이 맡는다. */
 .app.is-sidebar-collapsed .sidebar-resizer {
-  cursor: default;
-  margin-left: 0;
+  display: none;
 }
 
 .app.is-resizing,
@@ -1308,64 +1219,242 @@ textarea:focus-visible {
   transition: none;
 }
 
+/* 머리줄. 제목은 목록 이름표라 작고 흐리게, 오른쪽 끝에 접기 버튼. */
 .sidebar-head {
   flex: none;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 12px 14px 8px;
-  border-bottom: 1px solid var(--line);
+  gap: 4px;
+  padding: 12px 10px 8px 18px;
 }
 
 .sidebar-title {
-  color: var(--ink);
-  font-size: 13.5px;
-  font-weight: 700;
-  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  display: block;
-  min-width: 0;
-}
-
-.sidebar-foot {
-  flex: none;
-  padding: 8px 12px;
-  border-top: 1px solid var(--line);
-  display: grid;
-  gap: 6px;
-}
-
-.button-small {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
   white-space: nowrap;
-  min-height: var(--control-h-sm);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-  font-size: 11.5px;
+  color: var(--muted);
+  font-size: 12px;
   font-weight: 600;
-  padding: 3px 10px;
 }
 
-.button-small:hover {
-  border-color: var(--accent);
+.sidebar-head .button-small {
+  gap: 4px;
+  min-height: 28px;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 500;
 }
 
-.session-list {
+.sidebar-head .button-small:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+/* 사이드바를 좁게 끌면 "+ 프로젝트"가 "+"만 남는다. 그러지 않으면 목록 제목이
+   "프로…"로 잘렸다. 버튼 이름은 aria-label("새 프로젝트")이 그대로 지킨다. */
+@container sidebar (max-width: 200px) {
+  .new-project-label {
+    display: none;
+  }
+
+  .sidebar-head .button-small {
+    width: 28px;
+    padding: 0;
+  }
+}
+
+/* 접기(사이드바 머리줄)와 펼치기(대화 제목 앞)는 같은 모양이다. 옅은 바탕을 깐
+   정사각형이라 아이콘만 떠 있을 때보다 누를 자리가 분명하다. */
+.sidebar-toggle,
+.sidebar-open {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--hover);
+  color: var(--ink-soft);
+  transition: background-color 120ms ease-out, color 120ms ease-out;
+}
+
+.sidebar-toggle:hover,
+.sidebar-open:hover {
+  background: var(--hover-strong);
+  color: var(--ink);
+}
+
+.sidebar-toggle:active,
+.sidebar-open:active {
+  transform: translateY(1px);
+}
+
+/* --- 프로젝트 트리 ---
+   프로젝트(묶음 머리) 아래에 채팅(줄)이 들어간다. 묶음은 상자로 그리지 않고,
+   지금 보고 있는 채팅 하나만 목록 위로 떠 있는 흰 줄로 표시한다. */
+.project-list.project-tree {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   list-style: none;
   margin: 0;
-  padding: 6px;
+  padding: 0 10px 12px;
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+.project-item {
+  position: relative;
+}
+
+/* 프로젝트끼리는 선 대신 간격으로 나눈다. 채팅 없는 프로젝트가 이어지면 선이
+   한 줄 걸러 하나씩 그어져 목록이 줄무늬처럼 보였다. */
+.project-tree > .project-item + .project-item {
+  margin-top: 6px;
+}
+
+.project-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  border-radius: var(--radius-sm);
+  transition: background-color 120ms ease-out;
+}
+
+.project-row:hover {
+  background: var(--hover);
+}
+
+.project-caret {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  transition: transform 120ms ease-out, color 120ms ease-out;
+}
+
+.project-caret.is-open {
+  transform: rotate(90deg);
+}
+
+.project-caret:hover {
+  color: var(--ink);
+}
+
+/* 이름과 연결 폴더는 한 줄이다(VS Code/Slack식). 오른쪽 +·⋯ 자리만큼 비워 둔다.
+   줄바꿈을 허용하되 높이를 한 줄로 묶어, 폴더명이 최소 폭(4em)도 못 받으면 둘째 줄로
+   넘어가 가려진다. "A…"처럼 한 글자만 남은 폴더명은 정보가 아니라 잡음이다. */
+.project-select {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 14px 6px;
+  height: 32px;
+  overflow: hidden;
+  padding: 7px 60px 7px 2px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  line-height: 18px;
+  text-align: left;
+}
+
+.project-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-soft);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.project-item.is-active > .project-row .project-name {
+  color: var(--ink);
+}
+
+/* 연결 폴더는 basis 0이라 이름을 다 쓰고 남는 자리만 받는다. 예전 flex: 0 100 auto는
+   폴더가 먼저 줄긴 했지만 이름도 1px 미만으로 함께 줄어, 자리가 넉넉한데도
+   "AI 맞춤…"처럼 이름 끝이 말줄임으로 잘렸다. */
+.project-meta {
+  flex: 1 1 0;
+  min-width: 4em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* 행 오른쪽의 +(새 채팅)·⋯(설정). 새 채팅 입구는 이 + 하나뿐이라 흐리게 두지
+   않고, 조용한 ⋯과 달리 강조색으로 세운다. */
+.project-actions {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  display: inline-flex;
+  gap: 1px;
+}
+
+.project-action {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+}
+
+.project-action:hover {
+  background: var(--hover-strong);
+  color: var(--ink);
+}
+
+.project-action[aria-label$="새 채팅"] {
+  color: var(--accent);
+  font-size: 17px;
+}
+
+/* 프로젝트 아래 채팅 목록. 왼쪽 안내선이 화살표 가운데에서 내려와 소속을 보여 준다. */
+.session-list.project-sessions {
+  list-style: none;
+  margin: 1px 0 2px 11px;
+  padding: 1px 0 1px 8px;
+  border-left: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+/* 채팅이 없는 프로젝트 밑에 안내선 토막만 남던 것을 없앤다. */
+.session-list.project-sessions:empty {
+  display: none;
 }
 
 .session-item {
@@ -1373,90 +1462,99 @@ textarea:focus-visible {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
+  transition: background-color 120ms ease-out, box-shadow 120ms ease-out;
+}
+
+.session-item:not(.is-active):hover {
+  background: var(--hover);
 }
 
 .session-item.is-active {
   background: var(--surface);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-raised);
 }
 
 .session-select {
-  display: grid;
-  gap: 2px;
+  display: flex;
+  align-items: baseline;
   width: 100%;
   min-width: 0;
-  text-align: left;
-  border: none;
+  padding: 6px 4px 6px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
   background: transparent;
-  padding: 8px 10px;
-  border-radius: var(--radius-md);
-}
-
-.session-item:not(.is-active) .session-select:hover {
-  background: rgba(0, 0, 0, 0.04);
+  line-height: 18px;
+  text-align: left;
 }
 
 .session-title-line {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  flex: 1;
   min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
 }
 
 .session-name {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--ink-soft);
-  white-space: nowrap;
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-soft);
+  font-size: 12.5px;
+}
+
+.session-item.is-active .session-name {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* 채팅 시각("방금", "10분 전")은 짧아서 자르면 "방…"처럼 읽을 수 없게 된다.
+   시각은 온전히 두고 자리가 모자라면 제목이 먼저 말줄임된다. */
+.session-meta {
+  flex: none;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .session-status {
   flex: none;
-  width: 7px;
-  height: 7px;
+  align-self: center;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
 }
 
 .session-status.is-running {
-  background: #22c55e;
+  background: #16a34a;
   animation: chip-pulse 1.2s ease-in-out infinite;
 }
 
 .session-status.is-interrupted {
-  background: #f59e0b;
+  background: #d97706;
 }
 
-.session-meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 10.5px;
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-}
-
-/* 제목 위에 겹쳐 두지 않고 항상 자리를 차지합니다.
-   hover 전에도 보이므로 "나타날 때까지 기다렸다 조준"할 필요가 없습니다. */
+/* ⋯은 늘 자리를 차지해 제목을 가리지 않고, hover 전에도 조준할 수 있다. */
 .session-action {
   flex: none;
-  width: var(--control-h-sm);
-  height: var(--control-h-sm);
-  margin-right: 6px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  border-radius: var(--radius-sm);
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  margin-right: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
   background: transparent;
+  color: var(--muted);
   font-size: 14px;
   line-height: 1;
-  color: var(--muted);
-  opacity: 0.45;
-  transition: opacity 120ms ease-out, background 120ms ease-out, color 120ms ease-out;
+  opacity: 0.5;
+  transition: opacity 120ms ease-out, background-color 120ms ease-out, color 120ms ease-out;
 }
 
 .session-item:hover .session-action,
@@ -1466,8 +1564,8 @@ textarea:focus-visible {
 }
 
 .session-action:hover {
+  background: var(--hover-strong);
   color: var(--ink);
-  background: var(--accent-soft);
 }
 
 .session-rename-input {
@@ -1481,6 +1579,277 @@ textarea:focus-visible {
   border-radius: 6px;
   padding: 2px 6px;
   outline: none;
+}
+
+/* --- 사이드바 하단 ---
+   사용량 · 환경 진단 · 설정이 한 줄씩 쌓인다. 모든 줄이 같은 아이콘 칸(16px),
+   이름 칸, 끝 칸(꺾쇠 · 재탐지 · 개수)을 써서 왼쪽 글자선과 오른쪽 끝선이 맞는다.
+   예전에는 가운데 정렬 버튼 셋이 한 줄에 끼어 있어 위 "사용량"과 어긋났다. */
+.sidebar-foot {
+  flex: none;
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px 10px;
+  border-top: 1px solid var(--line);
+}
+
+.foot-row {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.foot-row > .foot-button {
+  flex: 1;
+}
+
+.foot-button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-align: left;
+  transition: background-color 120ms ease-out, color 120ms ease-out;
+}
+
+.foot-button:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.foot-icon {
+  flex: none;
+  color: var(--muted);
+  transition: color 120ms ease-out;
+}
+
+.foot-button:hover .foot-icon {
+  color: var(--ink-soft);
+}
+
+.foot-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-fold-chevron {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+  transition: transform 120ms ease-out;
+}
+
+.usage-fold-toggle.is-open .usage-fold-chevron {
+  transform: rotate(90deg);
+}
+
+/* 끝 칸의 아이콘 버튼. 폭 32px 가운데에 16px 아이콘이 서서, 위 줄 꺾쇠와 같은
+   오른쪽 선에 맞는다. */
+.foot-action {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  transition: background-color 120ms ease-out, color 120ms ease-out;
+}
+
+.foot-action:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+/* 탐지 중: 아이콘이 돌고 강조색이 된다. 색은 "애니메이션 줄이기"에서 회전이 멈춰도
+   눌렸다는 신호로 남는다. */
+.foot-action[aria-busy="true"] {
+  color: var(--accent);
+}
+
+.foot-action[aria-busy="true"] svg {
+  animation: foot-spin 900ms linear infinite;
+}
+
+@keyframes foot-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 확인이 필요한 에이전트가 있으면 진단 줄 끝에 개수를 붙여 바로 눈에 띄게 한다. */
+.foot-button.has-issue,
+.foot-button.has-issue:hover {
+  color: var(--danger-ink);
+}
+
+.foot-button.has-issue .foot-icon {
+  color: var(--danger);
+}
+
+.foot-button.has-issue::after {
+  content: attr(data-issue-count);
+  flex: none;
+  min-width: 16px;
+  height: 16px;
+  /* 가장 좁은 사이드바(180px)에서도 "환경 진단"이 잘리지 않게 이름과 조금 붙인다. */
+  margin-left: -4px;
+  padding: 0 4px;
+  border-radius: var(--radius-pill);
+  background: var(--danger);
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 펼친 사용량은 "사용량" 줄의 이름 칸(아이콘 뒤)에서 시작해 그 줄에 딸린 내용으로
+   읽힌다. 안의 칸이 이미 막대라 바깥은 테두리 없이 자리만 잡고, hover로 누를 수
+   있음을 알린다. */
+.usage-strip {
+  display: block;
+  width: 100%;
+  margin: 0 0 4px;
+  padding: 4px 8px 6px 34px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  text-align: left;
+  transition: background-color 120ms ease-out;
+}
+
+.usage-strip:hover {
+  background: var(--hover);
+}
+
+/* 이름 | 5시간 | 주간 세 열. 공급자끼리 같은 열에 놓여 눈으로 비교하기 쉽다. */
+.usage-strip-items {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 4px 6px;
+}
+
+.usage-strip-head {
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 500;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.usage-strip-head:first-child {
+  text-align: left;
+}
+
+.usage-strip-empty {
+  grid-column: span 3;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.usage-row-name {
+  padding-right: 2px;
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* 칸 자체가 막대다. --fill(남은 %)만큼 채워지므로 숫자와 길이가 같은 뜻을 가진다. */
+.usage-mini {
+  --fill: 100%;
+  --bar: color-mix(in srgb, var(--accent) 22%, var(--surface));
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 5px;
+  overflow: hidden;
+  /* 좁은 사이드바에서 "5시간"이 글자 단위로 쪼개지지 않게 한다. */
+  white-space: nowrap;
+  color: var(--ink-soft);
+  font-size: 10.5px;
+  background:
+    linear-gradient(to right, var(--bar) var(--fill), transparent var(--fill)),
+    color-mix(in srgb, var(--ink) 6%, var(--surface));
+}
+
+.usage-mini strong {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-mini.is-warn {
+  --bar: #fcd9a0;
+  color: #92400e;
+}
+
+.usage-mini.is-danger {
+  --bar: #fbc6c6;
+  color: var(--danger-ink);
+}
+
+.usage-mini.is-unknown {
+  grid-column: span 2;
+  justify-content: flex-start;
+  padding: 0;
+  background: none;
+  color: var(--muted);
+}
+
+/* 창이 하나뿐인 공급자가 있어도 열이 어긋나지 않게 자리만 채운다. */
+.usage-mini.usage-mini-empty {
+  background: none;
+  color: var(--muted);
+}
+
+.usage-mini-blank {
+  opacity: 0.6;
+}
+
+/* 작은 테두리 버튼. 팝오버의 새로고침·설정에서 보기 등에서 쓴다. */
+.button-small {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  white-space: nowrap;
+  min-height: var(--control-h-sm);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink-soft);
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 3px 10px;
+  transition: background-color 120ms ease-out, border-color 120ms ease-out, color 120ms ease-out;
+}
+
+.button-small:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 /* --- 헤더 컨트롤 --- */
@@ -1594,27 +1963,21 @@ textarea:focus-visible {
   margin-top: 7px;
 }
 
+/* 인라인 코드는 글자색을 얇게 깐 면이라 에이전트·사용자 말풍선 어느 쪽에서도 읽힌다. */
 .inline-code {
   font-family: Consolas, "D2Coding", monospace;
   font-size: 12px;
-  background: var(--accent-soft);
-  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
   border-radius: 4px;
-  padding: 0 4px;
+  padding: 1px 5px;
 }
 
-.message.is-user .inline-code {
-  background: rgba(255, 255, 255, 0.15);
-  border-color: transparent;
-  color: inherit;
-}
-
+/* 코드 블록은 글자색(ink)을 어둡게 눌러 만든 면이다. 테마가 바뀌면 같은 계열로 따라간다. */
 .code-block {
   margin: 8px 0;
-  border: 1px solid var(--line-strong);
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   overflow: hidden;
-  background: #0f172a;
+  background: color-mix(in srgb, var(--ink) 88%, #000000);
 }
 
 .code-block:first-child {
@@ -1630,8 +1993,9 @@ textarea:focus-visible {
   align-items: center;
   justify-content: space-between;
   padding: 4px 10px;
-  background: #1e293b;
-  color: #cbd5e1;
+  background: rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.62);
   font-size: 10.5px;
   font-family: Consolas, monospace;
 }
@@ -1639,7 +2003,7 @@ textarea:focus-visible {
 .code-copy {
   border: none;
   background: transparent;
-  color: #cbd5e1;
+  color: rgba(255, 255, 255, 0.7);
   font-size: 10.5px;
   padding: 1px 6px;
   border-radius: 4px;
@@ -1658,18 +2022,21 @@ textarea:focus-visible {
 .code-block code {
   font-family: Consolas, "D2Coding", monospace;
   font-size: 12px;
-  color: #e2e8f0;
+  color: rgba(255, 255, 255, 0.9);
   white-space: pre;
 }
 
 .bubble a {
-  color: #1d4ed8;
+  color: var(--accent);
   text-decoration: underline;
+  text-underline-offset: 2px;
   cursor: default;
 }
 
 /* --- 라이브(스트리밍) 초안 --- */
+/* 아직 확정되지 않은 답이라 점선 테두리로 "초안"임을 보인다. */
 .bubble.is-live-bubble {
+  border-color: var(--line-strong);
   border-style: dashed;
   color: var(--muted);
 }
@@ -1857,25 +2224,58 @@ textarea:focus-visible {
 }
 
 .attachment-row {
-  max-width: 760px;
-  margin: 0 auto 8px;
+  margin-bottom: 8px;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
 
+/* 자리가 모자라면 글자를 쪼개지 않고 버튼 묶음이 다음 줄로 내려간다. */
 .response-mode-bar {
-  max-width: 760px;
-  margin: 0 auto 6px;
+  margin-bottom: 8px;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 4px 8px;
 }
 
 .response-mode-label {
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 500;
   color: var(--muted);
+  white-space: nowrap;
+}
+
+/* 둘 중 하나만 고르는 값(이어 발언 / 독립 발언)은 붙은 한 묶음으로 그린다.
+   고른 쪽만 흰 면으로 떠오른다. */
+.segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--hover);
+}
+
+.segmented .mode-chip {
+  min-height: 24px;
+  padding: 0 10px;
+  white-space: nowrap;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.segmented .mode-chip:hover {
+  border-color: transparent;
+  color: var(--ink);
+}
+
+.segmented .mode-chip.is-active {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-raised);
 }
 
 /* 일반 모드의 전문 실행 안내는 문장이 길다. 좁은 창에서는 버튼을 다음 줄로 넘긴다. */
@@ -1909,7 +2309,7 @@ textarea:focus-visible {
   font-size: 11px;
   font-weight: 500;
   cursor: pointer;
-  transition: all 120ms ease;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
 }
 
 .mode-chip:hover {
@@ -1928,10 +2328,10 @@ textarea:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--line);
   background: var(--surface);
-  border-radius: 10px;
-  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  padding: 3px 8px 3px 3px;
   font-size: 11.5px;
   max-width: 220px;
 }
@@ -1941,11 +2341,23 @@ textarea:focus-visible {
   height: 26px;
   object-fit: cover;
   border-radius: 6px;
-  background: var(--accent-soft);
+  background: var(--hover);
 }
 
+/* 파일 종류는 그림 대신 확장자(PDF · TXT · ZIP …)로 보인다. */
 .attachment-icon {
-  font-size: 14px;
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 3px;
+  border-radius: 6px;
+  background: var(--hover);
+  color: var(--ink-soft);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
 .attachment-name {
@@ -1974,9 +2386,7 @@ textarea:focus-visible {
 }
 
 .message.is-user .attachment-pill {
-  background: rgba(255, 255, 255, 0.12);
   border-color: transparent;
-  color: inherit;
 }
 
 .delivery-badge {
@@ -1990,9 +2400,12 @@ textarea:focus-visible {
   display: inline-block;
 }
 
+/* 파일을 끌어다 놓는 중: 입력창 전체가 강조색 면이 되어 놓을 자리임을 보인다. */
 .composer-box.is-dragover {
   background: var(--accent-soft);
-  box-shadow: 0 9px 20px rgba(0, 0, 0, 0.13), 0 24px 46px rgba(0, 0, 0, 0.11);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent),
+    0 8px 24px color-mix(in srgb, var(--ink) 10%, transparent);
 }
 
 /* --- 팝오버 --- */
@@ -2151,7 +2564,6 @@ textarea:focus-visible {
   background: var(--surface); border-radius: 18px; box-shadow: 0 20px 60px rgba(0,0,0,.25); padding: 22px;
 }
 .doctor-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
-.doctor-eyebrow { margin: 0 0 5px; color: var(--muted); font-size: 10px; font-weight: 800; letter-spacing: .13em; }
 .doctor-head h2 { margin: 0; font-size: 20px; }
 .doctor-head p:last-child { margin: 7px 0 0; color: var(--muted); font-size: 12px; }
 .doctor-close { flex: none; border: 0; box-shadow: none; }
@@ -2224,89 +2636,8 @@ textarea:focus-visible {
   background: rgba(255, 255, 255, 0.12);
 }
 
-.app {
-  --sidebar-width: 252px;
-  background: var(--accent);
-}
-
-.sidebar {
-  background: var(--sidebar);
-  border-right-color: var(--line);
-}
-
-.sidebar-head {
-  padding: 14px 14px 10px;
-  border-bottom: none;
-}
-
-.sidebar-heading {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-  flex: 1;
-}
-
-.sidebar-title {
-  color: var(--ink);
-  font-size: 15px;
-}
-
-.button-small {
-  border-color: var(--line-strong);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--accent);
-  padding: 5px 9px;
-}
-
-.button-small:hover {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-}
-
-.session-list {
-  gap: 5px;
-  padding: 4px 10px 12px;
-}
-
-.session-item {
-  border: 1px solid transparent;
-}
-
-.session-item.is-active {
-  background: var(--surface);
-  border-color: var(--line-strong);
-  box-shadow: var(--shadow);
-}
-
-.session-select {
-  padding: 10px;
-}
-
-.session-item:not(.is-active) .session-select:hover {
-  background: var(--accent-soft);
-}
-
-.session-name {
-  color: var(--ink);
-}
-
-.session-meta {
-  color: #7182a0;
-}
-
-.sidebar-foot {
-  display: grid;
-  gap: 7px;
-  padding: 11px 14px 13px;
-  border-top-color: var(--line);
-}
-
-.sidebar-foot {
-  gap: 6px;
-}
-
 .room-bar {
+  flex: none;
   display: grid;
   /* 참가자 칩·동작 버튼·작업공간을 한 칸에 몰아넣으니 창이 좁아질 때마다
      칩이 제멋대로 접혀 줄 수가 들쭉날쭉했다. 두 줄로 고정하고 칸마다 역할을
@@ -2317,22 +2648,11 @@ textarea:focus-visible {
   grid-template-areas:
     "info buttons"
     "controls chips";
-  gap: 12px 20px;
-  padding: 20px 24px 14px;
+  align-items: center;
+  gap: 10px 16px;
+  padding: 14px 24px 12px;
   background: var(--surface);
-  border-bottom-color: var(--line);
-}
-
-.room-info {
-  grid-area: info;
-  display: grid;
-  gap: 3px;
-}
-
-.room-title-button {
-  color: var(--ink);
-  font-size: 20px;
-  line-height: 1.25;
+  border-bottom: 1px solid var(--line);
 }
 
 .room-actions {
@@ -2341,21 +2661,11 @@ textarea:focus-visible {
 
 .agent-chips {
   grid-area: chips;
+  display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
   align-items: center;
-}
-
-.agent-chip {
-  min-height: 36px;
-  padding: 3px 9px 3px 4px;
-  border-color: var(--line);
-  background: var(--surface-muted);
-}
-
-.agent-avatar {
-  width: 28px;
-  height: 28px;
+  gap: 6px;
 }
 
 .room-controls {
@@ -2597,7 +2907,9 @@ textarea:focus-visible {
   max-height: min(40vh, 320px);
   overflow-y: auto;
   gap: 6px;
-  margin: 0 0 8px;
+  /* 좌우 여백은 입력창 위 줄들과 함께 auto로 가운데 선다(입력창 절). 단축 속성으로
+     margin을 다시 쓰면 넓은 창에서 이 상자만 왼쪽에 붙는다. */
+  margin-bottom: 8px;
   padding: 10px 12px;
   border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line));
   border-radius: 10px;
@@ -2765,49 +3077,6 @@ textarea:focus-visible {
   margin-left: 2px;
 }
 
-.chat-scroll {
-  padding: 24px 28px 10px;
-}
-
-.message-list,
-.typing-row,
-.composer-box {
-  max-width: 820px;
-}
-
-.message-list {
-  gap: 18px;
-}
-
-.message .bubble {
-  border-color: var(--line);
-  border-radius: 8px 16px 16px 16px;
-  box-shadow: var(--shadow);
-  padding: 10px 14px;
-}
-
-.message.is-user .bubble {
-  border-radius: 16px 8px 16px 16px;
-  background: var(--accent);
-  border-color: var(--accent);
-}
-
-.composer {
-  padding: 6px 28px 20px;
-  background: linear-gradient(180deg, rgba(246, 248, 252, 0) 0%, var(--page) 32%);
-}
-
-.composer-box {
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  box-shadow: var(--shadow);
-}
-
-.composer-box:focus-within {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent-soft);
-}
-
 .button-primary {
   background: var(--accent);
   border-color: var(--accent);
@@ -2873,60 +3142,6 @@ textarea:focus-visible {
   background: rgba(255, 255, 255, 0.18);
 }
 
-.sidebar-head {
-  padding: 16px 14px 10px;
-}
-
-.sidebar-heading {
-  display: block;
-}
-
-.sidebar-foot {
-  display: grid;
-  gap: 6px;
-  padding: 10px 14px 12px;
-}
-
-.room-bar {
-  gap: 9px 16px;
-  padding: 16px 24px 12px;
-}
-
-.room-title-button {
-  font-size: 18px;
-}
-
-.agent-chip {
-  border-radius: 8px;
-}
-
-.chip-button,
-#permission-select {
-  border-radius: 6px;
-}
-
-.message .bubble {
-  border-radius: 6px 12px 12px 12px;
-  box-shadow: 0 1px 4px rgba(22, 52, 96, 0.05);
-}
-
-.message.is-user .bubble {
-  border-radius: 12px 6px 12px 12px;
-}
-
-.composer {
-  padding: 12px 28px 18px;
-}
-
-.composer-box {
-  border-radius: 10px;
-  box-shadow: 0 4px 14px rgba(22, 52, 96, 0.07);
-}
-
-.composer-box:focus-within {
-  box-shadow: 0 5px 16px rgba(22, 52, 96, 0.1);
-}
-
 .doctor-dialog,
 .approval-dialog {
   border-radius: 10px;
@@ -2936,113 +3151,7 @@ textarea:focus-visible {
   border-radius: 8px;
 }
 
-/* --- Project hierarchy --- */
-.project-head {
-  padding-bottom: 8px;
-}
-
-.chat-head {
-  margin-top: 4px;
-  padding-top: 13px;
-  border-top: 1px solid var(--line);
-}
-
-.project-list {
-  flex: none;
-  max-height: 190px;
-  overflow-y: auto;
-  list-style: none;
-  margin: 0;
-  padding: 0 10px 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.project-item {
-  position: relative;
-  border: 1px solid transparent;
-  border-radius: 8px;
-}
-
-.project-item.is-active {
-  /* 프로젝트는 "묶음 머리"다. 상자로 그리면 안에 든 채팅 행·새 채팅 버튼과
-     같은 형태가 되어 층이 사라진다. 상자 대신 왼쪽 막대와 옅은 바탕만 준다. */
-  background: var(--accent-soft);
-  border-color: transparent;
-  box-shadow: none;
-}
-
-.project-select {
-  display: grid;
-  gap: 2px;
-  width: 100%;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  padding: 8px 32px 8px 10px;
-  text-align: left;
-}
-
-.project-item:not(.is-active) .project-select:hover {
-  background: var(--accent-soft);
-}
-
-.project-name {
-  color: var(--ink);
-  font-size: 12px;
-  font-weight: 700;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.project-meta {
-  color: var(--muted);
-  font-size: 10.5px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.project-actions {
-  position: absolute;
-  top: 50%;
-  right: 5px;
-  transform: translateY(-50%);
-  display: inline-flex;
-  /* 0.4는 보이지 않는 것과 같았다. 쉬고 있어도 읽히고, 현재 프로젝트에서는 선명하게. */
-  opacity: 0.65;
-  transition: opacity 120ms ease-out;
-}
-
-.project-item.is-active > .project-row .project-actions,
-.project-row:hover .project-actions {
-  opacity: 1;
-}
-
-.project-item:hover .project-actions,
-.project-item.is-active .project-actions,
-.project-actions:focus-within {
-  opacity: 1;
-}
-
-.project-action {
-  min-width: var(--control-h-sm);
-  height: var(--control-h-sm);
-  border: none;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--muted);
-  font-weight: 700;
-  line-height: 1;
-}
-
-.project-action:hover {
-  color: var(--ink);
-  background: var(--accent-soft);
-}
-
+/* --- 프로젝트 설정·기록 팝오버 --- */
 .project-popover-title {
   display: block;
   margin-bottom: 2px;
@@ -3302,180 +3411,6 @@ textarea:focus-visible {
   margin: 0;
 }
 
-
-/* --- 사이드바 사용량 스트립 --- */
-.usage-strip {
-  display: grid;
-  gap: 5px;
-  width: 100%;
-  /* 안에 든 게이지 칸이 이미 둥근 상자다. 바깥까지 테두리를 두르면 상자 안에
-     상자가 되어 정작 읽어야 할 수치가 묻힌다. 바깥은 자리만 잡고, 누를 수
-     있다는 신호는 hover로 준다. */
-  border: 1px solid transparent;
-  border-radius: var(--radius-md);
-  background: transparent;
-  padding: 4px 3px;
-  text-align: left;
-  transition: background-color 120ms ease-out;
-}
-
-.usage-strip:hover {
-  background: var(--accent-soft);
-}
-
-.usage-strip-head {
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  color: var(--muted);
-  text-align: center;
-  white-space: nowrap;
-}
-
-.usage-strip-head:first-child {
-  text-align: left;
-}
-
-/* 이름 | 5시간 | 주간 세 열. 공급자끼리 같은 열에 놓여 눈으로 비교하기 쉽습니다. */
-.usage-strip-items {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
-  align-items: center;
-  gap: 3px 4px;
-}
-
-.usage-strip-empty {
-  font-size: 11px;
-  color: var(--muted);
-}
-
-.usage-row-name {
-  font-size: 10px;
-  font-weight: 700;
-  color: var(--muted);
-  white-space: nowrap;
-  padding-right: 2px;
-}
-
-/* 칸 자체가 막대입니다. --fill(남은 %)만큼 채워지므로 숫자와 길이가 같은 뜻을 가집니다. */
-.usage-mini {
-  --fill: 100%;
-  min-width: 0;
-  display: inline-flex;
-  align-items: baseline;
-  justify-content: center;
-  gap: 3px;
-  border-radius: var(--radius-sm);
-  padding: 2px 5px;
-  font-size: 10px;
-  line-height: 1.5;
-  color: var(--ink-soft);
-  /* 좁은 사이드바에서 "5시간"이 글자 단위로 쪼개지지 않게 합니다. */
-  white-space: nowrap;
-  overflow: hidden;
-  background:
-    linear-gradient(
-      to right,
-      color-mix(in srgb, var(--accent) 22%, var(--surface)) var(--fill),
-      transparent var(--fill)
-    ),
-    var(--surface-muted);
-}
-
-.usage-mini strong {
-  flex: none;
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
-}
-
-.usage-mini.is-warn {
-  color: #92400e;
-  background: linear-gradient(to right, #fde68a var(--fill), transparent var(--fill)), var(--surface-muted);
-}
-
-.usage-mini.is-danger {
-  color: #b91c1c;
-  background: linear-gradient(to right, #fecaca var(--fill), transparent var(--fill)), var(--surface-muted);
-}
-
-.usage-mini.is-unknown {
-  grid-column: span 2;
-  justify-content: flex-start;
-  background: var(--surface-muted);
-  color: var(--muted);
-}
-
-/* 창이 하나뿐인 공급자가 있어도 열이 어긋나지 않게 자리만 채웁니다. */
-.usage-mini-empty {
-  min-width: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  color: var(--muted);
-  font-size: 10px;
-}
-
-.usage-mini-blank {
-  opacity: 0.5;
-}
-
-.usage-strip-empty {
-  grid-column: span 3;
-}
-
-.sidebar-foot-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.sidebar-foot-actions .foot-button {
-  flex: 1 1 auto;
-  width: auto;
-  padding: 4px 6px;
-  white-space: nowrap;
-}
-
-/* 확인이 필요한 에이전트가 있으면 진단 버튼에 점을 붙여 사이드바에서 바로 눈에 띄게 합니다. */
-.foot-button.has-issue {
-  color: #b91c1c;
-  font-weight: 700;
-}
-
-.foot-button.has-issue::before {
-  content: "";
-  flex: none;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--danger);
-}
-
-.foot-button.has-issue:hover {
-  color: #b91c1c;
-  background: var(--danger-soft);
-}
-
-.foot-button-icon {
-  flex: none !important;
-  width: var(--control-h-sm) !important;
-  padding: 0 !important;
-}
-
-.usage-diagnose {
-  border: none;
-  background: transparent;
-  padding: 0;
-  font: inherit;
-  color: var(--accent);
-  text-decoration: underline;
-}
-
-.usage-diagnose:hover {
-  color: var(--accent-strong);
-}
-
 /* --- Agora shell visual pass ---
    Existing controls and IDs stay intact; this block only changes the shell.
    ponytail: keep the first pass CSS-only so behavior remains on the tested path. */
@@ -3507,16 +3442,6 @@ textarea:focus-visible {
   background: #c93636;
 }
 
-.sidebar {
-  background: var(--sidebar);
-  border-right-color: var(--line);
-}
-
-/* 브랜드를 뺀 만큼 프로젝트 목록이 위로 붙지 않게 상단 여백을 살립니다. */
-.sidebar .project-head {
-  padding-top: 14px;
-}
-
 /* 비활성 컨트롤은 눌러도 반응 없다는 신호를 커서로 명확히 합니다. */
 .chip-button:disabled,
 .work-mode-switch:disabled,
@@ -3525,45 +3450,13 @@ textarea:focus-visible {
   opacity: 0.55;
 }
 
-.sidebar-head {
-  padding-left: 16px;
-  padding-right: 16px;
-}
-
-.project-head {
-  padding-top: 16px;
-}
-
-.chat-head {
-  border-top-color: var(--line);
-}
-
-.session-item.is-active {
-  border-color: color-mix(in srgb, var(--accent) 28%, var(--line));
-  box-shadow: 0 1px 3px rgba(16, 42, 67, 0.08);
-}
-
-.room-bar {
-  padding: 17px 24px 12px;
-  border-bottom-color: var(--line);
-}
-
-.room-title-button {
-  font-size: 19px;
-}
-
-.agent-chip {
-  min-height: 34px;
-  border-radius: 8px;
-  background: var(--surface);
-  box-shadow: 0 1px 2px rgba(16, 42, 67, 0.05);
-}
-
+/* 상단 줄 컨트롤(작업공간 · 권한 · 참가자 칩 · 모드 전환)은 높이 30px, 모서리 8px 하나로
+   맞춘다. 예전에는 6px · 7px · 8px이 한 줄에 섞여 있었다. */
 .chip-button,
 #permission-select,
 .work-mode-switch {
   min-height: 30px;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
 }
 
 /* 상자 안의 상자 정리 — 바깥이 이미 테두리를 가진 자리에서는 안쪽 요소가
@@ -3578,11 +3471,11 @@ textarea:focus-visible {
 
 .work-mode-switch:hover {
   border-color: transparent;
-  background: var(--accent-soft);
+  background: var(--hover);
 }
 
-/* 첨부(＋)는 테두리 친 입력창 안에 있다. 자기 테두리를 또 그리면 입력창
-   상자 안의 상자가 된다. 평소에는 아이콘만 두고 hover에서만 바탕을 준다. */
+/* 첨부(클립)는 입력창 면 안에 있다. 자기 테두리를 또 그리면 입력창 안의 상자가
+   된다. 평소에는 아이콘만 두고 hover에서만 바탕을 준다. */
 .composer-box .icon-button {
   border-color: transparent;
   background: transparent;
@@ -3590,25 +3483,7 @@ textarea:focus-visible {
 
 .composer-box .icon-button:hover {
   border-color: transparent;
-  background: var(--accent-soft);
-}
-
-
-.chat-scroll {
-  background: var(--surface);
-}
-
-.message .bubble {
-  box-shadow: 0 1px 4px rgba(16, 42, 67, 0.05);
-}
-
-.composer {
-  background: var(--surface);
-}
-
-.composer-box {
-  border-radius: 10px;
-  box-shadow: 0 3px 12px rgba(16, 42, 67, 0.07);
+  background: var(--hover);
 }
 
 /* 사이드바 2열부터 채팅까지 하나의 Slack식 작업 패널로 이어집니다. */
@@ -3620,7 +3495,6 @@ textarea:focus-visible {
   background: var(--surface);
 }
 
-
 /* 좁은 창에서도 버튼은 줄바꿈하고 상태 안내는 가용 폭 안에서 읽힌다. */
 @media (max-width: 900px) {
   .professional-actions {
@@ -3630,43 +3504,6 @@ textarea:focus-visible {
 }
 
 /* --- Shared control polish --- */
-.project-item,
-.session-item {
-  transition: background-color 120ms ease-out, border-color 120ms ease-out, box-shadow 120ms ease-out;
-}
-
-.project-item:hover,
-.session-item:not(.is-active):hover {
-  border-color: color-mix(in srgb, var(--accent) 20%, var(--line));
-}
-
-.project-item.is-active .project-name,
-.session-item.is-active .session-name {
-  color: var(--accent);
-}
-
-.project-item.is-active .project-meta,
-.session-item.is-active .session-meta {
-  color: var(--muted);
-}
-
-.button-small,
-.foot-button,
-.sidebar-toggle {
-  transition: background-color 120ms ease-out, border-color 120ms ease-out, color 120ms ease-out, box-shadow 120ms ease-out;
-}
-
-.foot-button:hover,
-.button-small:hover {
-  background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
-  color: var(--accent);
-}
-
-.sidebar-toggle {
-  border: 1px solid var(--line);
-  box-shadow: 0 1px 5px rgba(16, 42, 67, 0.09);
-}
 
 .room-controls-context,
 .room-controls-actions {
@@ -3677,43 +3514,6 @@ textarea:focus-visible {
 .room-controls-actions .work-mode-switch {
   min-width: 82px;
   justify-content: center;
-}
-
-.message .avatar {
-  width: 42px;
-  height: 42px;
-  border-radius: 11px;
-}
-
-.message .bubble {
-  border-radius: 8px 14px 14px 14px;
-  line-height: 1.58;
-}
-
-.message.is-user .bubble {
-  border-radius: 14px 8px 14px 14px;
-}
-
-.foot-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  width: 100%;
-  min-height: var(--control-h-sm);
-  border: none;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--muted);
-  font-size: 11.5px;
-  font-weight: 600;
-  padding: 4px 8px;
-  transition: background 120ms ease-out, color 120ms ease-out;
-}
-
-.foot-button:hover {
-  color: var(--ink);
-  background: var(--accent-soft);
 }
 
 /* --- 팝오버 메뉴 (세션 우클릭 · ⋯) --- */
@@ -3836,352 +3636,30 @@ textarea:focus-visible {
   padding-top: 9px;
 }
 
-/* --- Showcase finish pass: messages, composer, sidebar --- */
-
-/* 메시지 아바타는 시안처럼 흰 박스에 공식 로고를 담습니다. */
-.message .avatar {
-  background: #ffffff;
-  border: 1px solid var(--line);
-  padding: 4px;
-  box-shadow: 0 1px 3px rgba(16, 42, 67, 0.08);
-}
-.message .avatar::before {
-  background: #ffffff;
-}
-.message .avatar .agent-logo {
-  width: 100%;
-  height: 100%;
-}
-
-/* AI 말풍선은 연한 표면색, 사용자 말풍선은 강조색 그대로 유지합니다. */
-.message:not(.is-user):not(.is-system) .bubble {
-  background: var(--surface-muted);
-}
-
-.message .meta .name {
-  font-weight: 700;
-}
-
-/* 입력창은 시안의 떠 있는 카드 느낌으로 다듬습니다. */
-.composer-box {
-  border: 1px solid var(--line-strong);
-  border-radius: 12px;
-  box-shadow: 0 4px 14px rgba(16, 42, 67, 0.08);
-}
-.composer-box:focus-within {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent-soft), 0 6px 18px rgba(16, 42, 67, 0.1);
-}
-
-/* 사이드바는 프로젝트(묶음) 안에 채팅(줄)이 들어가는 구조다. 둘 다 테두리 친
-   둥근 상자로 그리면 상자 안에 상자가 되어, 어느 것이 묶음이고 어느 것이 줄인지
-   형태로는 읽히지 않는다. 묶음에는 상자를 주지 않고 머리줄만 물들이고, 줄은
-   테두리 없이 바탕색으로만 표시한다. */
-.project-item.is-active {
-  background: transparent;
-  border-color: transparent;
-  box-shadow: none;
-}
-
-.project-item.is-active > .project-row {
-  background: var(--accent-soft);
-  border-radius: 8px;
-}
-
-.session-item.is-active {
-  background: var(--accent-soft);
-  border-color: transparent;
-  box-shadow: none;
-}
-
-/* 묶음 자체에는 hover 테두리도 주지 않는다 — 누를 수 있는 것은 안의 줄이다. */
-.project-item:hover,
-.session-item:not(.is-active):hover {
-  border-color: transparent;
-}
-.project-item.is-active .project-name,
-.session-item.is-active .session-name {
-  color: var(--accent);
-}
-
-/* 사이드바 섹션 제목을 시안처럼 작은 회색 라벨로 통일합니다.
-   (기존 15px·진한 잉크색이 본문보다 과하게 커 보이던 문제) */
-.sidebar .sidebar-title {
-  font-size: 11.5px;
-  font-weight: 700;
-  color: var(--muted);
-  letter-spacing: 0.02em;
-}
-
-/* --- 프로젝트 토글 트리 --- */
-/* 사이드바는 프로젝트를 토글로 삼는 트리 하나입니다. 스크롤 컨테이너도 트리 자신입니다. */
-.project-list.project-tree {
-  flex: 1;
-  min-height: 0;
-  max-height: none;
-  overflow-y: auto;
-  padding: 6px 10px 10px;
-  gap: 2px;
-}
-
-.project-row {
-  position: relative;
-  display: flex;
-  align-items: center;
-  min-width: 0;
-}
-
-.project-caret {
-  flex: none;
-  width: 18px;
-  height: var(--control-h-sm);
+/* 조회에 실패한 공급자 옆의 "환경 진단" 링크. */
+.usage-diagnose {
   border: none;
   background: transparent;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1;
-  transition: transform 120ms ease-out;
-}
-
-.project-caret.is-open {
-  transform: rotate(90deg);
-}
-
-.project-caret:hover {
-  color: var(--ink);
-}
-
-/* 행 우측에 +(새 채팅)·⋯(설정) 두 개가 놓이므로 제목이 겹치지 않게 여백을 넓힙니다. */
-.project-row .project-select {
-  flex: 1;
-  min-width: 0;
-  padding: 7px 56px 7px 4px;
-}
-
-.project-row .project-actions {
-  top: 50%;
-  right: 4px;
-  transform: translateY(-50%);
-}
-
-/* 새 채팅 입구는 프로젝트 행의 + 하나다. 목록 맨 위에 같은 동작의 줄을 또
-   두면 채팅 항목과 자리·들여쓰기가 같아 "목록의 한 줄"로 읽힌다. 입구를
-   하나로 줄인 대신 그 +를 조용한 ⋯과 다르게 강조색으로 세운다. */
-.project-action[aria-label$="새 채팅"] {
+  padding: 0;
+  font: inherit;
   color: var(--accent);
-  font-size: 16px;
-  font-weight: 700;
+  text-decoration: underline;
 }
 
-.project-action[aria-label$="새 채팅"]:hover {
-  color: var(--accent);
-  background: var(--accent-soft);
-}
-
-/* 프로젝트 행의 동작 아이콘은 늘 또렷하게 — 흐려 두면 새 채팅 입구가 하나뿐인
-   지금 구조에서 그 하나를 못 찾는다. */
-.project-actions {
-  opacity: 1;
-}
-
-/* 프로젝트 아래 중첩된 채팅 목록: 자체 스크롤 없이 트리 흐름에 붙습니다.
-   좌측 가이드 선이 "이 채팅들은 위 프로젝트 소속"임을 보여줍니다. */
-.session-list.project-sessions {
-  flex: none;
-  overflow: visible;
-  margin-left: 13px;
-  border-left: 1px solid var(--line);
-  padding: 2px 2px 6px 8px;
-  gap: 1px;
-}
-
-/* 채팅 행은 프로젝트 행보다 한 단계 옅게 — 제목 굵기·색·크기를 낮춰 위계를 만듭니다. */
-.project-sessions .session-name {
-  font-weight: 400;
-  font-size: 11.5px;
-  color: var(--muted);
-}
-
-.project-sessions .session-item:hover .session-name,
-.project-sessions .session-item.is-active .session-name {
-  color: var(--ink);
-}
-
-.project-sessions .session-item.is-active .session-name {
-  color: var(--accent);
-  font-weight: 600;
-}
-
-.project-sessions .session-meta {
-  font-size: 10px;
-}
-
-/* 채팅 행: 지금 보고 있는 채팅만 통째로 색을 깔고 왼쪽에 막대를 세운다.
-   테두리 친 상자로 표시하면 위의 프로젝트 상자·아래 새 채팅 알약과 형태가
-   겹쳐 셋이 같은 것으로 보였다. 형태를 나눠야 종류가 나뉜다. */
-.project-sessions .session-item.is-active {
-  background: var(--accent-soft);
-  border-color: transparent;
-  box-shadow: none;
-}
-
-.project-sessions .session-item.is-active::before {
-  content: "";
-  position: absolute;
-  left: -9px;
-  top: 3px;
-  bottom: 3px;
-  width: 2px;
-  border-radius: 1px;
-  background: var(--accent);
-}
-
-.project-sessions-empty {
-  color: var(--muted);
-  opacity: 0.7;
-  font-size: 11px;
-  padding: 4px 8px 2px;
-  list-style: none;
-}
-
-/* 프로젝트끼리는 옅은 구분선으로 나눠 하나의 덩어리로 보이지 않게 합니다. */
-.project-item {
-  border-radius: 8px;
-}
-
-/* 프로젝트 이름은 묶음 머리답게 채팅 행보다 확실히 크고 굵게. 예전에는 12px/700,
-   채팅 행이 11.5px/400이라 차이가 0.5px뿐이어서 위계가 읽히지 않았다. */
-.project-row .project-name {
-  font-size: 13px;
-  letter-spacing: -0.1px;
-}
-
-.project-item.is-active > .project-row .project-name {
-  color: var(--accent);
-}
-
-.project-tree > .project-item + .project-item {
-  margin-top: 6px;
-  position: relative;
-}
-
-.project-tree > .project-item + .project-item::before {
-  content: "";
-  position: absolute;
-  top: -4px;
-  left: 6px;
-  right: 6px;
-  border-top: 1px solid var(--line);
-}
-
-/* --- 사용량 접기/펼치기 --- */
-.usage-fold-toggle {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  border: none;
-  background: transparent;
-  color: var(--muted);
-  font-size: 11.5px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  padding: 4px 6px;
-  border-radius: var(--radius-sm);
-}
-
-.usage-fold-toggle:hover {
-  color: var(--ink);
-  background: var(--accent-soft);
-}
-
-.usage-fold-chevron {
-  display: inline-block;
-  font-size: 13px;
-  line-height: 1;
-  transition: transform 120ms ease-out;
-}
-
-.usage-fold-toggle.is-open .usage-fold-chevron {
-  transform: rotate(90deg);
-}
-
-/* --- 컴포저 세로 정렬 --- */
-/* 한 줄 입력일 때 글자가 버튼(32px)보다 낮게 보이던 것을 보정합니다.
-   줄 높이 20px + 상하 6px = 32px로 버튼과 같은 높이가 되어 가운데로 읽힙니다. */
-#composer-input {
-  padding: 6px 0;
-  line-height: 20px;
-  min-height: 32px;
-}
-
-/* --- 사이드바 한 줄 행 (VS Code / Slack 스타일) --- */
-/* 프로젝트와 채팅 모두 한 행 = 한 줄입니다. 부차 정보(연결 폴더, 시각)는
-   줄바꿈 대신 이름 옆에 흐리게 붙습니다. */
-.project-row .project-select,
-.project-sessions .session-select {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  min-width: 0;
-}
-
-/* 이름은 주 식별자라 최대한 보존합니다(shrink 1). 아래 meta가 먼저 줄어듭니다. */
-.project-row .project-name,
-.project-sessions .session-name {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 공간이 모자라면 부차 정보(폴더/시각)가 먼저 줄어듭니다. 이름이 주 식별자라
-   이름을 자르고 폴더명을 온전히 남기면 위계가 뒤집힙니다. shrink 계수를 크게 줘
-   이름보다 훨씬 빨리 줄어들게 합니다. */
-.project-row .project-meta,
-.project-sessions .session-meta {
-  flex: 0 100 auto;
-  min-width: 0;
-  font-size: 10.5px;
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* 한 줄이 되면서 행이 낮아지므로 세로 여백을 조금 조입니다. */
-.project-row .project-select {
-  padding: 6px 56px 6px 4px;
-}
-
-.project-sessions .session-select {
-  padding: 5px 8px;
-}
-
-/* 제목줄이 곧 행 전체라 남는 공간을 모두 차지하게 둡니다. */
-.project-sessions .session-title-line {
-  flex: 1;
-  min-width: 0;
-  align-items: baseline;
+.usage-diagnose:hover {
+  color: var(--accent-strong);
 }
 
 /* --- 마크다운 표와 제목 --- */
-/* 표는 말풍선 너비를 넘길 수 있으므로 표만 가로 스크롤합니다.
-   본문 전체가 가로로 밀리면 읽기가 더 나빠집니다. */
-/* .message가 flex라 말풍선의 기본 min-width:auto가 축소를 막습니다. 그대로 두면
-   줄바꿈되지 않는 넓은 콘텐츠(표)가 말풍선째로 대화 영역을 가로로 밀어냅니다.
-   표뿐 아니라 긴 코드 줄에도 같은 문제라 공유 지점에서 한 번 고칩니다. */
-.message .bubble {
-  min-width: 0;   /* 표 오버플로 */
-}
-
+/* 표는 말풍선 너비를 넘길 수 있으므로 표만 가로 스크롤한다. 본문 전체가 가로로
+   밀리면 읽기가 더 나빠진다. 말풍선의 옅은 면 위에서도 칸이 읽히도록 흰 바탕을 깐다. */
 .table-wrap {
   max-width: 100%;
   overflow-x: auto;
   margin: 8px 0;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
+  background: var(--surface);
 }
 
 .md-table {
@@ -4201,9 +3679,9 @@ textarea:focus-visible {
 }
 
 .md-table th {
-  background: var(--accent-soft);
+  background: var(--fill-subtle);
   color: var(--ink);
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .md-table tbody tr:last-child td {
@@ -4214,7 +3692,7 @@ textarea:focus-visible {
 .md-heading {
   margin: 12px 0 6px;
   line-height: 1.35;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--ink);
 }
 
@@ -4228,3 +3706,16 @@ h3.md-heading { font-size: 14px; }
 h4.md-heading,
 h5.md-heading,
 h6.md-heading { font-size: 13px; }
+
+/* 운영체제에서 "애니메이션 줄이기"를 켠 사용자에게는 깜빡임·회전·밀림을 멈춘다.
+   실행 중·재탐지 중 같은 상태는 색과 문구로 여전히 드러난다. (설정 창과 같은 규칙) */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
