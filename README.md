@@ -147,8 +147,6 @@ artifacts/Agora-<버전>.exe
 - [초기 구현 계획(역사 문서)](docs/design/AGORA_IMPLEMENTATION_PLAN.md)
 - [미래 호환성 원칙](docs/design/AGORA_V1_FUTURE_COMPATIBILITY.md)
 
-과거 조사와 검수 기록은 [docs/archive](docs/archive/)에서 확인할 수 있습니다.
-
 ## 라이선스와 원본 고지
 
 이 프로젝트는 [MIT License](LICENSE)를 따릅니다. Agora는 CodePet을 기반으로 발전했으며 원본 저작권 고지를 유지합니다. 자세한 내용은 [LICENSE](LICENSE)를 확인하세요.

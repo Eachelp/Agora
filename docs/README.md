@@ -46,9 +46,6 @@ V1.5의 역할 전달 요청은 기존 Professional FSM의 순서와 승인 조�
 | [D-A0 결정 기록](design/AGORA_STAGE_DA0_VERIFICATION_BOUNDARY_DECISIONS.md) | 검증 안전 경계의 결정·검수 이력 |
 | [Stage D Charter](design/AGORA_STAGE_D_ASSURANCE_CHARTER.md) | 승인된 v0.5 의미 계약. 이번 정리는 계약을 변경하지 않음 |
 | [Stage D 결정 기록](design/AGORA_STAGE_D_ASSURANCE_DECISIONS.md) | 2026-08-25 완료 기준과 당시 한계. 승인 UI 후속 구현은 상단 안내 참조 |
-| [초기 Delta 명세](archive/AGORA_CODEPET_DELTA_SPEC_v3.md) | 2026-08-08 CodePet 분리 설계 원문 |
-| [Phase 1 검수 보고서](archive/AGORA_INSPECTION_REPORT.md) | 초기 결함과 당시 수정 계획 |
-| [기준선 감사](archive/BASELINE_AUDIT.md) | 2026-08-08 구현 전 기준선 |
 | [이 문서](README.md) | 팀 공유 진입점과 전체 문서 분류 |
 
-추적된 비-Markdown 참고 자료인 [초기 화면 목업](mockups/AGORA_CODEX_STYLE_SLACK_BLUE.html)은 과거 디자인 시안이며 현재 화면 사용법이 아닙니다. 작업 폴더의 `.project-memory`는 실행 중 생성하는 프로젝트별 기록으로, 공개 제품 안내와 별개입니다. 로컬 검수 사본인 `.codex-review-*`와 의존성 문서는 이 제품 문서 목록에서 제외합니다.
+CodePet 분리 당시의 초기 명세·검수 보고서·기준선 감사와 초기 화면 목업은 지금 앱과 맞지 않아 삭제했습니다. 필요하면 git 기록에서 볼 수 있습니다. 작업 폴더의 `.project-memory`는 실행 중 생성하는 프로젝트별 기록으로, 공개 제품 안내와 별개입니다. 로컬 검수 사본인 `.codex-review-*`와 의존성 문서는 이 제품 문서 목록에서 제외합니다.
