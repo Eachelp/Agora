@@ -103,3 +103,29 @@ test("summarizeWindows는 5시간과 주간 두 칸을 순서대로 돌려준다
   });
   assert.equal(usageView.summarizeWindows(null), null);
 });
+
+test("summarizeWindows는 다른 모델군 게이지를 빈 칸에 대신 넣지 않는다", () => {
+  // AGY 무료 계정: Gemini는 주간만 있고, Claude/GPT 그룹에 5시간이 있어도 AGY 5시간 칸은 비워 둡니다.
+  const agy = usageView.summarizeWindows({
+    id: "agy",
+    label: "AGY",
+    gauges: [
+      { label: "주간", usedPercent: 4 },
+      { label: "Claude / GPT · 5시간", usedPercent: 80 },
+      { label: "Claude / GPT · 주간", usedPercent: 0 },
+    ],
+  });
+  assert.deepEqual(agy.windows.map((window) => [window.label, window.remaining]), [["주간", 96]]);
+
+  // 기본 창을 하나도 못 찾으면 범위가 붙은 게이지로 채우지 않고 칸을 비웁니다.
+  const unknown = usageView.summarizeWindows({
+    id: "agy",
+    label: "AGY",
+    gauges: [
+      { label: "Gemini · 특수 구간", usedPercent: 60 },
+      { label: "Claude / GPT · 주간", usedPercent: 10 },
+    ],
+  });
+  assert.deepEqual(unknown.windows, []);
+  assert.equal(unknown.error, undefined);
+});

@@ -54,9 +54,8 @@ function formatAgyGroupLabel(name) {
   return text.replace(/\s+models$/i, "").trim();
 }
 
-function formatAgyBucketLabel(bucketName) {
-  const classified = classifyWindow(bucketName);
-  if (classified) return classified;
+function formatAgyBucketLabel({ window, bucketName }) {
+  if (window) return window;
   let text = String(bucketName || "").trim();
   text = text.replace(/\s*(?:limit|remaining|한도|남음)\b/gi, "").trim();
   return text || "기타";
@@ -65,7 +64,7 @@ function formatAgyBucketLabel(bucketName) {
 function classifyWindow(text) {
   const value = String(text || "").trim().toLowerCase();
   if (!value) return null;
-  if (/(?:^|[^0-9])5\s*(?:시간|h(?![a-z])|hours?)|five[_\s-]?hours?/.test(value)) return WINDOW_5H;
+  if (/(?:^|[^0-9])5[\s-]*(?:시간|h(?![a-z])|hours?)|five[_\s-]?hours?/.test(value)) return WINDOW_5H;
   if (/주간|일주일|주\s*단위|1\s*주|7\s*일|weekly|week|seven[_\s-]?days?/.test(value)) return WINDOW_WEEK;
   return null;
 }
@@ -92,10 +91,13 @@ function normalizeAgyQuota(data) {
     const remaining = Number(bucket.remainingFraction ?? bucket.remaining_fraction);
     if (!Number.isFinite(remaining)) return null;
     const bucketName = bucket.displayName || bucket.window || "";
+    // 구간은 화면용 문구(displayName)보다 기계용 필드(window: "weekly", bucketId: "gemini-weekly")로
+    // 먼저 가립니다. 문구는 Google이 언제든 바꿀 수 있습니다.
+    const window = classifyWindow(bucket.window) || classifyWindow(bucket.bucketId) || classifyWindow(bucketName);
     return {
       groupName: group.displayName || group.name || "",
       bucketName,
-      window: classifyWindow(bucketName),
+      window,
       usedPercent: clampPercent((1 - remaining) * 100),
       resetText: bucket.resetTime || bucket.reset_time || "",
     };
@@ -135,7 +137,7 @@ function normalizeAgyQuota(data) {
       const parsed = parseBucket(group, bucket);
       if (!parsed) return [];
       const groupLabel = formatAgyGroupLabel(parsed.groupName);
-      const bucketLabel = formatAgyBucketLabel(parsed.bucketName);
+      const bucketLabel = formatAgyBucketLabel(parsed);
       const label = [groupLabel, bucketLabel].filter(Boolean).join(" · ");
       return [{
         label,

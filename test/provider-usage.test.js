@@ -65,6 +65,48 @@ test("AGY 한도는 gemini 계열 기본 5시간·주간과 함께 Claude/GPT-OS
   ]);
 });
 
+test("AGY 구간은 표시 문구보다 window·bucketId 필드로 먼저 가린다", () => {
+  // 2026-10 무료 계정 실제 응답 형태: Gemini는 주간 버킷 하나뿐입니다.
+  assert.deepEqual(
+    normalizeAgyQuota({
+      groups: [
+        {
+          displayName: "Gemini Models",
+          buckets: [{
+            bucketId: "gemini-weekly",
+            displayName: "Weekly Limit Remaining",
+            window: "weekly",
+            resetTime: "2026-10-08T22:54:03Z",
+            remainingFraction: 0.9599408,
+          }],
+        },
+        {
+          displayName: "Claude and GPT models",
+          buckets: [{ bucketId: "3p-weekly", displayName: "Weekly Limit Remaining", window: "weekly", remainingFraction: 1 }],
+        },
+      ],
+    }),
+    [
+      { label: "주간", usedPercent: 4, resetText: "2026-10-08T22:54:03Z" },
+      { label: "Claude / GPT · 주간", usedPercent: 0, resetText: "" },
+    ]
+  );
+
+  // 구독 계정의 5시간 버킷 문구가 바뀌어도 window 필드나 bucketId로 분류합니다.
+  const gauges = normalizeAgyQuota({
+    groups: [{
+      displayName: "Gemini Models",
+      buckets: [
+        { bucketId: "gemini-5h", displayName: "Short-term Limit Remaining", window: "five_hour", remainingFraction: 0.5 },
+        { bucketId: "gemini-5h-alt", displayName: "Refreshing Limit", remainingFraction: 0.7 },
+        { bucketId: "gemini-weekly", displayName: "Weekly Limit Remaining", window: "weekly", remainingFraction: 0.8 },
+      ],
+    }],
+  });
+  assert.deepEqual(gauges.map((gauge) => [gauge.label, gauge.usedPercent]), [["5시간", 50], ["주간", 20]]);
+  assert.equal(classifyWindow("5-Hour Limit Remaining"), "5시간");
+});
+
 test("AGY 그룹 이름이 바뀌어 gemini를 못 찾으면 전체를 그대로 쓴다", () => {
   assert.deepEqual(
     normalizeAgyQuota({

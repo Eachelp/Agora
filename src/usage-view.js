@@ -61,17 +61,9 @@
   // 사이드바에서는 짧은 이름으로 통일해 보여 줍니다.
   function shortWindowLabel(label) {
     const value = String(label || "").trim();
-    if (/5\s*시간|5\s*h(?![a-z])|five[_\s-]?hour/i.test(value)) return "5시간";
+    if (/(?:^|[^0-9])5[\s-]*(?:시간|h(?![a-z])|hours?)|five[_\s-]?hour/i.test(value)) return "5시간";
     if (/주간|일주일|7\s*일|week|seven[_\s-]?day/i.test(value)) return "주간";
     return value;
-  }
-
-  // 5시간을 먼저, 주간을 다음에 놓아 공급자끼리 같은 순서로 읽히게 합니다.
-  function windowRank(label) {
-    const short = shortWindowLabel(label);
-    if (short === "5시간") return 0;
-    if (short === "주간") return 1;
-    return 2;
   }
 
   // 사이드바 스트립용: 공급자 하나를 5시간·주간 두 칸으로 정리합니다.
@@ -84,20 +76,19 @@
     const gauges = Array.isArray(item.gauges) ? item.gauges : [];
     if (gauges.length === 0) return { ...base, error: "한도 정보 없음" };
 
-    // 정확히 "5시간", "주간"인 기본 게이지를 우선 선택합니다.
-    const exact5h = gauges.find((g) => g.label === "5시간");
-    const exactWeek = gauges.find((g) => g.label === "주간");
-    const match5h = exact5h || gauges.find((g) => shortWindowLabel(g.label) === "5시간") || null;
-    const matchWeek = exactWeek || gauges.find((g) => shortWindowLabel(g.label) === "주간") || null;
-
-    const selected = [match5h, matchWeek].filter(Boolean);
-    const fallback = selected.length > 0
-      ? selected
-      : [...gauges].sort((a, b) => windowRank(a.label) - windowRank(b.label)).slice(0, 2);
+    // 공급자 전체에 걸리는 기본 창만 칸에 넣습니다. "Claude / GPT · 주간"처럼 범위가 붙은
+    // 게이지는 다른 모델군의 한도라, 기본 창이 없다고 대신 넣으면 엉뚱한 값이 보입니다.
+    // 그런 게이지는 상세 보기(팝오버)에만 나옵니다.
+    const primary = gauges.filter((g) => !String(g?.label || "").includes("·"));
+    const pick = (target) =>
+      primary.find((g) => g.label === target) ||
+      primary.find((g) => shortWindowLabel(g.label) === target) ||
+      null;
+    const selected = [pick("5시간"), pick("주간")].filter(Boolean);
 
     return {
       ...base,
-      windows: fallback.map((gauge) => ({
+      windows: selected.map((gauge) => ({
         label: shortWindowLabel(gauge.label),
         remaining: remainingPercent(gauge),
         tone: usageTone(gauge.usedPercent),
