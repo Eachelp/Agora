@@ -24,6 +24,7 @@ const { resolveTaskFileBoundary } = require("../agora/task-file-boundary");
 const {
   createCapabilityService,
   claudeResolvedModelLabel,
+  claudeObservationContext,
   toPublicProviders,
 } = require("../providers/provider-capabilities");
 const { toDiagnostics } = require("../providers/provider-diagnostics");
@@ -344,6 +345,8 @@ function createChatFeature(options) {
         result[alias] = {
           model: resolvedModel,
           observedAt: Number.isFinite(entry?.observedAt) ? entry.observedAt : 0,
+          // 확인할 때의 CLI 버전·API 공급자. 이 둘이 없는 예전 기록도 그대로 읽는다.
+          ...claudeObservationContext(entry && typeof entry === "object" ? entry : {}),
         };
       }
     }
@@ -389,22 +392,30 @@ function createChatFeature(options) {
     const alias = String(message.agentMeta?.model || "").trim().toLowerCase();
     const resolvedModel = String(message.agentMeta?.resolvedModel || "").trim();
     if (!claudeResolvedModelLabel(alias, resolvedModel)) return false;
+    // 별칭이 가리키는 모델은 CLI 버전·API 공급자에 따라 바뀐다. 표시할 때 이 확인값을
+    // 아직 믿어도 되는지 따질 수 있게 확인한 때의 맥락을 함께 남긴다. 모델이 같아도
+    // 맥락이 바뀌었으면 다시 저장해야 새 CLI에서도 확인값으로 인정된다.
+    const record = ensureCapabilityService()?.getRecord?.("claude");
+    const context = claudeObservationContext({
+      cliVersion: record?.version,
+      apiProvider: record?.authApiProvider,
+    });
     const current = normalizeClaudeResolvedModels(store.getConfig()?.claudeResolvedModels);
-    if (current[alias]?.model === resolvedModel) return false;
-    current[alias] = { model: resolvedModel, observedAt: Number(message.ts) || Date.now() };
+    const previous = current[alias];
+    if (
+      previous?.model === resolvedModel
+      && previous.cliVersion === context.cliVersion
+      && previous.apiProvider === context.apiProvider
+    ) return false;
+    current[alias] = { model: resolvedModel, observedAt: Number(message.ts) || Date.now(), ...context };
     if (!store.readOnly) store.patchConfig({ claudeResolvedModels: current });
     return true;
   }
 
-  function applyClaudeResolvedLabels(publicProviders) {
-    const resolved = normalizeClaudeResolvedModels(store?.getConfig()?.claudeResolvedModels);
-    const claude = (publicProviders || []).find((provider) => provider.id === "claude");
-    if (!claude || !Array.isArray(claude.modelOptions)) return publicProviders;
-    claude.modelOptions = claude.modelOptions.map((option) => {
-      const label = claudeResolvedModelLabel(option.id, resolved[option.id]?.model);
-      return label ? { ...option, label } : option;
-    });
-    return publicProviders;
+  // 실행에서 확인해 저장해 둔 { 별칭: { model, cliVersion?, apiProvider? } }. 표시명에
+  // 어떻게 반영할지는 provider-capabilities의 toPublicProvider가 정한다.
+  function claudeObservations() {
+    return normalizeClaudeResolvedModels(store?.getConfig()?.claudeResolvedModels);
   }
 
   function ensureStore() {
@@ -470,9 +481,10 @@ function createChatFeature(options) {
     return capabilityService;
   }
 
+  // renderer로 가는 공급자 목록은 전부 여기서 만든다(첫 화면 상태·broadcast·재탐지).
   function providersPayload(records) {
     return {
-      providers: applyClaudeResolvedLabels(toPublicProviders(records)),
+      providers: toPublicProviders(records, { claudeObservations: claudeObservations() }),
       diagnostics: toDiagnostics(records),
     };
   }
@@ -1304,14 +1316,14 @@ function roomMeta(meta) {
 
     room.on("message", (message) => {
       store.appendEvent(sessionId, { kind: "message", message });
-      const claudeLabelChanged = rememberClaudeResolvedModel(message);
+      const claudeObservationChanged = rememberClaudeResolvedModel(message);
       // renderer로는 첨부 내부 레코드(fileName/sha256)를 제거한 사본만 보냅니다.
       const outbound = message.attachments
         ? { ...message, attachments: message.attachments.map(publicAttachment) }
         : message;
       broadcast("chat:message", { sessionId, message: outbound });
       broadcast("chat:sessions-changed", sessionsPayload());
-      if (claudeLabelChanged) {
+      if (claudeObservationChanged) {
         // 실행 id는 계속 fable/opus/sonnet 별칭을 쓰고, 표시명만 방금 확인한 실제
         // 버전으로 갱신합니다. 모델 카탈로그 자체가 바뀐 것은 아니므로 알림 토스트는
         // 띄우지 않습니다.
@@ -1473,8 +1485,10 @@ function roomMeta(meta) {
     return {
       // 저장소 문제는 하드 실패가 아니라 경고 배너로 전달합니다.
       error: storeError || null,
-      providers: toPublicProviders(records),
-      diagnostics: toDiagnostics(records),
+      // 공급자 목록은 broadcast·재탐지와 같은 providersPayload로 만든다. 예전에는 여기서만
+      // 목록을 따로 조립해, 실행에서 확인해 저장해 둔 Claude 버전 표시가 앱을 켠 첫
+      // 화면에는 빠지고 CLI 버전 추측값("Opus 5")이 나왔다.
+      ...providersPayload(records),
       permissionModes: PERMISSION_MODES,
       discussionMaxTurns: DEFAULT_DISCUSSION_RUN_BUDGET,
       discussionPresets: publicDiscussionPresets(),

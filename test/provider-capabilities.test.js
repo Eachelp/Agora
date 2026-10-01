@@ -12,6 +12,7 @@ const {
   parseClaudeHelpModels,
   claudeResolvedModelLabel,
   claudeAliasFallbackLabel,
+  claudeObservationContext,
   resolveEffortVariant,
   toPublicProviders,
 } = require("../src/providers/provider-capabilities");
@@ -484,6 +485,24 @@ test("Claude firstParty alias는 CLI 버전 기준으로 아직 안 쓴 모델�
   assert.equal(claudeAliasFallbackLabel("haiku", context), null);
 });
 
+// 추측 표는 Claude Code 변경 기록의 "now the default … model" 항목을 따른다. 2.1.280에서
+// Opus 5.5가, 2.1.284에서 Sonnet 5.5가 기본이 됐는데 표가 그 전 값에 멈춰 있어서, 아직
+// 돌려 보지 않은 별칭이 실제보다 낮은 "Opus 5"·"Sonnet 5"로 보였다.
+test("Claude alias 추측 표시는 CLI 버전이 올라가면 새 기본 모델을 따른다", () => {
+  const label = (alias, version) =>
+    claudeAliasFallbackLabel(alias, { version: `${version} (Claude Code)`, apiProvider: "firstParty", env: {} });
+  assert.equal(label("opus", "2.1.279"), "Opus 5");
+  assert.equal(label("opus", "2.1.280"), "Opus 5.5");
+  assert.equal(label("sonnet", "2.1.283"), "Sonnet 5");
+  assert.equal(label("sonnet", "2.1.284"), "Sonnet 5.5");
+  assert.equal(label("opus", "2.1.285"), "Opus 5.5");
+  assert.equal(label("sonnet", "2.1.285"), "Sonnet 5.5");
+  assert.equal(label("fable", "2.1.285"), "Fable 5.1");
+  // 표에 없는 옛 버전과 계열은 추측하지 않는다.
+  assert.equal(label("opus", "2.1.218"), null);
+  assert.equal(label("haiku", "2.1.285"), null);
+});
+
 test("Claude alias 표시 힌트는 환경변수 override를 최우선하고 타 provider는 추측하지 않는다", () => {
   assert.equal(
     claudeAliasFallbackLabel("sonnet", {
@@ -497,6 +516,116 @@ test("Claude alias 표시 힌트는 환경변수 override를 최우선하고 타
     claudeAliasFallbackLabel("sonnet", { version: "2.1.272", apiProvider: "bedrock", env: {} }),
     null
   );
+});
+
+// Claude CLI 하나만 설치된 Windows에서 탐지한 기록과, 그 기록에 실행 확인값을 넣어
+// 만든 공개 목록의 별칭 표시명.
+async function discoverClaude({ version = "2.1.285", apiProvider = "firstParty", env = {} } = {}) {
+  const claudePath = "C:\\Users\\u\\.local\\bin\\claude.exe";
+  const service = createCapabilityService({
+    platform: "win32",
+    env: { ...WIN_ENV, ...env },
+    home: "C:\\Users\\u",
+    fs: {
+      existsSync: (file) => file === claudePath,
+      statSync: () => ({ mtimeMs: 1, size: 2 }),
+    },
+    runCommand: async (file, args) => {
+      if (file === claudePath && args[0] === "--version") {
+        return { ok: true, stdout: `${version} (Claude Code)\n`, stderr: "" };
+      }
+      if (file === claudePath && args[0] === "auth") {
+        return { ok: true, stdout: JSON.stringify({ loggedIn: true, apiProvider }), stderr: "" };
+      }
+      if (file === claudePath && args[0] === "--help") {
+        return { ok: true, stdout: CLAUDE_HELP, stderr: "" };
+      }
+      return { ok: false, stdout: "", stderr: "" };
+    },
+    cache: { get: () => null, set: () => {} },
+  });
+  const records = await service.discover();
+  const labels = (claudeObservations) => Object.fromEntries(
+    toPublicProviders(records, { claudeObservations })
+      .find((record) => record.id === "claude")
+      .modelOptions.map((option) => [option.id, option.label])
+  );
+  return { records, labels };
+}
+
+// 표시명 우선순위는 toPublicProviders 한 곳에서 정한다. 예전에는 실행에서 확인한 값을
+// chat-ipc가 나중에 덧씌워서, 환경변수로 고정한 별칭까지 예전 확인값으로 가려졌다.
+test("Claude 별칭 표시명은 환경변수 > 실행에서 확인한 값 > CLI 버전 추측 순으로 정한다", async () => {
+  const { records, labels } = await discoverClaude({
+    env: { ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4-6[1m]" },
+  });
+  const seenNow = (model) => ({ model, cliVersion: "2.1.285", apiProvider: "firstParty" });
+
+  // 확인한 값이 없으면 추측값이고, 환경변수로 고정한 sonnet은 그 값이다.
+  assert.deepEqual(labels(undefined), {
+    default: "Claude 기본값 (CLI 설정 따름)",
+    fable: "Fable 5.1",
+    opus: "Opus 5.5",
+    sonnet: "Sonnet 4.6",
+    haiku: "Haiku",
+  });
+
+  assert.deepEqual(
+    labels({
+      // 계정·조직 사정으로 추측(5.5)과 다른 모델이 실제로 돌았다면 확인한 값이 맞다.
+      opus: seenNow("claude-opus-4-8"),
+      // 환경변수로 고정한 뒤에는, 그 전에 확인한 값이 남아 있어도 고정한 값을 보인다.
+      sonnet: seenNow("claude-sonnet-5-5"),
+      // 추측 표에 없는 계열도 한 번 돌려 보면 버전이 붙는다.
+      haiku: seenNow("claude-haiku-4-5-20251001"),
+    }),
+    {
+      default: "Claude 기본값 (CLI 설정 따름)",
+      fable: "Fable 5.1",
+      opus: "Opus 4.8",
+      sonnet: "Sonnet 4.6",
+      haiku: "Haiku 4.5",
+    }
+  );
+
+  // 다른 계열의 모델 id가 섞여 들어오면 근거로 쓰지 않고 추측값으로 돌아간다.
+  assert.equal(labels({ opus: seenNow("claude-sonnet-5-5") }).opus, "Opus 5.5");
+  // 환경변수 값은 공개 목록에 그대로 실리지 않는다(표시명으로만 쓴다).
+  assert.ok(!JSON.stringify(toPublicProviders(records)).includes("[1m]"));
+});
+
+// 별칭이 가리키는 모델은 CLI 버전과 API 공급자에 따라 바뀐다. 확인한 값을 맥락 없이
+// 믿으면, CLI가 저절로 올라가 opus가 Opus 5.5로 옮겨 간 뒤에도 그 전에 확인한
+// "Opus 5"가 다시 돌려 볼 때까지 남는다.
+test("실행에서 확인한 값은 그 뒤 CLI·API 공급자가 바뀌어 별칭이 옮겨 갔으면 추측에 자리를 내준다", async () => {
+  const { labels } = await discoverClaude({ version: "2.1.285" });
+  const opusSeen = (observation) => labels({ opus: observation }).opus;
+
+  // 2.1.279에서 확인했는데 변경 기록상 opus는 2.1.280부터 Opus 5.5를 가리킨다.
+  assert.equal(opusSeen({ model: "claude-opus-5", cliVersion: "2.1.279", apiProvider: "firstParty" }), "Opus 5.5");
+  // 지금 CLI에서 확인했다면 추측과 달라도(계정·조직 사정) 확인한 값이 맞다.
+  assert.equal(opusSeen({ model: "claude-opus-5", cliVersion: "2.1.285", apiProvider: "firstParty" }), "Opus 5");
+  // CLI 버전 없이 남은 예전 기록은 언제 확인했는지 모르므로 추측을 따른다.
+  assert.equal(opusSeen({ model: "claude-opus-5" }), "Opus 5.5");
+  // 다른 API 공급자에서 확인한 값은 매핑이 다르므로 쓰지 않는다.
+  assert.equal(opusSeen({ model: "claude-opus-4-8", cliVersion: "2.1.285", apiProvider: "bedrock" }), "Opus 5.5");
+  // 추측이 없는 계열은 예전 기록이라도 확인한 값이 유일한 근거다.
+  assert.equal(labels({ haiku: { model: "claude-haiku-4-5-20251001" } }).haiku, "Haiku 4.5");
+
+  // Bedrock에서는 추측하지 않고, firstParty에서 확인한 값도 쓰지 않는다.
+  const bedrock = await discoverClaude({ version: "2.1.285", apiProvider: "bedrock" });
+  assert.equal(
+    bedrock.labels({ opus: { model: "claude-opus-5-5", cliVersion: "2.1.285", apiProvider: "firstParty" } }).opus,
+    "Opus"
+  );
+
+  // 저장할 맥락은 알아볼 수 있는 값만 남긴다.
+  assert.deepEqual(
+    claudeObservationContext({ cliVersion: "2.1.285 (Claude Code)", apiProvider: "firstParty" }),
+    { cliVersion: "2.1.285", apiProvider: "firstParty" }
+  );
+  assert.deepEqual(claudeObservationContext({ cliVersion: "unknown", apiProvider: "first party" }), {});
+  assert.deepEqual(claudeObservationContext(), {});
 });
 
 test("Claude firstParty auth 정보는 내부 표시 힌트에만 쓰고 public provider에는 노출하지 않는다", async () => {

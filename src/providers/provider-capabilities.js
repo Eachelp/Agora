@@ -346,31 +346,69 @@ function stripClaudeContextSuffix(model) {
   return String(model || "").trim().replace(/\[[^\]]+\]$/, "");
 }
 
+// firstParty(Anthropic API)에서 별칭이 가리키는 모델이 바뀐 CLI 버전. Claude Code
+// 변경 기록의 "now the default <계열> model" 항목을 그대로 옮긴 것이고, 계열마다 새
+// 버전이 앞에 옵니다. 새 모델이 기본이 되면 이 표에 한 줄을 더합니다. 표가 뒤처져도
+// 그 별칭을 한 번 실행하면 실제로 확인한 값이 이 추측을 덮습니다.
+//   https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md
+const CLAUDE_ALIAS_DEFAULTS = Object.freeze({
+  fable: Object.freeze([
+    Object.freeze({ since: [2, 1, 257], model: "claude-fable-5-1" }),
+  ]),
+  opus: Object.freeze([
+    Object.freeze({ since: [2, 1, 280], model: "claude-opus-5-5" }),
+    Object.freeze({ since: [2, 1, 219], model: "claude-opus-5" }),
+  ]),
+  sonnet: Object.freeze([
+    Object.freeze({ since: [2, 1, 284], model: "claude-sonnet-5-5" }),
+    Object.freeze({ since: [2, 1, 197], model: "claude-sonnet-5" }),
+  ]),
+});
+
+// 지금 CLI에서 별칭이 가리킨다고 변경 기록이 말하는 표의 행({ since, model }).
+// provider별 alias 매핑이 다르므로 firstParty 외에는 추측하지 않습니다.
+function claudeAliasGuess(alias, { version, apiProvider } = {}) {
+  if (String(apiProvider || "").toLowerCase() !== "firstparty") return null;
+  const family = String(alias || "").trim().toLowerCase();
+  const rows = Object.hasOwn(CLAUDE_ALIAS_DEFAULTS, family) ? CLAUDE_ALIAS_DEFAULTS[family] : [];
+  return rows.find((entry) => claudeCliAtLeast(version, entry.since)) || null;
+}
+
+// 사용자/조직이 ANTHROPIC_DEFAULT_*_MODEL로 별칭을 덮어쓴 경우의 표시명. 대개 지금 그
+// 별칭을 실행하면 CLI가 쓰는 모델이므로, 예전 실행에서 확인한 값보다 앞섭니다. (관리
+// 정책 availableModels가 그 모델을 막으면 CLI는 따르지 않는데, 앱은 그 정책을 읽지 않습니다.)
+function claudeAliasOverrideLabel(alias, env = {}) {
+  const family = String(alias || "").trim().toLowerCase();
+  const envKey = CLAUDE_DEFAULT_MODEL_ENV[family];
+  if (!envKey) return null;
+  return claudeResolvedModelLabel(family, stripClaudeContextSuffix(env?.[envKey]));
+}
+
 // Claude Code는 alias가 가리키는 버전을 provider와 CLI 버전에 따라 바꿉니다.
 // 실제 실행에서 system/init이 보고한 resolved model이 가장 정확하므로 이 값은
 // "아직 그 alias를 실행하지 않은 경우"의 표시용 힌트로만 씁니다.
 // 사용자/조직이 ANTHROPIC_DEFAULT_*_MODEL로 별칭을 덮어썼다면 그 값을 최우선합니다.
 function claudeAliasFallbackLabel(alias, { version, apiProvider, env = {} } = {}) {
   const family = String(alias || "").trim().toLowerCase();
-  const envKey = CLAUDE_DEFAULT_MODEL_ENV[family];
-  if (!envKey) return null;
+  if (!CLAUDE_DEFAULT_MODEL_ENV[family]) return null;
 
-  const overridden = stripClaudeContextSuffix(env[envKey]);
-  const overriddenLabel = claudeResolvedModelLabel(family, overridden);
+  const overriddenLabel = claudeAliasOverrideLabel(family, env);
   if (overriddenLabel) return overriddenLabel;
 
-  // provider별 alias 매핑이 다르므로 firstParty 외에는 추측하지 않습니다.
-  if (String(apiProvider || "").toLowerCase() !== "firstparty") return null;
+  return claudeResolvedModelLabel(family, claudeAliasGuess(family, { version, apiProvider })?.model);
+}
 
-  let resolved = null;
-  if (family === "fable" && claudeCliAtLeast(version, [2, 1, 257])) {
-    resolved = "claude-fable-5-1";
-  } else if (family === "opus" && claudeCliAtLeast(version, [2, 1, 219])) {
-    resolved = "claude-opus-5";
-  } else if (family === "sonnet" && claudeCliAtLeast(version, [2, 1, 197])) {
-    resolved = "claude-sonnet-5";
-  }
-  return claudeResolvedModelLabel(family, resolved);
+// 실행에서 확인한 모델과 함께 저장하는 맥락. 별칭이 가리키는 모델은 CLI 버전과 API
+// 공급자에 따라 바뀌므로, 나중에 그 확인값을 아직 믿어도 되는지 이것으로 따집니다.
+// 탐지 기록(version·authApiProvider)에서 만들 때도, 저장해 둔 값을 다시 읽을 때도
+// 이 함수를 거쳐 알아볼 수 없는 값은 버립니다.
+function claudeObservationContext({ cliVersion, apiProvider } = {}) {
+  const version = parseClaudeCliVersion(cliVersion);
+  const provider = typeof apiProvider === "string" ? apiProvider.trim() : "";
+  return {
+    ...(version ? { cliVersion: version.join(".") } : {}),
+    ...(/^[A-Za-z0-9._-]{1,40}$/.test(provider) ? { apiProvider: provider } : {}),
+  };
 }
 
 // `claude --help`의 --model 설명에서 모델 별칭을 뽑습니다. 도움말은
@@ -742,18 +780,19 @@ function createCapabilityService(options = {}) {
     record.reason = "";
     Object.assign(record, await probeAuth(def, commandPath, record.needsShell));
     if (def.id === "claude") {
-      record.claudeAliasLabels = Object.fromEntries(
+      const labelsFrom = (labelFor) => Object.fromEntries(
         Object.keys(CLAUDE_ALIAS_LABELS)
-          .map((alias) => [
-            alias,
-            claudeAliasFallbackLabel(alias, {
-              version: record.version,
-              apiProvider: record.authApiProvider,
-              env,
-            }),
-          ])
+          .map((alias) => [alias, labelFor(alias)])
           .filter(([, label]) => Boolean(label))
       );
+      record.claudeAliasLabels = labelsFrom((alias) => claudeAliasFallbackLabel(alias, {
+        version: record.version,
+        apiProvider: record.authApiProvider,
+        env,
+      }));
+      // 환경변수로 고정한 별칭만 따로 남긴다. 표시명을 정할 때 이 값은 실행에서 확인한
+      // 값보다 앞서야 하는데, claudeAliasLabels만으로는 추측값과 구분할 수 없다.
+      record.claudeAliasOverrideLabels = labelsFrom((alias) => claudeAliasOverrideLabel(alias, env));
     }
 
     const cachedCatalog = catalogFromCache(def, cached);
@@ -1030,8 +1069,47 @@ function createCapabilityService(options = {}) {
   return { discover, refreshStaleCatalogs, hasStaleCatalogs, getRecord, defs: PROVIDER_DEFS };
 }
 
+// Claude 별칭(fable/opus/sonnet/haiku)의 표시명은 여기 한 곳에서만 정합니다. 앞선 것이
+// 이깁니다.
+//   1) 환경변수로 덮어쓴 값: 대개 지금 실행하면 CLI가 쓰는 모델.
+//   2) 실행에서 마지막으로 확인한 모델: 계정·게이트웨이 사정까지 반영된 실제 값. 단,
+//      확인한 뒤로 별칭이 옮겨 갔을 수 있으면 건너뜁니다(claudeObservationHolds).
+//   3) CLI 버전으로 추측한 값: 아직 돌려 보지 않은 별칭의 힌트.
+//   4) 계열명(option.label).
+// 예전에는 1·3만 여기서 정하고 2는 chat-ipc가 나중에 덧씌웠습니다. 그래서 덧씌우는
+// 단계를 빠뜨린 경로(앱을 켠 첫 화면)는 확인한 값을 잃었고, 덧씌운 경로는 환경변수로
+// 고정한 값까지 예전 확인값으로 가렸습니다.
+function claudeAliasDisplayLabel(record, alias, observations) {
+  if (!Object.hasOwn(CLAUDE_ALIAS_LABELS, alias)) return null;
+  const observation = observations?.[alias];
+  const observedLabel = observation && claudeObservationHolds(record, alias, observation)
+    ? claudeResolvedModelLabel(alias, observation.model)
+    : null;
+  return record.claudeAliasOverrideLabels?.[alias]
+    || observedLabel
+    || record.claudeAliasLabels?.[alias]
+    || null;
+}
+
+// 실행에서 확인한 값이 지금도 이 별칭의 모델을 말해 주는지.
+//  - 확인할 때와 API 공급자가 다르면 별칭 매핑 자체가 다릅니다.
+//  - 추측표에서 지금 CLI에 맞는 행이 확인한 CLI보다 새 버전부터라면, 확인한 뒤에 별칭이
+//    새 모델로 옮겨 간 것이므로 추측이 더 새 정보입니다. CLI 버전 없이 남은 예전 기록도
+//    언제 확인했는지 모르므로 추측이 있으면 추측을 따릅니다.
+// 추측표보다 새 CLI에서 확인한 값(표가 아직 모르는 새 모델)과, 같은 CLI에서 계정·조직
+// 사정으로 추측과 다르게 돈 값은 그대로 믿습니다.
+function claudeObservationHolds(record, alias, observation) {
+  const observedProvider = String(observation.apiProvider || "").toLowerCase();
+  const currentProvider = String(record.authApiProvider || "").toLowerCase();
+  if (observedProvider && currentProvider && observedProvider !== currentProvider) return false;
+  const guess = claudeAliasGuess(alias, { version: record.version, apiProvider: record.authApiProvider });
+  return !guess || claudeCliAtLeast(observation.cliVersion, guess.since);
+}
+
 // renderer로 보내는 안전한 뷰: 실행 경로/셸/환경 정보는 제외합니다.
-function toPublicProvider(record) {
+// claudeObservations는 실행에서 확인해 저장해 둔 { 별칭: { model, cliVersion?, apiProvider? } }
+// 입니다(저장 위치는 호출자가 정함).
+function toPublicProvider(record, { claudeObservations } = {}) {
   return {
     id: record.id,
     name: record.name,
@@ -1042,11 +1120,11 @@ function toPublicProvider(record) {
     reason: record.reason || "",
     version: record.version,
     models: record.models,
-    modelOptions: record.id === "claude" && record.claudeAliasLabels
-      ? (record.modelOptions || []).map((option) => ({
-          ...option,
-          label: record.claudeAliasLabels[option.id] || option.label,
-        }))
+    modelOptions: record.id === "claude" && Array.isArray(record.modelOptions)
+      ? record.modelOptions.map((option) => {
+          const label = claudeAliasDisplayLabel(record, option.id, claudeObservations);
+          return label ? { ...option, label } : option;
+        })
       : record.modelOptions,
     efforts: record.efforts,
     allowCustomModel: record.allowCustomModel,
@@ -1060,8 +1138,8 @@ function toPublicProvider(record) {
   };
 }
 
-function toPublicProviders(records) {
-  return (records || []).map(toPublicProvider);
+function toPublicProviders(records, options = {}) {
+  return (records || []).map((record) => toPublicProvider(record, options));
 }
 
 module.exports = {
@@ -1073,7 +1151,9 @@ module.exports = {
   resolveEffortVariant,
   parseClaudeHelpModels,
   claudeResolvedModelLabel,
+  claudeAliasOverrideLabel,
   claudeAliasFallbackLabel,
+  claudeObservationContext,
   probeCodexModelCatalog,
   probeAgyModelCatalog,
   cliCandidates,
