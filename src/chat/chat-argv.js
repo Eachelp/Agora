@@ -91,8 +91,11 @@ function agyModelForEffort(provider, model, effort) {
 
 function agyEffortForModel(provider, model, effort) {
   if (!model || !effort) return effort;
-  // AGY의 Claude Thinking/GPT-OSS 고정 변형은 오래된 capability cache가
-  // 잘못된 effort 목록을 갖고 있어도 --effort를 받지 않습니다.
+  // Claude·GPT-OSS에는 --effort를 붙이지 않습니다. Claude Thinking·GPT-OSS는 고정
+  // 변형이라 오래된 capability cache가 잘못된 effort 목록을 갖고 있어도 받지 않고,
+  // Claude 5.5는 agyModelForEffort가 고른 변형 id(claude-opus-5-5-high)가 이미 단계를
+  // 정합니다. 변형 id와 다른 --effort를 함께 넘기면 CLI가 오류로 끝납니다
+  // (agy 1.2.16 확인: --model claude-opus-5-5-low --effort high).
   if (/^(claude-|gpt-oss-)/i.test(model)) return null;
   const option = (provider?.modelOptions || []).find((entry) => entry?.id === model);
   if (option && Array.isArray(option.efforts)) {

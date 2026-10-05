@@ -135,9 +135,11 @@ function probeAgyModelCatalog(commandPath, needsShell, timeoutMs = MODEL_PROBE_T
   });
 }
 
-// AGY는 모델마다 reasoning effort를 받는 방식이 다릅니다. Gemini 변형은
-// 명시된 low/medium/high만 허용하지만, Claude Thinking·GPT-OSS Medium은
-// 모델 자체가 고정 변형이라 --effort를 추가하면 CLI가 거부할 수 있습니다.
+// AGY는 모델마다 reasoning effort를 받는 방식이 다릅니다. Gemini와 Claude 5.5는
+// -low/-medium/-high 변형을 따로 보고하며 단계를 고를 수 있습니다(agy 1.2.16의
+// `-p "/effort"`가 Claude 5.5에 adjustable·available [low, medium, high]로 응답).
+// Claude Thinking·GPT-OSS Medium은 모델 자체가 고정 변형이라 노력을 고를 수 없고
+// --effort를 추가하면 CLI가 거부할 수 있습니다.
 const AGY_MODEL_OPTIONS = Object.freeze([
   Object.freeze({ id: "default", label: "AGY 기본값", efforts: Object.freeze([]) }),
   Object.freeze({ id: "gemini-3.7-flash-high", label: "Gemini 3.7 Flash (높음)", efforts: Object.freeze(["high"]) }),
@@ -151,6 +153,12 @@ const AGY_MODEL_OPTIONS = Object.freeze([
   Object.freeze({ id: "gemini-3.5-flash-low", label: "Gemini 3.5 Flash (낮음)", efforts: Object.freeze(["low"]) }),
   Object.freeze({ id: "gemini-3.1-pro-high", label: "Gemini 3.1 Pro (높음)", efforts: Object.freeze(["high"]) }),
   Object.freeze({ id: "gemini-3.1-pro-low", label: "Gemini 3.1 Pro (낮음)", efforts: Object.freeze(["low"]) }),
+  Object.freeze({ id: "claude-opus-5-5-high", label: "Claude Opus 5.5 (높음)", efforts: Object.freeze(["high"]) }),
+  Object.freeze({ id: "claude-opus-5-5-medium", label: "Claude Opus 5.5 (중간)", efforts: Object.freeze(["medium"]) }),
+  Object.freeze({ id: "claude-opus-5-5-low", label: "Claude Opus 5.5 (낮음)", efforts: Object.freeze(["low"]) }),
+  Object.freeze({ id: "claude-sonnet-5-5-high", label: "Claude Sonnet 5.5 (높음)", efforts: Object.freeze(["high"]) }),
+  Object.freeze({ id: "claude-sonnet-5-5-medium", label: "Claude Sonnet 5.5 (중간)", efforts: Object.freeze(["medium"]) }),
+  Object.freeze({ id: "claude-sonnet-5-5-low", label: "Claude Sonnet 5.5 (낮음)", efforts: Object.freeze(["low"]) }),
   Object.freeze({ id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 (Thinking)", efforts: Object.freeze([]) }),
   Object.freeze({ id: "claude-opus-4-6-thinking", label: "Claude Opus 4.6 (Thinking)", efforts: Object.freeze([]) }),
   Object.freeze({ id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (중간)", efforts: Object.freeze([]) }),
@@ -509,7 +517,8 @@ const PROVIDER_DEFS = Object.freeze([
     installUrl: "https://antigravity.google/docs/cli/install",
     guiOnlyHint:
       "Antigravity IDE는 설치되어 있지만 agy CLI가 없습니다. https://antigravity.google/docs/cli/install 참고",
-    // agy 1.1.10 --help에서 검증된 플래그: -p/--print, --model, --effort low|medium|high,
+    // agy 1.2.16 --help에서 검증된 플래그: -p/--print, --model, --effort
+    // low|medium|high|xhigh|max(모델마다 지원 단계가 달라 아래 modelOptions가 고른다),
     // --mode accept-edits|plan, --sandbox, --disable-slash-commands, --add-dir.
     // 모델 목록은 발견 시 `agy models`로 갱신되며, 아래는 그 폴백입니다.
     models: Object.freeze(AGY_MODEL_OPTIONS.map((option) => option.id)),

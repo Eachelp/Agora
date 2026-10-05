@@ -35,11 +35,20 @@ function resolvedModel(record, configured) {
   return options.find((option) => option.isDefault)?.id || options[0]?.id || "default";
 }
 
+// AGY는 노력 단계를 모델 id의 변형(-low/-medium/-high)으로 나눠 보고합니다. 변형이
+// 접혀 effortModels를 가진 모델(Gemini, Claude 5.5)은 노력을 고를 수 있고, 변형이 하나뿐인
+// Claude Thinking·GPT-OSS는 모델 자체가 고정 변형이라 노력을 받지 않습니다. 이름이
+// claude-로 시작한다는 이유만으로 고정 취급하면 노력을 고를 수 있는 Claude 5.5의 선택도
+// 실행 전에 지워집니다.
+function isFixedAgyModel(record, model, option) {
+  if (record.id !== "agy" || option?.effortModels) return false;
+  return /^(claude-|gpt-oss-)/i.test(String(model || ""));
+}
+
 function resolvedEffort(record, model, configured) {
-  if (record.id === "agy" && /^(claude-|gpt-oss-)/i.test(String(model || ""))) {
-    return "default";
-  }
   const option = concreteModelOptions(record).find((entry) => entry.id === model);
+  // 오래된 AGY capability cache가 고정 모델에 잘못된 노력 목록을 남겨 둬도 제거합니다.
+  if (isFixedAgyModel(record, model, option)) return "default";
   const efforts = (Array.isArray(option?.efforts) ? option.efforts : record.efforts || [])
     .filter((effort) => effort !== "default");
   if (configured && configured !== "default" && efforts.includes(configured)) return configured;

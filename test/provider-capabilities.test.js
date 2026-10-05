@@ -1138,3 +1138,78 @@ test("자동 발견한 gemini-3.8-flash 노력 변형이 실제 probe 경로에�
   assert.equal(folded.effortModels.high, "gemini-3.8-flash-high");
   assert.equal(agy.modelOptions.some((option) => option.id === "gemini-3.8-flash-high"), false);
 });
+
+// agy 1.2.16이 실제로 내놓는 `agy models` 출력(탭으로 나뉜 두 열)이다. Claude 5.5는
+// 노력마다 변형 id를 따로 보고하고, GPT-OSS는 -medium 하나뿐인 고정 변형이다.
+const AGY_1_2_16_MODELS = [
+  "gemini-3.8-flash-high\tGemini 3.8 Flash (High)",
+  "gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)",
+  "gemini-3.8-flash-low\tGemini 3.8 Flash (Low)",
+  "gemini-3.1-pro-high\tGemini 3.1 Pro (High)",
+  "gemini-3.1-pro-low\tGemini 3.1 Pro (Low)",
+  "claude-opus-5-5-low\tClaude Opus 5.5 (Low)",
+  "claude-opus-5-5-medium\tClaude Opus 5.5 (Medium)",
+  "claude-opus-5-5-high\tClaude Opus 5.5 (High)",
+  "claude-sonnet-5-5-low\tClaude Sonnet 5.5 (Low)",
+  "claude-sonnet-5-5-medium\tClaude Sonnet 5.5 (Medium)",
+  "claude-sonnet-5-5-high\tClaude Sonnet 5.5 (High)",
+  "gpt-oss-120b-medium\tGPT-OSS 120B (Medium)",
+  "",
+].join("\n");
+
+function agyServiceReporting(modelsStdout) {
+  const agyPath = winPath.join(WIN_ENV.LOCALAPPDATA, "agy", "bin", "agy.exe");
+  const files = new Set([agyPath]);
+  const cacheStore = {};
+  return createCapabilityService({
+    platform: "win32",
+    env: WIN_ENV,
+    home: "C:\\Users\\u",
+    fs: { existsSync: (file) => files.has(file), statSync: () => ({ mtimeMs: 9, size: 10 }) },
+    runCommand: async (file, args) => {
+      if (file === agyPath && args[0] === "--version") return { ok: true, stdout: "1.2.16\n", stderr: "" };
+      if (file === agyPath && args[0] === "models") return { ok: true, stdout: modelsStdout, stderr: "" };
+      return { ok: false, stdout: "", stderr: "" };
+    },
+    cache: { get: () => cacheStore.value || null, set: (value) => { cacheStore.value = value; } },
+  });
+}
+
+test("agy Claude 5.5는 한 모델로 접혀 낮음·중간·높음을 고를 수 있고 GPT-OSS는 고정으로 남는다", async () => {
+  const agy = (await agyServiceReporting(AGY_1_2_16_MODELS).discover()).find((record) => record.id === "agy");
+  assert.deepEqual(agy.models, [
+    "default",
+    "gemini-3.8-flash",
+    "gemini-3.1-pro",
+    "claude-opus-5-5",
+    "claude-sonnet-5-5",
+    "gpt-oss-120b-medium",
+  ]);
+  for (const [id, label] of [["claude-opus-5-5", "Claude Opus 5.5"], ["claude-sonnet-5-5", "Claude Sonnet 5.5"]]) {
+    const option = agy.modelOptions.find((entry) => entry.id === id);
+    assert.equal(option.label, label);
+    assert.deepEqual(option.efforts, ["low", "medium", "high"]);
+    assert.deepEqual(option.effortModels, {
+      low: `${id}-low`,
+      medium: `${id}-medium`,
+      high: `${id}-high`,
+    });
+  }
+  // 변형이 하나뿐인 고정 모델은 접히지 않고 노력을 고를 수 없다.
+  assert.deepEqual(agy.modelOptions.find((entry) => entry.id === "gpt-oss-120b-medium").efforts, []);
+});
+
+test("agy models 조회가 실패해도 기본 목록에서 Claude 5.5의 노력을 고를 수 있다", async () => {
+  const agyPath = winPath.join(WIN_ENV.LOCALAPPDATA, "agy", "bin", "agy.exe");
+  // --version만 응답하고 `agy models`는 실패하는 환경(로그인 전·오프라인).
+  const { service } = makeService({
+    files: new Set([agyPath]),
+    probes: (file, args) => (file === agyPath && args[0] === "--version" ? "1.2.16\n" : ""),
+  });
+  const agy = (await service.discover()).find((record) => record.id === "agy");
+  const opus = agy.modelOptions.find((entry) => entry.id === "claude-opus-5-5");
+  assert.equal(opus.label, "Claude Opus 5.5");
+  assert.deepEqual(opus.efforts, ["low", "medium", "high"]);
+  assert.equal(opus.effortModels.high, "claude-opus-5-5-high");
+  assert.equal(agy.modelOptions.some((entry) => entry.id === "claude-opus-5-5-high"), false);
+});

@@ -367,3 +367,44 @@ test("AGY 접힌 gemini 모델은 노력에 맞는 변형 id로 호출된다", (
   assert.equal(fixed.argv[fixed.argv.indexOf("--model") + 1], "claude-sonnet-4-6");
   assert.equal(fixed.argv.includes("--effort"), false);
 });
+
+// agy 1.2.x의 Claude 5.5도 노력마다 변형 id(claude-opus-5-5-high)를 따로 보고한다.
+// 단계는 변형 id가 정하므로 --effort를 따로 붙이지 않는다. 변형 id와 다른 --effort를
+// 함께 주면 CLI가 오류로 끝난다(agy 1.2.16: claude-opus-5-5-low + --effort high).
+test("AGY 접힌 Claude 5.5 모델은 고른 노력의 변형 id로 호출되고 --effort는 붙지 않는다", () => {
+  const variants = (base) => ({
+    low: `${base}-low`,
+    medium: `${base}-medium`,
+    high: `${base}-high`,
+  });
+  const modelOptions = [
+    { id: "claude-opus-5-5", label: "Claude Opus 5.5", efforts: ["low", "medium", "high"], effortModels: variants("claude-opus-5-5") },
+    { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5", efforts: ["low", "medium", "high"], effortModels: variants("claude-sonnet-5-5") },
+    { id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (중간)", efforts: [] },
+  ];
+  const call = (model, effort) => buildAgentInvocation({
+    provider: { ...provider("agy"), modelOptions },
+    chatCwd: CHAT_CWD,
+    permissionMode: "chat",
+    model,
+    effort,
+  });
+  const modelArg = (result) => result.argv[result.argv.indexOf("--model") + 1];
+
+  for (const base of ["claude-opus-5-5", "claude-sonnet-5-5"]) {
+    for (const effort of ["low", "medium", "high"]) {
+      const result = call(base, effort);
+      assert.equal(result.ok, true);
+      assert.equal(modelArg(result), `${base}-${effort}`);
+      assert.equal(result.argv.includes("--effort"), false, `${base} ${effort}`);
+    }
+    // 노력을 고르지 않았거나 그 모델에 없는 단계는 변형 id가 중간으로 정한다.
+    assert.equal(modelArg(call(base, "default")), `${base}-medium`);
+    assert.equal(modelArg(call(base, "xhigh")), `${base}-medium`);
+  }
+
+  // 고정 모델은 노력을 골라도 그대로 호출된다.
+  const fixed = call("gpt-oss-120b-medium", "high");
+  assert.equal(modelArg(fixed), "gpt-oss-120b-medium");
+  assert.equal(fixed.argv.includes("--effort"), false);
+});

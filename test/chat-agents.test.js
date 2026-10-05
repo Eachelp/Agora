@@ -90,6 +90,58 @@ test("AGY 고정 모델은 예전에 저장된 effort를 실행 전에 제거한
   assert.equal(opus.effort, "default");
 });
 
+// agy 1.2.x의 Claude 5.5는 -low/-medium/-high 변형으로 접혀 노력을 고를 수 있다.
+// 예전에는 id가 claude-로 시작하면 전부 고정 모델로 보아 고른 노력이 지워졌다.
+const CLAUDE_5_5_OPTIONS = [
+  { id: "default", efforts: [] },
+  {
+    id: "claude-opus-5-5",
+    efforts: ["low", "medium", "high"],
+    effortModels: {
+      low: "claude-opus-5-5-low",
+      medium: "claude-opus-5-5-medium",
+      high: "claude-opus-5-5-high",
+    },
+  },
+  {
+    id: "claude-sonnet-5-5",
+    efforts: ["low", "medium", "high"],
+    effortModels: {
+      low: "claude-sonnet-5-5-low",
+      medium: "claude-sonnet-5-5-medium",
+      high: "claude-sonnet-5-5-high",
+    },
+  },
+  { id: "claude-sonnet-4-6", efforts: [] },
+  { id: "gpt-oss-120b-medium", efforts: [] },
+];
+
+test("AGY Claude 5.5는 사용자가 고른 노력을 유지한다", () => {
+  const agy = record("agy", CLAUDE_5_5_OPTIONS);
+  for (const model of ["claude-opus-5-5", "claude-sonnet-5-5"]) {
+    for (const effort of ["low", "medium", "high"]) {
+      const agent = roomAgentFromCapability(agy, { model, effort });
+      assert.equal(agent.model, model);
+      assert.equal(agent.effort, effort, `${model} ${effort}`);
+    }
+    // 고르지 않았거나 그 모델에 없는 단계(xhigh)는 중간으로 돌아간다.
+    assert.equal(roomAgentFromCapability(agy, { model }).effort, "medium");
+    assert.equal(roomAgentFromCapability(agy, { model, effort: "xhigh" }).effort, "medium");
+  }
+  // 같은 목록에 있는 고정 모델은 계속 노력을 받지 않는다.
+  assert.equal(roomAgentFromCapability(agy, { model: "claude-sonnet-4-6", effort: "high" }).effort, "default");
+  assert.equal(roomAgentFromCapability(agy, { model: "gpt-oss-120b-medium", effort: "high" }).effort, "default");
+});
+
+test("예전에 저장한 Claude 5.5 변형 id는 접힌 모델과 노력으로 이관된다", () => {
+  const agent = roomAgentFromCapability(record("agy", CLAUDE_5_5_OPTIONS), {
+    model: "claude-opus-5-5-high",
+    effort: "default",
+  });
+  assert.equal(agent.model, "claude-opus-5-5");
+  assert.equal(agent.effort, "high");
+});
+
 test("예전에 저장한 gemini 변형 id는 접힌 모델과 노력으로 이관된다", () => {
   const modelOptions = [
     { id: "default", efforts: [] },
