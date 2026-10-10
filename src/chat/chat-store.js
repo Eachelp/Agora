@@ -35,6 +35,42 @@ function readJsonSafe(file) {
   }
 }
 
+// 폴더째 지웁니다. Electron의 Windows rmSync는 읽기 전용 속성 파일에서 EPERM을 던지므로
+// 속성을 풀고 한 번 더 시도합니다. 그래도 실패하면 호출한 쪽이 다룹니다.
+function rmTreeForce(dir) {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+    return;
+  } catch {}
+  try {
+    for (const rel of fs.readdirSync(dir, { recursive: true })) {
+      try { fs.chmodSync(path.join(dir, rel), 0o666); } catch {}
+    }
+  } catch {}
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
+// from에 있고 to에 없는 파일만 채웁니다. 파일 하나가 안 옮겨져도 나머지는 계속 옮깁니다.
+function restoreMissingFiles(from, to) {
+  let rels = [];
+  try {
+    rels = fs.readdirSync(from, { recursive: true });
+  } catch {
+    return;
+  }
+  for (const rel of rels) {
+    const src = path.join(from, rel);
+    const dst = path.join(to, rel);
+    try {
+      if (fs.statSync(src).isDirectory()) fs.mkdirSync(dst, { recursive: true });
+      else if (!fs.existsSync(dst)) {
+        fs.mkdirSync(path.dirname(dst), { recursive: true });
+        fs.copyFileSync(src, dst);
+      }
+    } catch {}
+  }
+}
+
 // 마지막 줄이 찢겨 있어도(쓰던 중 종료) 나머지 이벤트는 살립니다.
 function readJsonlTolerant(file) {
   let raw;
@@ -473,17 +509,29 @@ class ChatStore {
       return false;
     }
     const target = path.join(this.trashRoot(), id);
-    fs.rmSync(target, { recursive: true, force: true });
+    rmTreeForce(target);
+    // 휴지통 시각은 옮기기 전에 원본 폴더에 적어 둡니다. 옮긴 뒤에 쓰다 실패하면
+    // 휴지통 사본이 deletedAt=0이 되어 다음 시작 때 바로 영구 삭제되기 때문입니다.
     try {
-      fs.renameSync(source, target);
-    } catch {
-      // Windows에서 파일이 잠겨 rename이 실패하면 복사 후 삭제로 대체합니다.
-      fs.cpSync(source, target, { recursive: true });
-      fs.rmSync(source, { recursive: true, force: true });
+      writeJsonAtomic(path.join(source, "trash.json"), { deletedAt: this.now() });
+    } catch (error) {
+      throw new Error(`휴지통 기록을 쓰지 못해 삭제하지 않았습니다: ${error.message || error}`);
     }
     try {
-      writeJsonAtomic(path.join(target, "trash.json"), { deletedAt: this.now() });
-    } catch {}
+      try {
+        fs.renameSync(source, target);
+      } catch {
+        // Windows에서 파일이 잠겨 rename이 실패하면 복사 후 삭제로 대체합니다.
+        fs.cpSync(source, target, { recursive: true });
+        rmTreeForce(source);
+      }
+    } catch (error) {
+      // 전부 아니면 전혀: 절반만 지워진 원본을 사본으로 되살리고 휴지통 사본은 치웁니다.
+      restoreMissingFiles(target, source);
+      try { fs.rmSync(path.join(source, "trash.json"), { force: true }); } catch {}
+      try { rmTreeForce(target); } catch {}
+      throw error;
+    }
     this.index.sessions = this.index.sessions.filter((entry) => entry.id !== id);
     this.persistIndex();
     return true;
@@ -534,7 +582,12 @@ class ChatStore {
     const cutoff = this.now() - this.trashRetentionMs;
     for (const entry of this.listTrash()) {
       if ((entry.deletedAt || 0) < cutoff) {
-        fs.rmSync(path.join(this.trashRoot(), entry.id), { recursive: true, force: true });
+        // 휴지통 정리는 덤입니다. 한 항목이 안 지워져도 저장소 시작을 막으면 안 됩니다.
+        try {
+          rmTreeForce(path.join(this.trashRoot(), entry.id));
+        } catch (error) {
+          console.error("[Agora] 휴지통 항목을 지우지 못했습니다:", entry.id, error && (error.message || error));
+        }
       }
     }
   }

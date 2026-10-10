@@ -2098,10 +2098,20 @@ function roomMeta(meta) {
           // stopAllSilently가 activeRuns를 0으로 만들기 전에 판단해야 한다.
           room.releaseWorkspaceMutationsIfIdle();
           room.stopAllSilently();
-          rooms.delete(sessionId);
+          // 실행이 실제로 끝나 로그 파일이 닫힐 때까지 기다린다. 열린 파일이 있으면
+          // Windows에서 폴더를 옮기거나 지울 수 없어 삭제가 중간에 끊긴다.
+          const deadline = Date.now() + 8000;
+          while (room.liveRuns > 0 && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 25));
+          }
+          if (room.liveRuns > 0) {
+            throw new Error("답변 중인 작업이 아직 끝나지 않아 삭제하지 못했습니다. 잠시 뒤 다시 시도해 주세요.");
+          }
         }
-        pendingAttachments.delete(sessionId);
+        // 실패하면 던진다: 세션은 그대로 남고 화면에 오류가 보인다(좀비 세션 방지).
         store.deleteSession(sessionId);
+        rooms.delete(sessionId);
+        pendingAttachments.delete(sessionId);
         let nextId = getActiveSessionId();
         if (!nextId && !store.readOnly) {
           nextId = createSessionForProject().id;
