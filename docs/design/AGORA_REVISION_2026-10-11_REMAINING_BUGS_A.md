@@ -28,3 +28,27 @@
 ### 회귀 테스트
 
 `test/regress-codex-account-store.test.js`(F122·F123·F125), `test/regress-account-switching-partial.test.js`(F128·F129·저장소 주입), `test/regress-claude-usage-readonly.test.js`(F165), `test/regress-codex-proxy-abort.test.js`(F127). 모두 수정 전 코드에서 실패하고 수정 후 통과한다.
+
+## 묶음 B2 — 설정·시작·플랫폼·제공자 기능 탐지
+
+| ID | 상태 | 원인 | 수정 |
+|---|---|---|---|
+| F131 | 수정 | 로그인 시작 응답은 main이 계정 목록을 읽은 뒤에야 도착한다. 그 사이 이벤트로 받은 로그인 주소를 응답 처리기가 `urls: []`로 덮어써 '브라우저 열기'가 꺼진 채 남았다. | 이미 진행 중으로 아는 로그인은 응답이 건드리지 않는다. 이벤트 없이 응답만 오면 예전처럼 패널을 만든다. |
+| F163 | 수정 | 로그인 패널 상태가 설정 창 렌더러 메모리에만 있어, 창을 닫았다 열면 진행 중인 로그인을 취소·완료할 수단이 사라졌다. | 로그인 러너에 `snapshot()`을 더하고 `getSettingsData`가 진행 중인 로그인(`logins`)을 싣는다. 설정 창은 열릴 때·새로고침 때 이를 읽어 패널을 되살린다. |
+| F132 | 수정 | '변경 사항 적용'이 화면 값 전체를 보내, 아직 불러오지 못한 기본값이나 트레이에서 바뀌기 전 값이 실제 설정을 덮어썼다. | 불러오기 전에는 저장하지 않는다. 화면을 서버 값으로 채운 시점의 값(`loadedSettings`)과 비교해 바뀐 항목만 보낸다. 바뀐 것이 없으면 요청을 보내지 않고 안내한다. |
+| F144 | 수정 | `settings.json`을 바로 덮어써 쓰는 도중 종료되면 파일이 잘렸고, 읽기는 파싱 실패를 `{}`로 삼켜 프록시 모드를 포함한 모든 설정이 초기화됐다. | 새 `src/settings-file.js`: 임시 파일에 쓴 뒤 이름을 바꾼다. 직전 정상 파일을 `.bak`로 남기고, 본문이 깨져 있으면 사본에서 읽는다. 실패는 경고로 남긴다. |
+| F133 | 수정 | Windows 종료·재시작·로그오프에서는 `before-quit`이 오지 않아 Codex 프록시 주소가 `config.toml`에 남았다. | 새 `src/session-end.js`: 모든 창의 `session-end`에도 같은 정리(`teardownCodexProxyOnQuit`)를 건다. 다음 실행 때 남은 주소를 지우는 기존 정리(`restoreCodexProxyMode`의 첫 단계)는 그대로다. |
+| F134 | 수정 | 글꼴 조회가 오류·시간 초과로 `[]`를 돌려줘도 그 결과를 세션 내내 캐시했고, 이후 저장이 저장된 글꼴을 지웠다. | 실패·빈 목록은 캐시하지 않아 다음 호출에서 다시 조회한다(성공은 계속 캐시). `settings:save`는 목록이 비어 있으면 글꼴 값을 건드리지 않는다. |
+| F168 | 수정 | AGY 표(`AGY_MODEL_OPTIONS`)에 Claude 5.5 표시명을 넣고 캐시 버전(6)을 올리지 않아, 옛 캐시가 최대 6시간 원시 id를 보였다. | 캐시 버전을 `규칙 번호:표 내용 지문`(예: `6:1a2b3c4d5e`)으로 바꿨다. 표를 고치기만 해도 옛 캐시가 자동 무효화된다. 규칙(코드)을 바꿀 때만 번호를 올린다. |
+| F160 | 수정 | Finder·Dock으로 띄운 macOS 앱의 PATH(`/usr/bin:/bin:...`)에는 node가 없어, npm 설치 CLI(`#!/usr/bin/env node`)의 `--version` 확인이 실패했다. | `withCommonCliPaths`가 `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin` 등을 PATH 뒤에 덧붙인다(macOS·Linux만, 플랫폼·홈은 주입). 탐지용 자식 프로세스(버전·로그인·모델 조회)와, 앱 시작 때 `process.env.PATH`에 적용해 실행(spawn)도 같은 PATH를 물려받는다. |
+
+### 한계
+
+- F133: `session-end`는 창이 하나라도 있어야 온다. 트레이 상주 앱은 채팅 창을 숨길 뿐 없애지 않으므로 보통 충족되지만, 창이 모두 없는 상태에서의 시스템 종료는 여전히 다음 실행 때의 정리에 기댄다.
+- F144: 이미 잘려 버린 파일은 `.bak`가 없으면 복구할 수 없다(업데이트 직후 첫 저장부터 사본이 생긴다).
+- F134: 글꼴 목록이 비어 있는 동안에는 '시스템 기본'으로 되돌리는 것(값을 비움)만 저장되고, 새 글꼴 선택은 목록이 있어야 가능하다.
+- F160: macOS 실제 환경에서는 실행 검증을 하지 못했다. 플랫폼·환경을 주입해 Windows에서 같은 경로를 확인했다.
+
+### 회귀 테스트
+
+`test/regress-settings-ui.test.js`(F131·F163·F132: 실제 `settings.js`를 가짜 DOM과 가짜 `settingsApi`로 실행), `test/regress-settings-persistence.test.js`(F144·F134·F133), `test/regress-provider-capabilities-cache-env.test.js`(F168·F160). 모두 수정 전 코드에서 실패하고 수정 후 통과한다. `test/provider-capabilities.test.js`의 AGY 캐시 버전 단언은 고정 숫자 대신 내보낸 상수를 본다.
