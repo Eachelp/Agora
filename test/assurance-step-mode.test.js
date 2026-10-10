@@ -330,24 +330,12 @@ test("B5: 사용자 거부는 Final PASS로 이어지지 않는다", async () =>
 
 // ---- B5: production 노출 경로가 실제로 존재하는가 ----
 
-test("B5: 승인 경로가 IPC와 preload에 실제로 노출된다", () => {
+test("B5: 승인 경로가 IPC에 노출된다", () => {
   // 테스트가 room 메서드만 부르면 "API는 있는데 사용자가 못 쓰는" 상태를
   // 통과시킨다. 실제 노출 지점을 소스에서 확인한다.
   const ipc = fs.readFileSync(path.join(__dirname, "..", "src", "chat", "chat-ipc.js"), "utf8");
   assert.match(ipc, /chat:specialist:pending-approvals/);
   assert.match(ipc, /chat:specialist:resolve-approval/);
   assert.match(ipc, /room\.resolveHumanApproval/);
-
-  const preload = fs.readFileSync(path.join(__dirname, "..", "src", "chat-preload.js"), "utf8");
-  assert.match(preload, /specialistPendingApprovals/);
-  assert.match(preload, /specialistResolveApproval/);
-
-  // IPC와 preload까지만 확인하면 "배선은 있는데 화면에 버튼이 없는" 상태를 그대로
-  // 통과시킨다. 실제로 그랬다 — 렌더러에 호출부가 하나도 없어서, 승인 대기에 들어간
-  // 실행은 입력창이 잠긴 채 사용자가 풀 방법이 없었다.
-  const renderer = fs.readFileSync(path.join(__dirname, "..", "src", "chat.js"), "utf8");
-  const html = fs.readFileSync(path.join(__dirname, "..", "src", "chat.html"), "utf8");
-  assert.match(renderer, /chatApi\.specialistPendingApprovals\(/, "렌더러가 승인 항목을 조회해야 합니다");
-  assert.match(renderer, /chatApi\.specialistResolveApproval\(/, "렌더러가 승인·거부를 보낼 수 있어야 합니다");
-  assert.match(html, /id="specialist-approvals"/, "승인 항목을 보여 줄 자리가 있어야 합니다");
+  // 화면(preload·렌더러·승인 목록)은 전문 모드와 함께 없어졌다. 백엔드 채널은 다음 단계에서 걷는다.
 });

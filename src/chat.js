@@ -17,8 +17,6 @@ const attachmentRow = document.getElementById("attachment-row");
 const btnModeSequential = document.getElementById("btn-mode-sequential");
 const btnModeIndependent = document.getElementById("btn-mode-independent");
 const responseModeBar = document.getElementById("response-mode-bar");
-const specialistChoiceBar = document.getElementById("specialist-choice-bar");
-const specialistApprovalsBar = document.getElementById("specialist-approvals");
 
 let isIndependentResponseMode = false;
 
@@ -44,27 +42,12 @@ const sessionTitleEl = document.getElementById("session-title");
 const workspaceButton = document.getElementById("btn-workspace");
 const workspaceLabel = document.getElementById("workspace-label");
 const permissionSelect = document.getElementById("permission-select");
-const permissionWarning = document.getElementById("permission-warning");
 const enforcementHint = document.getElementById("enforcement-hint");
 const discussionButton = document.getElementById("btn-discussion");
 const workflowButton = document.getElementById("btn-workflow");
-const specialistButton = document.getElementById("btn-specialist");
-const roomControlsActions = document.querySelector(".room-controls-actions");
 const usageButton = document.getElementById("btn-usage");
 const usageFoldToggle = document.getElementById("btn-usage-fold");
 const usageStripItems = document.getElementById("usage-strip-items");
-const professionalActions = document.getElementById("professional-actions");
-const professionalPlanButton = document.getElementById("btn-professional-plan");
-const professionalImplementationButton = document.getElementById("btn-professional-implementation");
-const professionalRecordButton = document.getElementById("btn-professional-record");
-const professionalFullButton = document.getElementById("btn-professional-full");
-const professionalPlanViewButton = document.getElementById("btn-professional-plan-view");
-const planAutoReviseToggle = document.getElementById("plan-auto-revise");
-const planAutoLimitSelect = document.getElementById("plan-auto-limit");
-const implementationAutoReviseToggle = document.getElementById("implementation-auto-revise");
-const implementationAutoLimitSelect = document.getElementById("implementation-auto-limit");
-const planPolicyBadge = document.getElementById("badge-professional-plan");
-const implementationPolicyBadge = document.getElementById("badge-professional-implementation");
 const storeWarning = document.getElementById("store-warning");
 const popover = document.getElementById("popover");
 const popoverBackdrop = document.getElementById("popover-backdrop");
@@ -88,10 +71,6 @@ const doctorSummary = document.getElementById("doctor-summary");
 const doctorRefresh = document.getElementById("doctor-refresh");
 const doctorClose = document.getElementById("doctor-close");
 const doctorDone = document.getElementById("doctor-done");
-const specialistBackdrop = document.getElementById("specialist-backdrop");
-const specialistBody = document.getElementById("specialist-body");
-const specialistCancelBtn = document.getElementById("specialist-cancel");
-const specialistCloseBtn = document.getElementById("specialist-close");
 
 let providers = [];
 let diagnostics = [];
@@ -125,62 +104,12 @@ let roomTurnState = { current: null, running: [], queue: [], deferred: [] };
 const liveRuns = new Map(); // runId → { item, textEl, statusEl, text }
 let mentionState = null;
 let noticeTimer = null;
-let specialistRunning = false;
-let specialistResumeAvailable = false;
-// 구현이 막힘(BLOCKED)으로 멈춰 사용자의 후속 선택을 기다리는 중인지.
-let specialistBlockedAvailable = false;
-// 단계별(step) 실행에서 현재 멈춘 단계(plan_ready/builder_done/review_fix_required/review_pass).
-let specialistResumePhase = null;
-// 전문 실행 진행 상태(진행 표시·입력창 잠금에 사용).
-let specialistActive = false;
-let specialistNeedsInput = false;
-let specialistPlanReady = false;
-// 승인된 기획서를 실제로 들고 있어 구현을 시작할 수 있는가(백엔드 기준).
-let specialistImplementationReady = false;
-let specialistNode = null;
-let specialistStatus = null;
-// 작업 전 백업으로 되돌릴 수 있는지. 백엔드(canRestore)가 유일한 근거이며,
-// 복원 계열 조작을 열지 말지 판단하는 데 쓴다.
-let specialistCanRestore = false;
-// 백엔드가 세는 라운드. 화면의 자동 보완 "설정값"과 혼동하면 안 되므로
-// 진행 횟수로는 이 값만 쓴다.
-let specialistPlanRound = 0;
-let specialistImplementationRound = 0;
-let specialistFrozenRunId = null;
-// 완료 전에 사용자가 직접 확인해야 하는 항목(HUMAN_APPROVAL). 검수자가 대신
-// 해소할 수 없어, 이 목록과 승인/거부 경로가 없으면 실행이 영영 대기에 남는다.
-let specialistPendingApprovals = [];
-let specialistApprovalContext = null;
-let specialistApprovalRequest = 0;
-let specialistApprovalsLoading = false;
-let specialistApprovalsError = "";
-// 한 번에 한 항목만 처리해 응답 순서에 따라 남은 목록이 되돌아가지 않게 한다.
-let specialistApprovalsBusy = false;
-// 막힘 처리 선택지를 상태 줄 아래에 펼치기 위한 상세(캔 복원 여부 등).
-let specialistBlockInfo = null;
-let specialistBlockFetch = "idle";
-let professionalModeEnabled = false;
-// 일반/전문 선택은 방마다 기억하고 앱을 다시 켜도 유지한다. 실행 상태는 이 값을
-// 바꾸지 않는다. 예전에는 실행 기록이 남은 방에 들어가면 저절로 켜지고, 켜진 채
-// 다른 방까지 따라가 일반 질문이 응답 없는 메모로 저장됐다.
-const PROFESSIONAL_MODE_ROOMS_KEY = "agora.chat.professionalModeRooms";
-const professionalModeRooms = readProfessionalModeRooms();
 // 방마다 쓰던 입력 초안. 방을 옮겨도 쓰던 글이 따라가거나 사라지지 않게 한다.
 const composerDrafts = new Map();
 // 방 설정(sessionMeta)을 바꾸는 요청의 순번. 늦게 온 응답이 최신 설정을 덮지 않게 한다.
 let sessionMetaRequest = 0;
 // 창 안 확인창이 열려 있으면 그 결과를 돌려줄 함수.
 let confirmResolve = null;
-// 기획안 미리보기 폭. 사용자가 조절한 값을 기억한다(popover는 열 때마다 재생성된다).
-const PLAN_PREVIEW_WIDTH_KEY = "agora.chat.planPreviewWidth";
-let planPreviewResizeObserver = null;
-
-// 승인된 기획안(TASK.md) 경로/제목. "기획안 보기" 버튼으로 열람합니다.
-let specialistPlanTaskPath = null;
-let specialistPlanTaskId = null;
-let specialistStopReason = null;
-let specialistCheckpointProtection = null;
-let specialistMissingSections = null;
 
 const SIDEBAR_WIDTH_KEY = "agora.chat.sidebarWidth";
 const SIDEBAR_COLLAPSED_KEY = "agora.chat.sidebarCollapsed";
@@ -200,103 +129,10 @@ const DISCUSSION_LENGTH_PRESETS = Object.freeze({
 });
 const SIDEBAR_MIN_WIDTH = 180;
 const SIDEBAR_MAX_WIDTH = 420;
-const SPECIALIST_STAGE_LABELS = Object.freeze({
-  planner: "기획",
-  planning: "기획",
-  design: "기획",
-  plan_review: "기획 검수",
-  implementation: "구현",
-  builder: "구현",
-  review: "검수",
-  reviewer: "검수",
-  recorder: "기록",
-  // V1.5 완료 후 사람용 정리(Archivist) 턴 — 라벨이 없으면 역할 배지·'응답 중' 단계가 붙지 않는다.
-  archivist: "기록 정리",
-});
-
-function boundedRevisionLimit(value, fallback = 1) {
-  const parsed = Number.parseInt(value, 10);
-  return Number.isInteger(parsed) ? Math.min(3, Math.max(1, parsed)) : fallback;
-}
-
-// 저장된 자동 보완 정책을 읽는다. 0(=끄기)이 유효한 값이라 boundedRevisionLimit
-// (횟수 select 전용, 1~3으로 clamp)을 쓰면 "꺼짐"이 1회로 되살아난다.
-function boundedAutoRevisions(value) {
-  const parsed = Number.parseInt(value, 10);
-  return Number.isInteger(parsed) ? Math.min(3, Math.max(0, parsed)) : 0;
-}
-
 function boundedDiscussionTurns(value, fallback = 15) {
   const parsed = Number.parseInt(value, 10);
   return Number.isInteger(parsed) ? Math.min(50, Math.max(3, parsed)) : fallback;
 }
-
-// 자동 보완 정책은 **프로젝트**가 갖는다(project.autoRevisions). 화면의 토글은
-// 그 값에서 시작해 이번 실행만 임시로 바꾸는 자리다. 예전에는 localStorage에
-// 저장돼 앱 전역이라, 한 프로젝트에서 3회로 바꾸면 다른 프로젝트도 3회가 됐다.
-//
-// 어느 프로젝트의 값을 올려 둔 상태인지 기억해, 프로젝트가 바뀔 때만 다시 채운다.
-// 매 상태 갱신마다 덮으면 사용자가 방금 바꾼 임시 값이 사라진다.
-let autoRevisionsProjectId = null;
-
-function applyProjectAutoRevisions(force = false) {
-  const project = activeProjectEntry();
-  const projectId = project?.id || null;
-  if (!force && projectId === autoRevisionsProjectId) return;
-  autoRevisionsProjectId = projectId;
-  const policy = project?.autoRevisions || {};
-  const plan = boundedAutoRevisions(policy.plan);
-  const implementation = boundedAutoRevisions(policy.implementation);
-  planAutoReviseToggle.checked = plan > 0;
-  if (plan > 0) planAutoLimitSelect.value = String(plan);
-  implementationAutoReviseToggle.checked = implementation > 0;
-  if (implementation > 0) implementationAutoLimitSelect.value = String(implementation);
-  syncAutoRevisionControls();
-}
-
-function syncAutoRevisionControls() {
-  planAutoLimitSelect.disabled = !planAutoReviseToggle.checked;
-  implementationAutoLimitSelect.disabled = !implementationAutoReviseToggle.checked;
-  renderProfessionalPolicyBadges();
-}
-
-// 자동 보완 설정이 실행 버튼의 의미를 바꾼다: 꺼져 있으면 검수가 수정을 요구할 때
-// 멈추고 사용자에게 승인을 묻고, 켜져 있으면 정해진 횟수만큼 자동으로 다시 돈다
-// (chat-specialist.js의 canAutoRevise / maxRounds). 그 사실이 버튼에 보이지 않아
-// "왜 어떤 때는 멈추고 어떤 때는 쭉 가는지" 알 수 없었다. 버튼이 직접 말하게 한다.
-function renderProfessionalPolicyBadges() {
-  const policy = currentProfessionalPolicy();
-  if (planPolicyBadge) planPolicyBadge.textContent = policyBadgeText(policy.planAutoRevisions);
-  if (implementationPolicyBadge) {
-    implementationPolicyBadge.textContent = policyBadgeText(policy.implementationAutoRevisions);
-  }
-}
-
-function policyBadgeText(revisions) {
-  return revisions > 0 ? `자동 보완 ${revisions}회` : "검수 후 확인";
-}
-
-// 눌릴 수 있는 버튼의 툴팁: 무엇을 하는지 + 이 설정에서 검수가 수정을 요구하면
-// 어떻게 되는지. 비활성 버튼의 툴팁은 "왜 못 누르는지"가 우선이라 여기 오지 않는다.
-function policyTooltip(description, revisions, stageLabel) {
-  const consequence = revisions > 0
-    ? `${stageLabel} 검수가 수정을 요구하면 최대 ${revisions}회까지 자동으로 다시 돌립니다.`
-    : `${stageLabel} 검수가 수정을 요구하면 멈추고 물어봅니다(자동 보완 꺼짐).`;
-  return `${description} ${consequence}`;
-}
-
-// 여기서 바꾼 값은 이번 실행에만 적용된다. 계속 쓸 값은 프로젝트 설정(⋯)에 둔다.
-for (const control of [planAutoReviseToggle, implementationAutoReviseToggle]) {
-  control.addEventListener("change", syncAutoRevisionControls);
-}
-
-for (const control of [planAutoLimitSelect, implementationAutoLimitSelect]) {
-  control.addEventListener("change", () => {
-    control.value = String(boundedRevisionLimit(control.value));
-    renderProfessionalPolicyBadges();
-  });
-}
-syncAutoRevisionControls();
 
 function clampSidebarWidth(value) {
   const viewportMax = Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, window.innerWidth * 0.46));
@@ -514,122 +350,25 @@ function strayModelLabel(id, note = "현재 설정") {
   return pretty ? `${pretty} · ${note}` : `${id} (${note})`;
 }
 
-function roleConfigFromProject(project, roleId) {
-  const raw = project?.defaultRoles?.[roleId];
-  if (typeof raw === "string") return { agentId: raw, model: "", effort: "" };
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    return { agentId: "", model: "", effort: "" };
-  }
-  return {
-    agentId: String(raw.agentId || ""),
-    model: String(raw.model || ""),
-    effort: String(raw.effort || ""),
-  };
-}
-
-function setSpecialistState(state = {}) {
-  specialistActive = Boolean(state.active);
-  specialistResumeAvailable = Boolean(state.available);
-  specialistBlockedAvailable = Boolean(state.blocked);
-  specialistResumePhase = specialistResumeAvailable ? state.resumePhase || null : null;
-  specialistNeedsInput = Boolean(state.needsInput);
-  specialistPlanReady = Boolean(state.planReady);
-  // 기획 검수는 통과했지만 승인된 기획서를 실제로 들고 있는지는 별개다.
-  // (앱을 다시 켰을 때 TASK.md를 읽지 못하면 통과 표시만 남는다.)
-  specialistImplementationReady = Boolean(state.implementationReady);
-  specialistNode = state.node || null;
-  specialistStatus = state.status || null;
-  specialistPlanTaskPath = state.planTaskPath || null;
-  specialistPlanTaskId = state.planTaskId || null;
-  specialistStopReason = state.stopReason || null;
-  specialistCheckpointProtection = state.checkpointProtection || null;
-  specialistCanRestore = Boolean(state.canRestore);
-  specialistPlanRound = Number.isFinite(state.planRound) ? state.planRound : 0;
-  specialistImplementationRound = Number.isFinite(state.implementationRound) ? state.implementationRound : 0;
-  specialistFrozenRunId = state.frozenRunId || null;
-  specialistMissingSections = Array.isArray(state.missingSections) && state.missingSections.length > 0
-    ? [...state.missingSections]
-    : null;
-  const approvalFlow = awaitingHumanApproval() || canResumeAfterApproval();
-  if (!approvalFlow || specialistApprovalContext?.sessionId !== activeSessionId
-    || specialistApprovalContext?.runId !== specialistFrozenRunId) {
-    resetSpecialistApprovals();
-    if (approvalFlow && activeSessionId) {
-      specialistApprovalContext = { sessionId: activeSessionId, runId: specialistFrozenRunId };
-    }
-  }
-  if (awaitingHumanApproval()) {
-    if (!specialistApprovalsBusy) void refreshPendingApprovals();
-  } else {
-    specialistApprovalRequest += 1;
-    specialistPendingApprovals = [];
-    specialistApprovalsLoading = false;
-    specialistApprovalsError = "";
-  }
-  renderSpecialistApprovals();
-  // 막힘도 같다 — 들어오면 상세를 받아 오고, 벗어나면 즉시 비운다. 이미 처리한
-  // 막힘의 선택지가 남아 있으면 "골랐는데 그대로"로 보인다.
-  if (specialistBlockedAvailable) refreshBlockInfo();
-  else if (specialistBlockInfo || specialistBlockFetch !== "idle") {
-    specialistBlockInfo = null;
-    specialistBlockFetch = "idle";
-    renderProfessionalBlocked();
-  }
-  // 일반/전문 모드는 여기서 바꾸지 않는다. 실행이 돌거나 사용자를 기다리는 동안
-  // 일반 모드에서는 입력창 위 줄이 그 사실과 '전문 실행 보기' 버튼을 보여 준다.
-}
-
-function readProfessionalModeRooms() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(PROFESSIONAL_MODE_ROOMS_KEY) || "[]");
-    return new Set(Array.isArray(saved) ? saved.filter((id) => typeof id === "string") : []);
-  } catch {
-    return new Set();
-  }
-}
-
-function persistProfessionalModeRooms() {
-  try {
-    localStorage.setItem(PROFESSIONAL_MODE_ROOMS_KEY, JSON.stringify([...professionalModeRooms]));
-  } catch {}
-}
-
-// 사용자가 고른 모드를 지금 방에 기록한다. 모드를 바꾸는 길은 이것뿐이다.
-function setProfessionalMode(enabled) {
-  professionalModeEnabled = Boolean(enabled);
-  if (!activeSessionId) return;
-  if (professionalModeEnabled) professionalModeRooms.add(activeSessionId);
-  else professionalModeRooms.delete(activeSessionId);
-  persistProfessionalModeRooms();
-}
-
-// 방을 옮길 때 그 방에 묶인 화면 상태를 함께 바꾼다. 쓰던 글은 방별로 보관하고,
-// 모드는 그 방에서 마지막으로 고른 값으로 되돌린다. 이전 방의 팝오버·확인창·
-// 승인 목록은 닫는다. 남겨 두면 그 조작이 새 방에 적용된다.
+// 방을 옮길 때 그 방에 묶인 화면 상태를 함께 바꾼다. 쓰던 글은 방별로 보관한다.
+// 이전 방의 팝오버·확인창은 닫는다. 남겨 두면 그 조작이 새 방에 적용된다.
 function switchActiveSession(nextId) {
   if (activeSessionId === nextId) return;
   if (activeSessionId) {
     if (composerInput.value) composerDrafts.set(activeSessionId, composerInput.value);
     else composerDrafts.delete(activeSessionId);
   }
-  resetSpecialistApprovals();
-  renderSpecialistApprovals();
-  closeSpecialistDialog();
   closePopover();
   closeMentionPopup();
   settleConfirm(false);
-  // 이전 방에서 시작 요청을 보낸 표시다. 새 방의 버튼을 막지 않게 내린다.
-  specialistRunning = false;
   activeSessionId = nextId;
-  professionalModeEnabled = Boolean(nextId) && professionalModeRooms.has(nextId);
   composerInput.value = (nextId && composerDrafts.get(nextId)) || "";
   autoresize();
 }
 
-// 삭제한 방의 초안과 모드 기록을 지운다.
+// 삭제한 방의 초안을 지운다.
 function forgetRoom(sessionId) {
   composerDrafts.delete(sessionId);
-  if (professionalModeRooms.delete(sessionId)) persistProfessionalModeRooms();
 }
 
 // 전송이 실패하면 보냈던 글을 그 방의 입력칸으로 되돌린다. 그사이 다른 방으로
@@ -646,336 +385,8 @@ function restoreFailedDraft(sessionId, draftText) {
   composerDrafts.set(sessionId, join(composerDrafts.get(sessionId) || ""));
 }
 
-// 전문 실행이 실제로 돌거나 사용자 입력을 기다리는 중인가 — 백엔드의
-// isSpecialistLocked(active || resume || blocked)와 같은 기준이다.
-// "노드가 남아 있다"(runLive)는 여기 쓰지 않는다: 중단된 실행도 노드는 남으므로
-// 그 기준이면 전문 실행을 한 번 돌린 대화는 영영 메모 전용이 되어, 일반 모드에서
-// @claude를 불러도 답이 오지 않았다.
-function professionalRunBusy() {
-  return Boolean(specialistActive || specialistResumeAvailable || specialistBlockedAvailable);
-}
-
-function specialistLocksComposer() {
-  // READY 상태에서는 기획 수정을 허용하기 위해 composer를 잠그지 않는다.
-  if (specialistNode === "READY" && !specialistActive) return false;
-  // 일반 모드를 고른 사용자는 실행 중에도 메모를 남길 수 있어야 한다.
-  // recordOnly는 턴을 예약하지 않아 진행 중인 실행에 끼어들지 않는다.
-  if (!professionalModeEnabled) return false;
-  return Boolean(specialistActive || specialistBlockedAvailable || (specialistResumeAvailable && !specialistNeedsInput));
-}
-
 function syncComposerLock() {
-  lockComposer(Boolean(activeApproval || specialistLocksComposer()));
-  renderSpecialistChoice();
-  renderSpecialistApprovals();
-  // 전문/일반 모드를 오가면 막힘 선택지가 위(상태 줄 아래)와 아래(입력창 옆)
-  // 사이를 옮겨 간다. 둘을 같은 시점에 다시 그려야 한쪽이 사라진 채로 남지 않는다.
-  renderProfessionalBlocked();
-}
-
-// 사용자가 골라야만 진행되는 지점의 선택지를 실제 버튼으로 만든다.
-// 백엔드(resumeSpecialist/cancelSpecialist)는 예전부터 이 선택들을 처리했지만
-// 화면에 버튼이 없어서, composer가 "선택 대기"로 잠긴 채 고를 방법이 없었다.
-const SPECIALIST_CHOICES = {
-  CHECKPOINT_FAILED: [
-    { label: "재시도", title: "백업을 다시 만든 뒤 Builder를 시작합니다", run: () => window.chatApi.specialistResume(activeSessionId, "retry") },
-    { label: "무보호 진행", title: "백업 없이 실행합니다. 사전 스냅샷이 없어 회귀 검증 신뢰도가 제한됩니다", confirm: "작업 전 상태 백업 없이 실행할까요? 문제가 생겨도 실행 전으로 되돌릴 수 없습니다.", run: () => window.chatApi.specialistResume(activeSessionId, "proceed_unprotected") },
-    { label: "취소", title: "전문 실행을 중단합니다", run: () => window.chatApi.specialistCancel(activeSessionId) },
-  ],
-};
-
-// composer를 잠그면서 "선택해 주세요"라고 안내하는 상태는 모두 여기에 선택지가
-// 있어야 한다. BLOCKED는 선택지가 헤더의 모드 토글 버튼 뒤 모달에만 있어서,
-// "아래에서 선택해 주세요"라는 안내와 실제 위치가 정반대였다. 선택지 자체는
-// 모달이 이미 잘 설명하고 있으므로 여는 길만 안내한 자리에 만든다.
-function specialistChoicesNow() {
-  const choices = [];
-  // 막힘 처리는 상태 줄 아래(#professional-blocked)에 펼쳐 둔다. 입력창 옆에
-  // "다음 처리 선택" 칩을 또 두면 같은 일을 하는 자리가 둘이 되고, 실행이 멈춘
-  // 그 순간 사용자가 봐야 할 곳이 갈린다. 일반 모드로 내려온 동안에는 위 영역이
-  // 숨으므로 여기서 대신 보여 준다(고를 방법이 사라지면 안 된다).
-  if (specialistBlockedAvailable) {
-    if (!professionalModeEnabled) choices.push({
-      label: "다음 처리 선택",
-      title: "구현이 막혔습니다. 변경 유지·복원·재기획·지시서 수정 중에서 고릅니다",
-      run: () => { openSpecialistDialog(); return Promise.resolve(null); },
-    });
-  } else if (specialistNeedsInput && SPECIALIST_CHOICES[specialistStopReason]) {
-    choices.push(...SPECIALIST_CHOICES[specialistStopReason]);
-  }
-  // 일반 모드에서는 전문 실행 영역이 숨는다. 실행이 돌거나 사용자를 기다리는
-  // 동안에는 돌아갈 길을 여기 남긴다. 모드는 사용자가 누를 때만 바뀐다.
-  if (!professionalModeEnabled && professionalRunBusy()) {
-    choices.push({
-      label: "전문 실행 보기",
-      title: "전문 모드로 전환해 PLAN·실행 버튼과 진행 상태를 봅니다. 실행은 그대로 진행됩니다",
-      run: () => {
-        setProfessionalMode(true);
-        renderHeader();
-        syncComposerLock();
-        return Promise.resolve(null);
-      },
-    });
-  }
-  return choices.length > 0 ? choices : null;
-}
-
-// 입력창 위 줄의 머리말. 일반 모드에서 전문 실행이 진행·대기 중이면 그 상태를 말한다.
-function specialistChoiceLabel() {
-  if (professionalModeEnabled || !professionalRunBusy()) return "다음 처리:";
-  const headline = specialistStatusView().headline;
-  return headline ? `전문 실행 · ${headline}` : "전문 실행이 진행 중입니다.";
-}
-
-function renderSpecialistChoice() {
-  const choices = specialistChoicesNow();
-  specialistChoiceBar.replaceChildren();
-  specialistChoiceBar.hidden = !choices;
-  specialistChoiceBar.classList.toggle("is-run-status", !professionalModeEnabled && professionalRunBusy());
-  if (!choices) return;
-  const label = document.createElement("span");
-  label.className = "response-mode-label";
-  label.textContent = specialistChoiceLabel();
-  specialistChoiceBar.append(label);
-  for (const choice of choices) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "mode-chip";
-    button.textContent = choice.label;
-    button.title = choice.title;
-    button.addEventListener("click", async () => {
-      const sessionId = activeSessionId;
-      if (choice.confirm && !(await confirmInApp(choice.confirm))) return;
-      if (sessionId !== activeSessionId) return;
-      specialistChoiceBar.hidden = true;
-      const result = await call(choice.run());
-      // 응답을 기다리는 사이 방을 옮겼으면 새 방 화면은 이미 그려져 있다.
-      if (sessionId !== activeSessionId) return;
-      if (!result) {
-        renderSpecialistChoice();
-        return;
-      }
-      if (result.specialist) setSpecialistState(result.specialist);
-      syncComposerLock();
-      renderHeader();
-    });
-    specialistChoiceBar.append(button);
-  }
-}
-
-// 승인 후에도 FSM의 stopReason은 기록 시작까지 남는다. 실제 재개 단계가
-// review_pass이면 더 이상 승인 목록을 기다리지 않는다.
-function awaitingHumanApproval() {
-  if (specialistActive || specialistBlockedAvailable
-    || ["INTERRUPTED", "BLOCKED", "INVALID", "COMPLETED"].includes(specialistStatus)
-    || specialistResumePhase === "review_pass") return false;
-  return specialistResumePhase === "awaiting_human_approval"
-    || (specialistNode === "REVIEWING" && specialistStatus === "WAITING"
-      && specialistStopReason === "HUMAN_APPROVAL_REQUIRED");
-}
-
-// 막힘 처리를 고른 뒤에는 상세가 낡는다. 다음 상태가 오면 다시 받아 온다.
-function invalidateBlockInfo() {
-  specialistBlockInfo = null;
-  specialistBlockFetch = "idle";
-}
-
-function canResumeAfterApproval() {
-  return specialistResumeAvailable && specialistResumePhase === "review_pass"
-    && !specialistActive && !specialistBlockedAvailable && specialistStatus !== "INTERRUPTED";
-}
-
-function resetSpecialistApprovals() {
-  specialistApprovalContext = null;
-  specialistApprovalRequest += 1;
-  specialistPendingApprovals = [];
-  specialistApprovalsLoading = false;
-  specialistApprovalsError = "";
-  specialistApprovalsBusy = false;
-}
-
-function isCurrentApprovalContext(context) {
-  return Boolean(context && context === specialistApprovalContext
-    && context.sessionId === activeSessionId && context.runId === specialistFrozenRunId);
-}
-
-// 세션뿐 아니라 실행과 요청 순서도 대조한다. 이전 대화의 목록이나 늦게 온
-// 조회 응답으로 다른 실행의 동일한 criterionId를 승인하면 안 된다.
-async function refreshPendingApprovals() {
-  const context = specialistApprovalContext;
-  if (!isCurrentApprovalContext(context) || !awaitingHumanApproval() || specialistApprovalsBusy) return;
-  const request = ++specialistApprovalRequest;
-  specialistApprovalsLoading = true;
-  specialistApprovalsError = "";
-  renderSpecialistApprovals();
-  try {
-    const result = await window.chatApi.specialistPendingApprovals(context.sessionId);
-    if (!isCurrentApprovalContext(context) || request !== specialistApprovalRequest) return;
-    if (!result || result.ok === false || result.runId !== context.runId || !Array.isArray(result.pending)) {
-      throw new Error(result?.error || "승인 목록을 확인하지 못했습니다. 다시 불러와 주세요.");
-    }
-    specialistPendingApprovals = result.pending;
-  } catch (error) {
-    if (!isCurrentApprovalContext(context) || request !== specialistApprovalRequest) return;
-    specialistPendingApprovals = [];
-    specialistApprovalsError = error?.message || "승인 목록을 불러오지 못했습니다.";
-  }
-  specialistApprovalsLoading = false;
-  renderSpecialistApprovals();
-  renderHeader();
-}
-
-// 승인/거부를 백엔드에 전달한다. 성공하면 백엔드가 돌려준 최신 상태와 남은
-// 항목을 그대로 반영한다(프론트가 완료로 앞질러 표시하지 않는다).
-async function resolveApproval(criterionId, approved, context = specialistApprovalContext) {
-  if (!isCurrentApprovalContext(context) || !context.runId || !awaitingHumanApproval()
-    || specialistApprovalsBusy || specialistApprovalsLoading) return;
-  const item = specialistPendingApprovals.find((entry) => entry.criterionId === criterionId);
-  if (!item) return;
-  if (!approved) {
-    const label = item?.statement ? `\n\n${item.statement}` : "";
-    if (!(await confirmInApp(`이 항목을 거부할까요? 거부하면 이 실행은 완료로 처리되지 않습니다.${label}`))) return;
-    // 확인을 기다리는 사이 상태가 바뀌었으면 거부하지 않는다.
-    if (!isCurrentApprovalContext(context) || !awaitingHumanApproval()
-      || specialistApprovalsBusy || specialistApprovalsLoading) return;
-  }
-  specialistApprovalRequest += 1;
-  specialistApprovalsBusy = true;
-  renderSpecialistApprovals();
-  const result = await call(window.chatApi.specialistResolveApproval(context.sessionId, criterionId, approved, null, context.runId));
-  if (!isCurrentApprovalContext(context)) return;
-  if (!result) {
-    specialistApprovalsBusy = false;
-    await refreshPendingApprovals();
-    return;
-  }
-  if (result.specialist) setSpecialistState(result.specialist);
-  if (isCurrentApprovalContext(context)) {
-    specialistPendingApprovals = awaitingHumanApproval() && Array.isArray(result.pending) ? result.pending : [];
-    specialistApprovalsBusy = false;
-  }
-  syncComposerLock();
-  renderHeader();
-  if (!isCurrentApprovalContext(context)) return;
-  // 남은 승인이 없고 백엔드가 이어서 진행할 수 있다고 알려 준 경우에만 재개한다.
-  // 승인되지 않았는데 화면만 완료로 넘어가지 않도록, 판단은 백엔드 값에 맡긴다.
-  if (result.resumable && specialistPendingApprovals.length === 0) {
-    await resumeAfterApproval(context);
-  } else if (specialistPendingApprovals.length > 0) {
-    flashNotice(`남은 확인 항목이 ${specialistPendingApprovals.length}건 있습니다.`, false);
-  }
-}
-
-async function resumeAfterApproval(context = specialistApprovalContext) {
-  if (!isCurrentApprovalContext(context) || !canResumeAfterApproval() || specialistApprovalsBusy) return;
-  specialistApprovalsBusy = true;
-  renderSpecialistApprovals();
-  const result = await call(window.chatApi.specialistResume(context.sessionId, undefined, context.runId));
-  if (!isCurrentApprovalContext(context)) return;
-  specialistApprovalsBusy = false;
-  if (result?.meta) sessionMeta = result.meta;
-  if (result?.specialist) setSpecialistState(result.specialist);
-  syncComposerLock();
-  renderHeader();
-}
-
-// 승인 대기 항목 목록. 항목 본문과 사람이 필요한 이유를 함께 보여 준다.
-function renderSpecialistApprovals() {
-  if (!specialistApprovalsBar) return;
-  specialistApprovalsBar.replaceChildren();
-  const context = specialistApprovalContext;
-  const show = isCurrentApprovalContext(context) && (awaitingHumanApproval() || canResumeAfterApproval());
-  specialistApprovalsBar.hidden = !show;
-  if (!show) return;
-
-  const head = document.createElement("div");
-  head.className = "specialist-approvals-head";
-  head.textContent = canResumeAfterApproval() ? "확인이 끝났습니다. 기록을 이어서 진행할 수 있습니다."
-    : specialistApprovalsLoading ? "확인할 항목을 불러오는 중입니다…"
-      : specialistApprovalsError || (specialistPendingApprovals.length > 0
-        ? `완료 전에 확인할 항목 ${specialistPendingApprovals.length}건`
-        : "표시할 승인 항목이 없습니다. 목록을 다시 확인하거나 PLAN으로 재기획해 주세요.");
-  specialistApprovalsBar.append(head);
-
-  if (canResumeAfterApproval() || (!specialistApprovalsLoading && specialistPendingApprovals.length === 0)) {
-    const resume = canResumeAfterApproval();
-    const actions = document.createElement("div");
-    actions.className = "specialist-approval-actions";
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "button";
-    button.textContent = specialistApprovalsBusy ? "처리 중…" : resume ? "기록 이어서 진행" : "목록 다시 불러오기";
-    button.disabled = specialistApprovalsBusy;
-    button.addEventListener("click", () => {
-      if (!isCurrentApprovalContext(context)) return;
-      return resume ? resumeAfterApproval(context) : refreshPendingApprovals();
-    });
-    actions.append(button);
-    if (!resume) {
-      // 승인으로 풀 수 없게 된 실행(항목이 비었거나 목록을 못 받는 경우)에서
-      // 빠져나갈 길. 이것이 없으면 입력창은 "확인 대기"로 잠긴 채 막다른 상태가
-      // 된다. 새 기획은 PLAN 버튼이 맡는다.
-      const cancel = document.createElement("button");
-      cancel.type = "button";
-      cancel.className = "button";
-      cancel.textContent = "실행 취소";
-      cancel.title = "이 전문 실행을 중단합니다. 파일 변경은 그대로 남습니다";
-      cancel.disabled = specialistApprovalsBusy;
-      cancel.addEventListener("click", async () => {
-        if (!isCurrentApprovalContext(context)) return;
-        if (!(await confirmInApp("이 전문 실행을 취소할까요? 구현자가 만든 파일 변경은 그대로 남습니다."))) return;
-        if (!isCurrentApprovalContext(context)) return;
-        const sessionId = context.sessionId;
-        const result = await call(window.chatApi.specialistCancel(sessionId));
-        if (sessionId !== activeSessionId) return;
-        if (result?.specialist) setSpecialistState(result.specialist);
-        syncComposerLock();
-        renderHeader();
-      });
-      actions.append(cancel);
-    }
-    specialistApprovalsBar.append(actions);
-    return;
-  }
-  if (specialistPendingApprovals.length === 0) return;
-
-  const hint = document.createElement("p");
-  hint.className = "popover-hint";
-  hint.textContent = "각 항목을 직접 확인한 뒤 승인해 주세요.";
-  specialistApprovalsBar.append(hint);
-
-  for (const item of specialistPendingApprovals) {
-    const row = document.createElement("div");
-    row.className = "specialist-approval-item";
-    const text = document.createElement("div");
-    text.className = "specialist-approval-text";
-    text.textContent = item.statement || item.criterionId;
-    row.append(text);
-    const reasons = (item.reasons || []).filter(Boolean);
-    if (reasons.length > 0) {
-      const why = document.createElement("p");
-      why.className = "popover-hint";
-      why.textContent = `사용자 확인이 필요한 이유: ${reasons.join(", ")}`;
-      row.append(why);
-    }
-    const actions = document.createElement("div");
-    actions.className = "specialist-approval-actions";
-    const busy = specialistApprovalsBusy || specialistApprovalsLoading;
-    for (const choice of [
-      { label: busy ? "처리 중…" : "승인", approved: true, primary: true },
-      { label: "거부", approved: false, primary: false },
-    ]) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = choice.primary ? "button button-primary" : "button";
-      button.textContent = choice.label;
-      button.disabled = busy;
-      button.addEventListener("click", () => resolveApproval(item.criterionId, choice.approved, context));
-      actions.append(button);
-    }
-    row.append(actions);
-    specialistApprovalsBar.append(row);
-  }
+  lockComposer(Boolean(activeApproval));
 }
 
 function doctorStatus(diagnostic) {
@@ -1470,148 +881,7 @@ function openProjectSettings(anchor, project) {
       defaultAgentControls.set(agent.id, { enabled, model, effort });
     }
 
-    const roleControls = new Map();
-    const roleSection = document.createElement("section");
-    roleSection.className = "project-default-section";
-    const roleTitle = document.createElement("strong");
-    roleTitle.textContent = "전문 모드 역할 설정";
-    const roleHint = document.createElement("p");
-    roleHint.className = "popover-hint";
-    roleHint.textContent = "기본 모드는 현재 채팅 설정을 쓰고, 전문 모드는 여기 지정한 담당자·모델을 씁니다. 기획 검수 담당자는 선택이며 비우면 검토 담당자를 사용합니다.";
-    roleSection.append(roleTitle, roleHint);
-    const workflowRoleDefs = workflow.roles?.length
-      ? workflow.roles
-      : [
-          { id: "planning", label: "기획" },
-          { id: "implementation", label: "구현" },
-          { id: "review", label: "검토" },
-          { id: "recorder", label: "기록" },
-        ];
-    // workflow 작업 역할을 늘리지 않고, 전문 실행 설정에만 선택형 기획 검수자를
-    // 노출한다. 비워 두면 main 프로세스가 검토 담당자를 재사용한다.
-    const roleDefs = [
-      ...workflowRoleDefs.slice(0, 1),
-      { id: "plan_review", label: "기획 검수 (선택)" },
-      ...workflowRoleDefs.slice(1),
-    ];
-    for (const role of roleDefs) {
-      const savedRole = roleConfigFromProject(project, role.id);
-      const select = document.createElement("select");
-      const none = document.createElement("option");
-      none.value = "";
-      none.textContent = "지정 안 함";
-      select.append(none);
-      for (const agent of agents) {
-        const option = document.createElement("option");
-        option.value = agent.id;
-        option.textContent = `@${agent.id} · ${agent.name}`;
-        select.append(option);
-      }
-      select.value = savedRole.agentId || "";
-
-      const model = document.createElement("select");
-      const effort = document.createElement("select");
-      const roleRow = document.createElement("div");
-      roleRow.className = "project-agent-default";
-
-      const populateEfforts = (provider, selected) => {
-        effort.textContent = "";
-        const defaultOption = document.createElement("option");
-        defaultOption.value = "default";
-        defaultOption.textContent = "공급자 기본값";
-        effort.append(defaultOption);
-        const options = provider ? effortOptionsForModel(provider, model.value) : [];
-        for (const value of options) {
-          const item = document.createElement("option");
-          item.value = value;
-          item.textContent = effortLabel(value);
-          effort.append(item);
-        }
-        effort.value = options.includes(selected) ? selected : "default";
-        effort.disabled = !provider || options.length === 0;
-      };
-
-      const populateModels = (selectedModel = "default", selectedEffort = "default") => {
-        model.textContent = "";
-        const agent = agentById(select.value);
-        const provider = agent ? providerById(agent.id) : null;
-        if (!provider) {
-          const item = document.createElement("option");
-          item.value = "default";
-          item.textContent = "담당자를 먼저 선택하세요";
-          model.append(item);
-          model.value = "default";
-          model.disabled = true;
-          populateEfforts(null, "default");
-          return;
-        }
-        const options = modelOptionsForProvider(provider, true);
-        const fold = foldSavedModel(options, selectedModel, selectedEffort);
-        selectedModel = fold.model;
-        selectedEffort = fold.effort;
-        if (selectedModel && !options.some((option) => option.id === selectedModel)) {
-          options.push({ id: selectedModel, label: strayModelLabel(selectedModel), efforts: [] });
-        }
-        for (const option of options) {
-          const item = document.createElement("option");
-          item.value = option.id;
-          item.textContent = option.label || option.id;
-          model.append(item);
-        }
-        model.value = selectedModel || "default";
-        model.disabled = !agent.available;
-        populateEfforts(provider, selectedEffort);
-      };
-
-      select.addEventListener("change", () => populateModels("default", "default"));
-      model.addEventListener("change", () => {
-        const provider = providerById(select.value);
-        populateEfforts(provider, "default");
-      });
-      populateModels(savedRole.model || "default", savedRole.effort || "default");
-      roleRow.append(
-        makeField(role.label || role.id, select),
-        makeField("모델", model),
-        makeField("추론", effort)
-      );
-      roleSection.append(roleRow);
-      roleControls.set(role.id, { agent: select, model, effort });
-    }
-
-    // 전문 실행 자동 보완 정책 — 이 프로젝트에서 계속 쓸 값.
-    // 검수가 수정을 요구할 때 몇 번까지 자동으로 다시 돌릴지 정한다(0이면 멈추고 물어봄).
-    const autoSection = document.createElement("section");
-    autoSection.className = "project-default-section";
-    const autoTitle = document.createElement("strong");
-    autoTitle.textContent = "전문 실행 자동 보완";
-    const autoHint = document.createElement("p");
-    autoHint.className = "popover-hint";
-    autoHint.textContent = "검수가 수정을 요구하면 몇 번까지 자동으로 다시 돌릴지 정합니다. 끄면 멈추고 물어봅니다. 실행 줄의 토글로 이번 실행만 다르게 할 수 있습니다.";
-    autoSection.append(autoTitle, autoHint);
-    const autoControls = new Map();
-    for (const [key, label] of [["plan", "기획"], ["implementation", "구현"]]) {
-      const saved = boundedAutoRevisions(project.autoRevisions?.[key]);
-      const row = document.createElement("div");
-      row.className = "project-auto-revision-row";
-      const on = document.createElement("input");
-      on.type = "checkbox";
-      on.checked = saved > 0;
-      const count = document.createElement("select");
-      for (const value of [1, 2, 3]) {
-        const item = document.createElement("option");
-        item.value = String(value);
-        item.textContent = `${value}회`;
-        count.append(item);
-      }
-      count.value = String(saved > 0 ? saved : (key === "plan" ? 2 : 1));
-      count.disabled = !on.checked;
-      on.addEventListener("change", () => { count.disabled = !on.checked; });
-      row.append(makeField(label, on), makeField("횟수", count));
-      autoSection.append(row);
-      autoControls.set(key, { on, count });
-    }
-
-        const actions = document.createElement("div");
+    const actions = document.createElement("div");
     actions.className = "project-popover-actions";
     const save = document.createElement("button");
     save.type = "button";
@@ -1626,27 +896,11 @@ function openProjectSettings(anchor, project) {
           effort: controls.effort.value,
         };
       }
-      const defaultRoles = {};
-      for (const [roleId, controls] of roleControls) {
-        if (controls.agent.value) {
-          defaultRoles[roleId] = {
-            agentId: controls.agent.value,
-            model: controls.model.value,
-            effort: controls.effort.value,
-          };
-        }
-      }
-      const autoRevisions = {};
-      for (const [key, controls] of autoControls) {
-        autoRevisions[key] = controls.on.checked ? boundedRevisionLimit(controls.count.value) : 0;
-      }
       const result = await call(window.chatApi.projectsUpdate(project.id, {
         name: name.value,
         context: context.value,
         defaultPermissionMode: permission.value,
         defaultAgents,
-        defaultRoles,
-        autoRevisions,
       }));
       if (result) {
         closePopover();
@@ -1680,8 +934,6 @@ function openProjectSettings(anchor, project) {
       makeField("새 대화 기본 권한", permission),
       makeField("프로젝트 폴더", workspaceField),
       defaultAgentSection,
-      roleSection,
-      autoSection,
       actions
     );
   });
@@ -2015,23 +1267,6 @@ function renderHeader() {
     }
   }
 
-  // 전문 모드는 쓰기 권한이 필요하므로, 그렇지 않으면 눈에 띄게 안내합니다.
-  const projectForWarning = projects.find((entry) => entry.id === activeProjectId);
-  const specialistConfigured = Boolean(
-    roleConfigFromProject(projectForWarning, "implementation").agentId &&
-      roleConfigFromProject(projectForWarning, "review").agentId
-  );
-  if (specialistConfigured && mode !== "workspace-write") {
-    permissionWarning.hidden = false;
-    permissionWarning.textContent = workspace
-      ? "전문 모드엔 쓰기 권한 필요"
-      : "전문 모드엔 폴더+쓰기 권한 필요";
-    permissionWarning.title =
-      "전문 모드는 워크스페이스 쓰기 권한으로 실행됩니다. 클릭하면 이 채팅을 쓰기 권한으로 바꿉니다.";
-  } else {
-    permissionWarning.hidden = true;
-  }
-
   const hints = [];
   const enforcementKinds = new Set();
   for (const provider of providers) {
@@ -2056,453 +1291,8 @@ function renderHeader() {
   discussionButton.title = discussable
     ? "활성 에이전트들이 정해진 라운드만큼 토론합니다"
     : "토론에는 사용 가능한 에이전트가 두 명 이상 필요합니다";
-  const project = projects.find((entry) => entry.id === activeProjectId);
-  const planner = roleConfigFromProject(project, "planning");
-  const planReview = roleConfigFromProject(project, "plan_review");
-  const implementation = roleConfigFromProject(project, "implementation");
-  const review = roleConfigFromProject(project, "review");
-  const recorder = roleConfigFromProject(project, "recorder");
-  const effectivePlanReview = planReview.agentId ? planReview : review;
-  // 단계별 IPC 요구 조건과 버튼 활성 조건을 맞춥니다.
-  // PLAN은 기획자와 기획 검수(비어 있으면 검토 담당자 재사용)만 필요하고,
-  // 구현은 구현자·검토자, 전체 실행만 세 역할을 모두 필요로 합니다.
-  const planConfigured = Boolean(planner.agentId && effectivePlanReview.agentId);
-  const implementationConfigured = Boolean(implementation.agentId && review.agentId);
-  const fullConfigured = Boolean(
-    planner.agentId && effectivePlanReview.agentId && implementation.agentId && review.agentId
-      && recorder.agentId
-  );
-  // 모드 토글은 표시와 입력 라우팅만 바꾸고 실행 상태는 건드리지 않는다. 실행 중에
-  // 잠그면 "실행 중 일반 모드로 메모를 남긴다"는 경로에 도달할 수가 없다.
-  specialistButton.disabled = !activeSessionId;
-  specialistButton.setAttribute("aria-checked", String(professionalModeEnabled));
-  specialistButton.title = professionalModeEnabled
-    ? "일반 대화 화면으로 돌아갑니다. 실행은 그대로 진행됩니다"
-    : planConfigured
-      ? "PLAN, 실행, 전체 실행 버튼을 표시합니다"
-      : "프로젝트 설정에서 기획·구현·검토 담당자를 지정하면 사용할 수 있습니다";
-  specialistButton.setAttribute(
-    "aria-label",
-    professionalModeEnabled ? "전문 실행에서 일반 대화로 전환" : "일반 대화에서 전문 실행으로 전환"
-  );
-  professionalActions.hidden = !professionalModeEnabled;
-  roomControlsActions.classList.toggle("is-professional-mode", professionalModeEnabled);
   // discussable = 사용 가능하고 참여 중인 에이전트가 둘 이상.
-  responseModeBar.hidden = professionalModeEnabled || !discussable;
-  const ordinaryTurnBusy = Boolean(
-    roomTurnState.current ||
-      // 독립 발언은 여러 턴이 동시에 돈다(current는 그중 첫 번째일 뿐).
-      (roomTurnState.running || []).length > 0 ||
-      (roomTurnState.queue || []).length > 0 ||
-      (roomTurnState.deferred || []).length > 0
-  );
-  // "실행 중이라 바쁘다"와 "사용자를 기다린다"는 서로 다른 상태다. 예전에는 둘을
-  // 한 값으로 묶어서, BLOCKED나 검수 답변 대기처럼 **사용자가 다시 시작하고 싶은
-  // 바로 그 상태**에서 PLAN 버튼까지 꺼졌다. 그러면 걸려 있는 질문에 답하는 것
-  // 말고 길이 없어, 계약이 잘못 잡혔을 때 그 계약 안에서만 맴돌게 된다.
-  const specialistBusy = Boolean(specialistRunning || specialistActive || ordinaryTurnBusy);
-  const awaitingUser = Boolean(specialistBlockedAvailable || specialistResumeAvailable);
-  const blockedOrBusy = specialistBusy || awaitingUser;
-  // READY는 기획이 승인만 된 상태다. Builder가 돌지 않았으니 되돌릴 변경도
-  // checkpoint도 없고, FSM은 이미 READY -> PLANNING 복귀를 지원한다(USER_ANSWER_PLAN).
-  // 여기서 PLAN을 막으면 승인 이후 단계에서 거부됐을 때(승인 입력 재대조 실패,
-  // 검증 계획 거부 등) 같은 실행 버튼을 반복해서 누르는 것 말고 길이 없어진다.
-  // 사용자를 기다리는 상태(BLOCKED·답변 대기·중단)는 전부 "처음부터 다시"가
-  // 열려 있어야 한다. 백엔드도 plan/full은 busy 기준만 본다.
-  const planStartable = !specialistNode
-    || specialistNode === "COMPLETED"
-    || specialistNode === "READY"
-    || specialistStatus === "INTERRUPTED"
-    || awaitingUser
-    || specialistNeedsInput;
-  // 사용자가 답해야 진행되는 대기(기획 질문·계약 보완·checkpoint 선택·완료 전 확인).
-  // 이 상태에서는 구현을 시작하지 않고, 그 대기를 먼저 풀어야 한다.
-  const awaitingAnswer = Boolean(specialistNeedsInput || awaitingHumanApproval());
-  // 승인된 기획으로 구현을 시작할 수 있는 조건. 백엔드(startSpecialist의
-  // implementation 분기)는 "기획 검수 통과 + 막힘 아님 + 실행 중 아님"만 본다.
-  //
-  // 예전에는 여기서 blockedOrBusy(=awaitingUser 포함)를 썼는데, READY에는 승인
-  // 대기 resume이 늘 있으므로 awaitingUser가 항상 참이었다. 그래서 **기획 검수를
-  // 통과한 바로 그 상태에서 '실행 ▶'이 영영 꺼져 있었다** — 툴팁은 실행할 수
-  // 있다고 말하면서. 백엔드가 허용하는 조건과 같게 맞춘다.
-  const canStartImplementation = canStartImplementationNow({
-    implementationConfigured,
-    busy: specialistBusy,
-  });
-  professionalPlanButton.disabled = !planConfigured || specialistBusy || !planStartable;
-  professionalImplementationButton.disabled = !canStartImplementation;
-  // 눌릴 수 있는 버튼의 툴팁은 "이 설정으로 무엇이 일어나는가"를 말한다.
-  // 눌리지 않는 이유는 아래에서 그 자리를 덮어쓴다.
-  renderProfessionalPolicyBadges();
-  const canRegenerateRecord = specialistNode === "COMPLETED" || (specialistNode === "RECORDING" && specialistStatus === "WAITING");
-  professionalRecordButton.hidden = !canRegenerateRecord;
-  // 기록 다시 생성은 기록이 실패해 멈춘 상태(RECORDING/WAITING)에서 쓰라고 있는
-  // 버튼이다. 그 상태에도 resume이 남아 있어 awaitingUser로 막으면 보이기만 하고
-  // 누를 수 없다. 실행 중과 막힘만 막는다.
-  professionalRecordButton.disabled = !recorder.agentId || specialistBusy || specialistBlockedAvailable;
-  professionalFullButton.disabled = !fullConfigured || specialistBusy || !planStartable;
-  // 버튼이 비활성인 이유를 툴팁으로 알려, 눌리지 않는 것처럼 보이지 않게 합니다.
-  const roleSetupHint = "프로젝트 설정(⋯)에서 담당자를 지정하면 사용할 수 있습니다";
-  professionalPlanButton.title = ordinaryTurnBusy
-    ? "일반 응답이 끝난 뒤 전문 기획을 시작할 수 있습니다"
-    : planConfigured
-      ? policyTooltip("기획을 만들고 다른 담당자가 기획을 검수합니다.", currentProfessionalPolicy().planAutoRevisions, "기획")
-      : `기획·검토 담당자가 필요합니다. ${roleSetupHint}`;
-  professionalFullButton.title = ordinaryTurnBusy
-    ? "일반 응답이 끝난 뒤 전체 전문 실행을 시작할 수 있습니다"
-    : fullConfigured
-      ? "기획 검수 PASS 후 별도 승인 없이 구현·검수·기록까지 이어서 실행합니다"
-      : `기획·구현·검토·기록 담당자가 모두 필요합니다. ${roleSetupHint}`;
-  // 기록 버튼도 다른 버튼처럼 비활성 이유를 알려 줍니다. 이유 없이 눌리지 않으면
-  // 고장으로 보입니다.
-  professionalRecordButton.title = recorder.agentId
-    ? "완료된 실행의 기록을 다시 만듭니다"
-    : `기록 담당자가 필요합니다. ${roleSetupHint}`;
-  // 저장된 기획안이 있으면(승인 대기 중이거나 통과한 경우) 열람 버튼을 노출합니다.
-  const hasPlanTask = Boolean(specialistPlanTaskPath);
-  professionalPlanViewButton.hidden = !hasPlanTask;
-  professionalPlanViewButton.disabled = specialistRunning || specialistActive;
-  professionalPlanViewButton.textContent = specialistPlanTaskId
-    ? `기획안 보기 (${specialistPlanTaskId})`
-    : "기획안 보기";
-  // 툴팁도 실제 활성 조건과 같은 값을 본다. "실행할 수 있습니다"라고 적힌 버튼이
-  // 눌리지 않는 상태를 만들지 않는다.
-  professionalImplementationButton.title = ordinaryTurnBusy
-    ? "일반 응답이 끝난 뒤 구현·검수를 시작할 수 있습니다"
-    : !implementationConfigured
-      ? `구현·검토 담당자가 필요합니다. ${roleSetupHint}`
-    : !specialistPlanReady
-      ? "먼저 기획·검수를 통과시켜 주세요"
-    : specialistBlockedAvailable
-      ? "구현이 막혔습니다. 먼저 변경 유지·복원·재기획 중 하나를 선택해 주세요"
-    : awaitingAnswer
-      ? "먼저 대기 중인 질문이나 확인 항목을 처리해 주세요"
-    : canStartImplementation
-      ? policyTooltip("기획 검수를 통과한 작업을 구현·검수·기록까지 실행합니다.", currentProfessionalPolicy().implementationAutoRevisions, "구현")
-      : "실행 중에는 새로 시작할 수 없습니다";
-  // 다음에 실행할 단계를 강조합니다: 기획 통과 전이면 1단계, 통과 후면 2단계.
-  // 강조와 활성 조건은 같은 값을 써야 "빛나는데 눌리지 않는" 버튼이 생기지 않는다.
-  const nextIsImplementation = canStartImplementation;
-  const nextIsPlan = planConfigured && !specialistPlanReady && !blockedOrBusy;
-  professionalPlanButton.classList.toggle("is-next-step", nextIsPlan);
-  professionalImplementationButton.classList.toggle("is-next-step", nextIsImplementation);
-  renderProfessionalStatusDetail();
-  renderProfessionalBlocked();
-}
-
-// 재기획·보완은 이전 작업으로 돌아간다. 순번으로 앞 단계의 완료를 추정하지
-// 않고, 백엔드가 보고한 현재 작업과 라운드만 표시한다.
-const PROFESSIONAL_NODE_LABELS = Object.freeze({
-  PLANNING: "기획",
-  PLAN_REVIEW: "기획 검수",
-  READY: "실행 대기",
-  IMPLEMENTING: "구현",
-  REVIEWING: "구현 검수",
-  RECORDING: "기록",
-  COMPLETED: "완료",
-});
-
-function specialistRoundSummary() {
-  const rounds = [];
-  if (specialistPlanRound > 0) rounds.push(`기획 ${specialistPlanRound}차`);
-  if (specialistImplementationRound > 0) rounds.push(`구현 ${specialistImplementationRound}차`);
-  return rounds.join(" · ");
-}
-
-// 멈춤·대기 사유를 사용자 언어로 옮긴다. 내부 코드(USER_INTERRUPTED 같은)는
-// 아래 "자세히"에만 남긴다. 모르는 코드는 정상 완료나 복원 가능으로 포장하지 않고
-// 확인이 필요한 상태로 알린다.
-const SPECIALIST_STOP_INFO = Object.freeze({
-  PLAN_READY: { text: "기획 검수를 통과했습니다.", next: "‘기획안 보기’로 확인한 뒤 ‘실행 ▶’을 누르면 구현을 시작합니다." },
-  NEEDS_DECISION: { text: "기획자가 결정을 요청했습니다.", next: "아래 입력칸에 답해 주시면 기획을 이어서 진행합니다." },
-  HUMAN_APPROVAL_REQUIRED: { text: "완료 전에 확인할 항목이 있습니다.", next: "아래 목록에서 승인하거나 거부해 주세요." },
-  CHECKPOINT_FAILED: { text: "작업 전 백업을 만들지 못했습니다.", next: "아래에서 재시도·무보호 진행·취소 중 하나를 골라 주세요." },
-  TASK_CONTRACT_INCOMPLETE: { text: "기획안에 빠진 항목이 있습니다.", next: "아래 입력칸에 보완할 내용을 알려 주세요." },
-  FIX_REQUIRED: { text: "검수에서 수정 요청이 나왔습니다.", next: "자동 보완 한도를 넘었다면 보완 내용을 직접 알려 주세요." },
-  LIMIT_EXCEEDED: { text: "자동 보완 한도에 도달했습니다.", next: "보완 내용을 직접 알려 주거나 기획부터 다시 시작할 수 있습니다." },
-  SCOPE_OUT: { text: "검수 지적이 기획안 범위 밖입니다.", next: "기획안을 고쳐 범위를 넓히거나 이 실행을 마무리해 주세요." },
-  SCOPE_UNSPECIFIED: { text: "검수 지적의 범위가 분명하지 않습니다.", next: "기획안을 확인해 범위를 정해 주세요." },
-  INSUFFICIENT_EVIDENCE: { text: "검수가 판정할 근거가 부족합니다.", next: "기획안의 검증 조건을 보완한 뒤 다시 실행해 주세요." },
-  AMBIGUOUS_VERDICT: { text: "검수 판정이 명확하지 않습니다.", next: "검수 결과를 확인한 뒤 다시 실행할지 정해 주세요." },
-  BUILDER_DONE: { text: "구현이 끝났습니다.", next: "이어서 검수를 진행할 수 있습니다." },
-  REVIEW_PASS: { text: "구현 검수를 통과했습니다.", next: "이어서 기록 단계를 진행할 수 있습니다." },
-  BLOCKED: { text: "구현이 막혀 안전하게 멈췄습니다.", next: "변경 유지·복원·재기획 중 하나를 고르세요." },
-  // 막힘 처리를 끝낸 뒤의 정상 종료다. 표에 없으면 "확인이 필요한 상태로
-  // 멈췄습니다"라는 미상 코드 문구가 떠서, 성공했는데 실패처럼 보인다.
-  BLOCK_RESOLVED: { text: "막힌 실행을 정리했습니다.", next: "PLAN 또는 전체 실행으로 새로 시작할 수 있습니다." },
-  EXECUTION_BLOCKED: { text: "구현이 막혀 안전하게 멈췄습니다.", next: "처리 방법을 고르세요." },
-  ASSURANCE_BLOCKED: { text: "확인 조건을 충족하지 못해 완료를 보류했습니다.", next: "처리 방법을 고르세요." },
-  ASSURANCE_INVALIDATED: { text: "확인한 뒤 결과물이나 입력 자료가 바뀌었습니다.", next: "다시 확인할 방법을 고르세요." },
-  USER_INTERRUPTED: { text: "사용자가 실행을 중지했습니다.", next: "PLAN 또는 전체 실행으로 다시 시작할 수 있습니다." },
-  EXECUTION_INTERRUPTED: { text: "실행이 중단되었습니다.", next: "PLAN 또는 전체 실행으로 다시 시작할 수 있습니다." },
-  WORKSPACE_BUSY: { text: "같은 폴더를 다른 작업이 쓰고 있어 시작하지 못했습니다.", next: "그 작업이 끝난 뒤 다시 시도해 주세요." },
-  RECORDER_FAILED: { text: "기록을 만들지 못했습니다.", next: "‘기록 다시 생성’으로 다시 시도할 수 있습니다." },
-  TASK_CHANGED_AFTER_REVIEW: { text: "검수 뒤 기획안이 바뀌어 완료로 처리하지 않았습니다.", next: "기획안을 확인하고 다시 검수해 주세요." },
-  FROZEN_TASK_MISSING: { text: "승인된 기획안을 찾지 못했습니다.", next: "기획부터 다시 시작해 주세요." },
-  FROZEN_TASK_CORRUPTED: { text: "승인된 기획안이 손상됐습니다.", next: "처리 방법을 고르세요." },
-  PROTOCOL_FINAL_MISSING: { text: "담당 AI의 최종 응답을 확인하지 못했습니다.", next: "다시 실행하거나 담당자를 바꿔 보세요." },
-});
-
-// 저장 실패 계열은 한 문장으로 묶는다(어느 파일에 실패했는지는 자세히에 남는다).
-const SPECIALIST_WRITE_FAILURES = Object.freeze(new Set([
-  "PROFESSIONAL_RUN_WRITE_FAILED",
-  "RUN_STATE_WRITE_FAILED",
-  "WORKFLOW_WRITE_FAILED",
-  "EVIDENCE_WRITE_FAILED",
-  "RECOVERY_JOURNAL_WRITE_FAILED",
-  "ASSURANCE_STATE_WRITE_FAILED",
-  "DIFF_COLLECTION_FAILED",
-  "CHECKPOINT_CLEANUP_FAILED",
-]));
-
-function specialistStopInfo() {
-  if (!specialistStopReason) return null;
-  if (specialistStopReason === "TASK_CONTRACT_INCOMPLETE" && specialistMissingSections?.length > 0) {
-    return {
-      text: `기획안에 빠진 항목이 있습니다 (누락: ${specialistMissingSections.join(", ")}).`,
-      next: "아래 입력칸에 보완할 내용을 알려 주세요.",
-    };
-  }
-  if (SPECIALIST_WRITE_FAILURES.has(specialistStopReason)) {
-    return { text: "실행 기록을 저장하지 못해 멈췄습니다.", next: "저장 공간과 폴더 권한을 확인한 뒤 다시 시도해 주세요." };
-  }
-  return SPECIALIST_STOP_INFO[specialistStopReason]
-    || { text: "확인이 필요한 상태로 멈췄습니다.", next: "아래 ‘자세히’에서 사유 코드를 확인해 주세요." };
-}
-
-// 현재 상태 한 줄 + 다음 행동 한 줄. 우선순위는 "사용자가 지금 해야 하는 일"이
-// 있는 상태부터다.
-function specialistStatusView() {
-  const stop = specialistStopInfo();
-  if (!specialistNode && !specialistStopReason) {
-    return { headline: "", next: "", tone: "idle" };
-  }
-  if (specialistBlockedAvailable || specialistStatus === "BLOCKED" || specialistStatus === "INVALID") {
-    return {
-      headline: stop?.text || "구현이 막혀 안전하게 멈췄습니다.",
-      // 선택지가 있는 자리는 모드에 따라 다르다. 전문 모드에서는 이 줄 바로 아래에
-      // 펼쳐 두고, 일반 모드에서는 입력창 옆 칩이 대신한다. 없는 것을 가리키면
-      // 사용자는 화면에서 찾다가 길을 잃는다.
-      next: professionalModeEnabled
-        ? "바로 아래에서 변경 유지·복원·재기획 중 하나를 고르세요."
-        : "입력창 옆 ‘다음 처리 선택’에서 변경 유지·복원·재기획 중 하나를 고르세요.",
-      tone: "blocked",
-    };
-  }
-  if (canResumeAfterApproval()) {
-    return {
-      headline: "확인이 끝났습니다. 기록 단계를 기다리고 있습니다.",
-      next: "아래 ‘기록 이어서 진행’으로 다시 시도할 수 있습니다.",
-      tone: "waiting",
-    };
-  }
-  if (awaitingHumanApproval()) {
-    const count = specialistPendingApprovals.length;
-    return {
-      headline: count > 0 ? `완료 전에 확인할 항목이 ${count}건 있습니다.` : "완료 전에 확인할 항목이 있습니다.",
-      next: specialistApprovalsLoading ? "확인 목록을 불러오고 있습니다."
-        : specialistApprovalsError || count === 0 ? "아래에서 목록을 다시 불러올 수 있습니다."
-          : "아래 목록에서 승인하거나 거부해 주세요.",
-      tone: "waiting",
-    };
-  }
-  if (specialistNode === "COMPLETED") {
-    // 완료 뒤의 기록 정리(Archivist)를 중지한 경우까지 실패로 보이지 않게 한다.
-    const archivistStopped = specialistStopReason === "USER_INTERRUPTED";
-    return {
-      headline: specialistActive ? "본 실행이 완료되었습니다. 추가 기록 작업 중입니다."
-        : archivistStopped ? "본 실행이 완료되었습니다. 추가 기록 정리는 중지했습니다." : "본 실행이 완료되었습니다.",
-      next: "‘기록 다시 생성’으로 기록을 다시 만들거나, 새 작업을 요청할 수 있습니다.",
-      tone: "done",
-    };
-  }
-  // 중단됐더라도 READY로 돌아와 승인된 기획을 그대로 들고 있으면 '실행 ▶'을 바로
-  // 누를 수 있다(백엔드는 status가 아니라 승인된 기획만 본다). 그때 중단 안내만
-  // 내보내면 화면은 PLAN·전체 실행만 말하는데 정작 강조된 버튼은 '실행 ▶'이라,
-  // 눌러도 되는 것인지 알 수 없게 된다. 스테퍼도 이미 '대기'로 그려진다.
-  const interruptedButRunnable = specialistNode === "READY" && specialistImplementationReady;
-  if (specialistStatus === "INTERRUPTED" && !interruptedButRunnable) {
-    return {
-      headline: stop?.text || "실행이 중단되었습니다.",
-      next: stop?.next || "PLAN 또는 전체 실행으로 다시 시작할 수 있습니다.",
-      tone: "stopped",
-    };
-  }
-  if (specialistStatus === "RUNNING") {
-    const label = PROFESSIONAL_NODE_LABELS[specialistNode];
-    return {
-      headline: label ? `${label} 진행 중입니다.` : "전문 실행이 진행 중입니다.",
-      next: "일반 대화로 전환하면 실행 중에도 기획자에게 메모를 남길 수 있습니다.",
-      tone: "running",
-    };
-  }
-  // READY라도 사용자가 먼저 답해야 하는 대기(백업 실패 선택, 기획안 보완)가
-  // 걸려 있으면 그쪽이 우선이다. 예전에는 node만 보고 "실행을 기다립니다"라고
-  // 안내했는데, 그 순간 '실행 ▶'은 비활성이고 입력창은 다른 것을 요구하고 있었다.
-  if (specialistNode === "READY" && !specialistNeedsInput) {
-    // 검수는 통과했는데 승인된 기획서를 읽지 못한 경우(앱을 다시 켠 뒤 TASK.md가
-    // 사라졌거나 바뀐 경우)에는 '실행 ▶'이 꺼져 있다. 왜 못 누르는지 밝힌다.
-    if (!specialistImplementationReady) {
-      return {
-        headline: "기획 검수는 통과했지만 승인된 기획서를 읽지 못했습니다.",
-        next: "작업 폴더에서 기획서(TASK.md)가 지워졌거나 바뀌었습니다. 입력칸에 수정 사항을 적어 기획을 다시 통과시켜 주세요.",
-        tone: "waiting",
-      };
-    }
-    return {
-      // 중단됐다는 사실은 지우지 않는다 — 다만 "그래서 지금 무엇을 할 수 있는지"를
-      // 함께 말한다.
-      headline: specialistStatus === "INTERRUPTED"
-        ? "이전 실행은 중단됐지만 승인된 기획은 그대로 남아 있습니다."
-        : "기획 검수를 통과했습니다. 실행을 기다리고 있습니다.",
-      next: "‘기획안 보기’로 확인한 뒤 ‘실행 ▶’을 누르면 구현을 시작합니다. 입력칸에 쓰면 기획을 수정합니다.",
-      tone: "waiting",
-    };
-  }
-  if (stop) return { headline: stop.text, next: stop.next, tone: "waiting" };
-  return { headline: "다음 진행을 기다리고 있습니다.", next: "", tone: "waiting" };
-}
-
-// '실행 ▶'을 누를 수 있는가. 백엔드(startSpecialist의 implementation 분기)가
-// 허용하는 조건과 같아야 한다: 기획 검수 통과 + 승인된 기획서 보유 + 막힘 아님
-// + 실행 중 아님 + 사용자가 답해야 하는 대기 없음.
-//
-// 이 판정은 두 번 어긋난 적이 있다. 한 번은 READY에 늘 있는 재개 상태를 '바쁨'으로
-// 세어 통과 직후 버튼이 영영 꺼져 있었고, 한 번은 앱을 다시 켠 뒤 기획서를 읽지
-// 못했는데도 켜져서 누르면 백엔드가 거절했다. 그래서 화면 그리기에서 떼어 내
-// 그 자체로 시험할 수 있게 둔다.
-function canStartImplementationNow({ implementationConfigured, busy }) {
-  return Boolean(
-    implementationConfigured
-    && specialistPlanReady
-    && specialistImplementationReady
-    && !busy
-    && !specialistBlockedAvailable
-    && !(specialistNeedsInput || awaitingHumanApproval())
-  );
-}
-
-function renderProfessionalStatusDetail() {
-  const box = document.getElementById("professional-status-detail");
-  if (!box) return;
-  const detailsOpen = Boolean(box.querySelector("details")?.open);
-  box.replaceChildren();
-  const view = specialistStatusView();
-  box.dataset.tone = view.tone;
-  box.hidden = !view.headline;
-  if (!view.headline) return;
-
-  const roundSummary = specialistRoundSummary();
-  if (roundSummary) {
-    const context = document.createElement("span");
-    context.className = "professional-status-context";
-    context.textContent = roundSummary;
-    box.append(context);
-  }
-  const headline = document.createElement("span");
-  headline.className = "professional-status-headline";
-  headline.textContent = view.headline;
-  box.append(headline);
-  if (view.next) {
-    const next = document.createElement("span");
-    next.className = "professional-status-next";
-    next.textContent = view.next;
-    box.append(next);
-  }
-
-  // 기술 정보는 기본 화면에서 빼고, 필요할 때만 펼쳐 본다.
-  const facts = [];
-  if (specialistStopReason) facts.push(`사유 코드: ${specialistStopReason}`);
-  if (specialistNode) facts.push(`상태: ${specialistNode}/${specialistStatus || "-"}`);
-  if (specialistFrozenRunId) facts.push(`Run: ${specialistFrozenRunId}`);
-  if (specialistPlanTaskId) facts.push(`기획안: ${specialistPlanTaskId}`);
-  if (specialistCheckpointProtection) {
-    facts.push(specialistCheckpointProtection === "protected"
-      ? "작업 전 백업: 있음"
-      : "작업 전 백업: 없음(무보호 실행)");
-  } else if (specialistNode && specialistNode !== "PLANNING") {
-    facts.push(specialistCanRestore ? "작업 전 백업: 있음" : "작업 전 백업: 없음");
-  }
-  if (facts.length === 0) return;
-  const details = document.createElement("details");
-  details.className = "professional-status-facts";
-  details.open = detailsOpen;
-  const summary = document.createElement("summary");
-  summary.textContent = "자세히";
-  const list = document.createElement("span");
-  list.textContent = facts.join(" · ");
-  details.append(summary, list);
-  box.append(details);
-}
-
-// 막힘 상세(복원 가능 여부·Run·변경 요약)를 받아 온다. 세션을 바꾼 뒤 늦게 온
-// 응답이 지금 화면을 덮지 않도록 요청 시점의 세션과 대조한다(승인 목록과 같은 계약).
-async function refreshBlockInfo() {
-  const sessionId = activeSessionId;
-  if (!sessionId) return;
-  if (specialistBlockFetch === "loading") return;
-  specialistBlockFetch = "loading";
-  renderProfessionalBlocked();
-  const result = await call(window.chatApi.specialistBlockDetails(sessionId));
-  if (sessionId !== activeSessionId) {
-    // loading에 둔 채 나가면 위 가드에 막혀 다시 조회하지 못한다.
-    specialistBlockFetch = "idle";
-    return;
-  }
-  if (!result) {
-    specialistBlockFetch = "error";
-    renderProfessionalBlocked();
-    return;
-  }
-  specialistBlockInfo = result.details || null;
-  specialistBlockFetch = "ready";
-  renderProfessionalBlocked();
-}
-
-// 막힘 처리 선택지를 상태 줄 바로 아래에 펼친다. 버튼은 모달과 같은 빌더
-// (renderBlockedActions)로 만들어 두 곳이 갈라지지 않게 한다.
-function renderProfessionalBlocked() {
-  const box = document.getElementById("professional-blocked");
-  if (!box) return;
-  box.replaceChildren();
-  const show = specialistBlockedAvailable && professionalModeEnabled;
-  box.hidden = !show;
-  if (!show) return;
-
-  if (specialistBlockFetch === "loading") {
-    const loading = document.createElement("p");
-    loading.className = "popover-hint";
-    loading.textContent = "막힘 정보를 불러오는 중…";
-    box.append(loading);
-    return;
-  }
-  if (specialistBlockFetch === "error") {
-    const failed = document.createElement("p");
-    failed.className = "popover-hint";
-    failed.textContent = "막힘 정보를 불러오지 못했습니다.";
-    const retry = document.createElement("button");
-    retry.type = "button";
-    retry.className = "button";
-    retry.textContent = "다시 불러오기";
-    retry.addEventListener("click", () => { specialistBlockFetch = "idle"; void refreshBlockInfo(); });
-    box.append(failed, retry);
-    return;
-  }
-
-  const actions = document.createElement("div");
-  actions.className = "professional-blocked-actions";
-  renderBlockedActions(actions, specialistBlockInfo);
-  box.append(actions);
-
-  // 변경 내용·Run 같은 자세한 정보는 예전처럼 모달에서 본다.
-  if (specialistBlockInfo?.block?.changes?.text || specialistBlockInfo?.runId) {
-    const more = document.createElement("button");
-    more.type = "button";
-    more.className = "professional-blocked-more";
-    more.textContent = "변경 내용 보기";
-    more.addEventListener("click", () => { void openSpecialistDialog(); });
-    box.append(more);
-  }
+  responseModeBar.hidden = !discussable;
 }
 
 // 참가자 칩 툴팁. 칩 본문은 @id라 이름이 드러나지 않으므로, 세로 레일이 들고
@@ -2594,7 +1384,7 @@ function answerAwaitingAgent(agentId, option = "") {
   autoresize();
 }
 
-const POPOVER_VARIANTS = ["is-project-settings", "is-new-project", "is-workflow", "plan-preview-popover", "is-menu", "is-usage", "is-agent"];
+const POPOVER_VARIANTS = ["is-project-settings", "is-new-project", "is-workflow", "is-menu", "is-usage", "is-agent"];
 
 function closePopover() {
   popover.hidden = true;
@@ -3564,7 +2354,7 @@ function openWorkflowPopover(anchor) {
     const taskAgent = document.createElement("select");
     const defaultAgentOption = document.createElement("option");
     defaultAgentOption.value = "";
-    defaultAgentOption.textContent = "프로젝트 기본 담당자";
+    defaultAgentOption.textContent = "담당자 미지정";
     taskAgent.append(defaultAgentOption);
     for (const agent of agents) {
       const option = document.createElement("option");
@@ -3572,12 +2362,6 @@ function openWorkflowPopover(anchor) {
       option.textContent = `@${agent.id} · ${agent.name}`;
       taskAgent.append(option);
     }
-    const syncTaskAgent = () => {
-      const defaultAgent = roleConfigFromProject(project, taskRole.value).agentId || "";
-      taskAgent.value = defaultAgent || "";
-    };
-    syncTaskAgent();
-    taskRole.addEventListener("change", syncTaskAgent);
     let editingTaskId = null;
     const taskCreate = document.createElement("button");
     taskCreate.type = "button";
@@ -3594,7 +2378,7 @@ function openWorkflowPopover(anchor) {
       taskDescription.value = "";
       taskDecision.value = "";
       taskRole.value = "implementation";
-      syncTaskAgent();
+      taskAgent.value = "";
       taskCreate.textContent = "작업 만들기";
       taskCancel.hidden = true;
       taskFormTitle.textContent = "새 작업";
@@ -3826,359 +2610,6 @@ function openWorkflowPopover(anchor) {
 
 // --- 토론 팝오버 ---
 workflowButton.addEventListener("click", () => openWorkflowPopover(workflowButton));
-// 작업 시작 모달을 열고 상태에 따라 본문을 채웁니다.
-async function openSpecialistDialog() {
-  const sessionId = activeSessionId;
-  if (!sessionId) return;
-  const result = await call(window.chatApi.specialistBlockDetails(sessionId));
-  // 조회하는 사이 세션을 바꿨다면 이전 세션의 막힘 상태를 지금 화면에 띄우지 않는다.
-  if (sessionId !== activeSessionId) return;
-  renderSpecialistDialog(result?.details || null);
-  specialistBackdrop.hidden = false;
-}
-
-function closeSpecialistDialog() {
-  specialistBackdrop.hidden = true;
-  specialistBody.textContent = "";
-}
-
-// 이 모달은 구현이 막혔을 때(BLOCKED)의 후속 처리 전용입니다.
-// 기획·구현·검수 실행은 전문 실행 줄의 버튼(runProfessionalAction)이 담당합니다.
-function renderSpecialistDialog(details = null) {
-  specialistBody.textContent = "";
-  const hint = document.createElement("p");
-  hint.className = "specialist-missing";
-  const reason = details?.blockReason || "BLOCKED";
-  hint.textContent = `전문 실행이 안전하게 중단되었습니다 (${reason}). 현재 변경은 보존되어 있습니다. 다음 처리를 선택해 주세요.`;
-  specialistBody.append(hint);
-  if (details?.runId || details?.taskPath) {
-    const meta = document.createElement("p");
-    meta.className = "popover-hint";
-    const parts = [];
-    if (details.runId) parts.push(`Run: ${details.runId}`);
-    if (details.taskPath) parts.push(`Task: ${details.taskPath}`);
-    meta.textContent = parts.join(" · ");
-    specialistBody.append(meta);
-  }
-  if (details?.block?.changes?.text) {
-    const changeDetails = document.createElement("details");
-    changeDetails.className = "specialist-block-changes";
-    const summary = document.createElement("summary");
-    summary.textContent = details.block.changes.truncated
-      ? "부분 변경 보기 (일부만 표시)"
-      : "부분 변경 보기";
-    const code = document.createElement("pre");
-    code.textContent = details.block.changes.text;
-    changeDetails.append(summary, code);
-    specialistBody.append(changeDetails);
-  }
-  renderBlockedActions(specialistBody, details);
-  specialistCancelBtn.textContent = "닫기";
-}
-
-specialistButton.addEventListener("click", () => {
-  if (!activeSessionId) return;
-  // 이 버튼은 일반/전문 화면 전환만 한다. 예전에는 막힘(BLOCKED) 상태에서만
-  // 몰래 막힘 처리 모달을 열어, 라벨("전환")과 실제 동작이 어긋났다. 막힘 처리는
-  // 전문 모드에서는 상태 줄 아래 패널이, 일반 모드에서는 입력창 옆 칩이 맡는다.
-  // 고른 모드는 이 방에 기억해 다른 방으로 옮겨 가지 않고, 다시 켜도 유지된다.
-  setProfessionalMode(!professionalModeEnabled);
-  // 모드가 바뀌면 입력창의 잠금·안내 문구·전송 버튼 라벨도 같은 순간에 바뀌어야
-  // 한다. renderHeader만 부르면 화면은 전문 모드인데 입력창은 이전 모드의
-  // 문구를 그대로 들고 있었다. 작성 중인 입력은 건드리지 않는다.
-  renderHeader();
-  syncComposerLock();
-});
-
-professionalPlanButton.addEventListener("click", () => runProfessionalAction("plan"));
-professionalImplementationButton.addEventListener("click", () => runProfessionalAction("implementation"));
-professionalRecordButton.addEventListener("click", () => runProfessionalAction("record"));
-professionalFullButton.addEventListener("click", () => runProfessionalAction("full"));
-professionalPlanViewButton.addEventListener("click", () => openPlanPreview(professionalPlanViewButton));
-
-// 승인된 기획안(TASK.md)을 읽어 팝오버로 보여줍니다. 구현 담당에게 넘기기 전에
-// 사용자가 "이 기획안 기준으로 진행되는 게 맞는지" 확인하는 지점입니다.
-async function openPlanPreview(anchor) {
-  if (!activeSessionId || !specialistPlanTaskPath) return;
-  const taskPath = specialistPlanTaskPath;
-  const taskId = specialistPlanTaskId;
-  const result = await call(window.chatApi.readTaskFile(activeSessionId, taskPath));
-  if (!result) return;
-  openPopover(anchor, (root) => {
-    root.classList.add("plan-preview-popover");
-    // 조절한 폭을 기억한다. popover는 열 때마다 다시 만들어지므로 저장하지 않으면
-    // 볼 때마다 다시 늘려야 해서 조절 기능이 반쪽이 된다.
-    const savedWidth = Number(localStorage.getItem(PLAN_PREVIEW_WIDTH_KEY));
-    if (Number.isFinite(savedWidth) && savedWidth >= 280) {
-      root.style.width = `${Math.min(savedWidth, Math.round(window.innerWidth * 0.94))}px`;
-    }
-    if (typeof ResizeObserver === "function") {
-      const observer = new ResizeObserver(() => {
-        if (root.hidden) return;
-        try { localStorage.setItem(PLAN_PREVIEW_WIDTH_KEY, String(Math.round(root.offsetWidth))); } catch {}
-      });
-      observer.observe(root);
-      planPreviewResizeObserver?.disconnect();
-      planPreviewResizeObserver = observer;
-    }
-    const head = document.createElement("div");
-    head.className = "popover-head";
-    const title = document.createElement("strong");
-    title.textContent = taskId ? `기획안 ${taskId}` : "기획안";
-    head.append(title);
-    root.append(head);
-
-    const note = document.createElement("p");
-    note.className = "popover-status";
-    note.textContent = "구현 담당은 이 기획안(Frozen Task)만 기준으로 작업합니다.";
-    root.append(note);
-
-    const body = document.createElement("div");
-    body.className = "plan-preview-body";
-    const content = String(result.content || "").trim();
-    if (content) renderRichText(body, content);
-    else body.textContent = "기획안 내용이 비어 있습니다.";
-    root.append(body);
-
-    const actions = document.createElement("div");
-    actions.className = "popover-actions";
-    const openInEditor = document.createElement("button");
-    openInEditor.type = "button";
-    openInEditor.textContent = "편집기로 열기";
-    openInEditor.title = "OS 기본 편집기로 TASK.md를 엽니다";
-    openInEditor.addEventListener("click", async () => {
-      closePopover();
-      await call(window.chatApi.openTaskFile(activeSessionId, taskPath));
-    });
-    actions.append(openInEditor);
-    root.append(actions);
-  });
-}
-
-// 이 모달은 BLOCKED 후속 처리 전용이라, 시작 버튼은 숨겨져 있고 닫기만 동작합니다.
-specialistCancelBtn.addEventListener("click", closeSpecialistDialog);
-specialistCloseBtn.addEventListener("click", closeSpecialistDialog);
-specialistBackdrop.addEventListener("click", (event) => {
-  if (event.target === specialistBackdrop) closeSpecialistDialog();
-});
-
-// 화면의 자동 보완 토글을 실행 정책으로 읽는다. 버튼(PLAN/실행/전체 실행)과
-// 멘션(`@팀 실행`)이 **같은 값**을 써야 한다 — 예전에는 멘션 경로가 1회로 고정돼
-// 있어, 토글을 2회로 두고 `@팀 실행`을 치면 조용히 1회로 돌았다.
-function currentProfessionalPolicy() {
-  return {
-    planAutoRevisions: planAutoReviseToggle.checked
-      ? boundedRevisionLimit(planAutoLimitSelect.value, 2)
-      : 0,
-    implementationAutoRevisions: implementationAutoReviseToggle.checked
-      ? boundedRevisionLimit(implementationAutoLimitSelect.value, 1)
-      : 0,
-  };
-}
-
-async function runProfessionalAction(action) {
-  if (!activeSessionId || specialistRunning || specialistActive) return;
-  const sessionId = activeSessionId;
-  // 대기 중인 실행이 있는데 기획을 새로 시작하면 그 실행과 작업 전 백업이 사라진다.
-  // 되돌릴 수 없으므로 한 번 확인받는다.
-  if ((action === "plan" || action === "full") && (specialistBlockedAvailable || specialistResumeAvailable)) {
-    const keptChanges = "구현자가 만든 파일 변경은 그대로 남습니다.";
-    if (!(await confirmInApp(
-      `진행 중이던 전문 실행을 버리고 기획부터 다시 시작할까요?\n\n작업 전 백업(checkpoint)과 대기 중인 답변 요청이 사라집니다. ${keptChanges}`
-    ))) {
-      return;
-    }
-    if (sessionId !== activeSessionId || specialistRunning || specialistActive) return;
-  }
-  specialistRunning = true;
-  specialistActive = true;
-  renderHeader();
-  syncComposerLock();
-  const result = await call(
-    window.chatApi.specialistStart(sessionId, {
-      action,
-      ...currentProfessionalPolicy(),
-    })
-  );
-  // 기다리는 사이 다른 방으로 옮겼으면 이 응답은 그 방의 것이 아니다. 새 방의
-  // 모드·입력 잠금·실행 표시를 바꾸지 않는다(돌아오면 방 상태를 새로 받는다).
-  if (sessionId !== activeSessionId) return;
-  if (result) {
-    const labels = {
-      plan: "PLAN을 시작했습니다.",
-      implementation: "실행을 시작했습니다.",
-      record: "기록을 다시 만들기 시작했습니다.",
-      full: "전체 실행을 시작했습니다. 기획 검수 PASS 후 구현까지 이어집니다.",
-    };
-    flashNotice(labels[action], false);
-  }
-  if (result?.meta) sessionMeta = result.meta;
-  if (result?.specialist) setSpecialistState(result.specialist);
-  else if (!result) specialistActive = false;
-  specialistRunning = false;
-  syncComposerLock();
-  renderHeader();
-}
-
-// 구현이 막혔을 때(BLOCKED) 고를 수 있는 후속 처리를 그립니다.
-// 주 액션 2개는 바로 노출하고, 되돌리기 계열은 접이식 메뉴로 묶습니다.
-//
-// 복원 계열은 백엔드가 실제로 되돌릴 수 있을 때만 엽니다(details.canRestore).
-// 예전에는 이 값을 전달하지 않아 복원할 수 없는 실행에서도 버튼이 살아 있었고,
-// 누르면 resolveBlocked가 "git workspace가 아니어서…"로 거부하거나(종결 경로),
-// replanBlocked가 조용히 아무것도 복원하지 않은 채 재기획만 했습니다.
-function renderBlockedActions(root, details = null) {
-  const canRestore = Boolean(details?.canRestore);
-  const noRestoreReason = "작업 전 백업이 없어 되돌릴 수 없습니다. git 저장소가 아니거나 백업을 만들지 못한 실행입니다.";
-
-  const replanKeepBtn = document.createElement("button");
-  replanKeepBtn.type = "button";
-  replanKeepBtn.className = "button button-primary";
-  replanKeepBtn.textContent = "변경 유지 후 재기획";
-  replanKeepBtn.title = "구현 변경을 유지한 채 막힌 사유를 기획자에게 전달해 재기획합니다";
-  replanKeepBtn.addEventListener("click", () => {
-    closeSpecialistDialog();
-    replanBlocked("keep");
-  });
-  root.append(replanKeepBtn);
-
-  const replanRestoreBtn = document.createElement("button");
-  replanRestoreBtn.type = "button";
-  replanRestoreBtn.className = "button";
-  replanRestoreBtn.textContent = "작업 전 복원 후 재기획";
-  replanRestoreBtn.disabled = !canRestore;
-  replanRestoreBtn.title = canRestore
-    ? "작업 전 상태로 복원한 뒤 막힌 사유를 기획자에게 전달해 재기획합니다"
-    : noRestoreReason;
-  replanRestoreBtn.addEventListener("click", () => {
-    closeSpecialistDialog();
-    replanBlocked("restore");
-  });
-  root.append(replanRestoreBtn);
-
-  const editBtn = document.createElement("button");
-  editBtn.type = "button";
-  editBtn.className = "button";
-  editBtn.textContent = "작업 지시서 직접 수정";
-  editBtn.title = "TASK.md를 직접 열어 빠진 조건을 보완합니다";
-  editBtn.addEventListener("click", () => {
-    closeSpecialistDialog();
-    openTaskFileForEdit();
-  });
-  root.append(editBtn);
-
-  const changesHint = document.createElement("p");
-  changesHint.className = "popover-hint";
-  changesHint.textContent = canRestore
-    ? "구현자가 막히기 전까지 만든 변경은 아직 그대로 있습니다. 아래에서 처리 방법을 고르세요."
-    : `구현자가 막히기 전까지 만든 변경은 아직 그대로 있습니다. ${noRestoreReason} 변경을 유지하는 처리만 고를 수 있습니다.`;
-  root.append(changesHint);
-
-  const changeSelect = document.createElement("select");
-  for (const option of [
-    { value: "", label: "변경사항 처리…" },
-    { value: "keep", label: "현재 변경만 유지 (종결)" },
-    { value: "restore", label: "작업 전으로 복원 (종결)", needsRestore: true },
-    { value: "discard", label: "작업 폐기 (복원 + 지시서 폐기)", needsRestore: true },
-  ]) {
-    const el = document.createElement("option");
-    el.value = option.value;
-    el.textContent = option.needsRestore && !canRestore
-      ? `${option.label} — 복원할 백업 없음`
-      : option.label;
-    el.disabled = Boolean(option.needsRestore) && !canRestore;
-    changeSelect.append(el);
-  }
-  changeSelect.addEventListener("change", () => {
-    const action = changeSelect.value;
-    if (!action) return;
-    changeSelect.value = "";
-    closeSpecialistDialog();
-    resolveBlocked(action);
-  });
-  root.append(changeSelect);
-}
-
-async function replanBlocked(workspaceAction) {
-  const sessionId = activeSessionId;
-  if (workspaceAction === "restore") {
-    if (!(await confirmInApp("작업 전 상태로 복원 후 재기획하시겠습니까? 구현자가 만든 변경은 사라집니다. (실행 전부터 있던 변경은 보존됩니다)"))) {
-      return;
-    }
-    if (sessionId !== activeSessionId) return;
-  }
-  const result = await call(window.chatApi.specialistReplanBlocked(sessionId, workspaceAction));
-  if (sessionId !== activeSessionId) return;
-  if (!result) {
-    // 실패하면 막힘 상태는 그대로다. 선택창만 닫힌 채 두면 길을 다시 찾아야 하므로
-    // 같은 선택지를 다시 연다(오류 내용은 call이 이미 알렸다).
-    openSpecialistDialog();
-    return;
-  }
-  flashNotice("막힌 사유를 전달하고 재기획을 시작했습니다.", false);
-  if (result.meta) sessionMeta = result.meta;
-  // 막힘 상세는 낡았다. 새 상태가 다시 막힘이면 setSpecialistState가 다시 받아 온다.
-  // blocked 자체는 백엔드 값만 믿는다 — 재기획이 다시 막혔는데 화면이 선택지를
-  // 지우면 안 된다.
-  invalidateBlockInfo();
-  if (result.specialist) setSpecialistState(result.specialist);
-  syncComposerLock();
-  renderHeader();
-}
-
-// 선택한 후속 처리를 백엔드에 전달합니다.
-async function resolveBlocked(action) {
-  const sessionId = activeSessionId;
-  if (action === "discard" || action === "restore") {
-    const label = action === "discard" ? "작업을 폐기" : "작업 전 상태로 복원";
-    if (!(await confirmInApp(`${label}하시겠습니까? 구현자가 만든 변경은 사라집니다. (실행 전부터 있던 변경은 보존됩니다)`))) {
-      return;
-    }
-    if (sessionId !== activeSessionId) return;
-  }
-  const result = await call(window.chatApi.specialistResolveBlocked(sessionId, action));
-  if (sessionId !== activeSessionId) return;
-  if (!result) {
-    // 거부되면 막힘 상태는 그대로다. 남은 선택지를 다시 보여 준다.
-    openSpecialistDialog();
-    return;
-  }
-  flashNotice(
-    action === "keep"
-      ? "현재 변경을 유지했습니다."
-      : action === "restore"
-        ? "작업 전 상태로 되돌렸습니다."
-        : "작업을 폐기했습니다.",
-    false
-  );
-  if (result?.meta) sessionMeta = result.meta;
-  invalidateBlockInfo();
-  if (result?.specialist) setSpecialistState(result.specialist);
-  syncComposerLock();
-  renderHeader();
-}
-
-// 막힌 사유를 기획자에게 넘겨 지시서를 다시 쓰게 합니다.
-// 별도 실행 경로를 만들지 않고, 기존 Handoff로 마지막 구현자 메시지를 전달합니다.
-
-// 작업 지시서(TASK.md)를 OS 기본 편집기로 엽니다.
-function openTaskFileForEdit() {
-  const workspace = sessionMeta?.workspace;
-  if (!workspace) {
-    flashNotice("워크스페이스가 연결되어 있지 않습니다.");
-    return;
-  }
-  const activeTask = (workflow?.tasks || []).find(
-    (task) => task.contentSource === "file" && task.taskPath && task.status !== "rejected"
-  );
-  if (!activeTask) {
-    flashNotice("수정할 작업 지시서를 찾지 못했습니다.");
-    return;
-  }
-  call(window.chatApi.openTaskFile(activeSessionId, activeTask.taskPath)).then((result) => {
-    if (result) flashNotice("작업 지시서를 열었습니다. 수정 후 전문 실행을 다시 시작하세요.", false);
-  });
-}
 discussionButton.addEventListener("click", () => {
   openPopover(discussionButton, (root) => {
     const head = document.createElement("div");
@@ -4414,14 +2845,6 @@ workspaceButton.addEventListener("click", () => {
 permissionSelect.addEventListener("change", () => {
   const mode = permissionSelect.value;
   void requestSessionMeta((sessionId) => window.chatApi.permissionSet(sessionId, mode));
-});
-
-permissionWarning.addEventListener("click", async () => {
-  const sessionId = activeSessionId;
-  const result = await requestSessionMeta((id) => window.chatApi.permissionSet(id, "workspace-write"));
-  if (result?.meta && sessionId === activeSessionId) {
-    flashNotice("이 채팅을 워크스페이스 쓰기 권한으로 바꿨습니다.", false);
-  }
 });
 
 // --- 메시지 렌더링 (모든 텍스트는 textContent로만 삽입) ---
@@ -4775,20 +3198,7 @@ function renderMessage(message) {
   meta.append(nameEl);
 
   if (!isUser) {
-    // 1. 역할 배지 — 전문 모드로 실행된 응답에만 붙입니다.
-    //    일반 대화·토론 응답에는 specialistStage가 없으므로 배지도 생기지 않습니다.
-    //    (알 수 없는 값은 배지로 만들지 않아 엉뚱한 라벨이 뜨지 않게 합니다.)
-    const stageKey = String(agentMeta.specialistStage || "").toLowerCase();
-    const stageLabel = SPECIALIST_STAGE_LABELS[stageKey];
-    if (stageLabel) {
-      const roleBadge = document.createElement("span");
-      roleBadge.className = `role-badge role-${stageKey}`;
-      roleBadge.textContent = stageLabel;
-      roleBadge.title = `전문 모드 ${stageLabel} 단계에서 나온 응답입니다`;
-      meta.append(roleBadge);
-    }
-
-    // 2. 모델 배지 — 별칭(fable)으로 실행했으면 CLI가 보고한 실제 모델을 함께 적어
+    // 1. 모델 배지 — 별칭(fable)으로 실행했으면 CLI가 보고한 실제 모델을 함께 적어
     //    "최신"이 지금 어떤 버전인지 보이게 합니다.
     const shownModel = agentMeta.model && agentMeta.model !== "default" ? agentMeta.model : agent?.model;
     if (shownModel) {
@@ -4802,7 +3212,7 @@ function renderMessage(message) {
       meta.append(modelBadge);
     }
 
-    // 3. 노력/속도 배지
+    // 2. 노력/속도 배지
     const shownEffort = agentMeta.effort && agentMeta.effort !== "default" ? agentMeta.effort : agent?.effort;
     if (shownEffort) {
       const effortBadge = document.createElement("span");
@@ -4811,19 +3221,7 @@ function renderMessage(message) {
       meta.append(effortBadge);
     }
 
-    // 4. 불변 실행 계약 (Frozen Task) 인디케이터 칩
-    const taskId = agentMeta.taskId || message.taskMeta?.taskId;
-    const taskHash = agentMeta.taskHash || agentMeta.frozenHash || message.taskMeta?.hash;
-    if (taskId || taskHash) {
-      const taskChip = document.createElement("span");
-      taskChip.className = "meta-chip frozen-task-chip";
-      const hashShort = taskHash ? `@${String(taskHash).slice(0, 7)}` : "";
-      taskChip.textContent = `${taskId || "TASK"}${hashShort}`;
-      taskChip.title = `불변 스냅샷 실행 계약: ${taskId || "TASK"}${hashShort}`;
-      meta.append(taskChip);
-    }
-
-    // 5. 토론 결론 종합 배지
+    // 3. 토론 결론 종합 배지
     const summaryMeta = message.discussionSummary || agentMeta.discussionSummary;
     if (summaryMeta) {
       const summaryBadge = document.createElement("span");
@@ -4929,13 +3327,12 @@ function renderMessage(message) {
       : simplifyAuthorUsable
         ? "원문을 작성한 에이전트가 같은 모델로 알기 쉽게 다시 설명합니다"
         : "원문을 작성한 에이전트를 사용할 수 없어 쉽게 설명을 실행할 수 없습니다";
-    if (specialistRunning || specialistLocksComposer() || !simplifyAuthorUsable) {
+    if (!simplifyAuthorUsable) {
       simplifyBtn.disabled = true;
       simplifyBtn.classList.add("is-disabled");
     }
     simplifyBtn.addEventListener("click", async (event) => {
       event.stopPropagation();
-      if (specialistRunning || specialistLocksComposer()) return;
       // fallback 금지: 원문 작성 에이전트나 실제 모델 정보를 쓸 수 없으면 실행하지 않습니다.
       const target = agentById(message.author);
       const targetModel =
@@ -4954,17 +3351,10 @@ function renderMessage(message) {
     const handoffBtn = document.createElement("button");
     handoffBtn.type = "button";
     handoffBtn.className = "message-handoff-button";
-    if (specialistRunning || specialistLocksComposer()) {
-      handoffBtn.disabled = true;
-      handoffBtn.classList.add("is-disabled");
-      handoffBtn.title = "실행/토론 진행 중에는 다른 AI에게 전달할 수 없습니다 (완료 후 가능)";
-    } else {
-      handoffBtn.title = "이 메시지를 다른 AI에게 전달";
-    }
+    handoffBtn.title = "이 메시지를 다른 AI에게 전달";
     handoffBtn.textContent = "다른 AI에게 전달";
     handoffBtn.addEventListener("click", (event) => {
       event.stopPropagation();
-      if (specialistRunning || specialistLocksComposer()) return;
       openHandoffPopover(handoffBtn, message.id, message.author);
     });
     actions.append(handoffBtn);
@@ -4981,7 +3371,7 @@ function renderMessage(message) {
 }
 
 // 같은 시스템 알림이 연달아 오면 줄을 늘리지 않고 횟수만 올립니다.
-// (전문 실행을 여러 번 취소하면 똑같은 문장이 화면을 채웁니다)
+// (같은 안내가 반복되면 똑같은 문장이 화면을 채웁니다)
 function mergeIntoPreviousSystem(item) {
   if (!item.classList.contains("is-system")) return false;
   if (item.querySelector(".discussion-summary-button")) return false;
@@ -5193,8 +3583,6 @@ function handleRunEvent(payload) {
     const nameEl = document.createElement("span");
     nameEl.className = "name";
     const liveMeta = [agent?.name || agentId, `@${agentId}`];
-    const stageLabel = SPECIALIST_STAGE_LABELS[String(payload.specialistStage || "").toLowerCase()];
-    if (stageLabel) liveMeta.push(stageLabel);
     liveMeta.push(payload.model || agent?.model || "모델 확인 중");
     liveMeta.push(effortLabel(payload.effort || agent?.effort || "추론 강도 확인 중"));
     liveMeta.push("응답 중");
@@ -5309,18 +3697,6 @@ composerBox.addEventListener("drop", async (event) => {
 });
 
 // --- 멘션 자동완성 ---
-// V1.5 역할 멘션 항목. 별칭은 main의 chat-mention ROLE_ALIASES와 같은 완전
-// 단어형이어야 한다 — 어긋나면 자동완성으로 넣은 멘션이 라우팅되지 않는다.
-// label은 목록 한 줄에 들어갈 만큼 짧게 — 별칭이 이미 말하는 역할명을 되풀이하지
-// 않는다("@기획자" 옆의 "기획자에게"는 같은 말이다). 무엇을 하는 호출인지의
-// 자세한 설명은 hint로 툴팁에 둔다.
-const ROLE_MENTION_TARGETS = Object.freeze([
-  { alias: "기획자", label: "질문 · 읽기 전용", hint: "기획자에게 질문합니다 (읽기 전용 · 실행하지 않음)", roleId: "planning" },
-  { alias: "구현자", label: "질문 · 읽기 전용", hint: "구현자에게 질문합니다 (읽기 전용 · 실행하지 않음)", roleId: "implementation" },
-  { alias: "검토자", label: "질문 · 읽기 전용", hint: "검토자에게 질문합니다 (읽기 전용 · 실행하지 않음)", roleId: "review" },
-  { alias: "기록자", label: "질문 · 읽기 전용", hint: "기록자에게 질문합니다 (읽기 전용 · 실행하지 않음)", roleId: "recorder" },
-]);
-
 // 참가자를 부를 수 없는 이유. "사용 불가"만 적으면 무엇을 고쳐야 하는지 알 수 없다.
 function agentUnavailableReason(agent) {
   if (!agent) return "담당자를 찾을 수 없음";
@@ -5337,39 +3713,7 @@ function agentUnavailableShort(agent) {
   return "";
 }
 
-// 역할 멘션을 쓸 수 있는가와, 못 쓴다면 왜인가. 회색 항목에 이유를 붙이기 위해
-// boolean 대신 { available, reason }을 돌려준다.
-function roleMentionStatus(project, roleId) {
-  let config = roleConfigFromProject(project, roleId);
-  // 기록 역할은 비워 두면 검토 담당자를 재사용한다(main의 fallback과 동일).
-  if (!config.agentId && roleId === "recorder") {
-    config = roleConfigFromProject(project, "review");
-  }
-  if (!config.agentId) {
-    return {
-      available: false,
-      reason: "담당자 미지정 · 프로젝트 설정(⋯)에서 지정",
-      reasonShort: "담당자 미지정",
-    };
-  }
-  const agent = agents.find((entry) => entry.id === config.agentId);
-  const reason = agentUnavailableReason(agent);
-  if (!reason) return { available: true, reason: "", reasonShort: "" };
-  return { available: false, reason, reasonShort: `담당자 ${agentUnavailableShort(agent)}` };
-}
-
-function roleMentionAvailable(project, roleId) {
-  return roleMentionStatus(project, roleId).available;
-}
-
 function mentionTargets() {
-  const project = activeProjectEntry();
-  const teamRoles = [
-    { roleId: "planning", name: "기획자" },
-    { roleId: "review", name: "검토자" },
-    { roleId: "implementation", name: "구현자" },
-  ];
-  const teamMissing = teamRoles.filter((role) => !roleMentionAvailable(project, role.roleId));
   return [
     ...agents.map((agent) => ({
       alias: agent.aliases[0],
@@ -5386,32 +3730,6 @@ function mentionTargets() {
       available: agents.some((agent) => agent.available && agent.enabled),
       reason: "쓸 수 있는 참가자가 없음",
       reasonShort: "참가자 없음",
-    },
-    ...ROLE_MENTION_TARGETS.map((role) => {
-      const status = roleMentionStatus(project, role.roleId);
-      return {
-        alias: role.alias,
-        label: role.label,
-        hint: role.hint,
-        color: "#7c6f64",
-        available: status.available,
-        reason: status.reason,
-        reasonShort: status.reasonShort,
-      };
-    }),
-    {
-      alias: "팀",
-      label: "순차 상담 · 읽기 전용",
-      hint: "기획자 → 검토자 → 구현자 순서로 상담합니다 (읽기 전용 · 실행하지 않음)",
-      color: "#7c6f64",
-      available: teamMissing.length === 0,
-      // 어느 역할이 비어 있는지 알아야 무엇을 지정할지 안다.
-      reason: teamMissing.length > 0
-        ? `${teamMissing.map((role) => role.name).join("·")} 담당자 미지정`
-        : "",
-      reasonShort: teamMissing.length > 0
-        ? `${teamMissing.map((role) => role.name).join("·")} 미지정`
-        : "",
     },
   ];
 }
@@ -5513,61 +3831,19 @@ function autoresize() {
 
 async function sendCurrentMessage() {
   // 응답은 보낸 방에만 적용한다. 기다리는 사이 다른 방으로 옮기면 그 방의 입력칸·
-  // 첨부·모드를 건드리지 않는다.
+  // 첨부를 건드리지 않는다.
   const sessionId = activeSessionId;
   const text = composerInput.value.trim();
-  // 기획 답변(질문 대기)과 기획 수정(READY 상태의 텍스트)은 전문 모드의 조작이다.
-  // 사용자가 일반 모드를 골랐으면 그 발화는 실행을 건드리지 않고 "다음 기획용
-  // 메모"로만 남는다(아래 send 경로).
-  const planAnswer = professionalModeEnabled
-    && (specialistNeedsInput || (specialistNode === "READY" && !specialistActive && text));
-  if (planAnswer) {
-    if (!text) return;
-    const draftText = composerInput.value;
-    composerInput.value = "";
-    closeMentionPopup();
-    autoresize();
-    const result = await call(window.chatApi.specialistPlanAnswer(sessionId, text));
-    if (!result) {
-      restoreFailedDraft(sessionId, draftText);
-    } else if (sessionId === activeSessionId) {
-      if (result.meta) sessionMeta = result.meta;
-      if (result.specialist) setSpecialistState(result.specialist);
-    }
-    if (sessionId !== activeSessionId) return;
-    syncComposerLock();
-    renderHeader();
-    composerInput.focus();
-    return;
-  }
-  if (specialistLocksComposer()) {
-    flashNotice("전문 실행이 진행 중이거나 승인 대기 중입니다. 먼저 작업을 완료하거나 취소해 주세요.");
-    return;
-  }
   if (!text && pendingAttachments.length === 0) return;
   const attachmentIds = pendingAttachments.map((attachment) => attachment.id);
   // 전송 실패 시 작성 중이던 내용을 복원하기 위해 보관해 둔다.
   const draftText = composerInput.value;
-  // 보낸 순간의 모드로 메모 여부와 안내를 정한다.
-  const professionalDraft = professionalModeEnabled || professionalRunBusy();
-  const professionalNotice = professionalModeEnabled;
   composerInput.value = "";
   closeMentionPopup();
   autoresize();
   const independent = isIndependentResponseMode;
   const result = await call(
-    window.chatApi.send(
-      sessionId,
-      text,
-      attachmentIds,
-      independent,
-      // 전문 실행이 실제로 돌거나 입력을 기다리는 동안에는 일반 모드에서도
-      // 메모로만 남긴다. 그러지 않으면 참가자 전원이 응답해 실행 맥락에 일반
-      // 대화가 섞인다. 중단된 실행의 노드가 남은 것만으로는 메모로 만들지 않는다.
-      professionalDraft,
-      // `@팀 실행`이 버튼과 같은 자동 보완 정책을 쓰도록 토글 값을 함께 보낸다.
-      currentProfessionalPolicy()
-    )
+    window.chatApi.send(sessionId, text, attachmentIds, independent)
   );
   if (!result) {
     // 첨부는 전송 전까지 목록에서 빼지 않았으므로 글만 되돌린다.
@@ -5576,11 +3852,6 @@ async function sendCurrentMessage() {
     // 보낸 첨부만 뺀다. 기다리는 사이 새로 붙인 첨부는 남긴다.
     pendingAttachments = pendingAttachments.filter((attachment) => !attachmentIds.includes(attachment.id));
     renderPendingAttachments();
-    // 역할 멘션이 상담(CONSULT)으로 라우팅된 전송은 메모가 아니다 — 곧 역할
-    // 담당자의 답이 오므로 "기록했습니다" 안내를 띄우지 않는다.
-    if (professionalNotice && !result.consult) {
-      flashNotice("작업 요청을 기록했습니다. PLAN 또는 전체 실행을 선택하세요.", false);
-    }
   }
   if (sessionId === activeSessionId) composerInput.focus();
 }
@@ -5734,13 +4005,8 @@ function applyFullState(full) {
   if (full.diagnostics) diagnostics = full.diagnostics;
   if (full.discussionPresets) discussionPresets = full.discussionPresets;
   if (full.projects) projects = full.projects;
-  const projectsChanged = Boolean(full.projects);
   if (full.workflow) workflow = full.workflow;
   if (Object.hasOwn(full, "activeProjectId")) activeProjectId = full.activeProjectId;
-  // 프로젝트가 바뀌면 그 프로젝트의 자동 보완 정책으로 토글을 채운다. 같은
-  // 프로젝트에서 목록만 다시 온 경우에는(설정 저장 직후 등) 강제로 다시 채워
-  // 방금 저장한 값이 화면에 반영되게 한다.
-  applyProjectAutoRevisions(projectsChanged && activeProjectId === autoRevisionsProjectId);
   if (full.sessions) sessions = full.sessions;
   if (full.sessionsByProject) sessionsByProject = full.sessionsByProject;
   if (Object.hasOwn(full, "activeSessionId")) switchActiveSession(full.activeSessionId);
@@ -5748,7 +4014,6 @@ function applyFullState(full) {
   if (full.session) {
     sessionMeta = full.session.meta;
     agents = full.session.agents || [];
-    setSpecialistState(full.session.specialist || {});
     typingAgents.clear();
     for (const agentId of full.session.typing || []) typingAgents.add(agentId);
     roomTurnState = full.session.turnState || { current: null, queue: [], deferred: [] };
@@ -5868,71 +4133,17 @@ window.chatApi.onProviders?.((payload) => {
     flashNotice("모델 목록을 새로 불러왔습니다. 모델 선택을 다시 열면 반영됩니다.", false);
   }
 });
-window.chatApi.onSpecialistResumeState(({ sessionId, ...state }) => {
-  if (sessionId !== activeSessionId) return;
-  setSpecialistState(state);
-  syncComposerLock();
-  renderHeader();
-});
 function lockComposer(locked) {
   composerInput.disabled = locked;
   sendButton.disabled = locked;
-  attachButton.disabled = locked || specialistNeedsInput;
-  // 일반 모드를 고른 동안에는 전문 조작 문구를 쓰지 않는다. 그 발화는 실행을
-  // 건드리지 않고 기획자가 다음 라운드에 읽을 메모로만 남는다.
-  const noteOnly = !professionalModeEnabled && professionalRunBusy();
-  if (noteOnly) {
-    composerInput.disabled = false;
-    sendButton.disabled = false;
-    composerInput.placeholder = "기획자에게 남길 메모를 입력하세요. 전문 실행은 그대로 둡니다 (Enter 전송)";
-    sendButton.textContent = "메모 남기기";
-  } else if (awaitingHumanApproval()) {
-    // 승인은 입력창 위 확인 목록에서 한다. "실행이 끝난 뒤"라고 안내하면
-    // 사용자가 무엇을 기다리는지 모른 채 막힌다.
-    composerInput.disabled = true;
-    sendButton.disabled = true;
-    composerInput.placeholder = "확인 목록에서 항목을 승인하거나 거부해 주세요";
-    sendButton.textContent = "확인 대기";
-  } else if (canResumeAfterApproval()) {
-    composerInput.placeholder = "‘기록 이어서 진행’을 눌러 주세요";
-    sendButton.textContent = "기록 대기";
-  } else if (specialistNeedsInput) {
-    if (specialistStopReason === "CHECKPOINT_FAILED") {
-      composerInput.placeholder = "아래에서 다음 처리를 선택하세요";
-      composerInput.disabled = true;
-      sendButton.textContent = "선택 대기";
-    } else if (specialistStopReason === "TASK_CONTRACT_INCOMPLETE") {
-      composerInput.placeholder = "기획을 보완하려면 수정 사항을 입력하세요 (Enter 전송)";
-      composerInput.disabled = false;
-      sendButton.textContent = "기획 보완";
-    } else {
-      composerInput.placeholder = "기획자의 Open Question에 답하세요 (Enter 전송)";
-      composerInput.disabled = false;
-      sendButton.textContent = "답변 보내기";
-    }
-  } else if (locked && specialistBlockedAvailable) {
-    // 막힘은 "실행이 도는 중"이 아니라 "사용자를 기다리는 중"이다. 여기서
-    // "실행이 끝난 뒤"라고 안내하면 아무것도 끝나지 않는데 기다리게 된다
-    // (승인 대기에서 이미 같은 문제를 고쳤다).
-    //
-    // locked를 함께 보는 이유: 일반 모드에서는 막혀 있어도 입력창을 잠그지
-    // 않는다(기획자에게 메모를 남길 수 있어야 한다). 그 경우 위쪽 noteOnly
-    // 분기가 맡는다.
-    composerInput.disabled = true;
-    sendButton.disabled = true;
-    composerInput.placeholder = "위쪽 막힘 안내에서 변경 유지·복원·재기획 중 하나를 골라 주세요";
-    sendButton.textContent = "선택 대기";
-  } else if (specialistNode === "READY" && !specialistActive) {
-    composerInput.disabled = false;
-    sendButton.disabled = false;
-    composerInput.placeholder = "기획을 수정하려면 변경사항을 입력하세요. '실행' 버튼으로 시작합니다 (Enter 전송)";
-    sendButton.textContent = "기획 수정";
-  } else {
-    composerInput.placeholder = locked ? "전문 실행이 끝난 뒤 입력할 수 있습니다" : "질문이나 작업을 입력하세요  (@로 대상 지정 · Enter 전송)";
-    sendButton.textContent = "전송";
-  }
+  attachButton.disabled = locked;
+  composerInput.placeholder = locked
+    ? "도구 실행 권한 요청에 답한 뒤 입력할 수 있습니다"
+    : "질문이나 작업을 입력하세요  (@로 대상 지정 · Enter 전송)";
+  sendButton.textContent = "전송";
   if (locked) composerInput.blur();
 }
+
 function showNextApproval() {
   if (activeApproval || approvalQueue.length === 0) return;
   activeApproval = approvalQueue.shift();

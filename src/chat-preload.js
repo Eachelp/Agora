@@ -38,20 +38,7 @@ const INVOKE = Object.freeze({
   AWAITING_DISMISS: "chat:awaiting:dismiss",
   DISCUSSION_START: "chat:discussion:start",
   DISCUSSION_SUMMARIZE: "chat:discussion:summarize",
-  SPECIALIST_START: "chat:specialist:start",
-  SPECIALIST_PLAN_ANSWER: "chat:specialist:plan-answer",
-  SPECIALIST_RESUME: "chat:specialist:resume",
-  SPECIALIST_CANCEL: "chat:specialist:cancel",
-  SPECIALIST_BLOCKED: "chat:specialist:blocked",
-  SPECIALIST_BLOCK_DETAILS: "chat:specialist:block-details",
-  SPECIALIST_REPLAN_BLOCKED: "chat:specialist:replan-blocked",
-  SPECIALIST_PENDING_APPROVALS: "chat:specialist:pending-approvals",
-  SPECIALIST_RESOLVE_APPROVAL: "chat:specialist:resolve-approval",
-  SPECIALIST_RECORD_INPUT_RETRIEVAL: "chat:specialist:record-input-retrieval",
-  SPECIALIST_INPUT_USAGE: "chat:specialist:input-usage",
   RUN_LOG_OPEN_FOLDER: "chat:run-log:open-folder",
-  TASK_OPEN_FILE: "chat:task:open-file",
-  TASK_READ_FILE: "chat:task:read-file",
   MESSAGE_HANDOFF: "chat:message:handoff",
   APPROVAL_RESPOND: "chat:approval:respond",
   WORKSPACE_CHOOSE: "chat:workspace:choose",
@@ -117,15 +104,8 @@ contextBridge.exposeInMainWorld("chatApi", {
     ipcRenderer.invoke(INVOKE.SESSIONS_RENAME, { sessionId, title }),
   sessionsDelete: (sessionId) => ipcRenderer.invoke(INVOKE.SESSIONS_DELETE, { sessionId }),
 
-  send: (sessionId, text, attachmentIds, independent = false, professionalDraft = false, professionalPolicy = null) =>
-    ipcRenderer.invoke(INVOKE.SEND, {
-      sessionId,
-      text,
-      attachmentIds,
-      independent,
-      professionalDraft,
-      professionalPolicy,
-    }),
+  send: (sessionId, text, attachmentIds, independent = false) =>
+    ipcRenderer.invoke(INVOKE.SEND, { sessionId, text, attachmentIds, independent }),
   stop: (sessionId) => ipcRenderer.invoke(INVOKE.STOP, { sessionId }),
   turnInterject: (sessionId) => ipcRenderer.invoke(INVOKE.TURN_INTERJECT, { sessionId }),
   turnCancel: (sessionId, turnId) =>
@@ -136,39 +116,8 @@ contextBridge.exposeInMainWorld("chatApi", {
     ipcRenderer.invoke(INVOKE.DISCUSSION_START, { sessionId, agentIds, ...options }),
   discussionSummarize: (sessionId, discussionId, agentId) =>
     ipcRenderer.invoke(INVOKE.DISCUSSION_SUMMARIZE, { sessionId, discussionId, agentId }),
-  specialistStart: (sessionId, options = {}) =>
-    ipcRenderer.invoke(INVOKE.SPECIALIST_START, { sessionId, ...options }),
-  specialistPlanAnswer: (sessionId, text) =>
-    ipcRenderer.invoke(INVOKE.SPECIALIST_PLAN_ANSWER, { sessionId, text }),
-  // action은 checkpoint 실패 후 선택(retry / proceed_unprotected)을 전달한다.
-  // 이 인자가 빠져 있어 백엔드가 지원하는 선택지를 화면에서 고를 수 없었다.
-  specialistResume: (sessionId, action, expectedRunId) =>
-    ipcRenderer.invoke(INVOKE.SPECIALIST_RESUME, { sessionId, action, expectedRunId }),
-  specialistCancel: (sessionId) =>
-    ipcRenderer.invoke(INVOKE.SPECIALIST_CANCEL, { sessionId }),
-  specialistResolveBlocked: (sessionId, action) =>
-    ipcRenderer.invoke(INVOKE.SPECIALIST_BLOCKED, { sessionId, action }),
-  specialistBlockDetails: (sessionId) =>
-    ipcRenderer.invoke(INVOKE.SPECIALIST_BLOCK_DETAILS, { sessionId }),
-  specialistReplanBlocked: (sessionId, workspaceAction) =>
-    ipcRenderer.invoke(INVOKE.SPECIALIST_REPLAN_BLOCKED, { sessionId, workspaceAction }),
-  // Stage D §20 — 사용자 승인이 필요한 확인 항목의 조회/해소.
-  // Reviewer가 대신 풀 수 없는 항목이므로 사용자 경로가 반드시 있어야 한다.
-  specialistPendingApprovals: (sessionId) =>
-    ipcRenderer.invoke(INVOKE.SPECIALIST_PENDING_APPROVALS, { sessionId }),
-  specialistResolveApproval: (sessionId, criterionId, approved, note, expectedRunId) =>
-    ipcRenderer.invoke(INVOKE.SPECIALIST_RESOLVE_APPROVAL, { sessionId, criterionId, approved, note, expectedRunId }),
-  // Stage D §3.1 — live 입력의 실제 사용 기록/조회.
-  specialistRecordInputRetrieval: (sessionId, inputId, metadata = {}) =>
-    ipcRenderer.invoke(INVOKE.SPECIALIST_RECORD_INPUT_RETRIEVAL, { sessionId, inputId, ...metadata }),
-  specialistInputUsage: (sessionId) =>
-    ipcRenderer.invoke(INVOKE.SPECIALIST_INPUT_USAGE, { sessionId }),
   openRunLogFolder: (sessionId) =>
     ipcRenderer.invoke(INVOKE.RUN_LOG_OPEN_FOLDER, { sessionId }),
-  openTaskFile: (sessionId, taskPath) =>
-    ipcRenderer.invoke(INVOKE.TASK_OPEN_FILE, { sessionId, taskPath }),
-  readTaskFile: (sessionId, taskPath) =>
-    ipcRenderer.invoke(INVOKE.TASK_READ_FILE, { sessionId, taskPath }),
   handoffMessage: (sessionId, targetAgentId, messageId, intent) =>
     ipcRenderer.invoke(INVOKE.MESSAGE_HANDOFF, { sessionId, targetAgentId, messageId, intent }),
   approvalRespond: (sessionId, approvalId, decision) =>
@@ -201,7 +150,6 @@ contextBridge.exposeInMainWorld("chatApi", {
   onMessage: (handler) => subscribe("chat:message", handler),
   onTyping: (handler) => subscribe("chat:typing", handler),
   onTurnState: (handler) => subscribe("chat:turn-state", handler),
-  onSpecialistResumeState: (handler) => subscribe("chat:specialist-resume-state", handler),
   onReset: (handler) => subscribe("chat:reset", handler),
   onRunEvent: (handler) => subscribe("chat:run-event", handler),
   onSessionsChanged: (handler) => subscribe("chat:sessions-changed", handler),

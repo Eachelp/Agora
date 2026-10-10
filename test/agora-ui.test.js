@@ -313,17 +313,6 @@ test("토론 자동 기록은 전문 실행 경로를 타지 않는다", () => {
   assert.ok(!fn.includes("withProfessionalAuthorization"), "run-scoped 권한을 요구하면 안 됩니다");
 });
 
-// 버튼 활성 조건과 백엔드 요구 역할이 어긋나면 "눌리는데 실패하는 버튼"이 된다.
-test("전문 실행 버튼은 백엔드가 요구하는 역할을 기준으로 활성화된다", () => {
-  const renderer = read("src/chat.js");
-  // 기록 버튼은 검토자가 아니라 기록 담당자를 본다.
-  assert.ok(renderer.includes("professionalRecordButton.disabled = !recorder.agentId"));
-  // 전체 실행은 백엔드가 기록 담당자까지 요구한다.
-  assert.ok(renderer.includes("&& recorder.agentId"));
-  // 비활성 이유를 툴팁으로 알린다.
-  assert.ok(renderer.includes("기록 담당자가 필요합니다"));
-});
-
 test("사용량 스트립은 접기/펼치기이고 접힌 동안 조회하지 않는다", () => {
   const html = read("src/chat.html");
   const renderer = read("src/chat.js");
@@ -378,26 +367,14 @@ test("작업공간은 창 전체를 쓰고 상단 줄은 역할별로 한 줄씩
   assert.doesNotMatch(css, /app-rail/);
   // 레일이 가리던 사이드바 설정 버튼을 다시 드러낸다.
   assert.doesNotMatch(css, /\.sidebar-foot \.foot-button-icon \{[^}]*display: none/);
-  assert.match(html, /class="room-actions"[\s\S]*id="btn-workflow"[\s\S]*id="btn-discussion"[\s\S]*id="btn-specialist"/);
+  assert.match(html, /class="room-actions"[\s\S]*id="btn-workflow"[\s\S]*id="btn-discussion"/);
+  // 일반/전문 전환 스위치와 전문 실행 줄은 없어졌다 — 그 자리를 비워 둔다.
+  assert.doesNotMatch(html, /btn-specialist|work-mode-switch|professional-actions|specialist-backdrop/);
+  assert.doesNotMatch(css, /work-mode|professional-|specialist-|auto-revise/);
   // 칩은 CSS가 display:flex로 켜 두는 자리라 hidden 표기를 달지 않는다.
   assert.doesNotMatch(html, /id="agent-chips"[^>]*hidden/);
   assert.match(renderer, /function agentChipHint\(agent\)/);
-  // 화면에 뜨지 않는 라벨(display:none)과 만드는 코드가 없는 단계 번호 뱃지는
-  // 마크업·CSS에서 지웠다. 다시 들어오면 "보이지 않는 요소를 위한 규칙"이 쌓인다.
-  assert.ok(!html.includes("professional-actions-label"), "숨겨진 라벨 요소는 남기지 않습니다");
-  assert.ok(!css.includes("professional-actions-label"), "숨겨진 라벨 규칙은 남기지 않습니다");
   assert.ok(!/\.step-num \{/.test(css), "쓰지 않는 단계 번호 뱃지 규칙은 남기지 않습니다");
-  // 같은 선택자를 여러 번 덮어쓰면 최종값을 읽으려면 파일 전체를 훑어야 한다.
-  for (const selector of [".professional-actions", ".professional-auto-options", ".professional-status-detail"]) {
-    const count = css.split(`\n${selector} {`).length - 1;
-    assert.equal(count, 1, `${selector} 규칙은 한 블록으로 유지합니다 (현재 ${count}개)`);
-  }
-  assert.match(html, /class="professional-action-row"[\s\S]*id="btn-professional-full"[\s\S]*id="professional-status-detail"/);
-  assert.match(css, /\.professional-action-row \{[^}]*grid-area: actions[^}]*justify-content: flex-start/);
-  assert.match(css, /\.professional-actions \{[^}]*grid-template-areas:[\s\S]*"actions"[\s\S]*"status"/);
-  assert.match(css, /\.professional-status-detail \{[^}]*grid-area: status/);
-  assert.ok(!html.includes("data-professional-step"), "현재 상태에서 앞 작업의 완료를 추정하는 단계 막대는 표시하지 않습니다");
-  assert.match(css, /\.professional-auto-options \{[^}]*order: 2/);
   assert.match(css, /\.chat-scroll \{\s*background: var\(--surface\)/);
   assert.match(css, /\.composer \{\s*background: var\(--surface\)/);
 });
@@ -481,32 +458,21 @@ test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있
   for (const id of ["project-list", "btn-new-project"]) {
     assert.match(html, new RegExp(`id="${id}"`));
   }
-  assert.match(html, /id="btn-specialist"/);
+  // 전문 모드 화면(전환 스위치·전문 실행 줄·막힘 처리 창)은 없어졌다.
   for (const id of [
+    "btn-specialist",
     "professional-actions",
     "btn-professional-plan",
-    "btn-professional-implementation",
-    "btn-professional-record",
-    "btn-professional-full",
-    "btn-professional-plan-view",
     "professional-status-detail",
     "plan-auto-revise",
-    "plan-auto-limit",
-    "implementation-auto-revise",
-    "implementation-auto-limit",
+    "specialist-backdrop",
+    "specialist-approvals",
+    "specialist-choice-bar",
+    "permission-warning",
   ]) {
-    assert.match(html, new RegExp(`id="${id}"`));
+    assert.doesNotMatch(html, new RegExp('id="' + id + '"'));
   }
-  // 전문 실행은 PLAN → ACT 흐름과 보조 기록 동작을 분리해 보여 준다.
-  // (PLAN·실행 버튼은 라벨 뒤에 현재 자동 보완 정책 배지를 함께 담는다.)
-  assert.match(html, /id="btn-professional-plan"[^>]*><span>PLAN<\/span>/);
-  assert.match(html, /id="btn-professional-implementation"[^>]*><span>실행 ▶<\/span>/);
-  assert.match(html, /id="btn-professional-full"[^>]*>전체 실행 ⚡<\/button>/);
-  assert.match(html, /id="professional-status-detail"[^>]*role="status"/);
-  assert.match(renderer, /specialistNode/);
-  // 옛 모달 시작 화면(3방식 선택)은 제거되어 renderer에 남지 않는다.
-  assert.doesNotMatch(renderer, /function buildStartDialog/);
-  assert.doesNotMatch(renderer, /async function runSpecialist\(/);
+  assert.doesNotMatch(renderer, /specialistNode|runProfessionalAction|openPlanPreview/);
   // 백그라운드 모델 목록 갱신은 main이 밀어 주고 renderer가 받아 새로 그린다.
   assert.match(preload, /onProviders: \(handler\) => subscribe\("chat:providers", handler\)/);
   assert.match(renderer, /window\.chatApi\.onProviders\?\.\(\(payload\) => \{[\s\S]*?providers = payload\.providers;[\s\S]*?renderHeader\(\);/);
@@ -516,11 +482,7 @@ test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있
   assert.match(preload, /projectsUpdate: \(projectId, patch\)/);
   assert.match(preload, /projectsDelete: \(projectId\)/);
   assert.match(preload, /sessionsMove: \(sessionId, projectId\)/);
-  assert.match(preload, /specialistStart: \(sessionId, options = \{\}\)/);
-  assert.match(preload, /specialistPlanAnswer: \(sessionId, text\)/);
-  assert.match(preload, /specialistBlockDetails: \(sessionId\)/);
-  assert.match(renderer, /부분 변경 보기/);
-  assert.match(preload, /readTaskFile: \(sessionId, taskPath\)/);
+  assert.doesNotMatch(preload, /specialist|readTaskFile|openTaskFile/i);
   assert.match(preload, /memoryAppend: \(projectId, content, title\)/);
   assert.match(preload, /decisionsCreate: \(input\)/);
   assert.match(preload, /tasksCreate: \(input\)/);
@@ -528,23 +490,13 @@ test("프로젝트 아래에 여러 대화를 묶는 화면과 IPC 연결이 있
   assert.match(renderer, /function selectProject\(projectId\)/);
   assert.match(renderer, /function openWorkflowPopover\(anchor\)/);
   assert.match(renderer, /defaultAgents/);
-  assert.match(renderer, /defaultRoles/);
+  assert.doesNotMatch(renderer, /defaultRoles|autoRevisions/);
   assert.match(renderer, /function openSessionMovePopover\(anchor, session\)/);
   assert.match(renderer, /sessionsMove\(session\.id, project\.id\)/);
   assert.doesNotMatch(renderer, /project-move-apply-workspace/);
-  assert.match(renderer, /전문 모드 역할 설정/);
-  assert.match(renderer, /기획 검수 \(선택\)/);
-  assert.match(renderer, /runProfessionalAction\(action\)/);
-  assert.match(renderer, /planAutoRevisions/);
-  assert.match(renderer, /implementationAutoRevisions/);
   assert.match(renderer, /payload\.model \|\| agent\?\.model/);
-  assert.match(html, /role="switch"/);
-  assert.match(renderer, /function openPlanPreview\(anchor\)/);
   assert.match(renderer, /누적 요약/);
   assert.doesNotMatch(ipc, /applyProjectWorkspace = false/);
-  assert.match(ipc, /"chat:specialist:start"/);
-  assert.match(ipc, /"chat:specialist:plan-answer"/);
-  assert.match(ipc, /"chat:task:read-file"/);
   assert.match(ipc, /"chat:memory:append"/);
   assert.match(ipc, /"chat:projects:create"/);
   assert.match(ipc, /"chat:projects:select"/);
@@ -685,7 +637,7 @@ test("상단 적용 방식은 짧은 라벨로 두고 상세는 툴팁으로 넘
   assert.match(renderer, /enforcementHint\.title = enforcementDetail/);
   assert.match(renderer, /permissionSelect\.title = enforcementDetail/);
   // 참여 에이전트가 둘 미만이면 @all 응답 방식은 숨깁니다.
-  assert.match(renderer, /responseModeBar\.hidden = professionalModeEnabled \|\| !discussable/);
+  assert.match(renderer, /responseModeBar\.hidden = !discussable/);
 });
 
 test("연속된 시스템 알림은 접히고 다시 펼칠 수 있다", () => {
@@ -709,92 +661,6 @@ test("토론 종료 알림은 결론 종합 버튼을 제공하고 토론 종합
   assert.match(css, /\.discussion-summary-button/);
 });
 
-// 승인 이후 단계(입력 재대조, 검증 계획 검사 등)에서 거부되면 run은 READY:WAITING에
-// 머무는데, 예전에는 그 상태에서 PLAN 버튼이 꺼져 있어 같은 실행 버튼을 반복해서
-// 누르는 것 말고 길이 없었다. READY는 Builder가 돌기 전이라 되돌릴 것이 없고
-// FSM도 READY -> PLANNING 복귀를 지원하므로 다시 기획할 수 있어야 한다.
-test("승인 상태(READY)에서도 기획을 처음부터 다시 시작할 수 있다", () => {
-  const renderer = read("src/chat.js");
-  const line = renderer.slice(renderer.indexOf("const planStartable"));
-  const decl = line.slice(0, line.indexOf(";"));
-  assert.ok(decl.includes('specialistNode === "READY"'), "READY에서 PLAN을 다시 시작할 수 있어야 합니다");
-  // 사용자를 기다리는 상태(BLOCKED·답변 대기)에서도 다시 시작할 수 있어야 한다.
-  assert.ok(decl.includes("awaitingUser"), "대기 상태에서도 새 기획을 시작할 수 있어야 합니다");
-  // 실행 중에는 여전히 막혀야 한다(리셋 통로가 진행 중 실행을 덮어쓰면 안 된다).
-  assert.ok(
-    renderer.includes("professionalPlanButton.disabled = !planConfigured || specialistBusy || !planStartable"),
-    "진행 중 실행은 여전히 막아야 합니다"
-  );
-  // "바쁨"과 "대기"가 다시 한 값으로 합쳐지면 같은 결함이 되살아난다.
-  assert.ok(renderer.includes("const specialistBusy = Boolean(specialistRunning || specialistActive || ordinaryTurnBusy)"));
-  assert.ok(renderer.includes("const awaitingUser = Boolean(specialistBlockedAvailable || specialistResumeAvailable)"));
-  // 되돌릴 수 없는 폐기이므로 확인을 받는다.
-  assert.ok(renderer.includes("기획부터 다시 시작할까요"), "폐기 전에 확인해야 합니다");
-});
-
-// checkpoint 실패는 사용자가 골라야 진행된다. 백엔드(resumeSpecialist)는 예전부터
-// retry / proceed_unprotected를 처리했지만 화면에 버튼이 없고 preload가 action을
-// 전달하지도 않아서, composer가 "선택 대기"로 잠긴 채 고를 방법이 없었다.
-test("사용자가 골라야 진행되는 지점에는 실제 선택 버튼이 있다", () => {
-  const html = read("src/chat.html");
-  const renderer = read("src/chat.js");
-  const preload = read("src/chat-preload.js");
-  assert.match(html, /id="specialist-choice-bar"/);
-  assert.ok(renderer.includes("CHECKPOINT_FAILED: ["), "checkpoint 실패 선택지가 정의되어야 합니다");
-  for (const action of ["retry", "proceed_unprotected"]) {
-    assert.ok(renderer.includes(`"${action}"`), `${action} 선택지가 있어야 합니다`);
-  }
-  assert.ok(renderer.includes("specialistCancel(activeSessionId)"), "취소 선택지가 있어야 합니다");
-  // composer를 잠그는 곳에서 반드시 선택지도 함께 그린다(잠금과 선택지는 한 쌍이다).
-  assert.ok(renderer.includes("renderSpecialistChoice();"), "잠금과 함께 선택지를 그려야 합니다");
-  // BLOCKED도 composer를 잠그고 "아래에서 선택해 주세요"라고 안내한다. 선택지가
-  // 헤더 모드 토글 뒤 모달에만 있으면 안내와 위치가 정반대가 된다.
-  assert.ok(renderer.includes("if (specialistBlockedAvailable) {"), "BLOCKED에도 선택 경로가 있어야 합니다");
-  const blockedBranch = renderer.slice(renderer.indexOf("function specialistChoicesNow"));
-  assert.ok(
-    blockedBranch.slice(0, 600).includes("openSpecialistDialog()"),
-    "BLOCKED 선택지는 기존 모달로 이어져야 합니다"
-  );
-  // preload가 action을 넘기지 않으면 어떤 버튼도 의미가 없다.
-  assert.match(preload, /SPECIALIST_RESUME, \{ sessionId, action, expectedRunId \}/);
-});
-
-// 예전에는 실행 기록이 "살아나는" 순간 전문 모드를 켰다. 중단된 기획 기록만
-// 있어도 켜졌고, 켜진 값이 다른 방까지 따라가 일반 질문이 메모로 저장됐다.
-// 모드는 사용자가 방마다 고른 값이고, 실행 상태는 그 값을 바꾸지 않는다.
-test("실행 상태는 일반/전문 모드를 바꾸지 않는다", () => {
-  const renderer = read("src/chat.js");
-  const setter = renderer.slice(renderer.indexOf("function setSpecialistState"));
-  const body = setter.slice(0, setter.indexOf("\nfunction "));
-  assert.doesNotMatch(body, /professionalModeEnabled\s*=|setProfessionalMode\(/, "상태 갱신이 모드를 바꾸면 안 됩니다");
-  assert.doesNotMatch(renderer, /professionalRunWasLive/, "실행 기록으로 모드를 켜던 경로가 남으면 안 됩니다");
-  // 모드를 바꾸는 곳은 사용자의 토글·'전문 실행 보기'(setProfessionalMode)와
-  // 방 전환 시 그 방에 저장된 값 복원뿐이다.
-  const assignments = renderer.match(/^\s+professionalModeEnabled = /gm) || [];
-  assert.equal(assignments.length, 2);
-});
-
-// "실행 중 → 일반 모드 → 메모"가 계약인데, 토글이 실행 중에 잠기고 입력창도
-// specialistActive면 닫혀 그 경로에 도달할 수가 없었다. 토글은 표시·라우팅만
-// 바꾸고 실행 상태는 건드리지 않으므로 실행 중에도 열려 있어야 한다.
-test("실행 중에도 일반 모드로 내려 메모를 남길 수 있다", () => {
-  const renderer = read("src/chat.js");
-  // 토글은 세션 유무로만 막는다.
-  assert.ok(
-    renderer.includes("specialistButton.disabled = !activeSessionId;"),
-    "실행 중이라고 모드 토글을 잠그면 메모 경로에 도달할 수 없습니다"
-  );
-  assert.ok(
-    renderer.includes('specialistButton.addEventListener("click", () => {\n  if (!activeSessionId) return;'),
-    "클릭 가드도 실행 중을 막으면 안 됩니다"
-  );
-  // 일반 모드면 실행 중에도 입력창이 열린다.
-  assert.ok(
-    renderer.includes("if (!professionalModeEnabled) return false;"),
-    "일반 모드에서는 실행 중에도 메모를 남길 수 있어야 합니다"
-  );
-});
-
 // 참가자 이름은 provider-capabilities 한 곳에서만 온다. HTML에 이름을 또 박으면
 // 개명할 때마다 어긋나는데, 레일을 지우면서 그 중복이 함께 사라졌다.
 test("참가자 이름은 HTML에 박지 않고 렌더러가 채운다", () => {
@@ -808,351 +674,16 @@ test("참가자 이름은 HTML에 박지 않고 렌더러가 채운다", () => {
   assert.doesNotMatch(html, /app-rail-label/);
 });
 
-// ---- 전문 실행 상태 표시: node만이 아니라 status와 대기 사유까지 본다 ----
-//
-// 아래 테스트는 문자열 존재 확인이 아니라 실제 판정 함수를 실행한다. 렌더러는
-// DOM 스크립트라 통째로 불러올 수 없으므로, 상태 판정 부분만 떼어 내 격리된
-// 컨텍스트에서 돌린다(그 부분은 모듈 전역 상태만 읽는 순수 함수다).
-function loadSpecialistView(state = {}) {
-  const vm = require("node:vm");
-  const src = read("src/chat.js");
-  const start = src.indexOf("const PROFESSIONAL_NODE_LABELS = Object.freeze({");
-  const end = src.indexOf("function renderProfessionalStatusDetail(");
-  assert.ok(start > 0 && end > start, "상태 판정 코드를 찾지 못했습니다");
-  const context = {
-    specialistNode: null,
-    specialistStatus: null,
-    specialistStopReason: null,
-    specialistMissingSections: null,
-    specialistBlockedAvailable: false,
-    specialistActive: false,
-    specialistResumeAvailable: false,
-    // 막힘 선택지가 어디 있는지가 모드에 따라 다르다(전문: 상태 줄 아래 / 일반: 입력창 옆).
-    professionalModeEnabled: true,
-    specialistPlanReady: false,
-    specialistNeedsInput: false,
-    // 승인된 기획서를 실제로 들고 있는 상태가 기본값이다.
-    specialistImplementationReady: true,
-    specialistResumePhase: null,
-    specialistPendingApprovals: [],
-    specialistApprovalsLoading: false,
-    specialistApprovalsError: "",
-    specialistPlanRound: 0,
-    specialistImplementationRound: 0,
-    ...state,
-  };
-  vm.createContext(context);
-  vm.runInContext(src.slice(src.indexOf("function awaitingHumanApproval()"), src.indexOf("function resetSpecialistApprovals()")), context);
-  vm.runInContext(src.slice(start, end), context);
-  return {
-    status: context.specialistStatusView(),
-    rounds: context.specialistRoundSummary(),
-    canStartImplementation: (options = {}) =>
-      context.canStartImplementationNow({ implementationConfigured: true, busy: false, ...options }),
-  };
-}
-
-test("READY는 기획검수 진행 중이 아니라 '검수 통과·실행 대기'로 보인다", () => {
-  const { status } = loadSpecialistView({ specialistNode: "READY", specialistStatus: "WAITING" });
-  assert.equal(status.tone, "waiting");
-  assert.match(status.headline, /기획 검수를 통과했습니다/);
-  assert.match(status.next, /실행/);
-});
-
-test("COMPLETED는 기록 단계가 계속 돌고 있는 것처럼 보이지 않는다", () => {
-  const { status } = loadSpecialistView({ specialistNode: "COMPLETED", specialistStatus: "COMPLETED" });
-  assert.equal(status.tone, "done");
-  assert.match(status.headline, /완료/);
-});
-
-test("완료 뒤 기록 정리(Archivist) 중지는 본 실행의 완료를 뒤집지 않는다", () => {
-  const { status } = loadSpecialistView({
-    specialistNode: "COMPLETED",
-    specialistStatus: "COMPLETED",
-    specialistStopReason: "USER_INTERRUPTED",
-  });
-  assert.equal(status.tone, "done");
-  assert.match(status.headline, /본 실행이 완료되었습니다/);
-  assert.match(status.headline, /기록 정리는 중지/);
-});
-
-test("중단과 실행 중은 다른 상태로 표시된다", () => {
-  const running = loadSpecialistView({ specialistNode: "IMPLEMENTING", specialistStatus: "RUNNING" });
-  const stopped = loadSpecialistView({
-    specialistNode: "IMPLEMENTING",
-    specialistStatus: "INTERRUPTED",
-    specialistStopReason: "USER_INTERRUPTED",
-  });
-  assert.equal(running.status.tone, "running");
-  assert.match(running.status.headline, /구현 진행 중/);
-  assert.equal(stopped.status.tone, "stopped");
-  assert.match(stopped.status.headline, /중지|중단/);
-  assert.match(stopped.status.next, /다시 시작/);
-});
-
-test("멈춤 사유는 내부 코드가 아니라 사용자 문장으로 보여 준다", () => {
-  for (const [stopReason, expected] of [
-    ["PLAN_READY", /기획 검수를 통과/],
-    ["HUMAN_APPROVAL_REQUIRED", /확인할 항목/],
-    ["RECORDER_FAILED", /기록을 만들지 못했습니다/],
-    ["CHECKPOINT_FAILED", /백업을 만들지 못했습니다/],
-    ["LIMIT_EXCEEDED", /자동 보완 한도/],
-  ]) {
-    const { status } = loadSpecialistView({
-      specialistNode: "REVIEWING",
-      specialistStatus: "WAITING",
-      specialistStopReason: stopReason,
-      specialistPendingApprovals: stopReason === "HUMAN_APPROVAL_REQUIRED" ? [{ criterionId: "V2" }] : [],
-    });
-    assert.match(status.headline, expected, `${stopReason}는 사용자 문장으로 옮겨야 합니다`);
-    assert.ok(!status.headline.includes(stopReason), `${stopReason} 코드를 그대로 노출하면 안 됩니다`);
-  }
-});
-
-test("모르는 멈춤 사유를 완료나 복원 가능으로 포장하지 않는다", () => {
-  const { status } = loadSpecialistView({
-    specialistNode: "REVIEWING",
-    specialistStatus: "WAITING",
-    specialistStopReason: "SOME_NEW_REASON",
-  });
-  assert.match(status.headline, /확인이 필요한 상태/);
-  assert.ok(!/완료|복원할 수 있|되돌릴 수 있/.test(status.headline));
-  assert.match(status.next, /자세히/);
-});
-
-test("BLOCKED는 막힌 이유와 다음 선택을 함께 안내한다", () => {
-  const { status } = loadSpecialistView({
-    specialistNode: "IMPLEMENTING",
-    specialistStatus: "BLOCKED",
-    specialistStopReason: "BLOCKED",
-    specialistBlockedAvailable: true,
-  });
-  assert.equal(status.tone, "blocked");
-  assert.match(status.headline, /막혀/);
-  // 선택지는 전문 모드에서 상태 줄 바로 아래에 펼쳐진다(자리 안내는 아래 전용 테스트).
-  assert.match(status.next, /변경 유지·복원·재기획/);
-});
-
-// ---- 완료 전 사용자 확인(HUMAN_APPROVAL) ----
-//
-// 백엔드는 이 대기를 REVIEWING/WAITING + HUMAN_APPROVAL_REQUIRED로 두고, 검수자가
-// 대신 해소할 수 없게 막아 둔다. 화면에 승인/거부 경로가 없으면 실행이 영영
-// 대기에 남는다 — IPC와 preload에만 있고 렌더러에서 부르지 않던 상태였다.
-test("승인 대기 항목을 화면에서 보고 승인·거부할 수 있다", () => {
-  const html = read("src/chat.html");
-  const renderer = read("src/chat.js");
-  assert.match(html, /id="specialist-approvals"/);
-  assert.match(renderer, /window\.chatApi\.specialistPendingApprovals\(context\.sessionId\)/);
-  assert.match(renderer, /window\.chatApi\.specialistResolveApproval\(context\.sessionId, criterionId, approved, null, context\.runId\)/);
-  // 항목 본문과 사람이 필요한 이유를 함께 보여 준다.
-  assert.match(renderer, /item\.statement \|\| item\.criterionId/);
-  assert.match(renderer, /사용자 확인이 필요한 이유/);
-  // 중복 제출 방지.
-  assert.match(renderer, /specialistApprovalsBusy \|\| specialistApprovalsLoading/);
-  assert.match(renderer, /button\.disabled = busy/);
-  // 응답 뒤에는 백엔드가 준 최신 목록과 상태를 그대로 반영한다.
-  assert.match(renderer, /specialistPendingApprovals = awaitingHumanApproval\(\) && Array\.isArray\(result\.pending\)/);
-  assert.match(renderer, /if \(result\.specialist\) setSpecialistState\(result\.specialist\)/);
-  // 승인되지 않았는데 화면만 넘어가지 않도록, 재개는 백엔드 판단(resumable)에 맡긴다.
-  assert.match(renderer, /if \(result\.resumable && specialistPendingApprovals\.length === 0\)/);
-  // 세션을 바꾼 뒤 늦게 온 응답이 지금 화면을 덮지 않는다.
-  assert.match(renderer, /if \(!isCurrentApprovalContext\(context\)\) return;/);
-  // 승인 대기 중 입력창은 "실행이 끝난 뒤"가 아니라 무엇을 기다리는지 알려 준다.
-  assert.match(renderer, /awaitingHumanApproval\(\)[\s\S]{0,400}확인 목록에서 항목을 승인하거나 거부해 주세요/);
-});
-
-// ---- 복원 가능 여부와 복원 조작 ----
-//
-// specialistBlockDetails()는 canRestore를 돌려주는데 화면이 쓰지 않아, 복원할 수
-// 없는 실행에서도 복원 버튼이 살아 있었다. 누르면 백엔드가 거부하거나(종결 경로)
-// 아무것도 복원하지 않은 채 재기획만 됐다(재기획 경로).
-test("복원 조작은 백엔드의 canRestore를 따른다", () => {
-  const renderer = read("src/chat.js");
-  assert.match(renderer, /renderBlockedActions\(specialistBody, details\)/);
-  assert.match(renderer, /function renderBlockedActions\(root, details = null\)/);
-  assert.match(renderer, /const canRestore = Boolean\(details\?\.canRestore\)/);
-  assert.match(renderer, /replanRestoreBtn\.disabled = !canRestore/);
-  // 종결 경로(복원·폐기)도 같은 근거로 잠근다.
-  assert.match(renderer, /el\.disabled = Boolean\(option\.needsRestore\) && !canRestore/);
-  // 왜 못 하는지 설명한다.
-  assert.match(renderer, /작업 전 백업이 없어 되돌릴 수 없습니다/);
-  // 변경 유지 경로는 계속 쓸 수 있어야 한다.
-  const blocked = renderer.slice(renderer.indexOf("function renderBlockedActions"));
-  assert.ok(!/replanKeepBtn\.disabled/.test(blocked.slice(0, 2000)), "변경 유지는 항상 열려 있어야 합니다");
-  // 처리에 실패하면 선택창만 사라지지 않고 다시 열린다.
-  assert.match(renderer, /if \(!result\) \{\s*\/\/[^\n]*\n\s*openSpecialistDialog\(\);/);
-});
-
-// ---- 모드 전환과 입력창 ----
-test("모드 토글은 라벨대로 전환만 하고 입력창을 함께 갱신한다", () => {
-  const renderer = read("src/chat.js");
-  const handler = renderer.slice(renderer.indexOf('specialistButton.addEventListener("click"'));
-  const body = handler.slice(0, handler.indexOf("});"));
-  // 예전에는 BLOCKED일 때만 몰래 막힘 모달을 열어 라벨과 동작이 어긋났다.
-  assert.ok(!body.includes("openSpecialistDialog()"), "토글은 전환만 합니다");
-  assert.ok(body.includes("setProfessionalMode(!professionalModeEnabled)"), "고른 모드를 이 방에 기억해야 합니다");
-  assert.ok(body.includes("syncComposerLock()"), "전환 직후 입력창 잠금·문구를 갱신해야 합니다");
-  // 실행을 취소하거나 상태를 초기화하지 않는다.
-  assert.ok(!/specialistCancel|setSpecialistState/.test(body), "전환이 실행 상태를 건드리면 안 됩니다");
-  // 막힘 처리는 입력창 위 '다음 처리 선택'이 전담한다(두 모드 모두에서 보인다).
-  const choices = renderer.slice(renderer.indexOf("function specialistChoicesNow"));
-  assert.ok(choices.slice(0, 600).includes("openSpecialistDialog()"));
-});
-
-// ---- 버튼 활성 조건이 백엔드 조건과 같은가 ----
-test("기획 검수를 통과하면 '실행 ▶'이 실제로 눌린다", () => {
-  const renderer = read("src/chat.js");
-  // 소스 모양이 아니라 실제 판정을 돌린다. 예전 결함(READY에 늘 있는 재개 상태를
-  // '바쁨'으로 셈)은 표현식만 검사하면 그대로 통과했다.
-  const ready = {
-    specialistNode: "READY",
-    specialistStatus: "WAITING",
-    specialistPlanReady: true,
-    specialistImplementationReady: true,
-    // READY에는 재개 상태가 남아 있을 수 있고, 그것만으로 막으면 안 된다.
-    specialistResumeAvailable: true,
-  };
-  assert.equal(loadSpecialistView(ready).canStartImplementation(), true, "통과 직후에는 눌려야 합니다");
-  // 백엔드가 거절하는 상태에서는 꺼져 있어야 한다.
-  assert.equal(
-    loadSpecialistView({ ...ready, specialistImplementationReady: false }).canStartImplementation(),
-    false, "승인된 기획서가 없으면 백엔드가 거절합니다"
-  );
-  assert.equal(
-    loadSpecialistView({ ...ready, specialistBlockedAvailable: true }).canStartImplementation(),
-    false, "막힌 실행은 먼저 정리해야 합니다"
-  );
-  assert.equal(
-    loadSpecialistView({ ...ready, specialistNeedsInput: true }).canStartImplementation(),
-    false, "사용자가 답해야 하는 대기가 있으면 시작하지 않습니다"
-  );
-  // 승인 대기는 재개 단계(awaiting_human_approval)로 판정한다 — stopReason만으로는
-  // READY에서 대기로 보지 않는다(백엔드는 이 대기를 REVIEWING/WAITING에 둔다).
-  assert.equal(
-    loadSpecialistView({ ...ready, specialistResumePhase: "awaiting_human_approval" }).canStartImplementation(),
-    false, "완료 전 확인 대기 중에는 시작하지 않습니다"
-  );
-  assert.equal(loadSpecialistView(ready).canStartImplementation({ busy: true }), false);
-  assert.equal(
-    loadSpecialistView(ready).canStartImplementation({ implementationConfigured: false }),
-    false, "구현 담당자가 없으면 시작할 수 없습니다"
-  );
-  assert.match(renderer, /professionalImplementationButton\.disabled = !canStartImplementation/);
-  // 강조와 활성 조건이 갈라지면 "빛나는데 눌리지 않는" 버튼이 생긴다.
-  assert.match(renderer, /const nextIsImplementation = canStartImplementation/);
-  // 기록 다시 생성도 대기 상태(RECORDING/WAITING)에서 눌려야 한다.
-  assert.match(
-    renderer,
-    /professionalRecordButton\.disabled = !recorder\.agentId \|\| specialistBusy \|\| specialistBlockedAvailable/
-  );
-});
-
-test("기록이 실패해 멈춘 상태는 기록 단계에서 기다리는 것으로 보인다", () => {
-  const { status } = loadSpecialistView({
-    specialistNode: "RECORDING",
-    specialistStatus: "WAITING",
-    specialistStopReason: "RECORDER_FAILED",
-  });
-  assert.equal(status.tone, "waiting");
-  assert.match(status.next, /기록 다시 생성/);
-});
-
-test("승인 대기는 남은 항목 수와 할 일을 함께 알려 준다", () => {
-  const { status } = loadSpecialistView({
-    specialistNode: "REVIEWING",
-    specialistStatus: "WAITING",
-    specialistStopReason: "HUMAN_APPROVAL_REQUIRED",
-    specialistResumePhase: "awaiting_human_approval",
-    specialistPendingApprovals: [{ criterionId: "V2" }, { criterionId: "V3" }],
-  });
-  assert.match(status.headline, /2건/);
-  assert.match(status.next, /승인하거나 거부/);
-});
-
-// 승인 대기인데 목록을 못 받으면 화면이 감춰지고 입력창만 "확인 대기"로 잠겨
-// 다시 막다른 길이 된다. 목록이 비어도 자리를 유지하고 길을 남겨야 한다.
-test("승인 항목을 못 받아도 화면이 사라지지 않고 다시 불러올 수 있다", () => {
-  const renderer = read("src/chat.js");
-  const fn = renderer.slice(renderer.indexOf("function renderSpecialistApprovals"));
-  const body = fn.slice(0, fn.indexOf("\nfunction "));
-  // 표시 여부는 "대기 중인가(또는 승인 뒤 기록 대기인가)"로만 정한다. 항목 수로 감추지 않는다.
-  assert.match(body, /const show = isCurrentApprovalContext\(context\) && \(awaitingHumanApproval\(\) \|\| canResumeAfterApproval\(\)\)/);
-  assert.ok(
-    !/length > 0[\s\S]{0,80}hidden/.test(body),
-    "항목이 없다고 화면을 감추면 안 됩니다"
-  );
-  // 조회 실패는 오류 문구를 그 자리에 보여 주고, 빈 목록·실패 모두 다시 불러올 수 있어야 한다.
-  assert.match(body, /specialistApprovalsError \|\|/);
-  assert.match(body, /목록 다시 불러오기/);
-  // 승인으로 풀 수 없게 된 실행에서 빠져나가는 탈출구.
-  assert.match(body, /chatApi\.specialistCancel\(sessionId\)/);
-  // 남은 항목이 없다고 완료라고 말하지 않는다.
-  assert.ok(!/완료되었습니다|완료했습니다/.test(body), "승인 화면이 완료를 단정하면 안 됩니다");
-  // 거부 확인 문구는 완료로 처리되지 않음을 말한다.
-  assert.match(renderer, /거부하면 이 실행은 완료로 처리되지 않습니다/);
-  // 대기 상태를 벗어나면 조회 상태(오류 문구·요청 순번)도 초기화한다(옛 오류 문구가 남지 않게).
-  assert.match(renderer, /function resetSpecialistApprovals\(\) \{[\s\S]{0,300}specialistApprovalsError = "";/);
-});
-
-test("READY라도 사용자가 답해야 하는 대기가 있으면 그쪽을 안내한다", () => {
-  // READY + WAITING인데 stopReason이 CHECKPOINT_FAILED·TASK_CONTRACT_INCOMPLETE인
-  // 상태가 실제로 있다. node만 보고 "실행을 기다립니다"라고 하면, 그 순간
-  // '실행 ▶'은 비활성이고 입력창은 다른 것을 요구하고 있어 화면이 서로 어긋난다.
-  for (const [stopReason, expected] of [
-    ["CHECKPOINT_FAILED", /백업을 만들지 못했습니다/],
-    ["TASK_CONTRACT_INCOMPLETE", /빠진 항목/],
-  ]) {
-    const { status } = loadSpecialistView({
-      specialistNode: "READY",
-      specialistStatus: "WAITING",
-      specialistStopReason: stopReason,
-      specialistNeedsInput: true,
-    });
-    assert.match(status.headline, expected, `${stopReason}가 READY 문구에 가려지면 안 됩니다`);
-  }
-
-  // 대기가 없으면 예전처럼 실행 안내다.
-  const ready = loadSpecialistView({ specialistNode: "READY", specialistStatus: "WAITING" });
-  assert.match(ready.status.headline, /기획 검수를 통과했습니다/);
-});
-
-test("막힘 처리를 끝낸 상태를 '확인이 필요한 상태'로 보여 주지 않는다", () => {
-  const { status } = loadSpecialistView({
-    specialistNode: "IMPLEMENTING",
-    specialistStatus: "WAITING",
-    specialistStopReason: "BLOCK_RESOLVED",
-  });
-  assert.match(status.headline, /정리했습니다/);
-  assert.ok(!/확인이 필요한 상태/.test(status.headline), "성공한 정리를 미상 코드로 보여 주면 안 됩니다");
-});
-
 test("동시에 도는 턴 목록이 화면 상태까지 전달된다", () => {
   const renderer = read("src/chat.js");
   // 방이 running을 실어 보내는데 렌더러가 버리면 그 필드는 죽은 값이 된다.
   assert.match(renderer, /running: Array\.isArray\(state\.running\) \? state\.running : \[\]/);
   assert.match(renderer, /roomTurnState = \{ current: null, running: \[\]/);
-  // "일반 응답 진행 중" 판정도 동시 실행을 봐야 한다.
-  const busy = renderer.slice(renderer.indexOf("const ordinaryTurnBusy"));
-  assert.match(busy.slice(0, 400), /roomTurnState\.running \|\| \[\]/);
-});
-
-// 앱을 다시 켰을 때 승인된 기획서(TASK.md)를 읽지 못하면 '실행 ▶'은 꺼진다.
-// 화면이 "실행을 기다리고 있습니다"라고만 하면 사용자는 눌리지 않는 버튼 앞에서
-// 이유를 알 수 없다.
-test("기획서를 읽지 못한 READY는 실행 대기가 아니라 그 사유를 알린다", () => {
-  const { status } = loadSpecialistView({
-    specialistNode: "READY",
-    specialistStatus: "WAITING",
-    specialistImplementationReady: false,
-  });
-  assert.match(status.headline, /기획서를 읽지 못했습니다/);
-  assert.match(status.next, /TASK\.md/);
-  assert.ok(!/‘실행 ▶’을 누르면/.test(status.next), "누를 수 없는 버튼을 안내하면 안 됩니다");
 });
 
 // 입력칸 잠금 문구는 "지금 무엇을 기다리는지"를 말해야 한다. 실제 판정 함수를
 // DOM 스텁 위에서 그대로 돌린다(문자열 검사가 아니라 동작 확인).
-function loadComposerLock(state = {}) {
+function loadComposerLock(locked) {
   const vm = require("node:vm");
   const src = read("src/chat.js");
   const start = src.indexOf("function lockComposer(locked) {");
@@ -1164,85 +695,45 @@ function loadComposerLock(state = {}) {
     composerInput: { disabled: false, placeholder: "", blur() {} },
     sendButton: { disabled: false, textContent: "" },
     attachButton: { disabled: false },
-    professionalModeEnabled: true,
-    specialistNeedsInput: false,
-    specialistStopReason: null,
-    specialistNode: null,
-    specialistActive: false,
-    specialistBlockedAvailable: false,
-    specialistResumePhase: null,
-    specialistPendingApprovals: [],
-    ...state,
   };
-  context.awaitingHumanApproval = () =>
-    context.specialistStopReason === "HUMAN_APPROVAL_REQUIRED"
-    || context.specialistResumePhase === "awaiting_human_approval";
-  context.canResumeAfterApproval = () => Boolean(state.canResumeAfterApproval);
-  // 실제 professionalRunBusy와 같은 기준(백엔드 isSpecialistLocked와 동일).
-  context.professionalRunBusy = () =>
-    Boolean(context.specialistActive || context.specialistResumeAvailable || context.specialistBlockedAvailable);
   vm.createContext(context);
   vm.runInContext(src.slice(start, end), context);
-  context.lockComposer(Boolean(state.locked));
-  return { placeholder: context.composerInput.placeholder, button: context.sendButton.textContent };
+  context.lockComposer(locked);
+  return {
+    placeholder: context.composerInput.placeholder,
+    button: context.sendButton.textContent,
+    inputDisabled: context.composerInput.disabled,
+    sendDisabled: context.sendButton.disabled,
+    attachDisabled: context.attachButton.disabled,
+  };
 }
 
-// 막힘은 "실행이 도는 중"이 아니라 "사용자를 기다리는 중"이다. 아무것도 끝나지
-// 않는데 "실행이 끝난 뒤"라고 안내하면 사용자는 영영 기다린다.
-test("막힘 상태의 입력칸은 다음 처리를 고르라고 안내한다", () => {
-  const blocked = loadComposerLock({
-    specialistNode: "IMPLEMENTING",
-    specialistBlockedAvailable: true,
-    locked: true,
-  });
-  assert.match(blocked.placeholder, /변경 유지·복원·재기획/);
-  assert.ok(!/실행이 끝난 뒤/.test(blocked.placeholder), "끝나지 않을 것을 기다리게 하면 안 됩니다");
-  assert.equal(blocked.button, "선택 대기");
+test("도구 실행 권한 요청 중에만 입력칸이 잠기고, 끝나면 보통 입력으로 돌아온다", () => {
+  const open = loadComposerLock(false);
+  assert.equal(open.inputDisabled, false);
+  assert.equal(open.sendDisabled, false);
+  assert.equal(open.attachDisabled, false);
+  assert.equal(open.button, "전송");
+  assert.match(open.placeholder, /질문이나 작업을 입력하세요/);
 
-  // 실제로 실행이 도는 중에는 기존 안내가 그대로다.
-  const running = loadComposerLock({ specialistNode: "IMPLEMENTING", specialistActive: true, locked: true });
-  assert.match(running.placeholder, /실행이 끝난 뒤/);
-});
-
-// 중단된 실행이 READY로 돌아오면 '실행 ▶'이 눌린다(백엔드는 status가 아니라
-// 승인된 기획만 본다). 그때 안내가 PLAN·전체 실행만 말하면, 강조된 버튼을
-// 눌러도 되는지 알 수 없다.
-test("중단됐어도 승인된 기획이 남은 READY는 실행할 수 있다고 안내한다", () => {
-  const ready = {
-    specialistNode: "READY",
-    specialistStatus: "INTERRUPTED",
-    specialistStopReason: "EXECUTION_INTERRUPTED",
-    specialistPlanReady: true,
-    specialistImplementationReady: true,
-  };
-  const v = loadSpecialistView(ready);
-  assert.equal(v.canStartImplementation(), true, "백엔드는 이 상태에서 실행을 허용합니다");
-  assert.match(v.status.next, /실행 ▶/, "눌리는 버튼이 안내에 있어야 합니다");
-  assert.match(v.status.headline, /중단/, "중단됐다는 사실은 지우지 않습니다");
-  assert.equal(v.status.tone, "waiting");
-
-  // 승인된 기획을 못 읽는 중단이라면 예전처럼 중단 안내가 맞다.
-  const noPlan = loadSpecialistView({ ...ready, specialistImplementationReady: false });
-  assert.equal(noPlan.canStartImplementation(), false);
-  assert.match(noPlan.status.headline, /실행이 중단되었습니다/);
+  const locked = loadComposerLock(true);
+  assert.equal(locked.inputDisabled, true);
+  assert.equal(locked.sendDisabled, true);
+  assert.equal(locked.attachDisabled, true);
+  assert.match(locked.placeholder, /권한 요청/, "무엇을 기다리는지 말해야 합니다");
+  assert.ok(!/전문 실행/.test(locked.placeholder), "없어진 기능을 가리키면 안 됩니다");
 });
 
 // 멘션 자동완성의 회색 항목은 "사용 불가"가 아니라 **왜** 못 쓰는지를 말해야 한다.
 // 실제 mentionTargets()를 스텁 위에서 돌린다.
-function loadMentionTargets({ agents, project }) {
+function loadMentionTargets({ agents }) {
   const vm = require("node:vm");
   const src = read("src/chat.js");
-  const start = src.indexOf("const ROLE_MENTION_TARGETS = Object.freeze([");
+  const start = src.indexOf("function agentUnavailableReason(agent) {");
   const end = src.indexOf("function closeMentionPopup(");
   assert.ok(start > 0 && end > start, "멘션 대상 코드를 찾지 못했습니다");
   const context = {
     agents,
-    activeProjectEntry: () => project,
-    roleConfigFromProject: (proj, roleId) => {
-      const raw = proj?.defaultRoles?.[roleId];
-      if (typeof raw === "string") return { agentId: raw };
-      return { agentId: String(raw?.agentId || "") };
-    },
   };
   vm.createContext(context);
   vm.runInContext(src.slice(start, end), context);
@@ -1255,48 +746,29 @@ test("부를 수 없는 멘션 대상에는 이유가 붙는다", () => {
     { id: "codex", name: "GPT", aliases: ["gpt"], color: "#000", available: false, enabled: true, reason: "Codex CLI가 필요합니다." },
     { id: "agy", name: "Gemini", aliases: ["gemini"], color: "#000", available: true, enabled: false },
   ];
-  const targets = loadMentionTargets({
-    agents,
-    // 기획자만 지정, 검토자는 CLI 없는 담당자, 구현자·기록자는 미지정.
-    project: { defaultRoles: { planning: { agentId: "claude" }, review: { agentId: "codex" } } },
-  });
+  const targets = loadMentionTargets({ agents });
   const byAlias = Object.fromEntries(targets.map((t) => [t.alias, t]));
 
+  // 참가자와 @모두만 있다 — 역할 호출(@기획자 등)·@팀은 없어졌다.
+  assert.equal(targets.map((t) => t.alias).join(","), "claude,gpt,gemini,모두");
   assert.equal(byAlias.gpt.available, false);
   assert.match(byAlias.gpt.reason, /Codex CLI가 필요/, "참가자는 탐지 결과의 사유를 그대로 쓴다");
   assert.match(byAlias.gemini.reason, /이 세션에서 꺼져/);
-  assert.equal(byAlias.기획자.available, true);
-  assert.equal(byAlias.기획자.reason, "");
-  // 목록 라벨은 별칭이 이미 말하는 역할명을 되풀이하지 않는다. 자세한 설명은 툴팁(hint).
-  assert.equal(byAlias.기획자.label, "질문 · 읽기 전용");
-  assert.match(byAlias.기획자.hint, /기획자에게 질문/);
-  assert.equal(byAlias.팀.label, "순차 상담 · 읽기 전용");
-  assert.match(byAlias.팀.hint, /기획자 → 검토자 → 구현자/);
+  assert.equal(byAlias.claude.available, true);
+  assert.equal(byAlias.claude.reason, "");
+  assert.equal(byAlias.모두.available, true);
   for (const target of targets) {
-    assert.ok(target.label.length <= 16, `목록 라벨이 깁니다: ${target.alias} — ${target.label}`);
+    assert.ok(target.label.length <= 16, "목록 라벨이 깁니다: " + target.alias + " — " + target.label);
   }
-  assert.match(byAlias.구현자.reason, /담당자 미지정/, "미지정이면 어디서 지정하는지 알려야 한다");
-  assert.match(byAlias.구현자.reason, /프로젝트 설정/);
   // 목록에는 한 줄에 들어가는 짧은 형태를 쓴다(전체 문장은 툴팁). 설치 명령·주소가
-  // 목록에 들어가면 별칭까지 줄바꿈돼 "@기/획자"처럼 갈라진다.
+  // 목록에 들어가면 별칭까지 줄바꿈돼 갈라진다.
   assert.equal(byAlias.gpt.reasonShort, "CLI 없음");
   assert.equal(byAlias.gemini.reasonShort, "세션에서 꺼짐");
-  assert.equal(byAlias.구현자.reasonShort, "담당자 미지정");
-  assert.equal(byAlias.검토자.reasonShort, "담당자 CLI 없음");
-  assert.equal(byAlias.팀.reasonShort, "검토자·구현자 미지정");
   assert.ok(byAlias.gpt.reasonShort.length < byAlias.gpt.reason.length);
-  assert.match(byAlias.검토자.reason, /Codex CLI가 필요/, "지정됐지만 CLI가 없으면 그 사유");
-  // 팀 상담은 비어 있는 역할 이름을 나열한다.
-  assert.equal(byAlias.팀.available, false);
-  assert.match(byAlias.팀.reason, /검토자/);
-  assert.match(byAlias.팀.reason, /구현자/);
-  assert.ok(!/기획자/.test(byAlias.팀.reason), "지정된 역할을 비었다고 하면 안 된다");
-  // 모두 지정되면 이유가 비고 사용 가능이다.
-  const full = loadMentionTargets({
-    agents: [agents[0]],
-    project: { defaultRoles: { planning: "claude", review: "claude", implementation: "claude" } },
-  });
-  assert.equal(full.find((t) => t.alias === "팀").available, true);
+  // 쓸 수 있는 참가자가 없으면 @모두도 쓸 수 없다.
+  const none = loadMentionTargets({ agents: [agents[1], agents[2]] });
+  assert.equal(none.find((t) => t.alias === "모두").available, false);
+  assert.match(none.find((t) => t.alias === "모두").reason, /쓸 수 있는 참가자가 없음/);
 });
 
 
@@ -1328,198 +800,6 @@ test("참가자 칩 툴팁은 이름과 못 쓰는 이유를 말한다", () => {
   assert.match(hint("agy"), /꺼져 있음/, "세션에서 꺼진 이유도 툴팁에");
 });
 
-// 막힘 처리 선택지는 실행이 멈춘 자리(상태 줄 바로 아래)에 펼쳐 둔다. 안내 문구가
-// 화면에 없는 것을 가리키면 사용자는 유일한 출구를 찾다가 길을 잃는다.
-test("막힘 안내는 선택지가 실제로 있는 자리를 가리킨다", () => {
-  const blocked = {
-    specialistNode: "IMPLEMENTING",
-    specialistStatus: "BLOCKED",
-    specialistBlockedAvailable: true,
-    specialistStopReason: "ASSURANCE_INVALIDATED",
-  };
-  // 전문 모드: 선택지가 상태 줄 바로 아래에 있다.
-  const pro = loadSpecialistView({ ...blocked, professionalModeEnabled: true });
-  assert.match(pro.status.next, /바로 아래/);
-  assert.ok(!/다음 처리 선택/.test(pro.status.next), "전문 모드에는 그 칩이 없습니다");
-  // 일반 모드: 위 영역이 숨으므로 입력창 옆 칩이 대신한다.
-  const plain = loadSpecialistView({ ...blocked, professionalModeEnabled: false });
-  assert.match(plain.status.next, /입력창 옆/);
-  assert.match(plain.status.next, /다음 처리 선택/);
-
-  // 입력창은 위쪽 패널을 가리킨다(막혀서 잠긴 것은 전문 모드뿐이다).
-  const composer = loadComposerLock({
-    specialistNode: "IMPLEMENTING",
-    specialistBlockedAvailable: true,
-    locked: true,
-  });
-  assert.match(composer.placeholder, /위쪽/);
-  assert.equal(composer.button, "선택 대기");
-  // 일반 모드에서 막혀 있으면 입력창을 잠그지 않는다 — 기획자에게 메모를 남길 수 있어야 한다.
-  const memo = loadComposerLock({
-    specialistNode: "IMPLEMENTING",
-    specialistBlockedAvailable: true,
-    professionalModeEnabled: false,
-    locked: false,
-  });
-  assert.match(memo.placeholder, /메모/);
-  assert.equal(memo.button, "메모 남기기");
-});
-
-// 자동 보완 설정은 실행 버튼의 의미를 바꾼다: 꺼져 있으면 검수가 수정을 요구할 때
-// 멈추고 물어보고, 켜져 있으면 정해진 횟수만큼 자동으로 다시 돈다. 그 사실이
-// 버튼에 보이지 않아 "왜 어떤 때는 멈추고 어떤 때는 쭉 가는지" 알 수 없었다.
-function loadPolicyHelpers() {
-  const vm = require("node:vm");
-  const src = read("src/chat.js");
-  const start = src.indexOf("function policyBadgeText(revisions) {");
-  const tail = src.indexOf("return `${description} ${consequence}`;", start);
-  assert.ok(start > 0 && tail > start, "정책 배지 코드를 찾지 못했습니다");
-  const end = src.indexOf("\n}", tail) + 2;
-  const context = {};
-  vm.createContext(context);
-  vm.runInContext(src.slice(start, end), context);
-  return context;
-}
-
-test("실행 버튼의 배지가 자동 보완 설정을 그대로 말한다", () => {
-  const { policyBadgeText, policyTooltip } = loadPolicyHelpers();
-  assert.equal(policyBadgeText(0), "검수 후 확인");
-  assert.equal(policyBadgeText(1), "자동 보완 1회");
-  assert.equal(policyBadgeText(3), "자동 보완 3회");
-
-  // 툴팁은 이 설정에서 실제로 무슨 일이 일어나는지 말한다
-  // (chat-specialist.js: canAutoRevise && maxAutoRevisions로 재실행 횟수를 정한다).
-  const off = policyTooltip("구현·검수를 실행합니다.", 0, "구현");
-  assert.match(off, /멈추고 물어봅니다/);
-  assert.ok(!/자동으로 다시 돌립니다/.test(off));
-  const on = policyTooltip("구현·검수를 실행합니다.", 2, "구현");
-  assert.match(on, /최대 2회까지 자동으로 다시 돌립니다/);
-  // 무엇을 하는 버튼인지도 잃지 않는다.
-  assert.match(off, /구현·검수를 실행합니다/);
-  assert.match(on, /구현·검수를 실행합니다/);
-});
-
-test("배지는 버튼 안에 있고, 못 누르는 버튼은 그 이유를 먼저 말한다", () => {
-  const html = read("src/chat.html");
-  const renderer = read("src/chat.js");
-  // 배지는 버튼 안에 있어야 "이 버튼이 이렇게 동작한다"로 읽힌다.
-  assert.match(html, /id="btn-professional-plan"[^>]*>[\s\S]{0,200}id="badge-professional-plan"/);
-  assert.match(html, /id="btn-professional-implementation"[^>]*>[\s\S]{0,200}id="badge-professional-implementation"/);
-  // 배지 함수는 title을 건드리지 않는다 — 비활성 버튼의 "왜 못 누르는지"를 덮으면 안 된다.
-  const body = renderer.slice(
-    renderer.indexOf("function renderProfessionalPolicyBadges()"),
-    renderer.indexOf("function policyBadgeText(")
-  );
-  assert.ok(!/\.title\s*=/.test(body), "배지 렌더가 툴팁을 덮으면 안 됩니다");
-  // 토글·횟수를 바꾸면 즉시 반영된다.
-  assert.match(renderer, /syncAutoRevisionControls\(\)[\s\S]{0,200}renderProfessionalPolicyBadges\(\)/);
-});
-
-// 자동 보완 정책은 프로젝트가 갖고, 화면 토글은 그 값에서 시작하는 임시 조정이다.
-// 0(=끄기)이 유효한 값이라 읽기 함수가 이를 살려야 한다 — 횟수 select 전용
-// clamp(1~3)를 그대로 쓰면 "꺼짐"이 1회로 되살아난다(실제로 그랬다).
-test("저장된 자동 보완 정책의 '꺼짐'이 1회로 되살아나지 않는다", () => {
-  const vm = require("node:vm");
-  const src = read("src/chat.js");
-  const start = src.indexOf("function boundedRevisionLimit(value, fallback = 1) {");
-  const end = src.indexOf("function boundedDiscussionTurns(");
-  assert.ok(start > 0 && end > start, "clamp 함수를 찾지 못했습니다");
-  const context = {};
-  vm.createContext(context);
-  vm.runInContext(src.slice(start, end), context);
-
-  // 횟수 select는 1~3만 고를 수 있다(0이 없다).
-  assert.equal(context.boundedRevisionLimit(0), 1);
-  assert.equal(context.boundedRevisionLimit(5), 3);
-  // 저장된 정책은 0을 그대로 읽어야 한다.
-  assert.equal(context.boundedAutoRevisions(0), 0);
-  assert.equal(context.boundedAutoRevisions(undefined), 0);
-  assert.equal(context.boundedAutoRevisions(2), 2);
-  assert.equal(context.boundedAutoRevisions(99), 3);
-  assert.equal(context.boundedAutoRevisions(-1), 0);
-});
-
-test("자동 보완 값은 프로젝트에서 읽고, 화면 토글은 저장하지 않는다", () => {
-  const renderer = read("src/chat.js");
-  // 프로젝트 값에서 토글을 채운다.
-  assert.match(renderer, /function applyProjectAutoRevisions/);
-  assert.match(renderer, /project\?\.autoRevisions/);
-  // 프로젝트가 바뀔 때 다시 채운다.
-  assert.match(renderer, /applyProjectAutoRevisions\(projectsChanged/);
-  // 더 이상 localStorage에 담지 않는다(앱 전역이 되어 모든 프로젝트가 함께 바뀌었다).
-  assert.ok(!/planAutoRevise"|implementationAutoRevise"/.test(renderer),
-    "자동 보완 설정을 localStorage에 저장하면 안 됩니다");
-  // 프로젝트 설정에서 저장된다.
-  assert.match(renderer, /autoRevisions,\n\s*\}\)\);/);
-});
-
-test("최종 승인 뒤에는 검수 완료와 기록 대기 상태를 보여 준다", () => {
-  const { status } = loadSpecialistView({
-    specialistNode: "REVIEWING", specialistStatus: "WAITING",
-    specialistStopReason: "HUMAN_APPROVAL_REQUIRED", specialistResumeAvailable: true,
-    specialistResumePhase: "review_pass",
-  });
-  assert.equal(status.tone, "waiting");
-  assert.match(status.next, /기록 이어서 진행/);
-});
-
-test("보완·재기획은 현재 작업과 실제 라운드로 표시한다", () => {
-  for (const [node, headline] of [["IMPLEMENTING", "구현 진행 중입니다."], ["PLANNING", "기획 진행 중입니다."]]) {
-    const { status, rounds } = loadSpecialistView({
-      specialistNode: node, specialistStatus: "RUNNING",
-      specialistPlanRound: 2, specialistImplementationRound: 3,
-    });
-    assert.equal(status.headline, headline);
-    assert.equal(rounds, "기획 2차 · 구현 3차");
-    assert.doesNotMatch(status.headline, /완료|통과/);
-  }
-});
-
-// 일반 모드의 메모 전용 입력창은 전문 실행이 **실제로** 돌거나 입력을 기다릴 때만이다.
-// 예전에는 "실행 노드가 남아 있다"로 판정해, 중단된 실행이 있는 대화는 영영 메모
-// 전용이 됐다 — 일반 모드에서 @claude를 불러도 메모로만 남고 답이 오지 않았다.
-test("중단된 전문 실행이 남아 있어도 일반 모드 입력창은 메모 전용이 되지 않는다", () => {
-  const src = read("src/chat.js");
-  const vm = require("node:vm");
-  const start = src.indexOf("function professionalRunBusy() {");
-  const end = src.indexOf("\n}\n", start) + 3;
-  assert.ok(start > 0, "professionalRunBusy를 찾지 못했습니다");
-  const busy = (state) => {
-    const context = { specialistActive: false, specialistResumeAvailable: false, specialistBlockedAvailable: false, ...state };
-    vm.createContext(context);
-    vm.runInContext(src.slice(start, end), context);
-    return context.professionalRunBusy();
-  };
-  // 중단·완료된 실행: 노드는 남지만 바쁘지 않다.
-  assert.equal(busy({}), false);
-  // 돌거나(active), 사용자 결정을 기다리거나(resume), 막힌(blocked) 실행: 바쁘다.
-  assert.equal(busy({ specialistActive: true }), true);
-  assert.equal(busy({ specialistResumeAvailable: true }), true);
-  assert.equal(busy({ specialistBlockedAvailable: true }), true);
-
-  // 입력창: 중단된 실행이 남은 일반 모드 → 보통 대화 입력.
-  const idle = loadComposerLock({
-    professionalModeEnabled: false,
-    specialistNode: "IMPLEMENTING",
-    specialistStopReason: "EXECUTION_INTERRUPTED",
-    locked: false,
-  });
-  assert.equal(idle.button, "전송");
-  assert.match(idle.placeholder, /질문이나 작업을 입력하세요/);
-  // 실행 대기(READY, 재개 상태 있음)인 일반 모드 → 기획자 메모.
-  const waiting = loadComposerLock({
-    professionalModeEnabled: false,
-    specialistNode: "READY",
-    specialistResumeAvailable: true,
-    locked: false,
-  });
-  assert.equal(waiting.button, "메모 남기기");
-  assert.match(waiting.placeholder, /전문 실행은 그대로 둡니다/);
-
-  // 전송 경로도 같은 기준으로 메모 여부를 정한다(백엔드 recordOnly의 입력).
-  assert.match(src, /professionalModeEnabled \|\| professionalRunBusy\(\)/);
-});
-
 // 저장된 노력 변형 id는 모델 드롭다운에서 접힌 베이스 + 노력으로 표시돼야 한다.
 // 접기 전에 gemini-3.8-flash-high를 저장했다면, 목록엔 접힌 gemini-3.8-flash만
 // 있으므로 그대로 두면 맨 위에 원시 id가 "…(현재 설정)"으로 튀어나온다.
@@ -1547,11 +827,11 @@ test("모델 드롭다운은 저장된 노력 변형 id를 접힌 베이스+노�
   // 지금 목록에 없는 모델(그 CLI가 안 잡음)은 저장값을 임의로 바꾸지 않는다.
   assert.equal(fold("gemini-9-flash-high", "default"), "gemini-9-flash-high|default");
   assert.equal(fold("default", "default"), "default|default");
-  // 세 렌더 지점(프로젝트 기본 담당자·역할 담당자·레일 참가자 팝오버) 모두
-  // 이 접기를 지난다 — 원시 변형이 어느 드롭다운에서도 그대로 새지 않게.
+  // 두 렌더 지점(프로젝트 기본 에이전트·참가자 팝오버) 모두 이 접기를 지난다 —
+  // 원시 변형이 어느 드롭다운에서도 그대로 새지 않게.
   const renderer = src;
-  assert.equal((renderer.match(/foldSavedModel\(/g) || []).length >= 4, true, "세 렌더 지점 + 정의");
-  assert.match(renderer, /const fold = foldSavedModel\(options, selectedModel, selectedEffort\)/);
+  assert.equal((renderer.match(/foldSavedModel\(/g) || []).length >= 3, true, "두 렌더 지점 + 정의");
+  assert.match(renderer, /const savedFold = foldSavedModel\(modelOptions, saved\.model/);
   assert.match(renderer, /const savedFold = foldSavedModel\(modelOptions, agent\.model, agent\.effort\)/);
 });
 
