@@ -134,6 +134,8 @@ rem ---- Agora 의존성 설치 ----
 echo Agora 구성요소를 설치합니다. 처음 한 번은 몇 분 걸릴 수 있습니다...
 call npm install
 if errorlevel 1 goto :installfail
+rem ---- npm이 0으로 끝나도 Electron 설치가 조용히 빠질 수 있어 실행 파일을 직접 확인합니다 ----
+if not exist "node_modules\electron\dist\electron.exe" goto :electronfail
 echo [OK] 구성요소 설치 완료
 echo.
 
@@ -167,3 +169,13 @@ echo [오류] 바로가기 생성에 실패했습니다.
 echo 바로가기 없이도 run-agora.bat 으로 실행할 수 있습니다.
 pause
 exit /b
+
+:electronfail
+echo.
+echo [오류] Electron 실행 파일이 설치되지 않았습니다.
+echo Node.js 버전이 낮거나, 사내망 등에서 Electron 다운로드가 막혔을 수 있습니다.
+echo 1. Node.js LTS 최신 버전으로 올린 뒤 이 파일을 다시 실행해 주세요.
+echo 2. 사내망이면 보안 프로그램이나 프록시 설정을 확인해 주세요.
+echo 바로가기는 만들지 않았습니다. 해결되기 전에는 Agora가 실행되지 않습니다.
+pause
+exit /b 1

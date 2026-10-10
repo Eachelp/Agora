@@ -57,6 +57,8 @@ if "%OLDLOCK%"=="%NEWLOCK%" goto :skipnpm
 echo [3/3] 패키지 업데이트 중...
 call npm install
 if errorlevel 1 goto :installfail
+rem ---- npm이 0으로 끝나도 Electron 설치가 조용히 빠질 수 있어 실행 파일을 직접 확인합니다 ----
+if not exist "node_modules\electron\dist\electron.exe" goto :electronfail
 goto :done
 
 :skipnpm
@@ -131,3 +133,13 @@ echo [오류] 패키지 반영 중 문제가 발생했습니다.
 echo 인터넷 연결을 확인한 뒤 Agora-업데이트.bat 을 다시 실행해 주세요.
 pause
 exit /b
+
+:electronfail
+echo.
+echo [오류] Electron 실행 파일이 설치되지 않았습니다.
+echo Node.js 버전이 낮거나, 사내망 등에서 Electron 다운로드가 막혔을 수 있습니다.
+echo 1. Node.js LTS 최신 버전으로 올린 뒤 이 파일을 다시 실행해 주세요.
+echo 2. 사내망이면 보안 프로그램이나 프록시 설정을 확인해 주세요.
+echo 해결되기 전에는 Agora가 실행되지 않을 수 있습니다.
+pause
+exit /b 1
