@@ -22,7 +22,9 @@ const STRONG_PATTERNS = [
 ];
 // "limit reached/exceeded"만 있으면 약한 신호다. 출력·컨텍스트·길이 상한을 말하는
 // 문맥이면 한도로 보지 않는다.
-const WEAK_PATTERN = /limit (?:has been |was )?(?:reached|exceeded)/i;
+// Claude CLI의 현재 문구("You've hit your limit", "You've reached your Fable limit",
+// "You're out of extra usage")도 같은 약한 신호로 본다.
+const WEAK_PATTERN = /limit (?:has been |was )?(?:reached|exceeded)|(?:hit|reached) your [\w .-]{0,30}limit|out of (?:extra )?usage/i;
 const NOT_A_QUOTA_PATTERN = /(?:output|context|character|size|length|line)\s*(?:window\s*)?limit/i;
 
 function extractResetSeconds(source) {

@@ -147,11 +147,13 @@ function parseClaudeLine(line) {
   }
 
   if (event.type === "result") {
-    if (event.subtype === "success" && typeof event.result === "string") {
-      return { kind: "final", text: event.result };
-    }
+    // API 오류(로그인 만료·429·한도)는 subtype이 "success"인 채 is_error:true로 온다.
+    // 성공 검사를 먼저 하면 오류 문구가 정상 답변으로 저장되므로 오류를 먼저 본다.
     if (event.is_error || (event.subtype && event.subtype !== "success")) {
       return { kind: "error", message: truncateLabel(event.result || event.subtype || "실행 오류", 200) };
+    }
+    if (event.subtype === "success" && typeof event.result === "string") {
+      return { kind: "final", text: event.result };
     }
     return null;
   }
