@@ -526,7 +526,7 @@ test("WebSocket 핸드셰이크 중 upstream이 닫으면 hang하지 않고 다�
     const status = await withDeadline(4000, "hang: no response", (resolve, reject) => {
       client = net.connect(proxyPort, "127.0.0.1", () => {
         client.write(
-          "GET /v1/responses HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n"
+          `GET /v1/responses HTTP/1.1\r\nHost: 127.0.0.1:${proxyPort}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n`
         );
       });
       let data = "";

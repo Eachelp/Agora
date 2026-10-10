@@ -244,6 +244,30 @@ class CodexProxy {
     this.port = null;
   }
 
+  // 호출자 검사입니다. 이 루프백 포트에는 인증이 없어 닿기만 하면 저장된 OAuth 토큰이 붙어 나갑니다.
+  // - Origin 헤더가 있으면 브라우저 페이지(교차 출처 요청/WebSocket)이므로 거절합니다. Codex CLI는 보내지 않습니다.
+  // - Host가 바인딩한 127.0.0.1:포트와 다르면 DNS rebinding이므로 거절합니다.
+  // 한계: 같은 PC의 다른 OS 사용자·프로세스는 인증 없는 루프백 포트에 그대로 닿을 수 있습니다. (닫았다고 주장하지 않음)
+  rejectReason(request) {
+    if (request.headers.origin !== undefined) return "브라우저 요청(Origin)은 받지 않습니다.";
+    const port = this.server?.address()?.port;
+    if (request.headers.host !== `127.0.0.1:${port}`) return "허용되지 않은 Host입니다.";
+    return null;
+  }
+
+  // 들어온 경로를 upstream URL로 바꾸고, 정규화(.., 인코딩된 점 포함) 뒤에도 허용 접두사 안인지 확인합니다.
+  // 벗어나면 null입니다.
+  upstreamTarget(request) {
+    // base_url이 http://127.0.0.1:port/v1 이므로 /v1 접두사를 벗겨 upstream 경로로 바꿉니다.
+    const incomingPath = request.url || "/";
+    const upstreamPath = incomingPath.startsWith("/v1/") ? incomingPath.slice(3) : incomingPath;
+    const base = new URL(this.upstreamBase);
+    const target = new URL(`${this.upstreamBase}${upstreamPath}`);
+    const basePath = base.pathname.replace(/\/$/, "");
+    const inside = target.pathname === basePath || target.pathname.startsWith(`${basePath}/`);
+    return target.origin === base.origin && inside ? target : null;
+  }
+
   // 요청 본문을 메모리에 모읍니다. 계정 로테이션 재시도에 같은 본문이 필요하기 때문입니다.
   bufferBody(request) {
     return new Promise((resolve, reject) => {
@@ -386,12 +410,10 @@ class CodexProxy {
   performUpgradeHandshake(upstreamSocket, request, target, auth) {
     return new Promise((resolve, reject) => {
       const headerLines = this.buildUpgradeHeaderLines(request, target, auth);
-      const upstreamPath = (request.url || "/").startsWith("/v1/")
-        ? (request.url || "/").slice(3)
-        : request.url || "/";
-      const basePath = new URL(this.upstreamBase).pathname.replace(/\/$/, "");
+      // handleUpgrade가 이미 검증한 경로이며, 정규화된 경로만 upstream에 보냅니다.
+      const resolved = this.upstreamTarget(request);
       upstreamSocket.write(
-        `GET ${basePath}${upstreamPath} HTTP/1.1\r\n${headerLines.join("\r\n")}\r\n\r\n`
+        `GET ${resolved.pathname}${resolved.search} HTTP/1.1\r\n${headerLines.join("\r\n")}\r\n\r\n`
       );
 
       let buffer = Buffer.alloc(0);
@@ -445,6 +467,13 @@ class CodexProxy {
     };
     socket.once("error", earlyGuard);
     socket.once("close", earlyGuard);
+
+    const rejected = this.rejectReason(request);
+    if (rejected || !this.upstreamTarget(request)) {
+      this.log(`proxy websocket rejected: ${rejected || "허용 경로 밖"}`);
+      socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+      return;
+    }
 
     const accounts = await this.candidateAccounts();
     const available = accounts.filter((account) => !this.isCoolingDown(account.key));
@@ -531,10 +560,14 @@ class CodexProxy {
   }
 
   async handleRequest(request, response) {
-    // base_url이 http://127.0.0.1:port/v1 이므로 /v1 접두사를 벗겨 upstream 경로로 바꿉니다.
-    const incomingPath = request.url || "/";
-    const upstreamPath = incomingPath.startsWith("/v1/") ? incomingPath.slice(3) : incomingPath;
-    const target = new URL(`${this.upstreamBase}${upstreamPath}`);
+    const rejected = this.rejectReason(request);
+    const target = rejected ? null : this.upstreamTarget(request);
+    if (!target) {
+      this.log(`proxy request rejected: ${rejected || "허용 경로 밖"}`);
+      response.writeHead(403, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: { message: `Agora proxy: ${rejected || "허용되지 않은 경로입니다."}` } }));
+      return;
+    }
 
     const accounts = await this.candidateAccounts();
 
