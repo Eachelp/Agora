@@ -139,13 +139,20 @@
         flushParagraph();
         const ordered = /^\d/.test(listMatch[2]);
         const items = [];
+        const rawLines = [];
+        let sequential = true;
         while (index < lines.length) {
           const itemMatch = lines[index].match(LIST_ITEM);
           if (!itemMatch || /^\d/.test(itemMatch[2]) !== ordered) break;
+          if (ordered && parseInt(itemMatch[2], 10) !== items.length + 1) sequential = false;
           items.push(tokenizeInline(itemMatch[3]));
+          rawLines.push(lines[index].trim());
           index += 1;
         }
-        blocks.push({ type: "list", ordered, items });
+        // <ol>은 항상 1부터 번호를 매기므로, 1부터 이어지지 않는 번호('3. ...', '2026. 10. 10.')는
+        // 원문 번호가 사라지지 않게 문단으로 그대로 보여 줍니다.
+        if (ordered && !sequential) blocks.push({ type: "paragraph", lines: rawLines.map(tokenizeInline) });
+        else blocks.push({ type: "list", ordered, items });
         continue;
       }
 
