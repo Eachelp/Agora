@@ -4,7 +4,9 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "agora-b3-"));
+const made = [];
+const tmp = () => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agora-b3-")); made.push(dir); return dir; };
+test.after(() => { for (const dir of made) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); });
 // F94 workflow 저장 실패 롤백.
 const { WorkflowStore } = require("../src/agora/workflow-store");
 
