@@ -55,10 +55,11 @@ function parseMentions(text, agents, groupAliases = []) {
 // 옛 역할 호출(@기획자·@검토자·@구현자·@기록자·@팀)을 알아보는 안내용 감지.
 // 호출은 지원하지 않으므로 어느 역할인지는 필요 없고 있었는지만 본다.
 // "팀"은 @팀장·@팀원 같은 흔한 단어를 삼키지 않게 정확 일치만 인정한다.
+// 영어 별칭(@planner·@team 등)은 평범한 핸들일 수 있어 감지하지 않는다.
 const LEGACY_ROLE_ALIASES = Object.freeze([
-  "planner", "기획자", "builder", "구현자", "reviewer", "검토자", "검수자", "recorder", "기록자",
+  "기획자", "구현자", "검토자", "검수자", "기록자",
 ]);
-const LEGACY_TEAM_ALIASES = Object.freeze(["team", "팀"]);
+const LEGACY_TEAM_ALIASES = Object.freeze(["팀"]);
 
 function hasLegacyRoleMention(text) {
   const source = maskNonCallingText(text);

@@ -217,3 +217,14 @@ test("@팀장 같은 다른 단어와 일반 메시지는 안내 대상이 아�
   await waitFor(() => calls.length >= 1);
   assert.deepEqual(calls.map((call) => call.agentId), ["agy"]);
 });
+
+for (const text of ["@planner foo", "@team foo", "@reviewer @builder @recorder 핸들"]) {
+  test(`영어 별칭은 평범한 핸들일 수 있어 안내로 막지 않는다: ${text}`, async () => {
+    const { feature, sessionId } = await openLegacySession(LEGACY_SHAPES.BLOCKED);
+    const sent = await feature.invoke("chat:send", { sessionId, text });
+    assert.equal(sent.ok, true, sent.error);
+    await settle();
+    const after = await feature.invoke("chat:state");
+    assert.ok(after.session.messages.some((m) => String(m.text || "").includes(text.split(" ")[0])), "메시지가 저장된다");
+  });
+}
