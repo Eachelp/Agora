@@ -1050,6 +1050,8 @@ function roomMeta(meta) {
       })),
       typing: room.state().typing,
       turnState: room.turnState(),
+      // 창이 닫혀 있던 사이 온 승인 요청도 창이 다시 붙을 때 이 목록으로 되살아난다.
+      pendingApprovals: room.pendingApprovalList().map((approval) => ({ sessionId, ...approval })),
       pendingAttachments: [...pendingFor(sessionId).values()].map(publicAttachment),
     };
   }

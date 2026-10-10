@@ -298,23 +298,31 @@ class ChatRoom extends EventEmitter {
   requestApproval(agent, approval) {
     this.approvalSeq += 1;
     const approvalId = `a${this.sessionId || "s"}-${this.approvalSeq}`;
+    const payload = {
+      approvalId,
+      agentId: agent.id,
+      summary: approval?.summary || "도구 실행 권한이 필요합니다.",
+      detail: approval?.detail || "",
+      retryScope: "turn",
+    };
     return new Promise((resolve) => {
-      this.pendingApprovals.set(approvalId, resolve);
-      this.emit("approval-request", {
-        approvalId,
-        agentId: agent.id,
-        summary: approval?.summary || "도구 실행 권한이 필요합니다.",
-        detail: approval?.detail || "",
-        retryScope: "turn",
-      });
+      // 이벤트는 창이 열려 있을 때만 닿는다. 요청 내용도 함께 들고 있어야 창이 닫혀 있던
+      // 사이에 온 요청을 상태 스냅숏(pendingApprovalList)으로 다시 보여 줄 수 있다.
+      this.pendingApprovals.set(approvalId, { resolve, payload });
+      this.emit("approval-request", payload);
     });
   }
 
+  // 아직 답하지 않은 승인 요청. 화면이 (다시) 붙을 때 상태 스냅숏에 실려 나간다.
+  pendingApprovalList() {
+    return [...this.pendingApprovals.values()].map((entry) => ({ ...entry.payload }));
+  }
+
   resolveApproval(approvalId, decision) {
-    const resolve = this.pendingApprovals.get(approvalId);
-    if (!resolve) return false;
+    const entry = this.pendingApprovals.get(approvalId);
+    if (!entry) return false;
     this.pendingApprovals.delete(approvalId);
-    resolve(decision === "approve");
+    entry.resolve(decision === "approve");
     return true;
   }
 
@@ -1536,7 +1544,9 @@ class ChatRoom extends EventEmitter {
   }
 
   stopAll() {
+    // 승인 카드를 기다리는 턴은 실행도 입력 중 표시도 없어 따로 센다.
     const hadWork = this.cancels.size > 0 || this.typingCounts.size > 0
+      || this.runningTurns.size > 0 || this.pendingApprovals.size > 0
       || this.turnQueue.length > 0 || this.deferredTurnQueue.length > 0;
     this.stopAllSilently();
     if (hadWork) this.appendSystem("응답을 중지했습니다.");
@@ -1568,9 +1578,9 @@ class ChatRoom extends EventEmitter {
     // resolver를 부르기 전에 provider-neutral approval-resolved를 내보내 renderer가 카드를
     // dismiss하게 한다(same-turn action 승인 · legacy whole-turn 승인 공통). 이후 adapter가
     // 뒤늦게 AbortController를 abort해도 이미 settled라 중복 이벤트는 나오지 않는다.
-    for (const [approvalId, resolve] of this.pendingApprovals) {
+    for (const [approvalId, entry] of this.pendingApprovals) {
       this.emit("approval-resolved", { approvalId });
-      resolve(false);
+      entry.resolve(false);
     }
     this.pendingApprovals.clear();
     for (const cancel of this.cancels) {

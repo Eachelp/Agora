@@ -49,7 +49,7 @@ function loadRoom() {
     },
     confirmInApp: async () => true,
     closePopover() {}, closeMentionPopup() {}, settleConfirm() {}, autoresize() {},
-    renderHeader() {}, syncComposerLock() {}, renderPendingAttachments() {}, flashNotice() {},
+    renderHeader() {}, syncComposerLock() {}, parkApproval() {}, renderPendingAttachments() {}, flashNotice() {},
   };
   vm.createContext(context);
   vm.runInContext([

@@ -751,6 +751,21 @@ textarea:focus-visible {
   color: var(--muted);
 }
 
+.queue-cancel {
+  border: none;
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  margin-right: -4px;
+  cursor: pointer;
+}
+
+.queue-cancel:hover {
+  color: var(--accent-strong);
+}
+
 .typing-pill .dots {
   display: inline-flex;
   gap: 3px;

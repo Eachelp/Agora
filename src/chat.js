@@ -11,6 +11,8 @@ const composerInput = document.getElementById("composer-input");
 const composerBox = document.getElementById("composer-box");
 const sendButton = document.getElementById("btn-send");
 const stopButton = document.getElementById("btn-stop");
+const interjectButton = document.getElementById("btn-interject");
+const queueRow = document.getElementById("queue-row");
 const attachButton = document.getElementById("btn-attach");
 const mentionPopup = document.getElementById("mention-popup");
 const attachmentRow = document.getElementById("attachment-row");
@@ -361,6 +363,8 @@ function switchActiveSession(nextId) {
   closePopover();
   closeMentionPopup();
   settleConfirm(false);
+  // 떠 있던 승인 카드는 그 방 것이다. 새 방에 남기지 않고 큐로 되돌린다.
+  parkApproval();
   activeSessionId = nextId;
   composerInput.value = (nextId && composerDrafts.get(nextId)) || "";
   autoresize();
@@ -387,6 +391,8 @@ function restoreFailedDraft(sessionId, draftText) {
 
 function syncComposerLock() {
   lockComposer(Boolean(activeApproval));
+  // 승인 대기도 방이 바쁜 상태다. 중지·잠깐 버튼이 같은 상태를 보게 함께 맞춘다.
+  renderBusyControls();
 }
 
 function doctorStatus(diagnostic) {
@@ -3694,7 +3700,7 @@ function renderTyping() {
   typingRow.textContent = "";
   const active = [...typingAgents].map(agentById).filter(Boolean);
   typingRow.hidden = active.length === 0;
-  stopButton.hidden = active.length === 0;
+  renderBusyControls();
   for (const agent of active) {
     const pill = document.createElement("span");
     pill.className = "typing-pill";
@@ -3707,6 +3713,46 @@ function renderTyping() {
   }
   renderAgents();
   scrollToBottom();
+}
+
+// 방이 바쁜지. 입력 중 표시만 보면 승인 카드를 기다리는 동안(실행도 입력 중 표시도 없다)
+// 중지 버튼이 사라져 방을 빠져나올 길이 막힌다. 실행 중·대기 중인 턴과 승인 대기를 모두 센다.
+function roomIsBusy() {
+  const turns = roomTurnState || {};
+  return typingAgents.size > 0
+    || Boolean(turns.current)
+    || (turns.running || []).length > 0
+    || (turns.queue || []).length > 0
+    || (turns.deferred || []).length > 0
+    || approvalQueue.some((approval) => approval.sessionId === activeSessionId)
+    || Boolean(activeApproval && activeApproval.sessionId === activeSessionId);
+}
+
+// 중지·잠깐 버튼과 대기 중인 발언 목록(각각 ×로 그 턴만 취소).
+function renderBusyControls() {
+  const busy = roomIsBusy();
+  stopButton.hidden = !busy;
+  interjectButton.hidden = !busy;
+  const queued = [...(roomTurnState.queue || []), ...(roomTurnState.deferred || [])];
+  queueRow.textContent = "";
+  queueRow.hidden = queued.length === 0;
+  for (const turn of queued) {
+    const agent = agentById(turn.agentId);
+    const name = agent?.name || turn.agentId;
+    const pill = document.createElement("span");
+    pill.className = "typing-pill";
+    if (agent) pill.style.setProperty("--agent-color", agent.color);
+    pill.append(document.createTextNode(`${name} 대기${turn.discussion ? " · 토론" : ""}`));
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "queue-cancel";
+    cancel.textContent = "×";
+    cancel.title = `${name}의 대기 중인 발언 취소`;
+    cancel.setAttribute("aria-label", cancel.title);
+    cancel.addEventListener("click", () => call(window.chatApi.turnCancel(activeSessionId, turn.turnId)));
+    pill.append(cancel);
+    queueRow.append(pill);
+  }
 }
 
 // --- 첨부 (작성 중) ---
@@ -4002,6 +4048,8 @@ window.addEventListener("focus", () => {
 // (강제 복원은 조합 상태와 어긋날 수 있어 더 나쁜 실패를 만든다).
 sendButton.addEventListener("click", sendCurrentMessage);
 stopButton.addEventListener("click", () => call(window.chatApi.stop(activeSessionId)));
+// 잠깐: 중지와 같이 진행 중인 응답·대기 턴을 모두 멈추되, 발언권을 사용자에게 돌리고 다음 메시지 전까지 AI끼리의 호출도 막는다.
+interjectButton.addEventListener("click", () => call(window.chatApi.turnInterject(activeSessionId)));
 
 newProjectButton.addEventListener("click", async () => {
   openNewProjectPopover(newProjectButton);
@@ -4075,6 +4123,8 @@ function applyFullState(full) {
     for (const agentId of full.session.typing || []) typingAgents.add(agentId);
     roomTurnState = full.session.turnState || { current: null, queue: [], deferred: [] };
     pendingAttachments = full.session.pendingAttachments || [];
+    // 창이 닫혀 있던 사이 온 승인 요청도 여기서 되살아난다(이미 아는 요청은 건너뛴다).
+    for (const approval of full.session.pendingApprovals || []) addApproval(approval);
     renderAllMessages(full.session.messages);
     scrollToBottom(true);
   }
@@ -4102,6 +4152,7 @@ function applyFullState(full) {
   renderAgents();
   renderTyping();
   renderPendingAttachments();
+  showNextApproval();
   syncComposerLock();
 }
 
@@ -4127,6 +4178,7 @@ window.chatApi.onTurnState(({ sessionId, ...state }) => {
     deferred: Array.isArray(state.deferred) ? state.deferred : [],
   };
   renderHeader();
+  renderBusyControls();
 });
 window.chatApi.onReset(({ sessionId }) => {
   if (sessionId !== activeSessionId) return;
@@ -4141,10 +4193,16 @@ window.chatApi.onReset(({ sessionId }) => {
   }
   renderAgents();
   roomTurnState = { current: null, running: [], queue: [], deferred: [] };
-  // Stage C — 방 reset(중지/초기화) 시 남은 승인 카드를 모두 제거한다(late accept 방지 UX).
-  approvalQueue.length = 0;
-  activeApproval = null;
-  approvalBackdrop.hidden = true;
+  // Stage C — 방 reset(중지/초기화) 시 이 방의 남은 승인 카드를 모두 제거한다(late accept 방지 UX).
+  // 다른 방의 요청은 그 방에서 답해야 하므로 남긴다.
+  for (let i = approvalQueue.length - 1; i >= 0; i -= 1) {
+    if (approvalQueue[i].sessionId === sessionId) approvalQueue.splice(i, 1);
+  }
+  if (activeApproval && activeApproval.sessionId === sessionId) {
+    activeApproval = null;
+    approvalBackdrop.hidden = true;
+  }
+  showNextApproval();
   syncComposerLock();
   renderTyping();
 });
@@ -4167,6 +4225,9 @@ window.chatApi.onSessionsChanged((payload) => {
     sessionMeta = { ...sessionMeta, title: entry.title };
     renderHeader();
   }
+  // 방이 바뀌었으면 새 방의 대기 승인을 올린다(이전 방 카드는 switchActiveSession이 내렸다).
+  showNextApproval();
+  syncComposerLock();
 });
 window.chatApi.onWorkflowChanged(({ projectId, workflow: nextWorkflow }) => {
   if (projectId !== activeProjectId || !nextWorkflow) return;
@@ -4201,9 +4262,12 @@ function lockComposer(locked) {
   if (locked) composerInput.blur();
 }
 
+// 승인 카드는 그 요청이 속한 방에서만 뜬다. 큐는 방 구분 없이 모으고, 지금 방 것만 꺼낸다.
 function showNextApproval() {
-  if (activeApproval || approvalQueue.length === 0) return;
-  activeApproval = approvalQueue.shift();
+  if (activeApproval) return;
+  const index = approvalQueue.findIndex((approval) => approval.sessionId === activeSessionId);
+  if (index < 0) return;
+  [activeApproval] = approvalQueue.splice(index, 1);
   const agent = agentById(activeApproval.agentId);
   approvalSummary.textContent = `${agent?.name || activeApproval.agentId}: ${activeApproval.summary}`;
   approvalDetail.textContent = activeApproval.detail || "세부 정보가 없습니다.";
@@ -4222,9 +4286,25 @@ async function answerApproval(decision) {
 }
 approvalApprove.addEventListener("click", () => answerApproval("approve"));
 approvalDeny.addEventListener("click", () => answerApproval("deny"));
-window.chatApi.onApprovalRequest((payload) => {
+// 같은 요청이 이벤트와 상태 스냅숏으로 두 번 와도 카드는 하나만 만든다.
+function addApproval(payload) {
+  if (!payload?.approvalId || !payload.sessionId) return;
+  if (activeApproval?.approvalId === payload.approvalId) return;
+  if (approvalQueue.some((approval) => approval.approvalId === payload.approvalId)) return;
   approvalQueue.push(payload);
+}
+// 방을 떠날 때 떠 있던 카드를 큐 앞으로 되돌린다. 그 방으로 돌아오면 다시 뜬다.
+function parkApproval() {
+  if (!activeApproval) return;
+  approvalQueue.unshift(activeApproval);
+  activeApproval = null;
+  approvalBackdrop.hidden = true;
+  syncComposerLock();
+}
+window.chatApi.onApprovalRequest((payload) => {
+  addApproval(payload);
   showNextApproval();
+  syncComposerLock();
 });
 // Stage C — same-turn 승인 카드가 turn 종료/취소/서버 resolved로 무효화되면 dismiss한다
 // (native protocol id 노출 없음; Agora approvalId만 사용). late accept를 UX에서도 막는다.
@@ -4238,9 +4318,10 @@ function dismissApproval(approvalId) {
     showNextApproval();
   }
 }
-window.chatApi.onApprovalResolved(({ sessionId, approvalId }) => {
-  if (sessionId !== activeSessionId) return;
+// 승인 id에 방 id가 들어 있어 전역에서 유일하다. 다른 방 것이어도 그 카드는 거둔다.
+window.chatApi.onApprovalResolved(({ approvalId }) => {
   dismissApproval(approvalId);
+  syncComposerLock();
 });
 window.chatApi.onAppearance(applyAppearance);
 
