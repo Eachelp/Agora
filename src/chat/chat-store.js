@@ -89,10 +89,39 @@ function readJsonlTolerant(file) {
     try {
       events.push(JSON.parse(trimmed));
     } catch {
-      // 손상 라인은 건너뜁니다. (정상 경로에서는 마지막 한 줄뿐입니다.)
+      // 찢긴 조각 뒤에 다음 기록이 같은 줄로 붙은 옛 파일이면 뒤쪽 온전한 기록만 건집니다.
+      const tail = trimmed.lastIndexOf(RECORD_START);
+      if (tail > 0) {
+        try {
+          events.push(JSON.parse(trimmed.slice(tail)));
+        } catch {}
+      }
+      // 그 밖의 손상 라인은 건너뜁니다.
     }
   }
   return events;
+}
+
+const RECORD_START = '{"v":1,"ts":';
+
+// 마지막 줄이 개행 없이 끊겨 있으면(전원 차단 등) 새 기록이 그 조각에 붙어 함께 사라집니다.
+// 파일이 개행으로 끝나지 않으면 새 줄부터 시작합니다.
+function appendJsonlLine(file, text) {
+  let prefix = "";
+  try {
+    const fd = fs.openSync(file, "r");
+    try {
+      const { size } = fs.fstatSync(fd);
+      if (size > 0) {
+        const last = Buffer.alloc(1);
+        fs.readSync(fd, last, 0, 1, size - 1);
+        if (last[0] !== 0x0a) prefix = "\n";
+      }
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {}
+  fs.appendFileSync(file, `${prefix}${text}\n`, "utf8");
 }
 
 function newSessionId(now) {
@@ -348,7 +377,7 @@ class ChatStore {
     if (!meta) return null;
     if (this.readOnly || meta.readOnly) return null;
     const entry = { v: 1, ts: this.now(), ...event };
-    fs.appendFileSync(this.transcriptPath(id), `${JSON.stringify(entry)}\n`, "utf8");
+    appendJsonlLine(this.transcriptPath(id), JSON.stringify(entry));
 
     const patch = {};
     if (entry.kind === "message" && entry.message && !entry.message.error) {
