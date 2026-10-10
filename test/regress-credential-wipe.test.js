@@ -11,6 +11,11 @@ const path = require("node:path");
 
 const { createAccountSwitching } = require("../src/agora/account-switching");
 
+// macOS는 Claude 라이브 자격을 파일이 아니라 키체인에 두므로, 폴더로 파일을 막아 삭제 실패를 흉내 낼 수 없다.
+const SKIP_MAC_KEYCHAIN = process.platform === "darwin"
+  ? "macOS는 Claude 라이브 자격을 키체인에 저장해 파일 막기로 삭제 실패를 흉내 낼 수 없다"
+  : false;
+
 function makeSwitching(t) {
   const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-wipe-")));
   const userData = path.join(home, "userData");
@@ -59,7 +64,7 @@ function seedClaudeProfile(switching) {
   return store;
 }
 
-test("Claude 로그아웃: 라이브 자격 증명을 지우지 못하면 실패를 던지고 저장 프로필도 남긴다", async (t) => {
+test("Claude 로그아웃: 라이브 자격 증명을 지우지 못하면 실패를 던지고 저장 프로필도 남긴다", { skip: SKIP_MAC_KEYCHAIN }, async (t) => {
   const { switching, home } = makeSwitching(t);
   blockClaudeLive(home);
   const store = seedClaudeProfile(switching);
@@ -73,7 +78,7 @@ test("AGY 로그아웃: 자격 저장소 삭제가 실패하면 실패를 던진
   await assert.rejects(switching.logoutProvider("agy"), /AGY 로그인 정보를 지우지 못했습니다: PowerShell 시간 초과/);
 });
 
-test("전체 지우기: Claude·AGY 라이브 삭제 실패를 failures로 알리고 프로필은 계속 지운다", async (t) => {
+test("전체 지우기: Claude·AGY 라이브 삭제 실패를 failures로 알리고 프로필은 계속 지운다", { skip: SKIP_MAC_KEYCHAIN }, async (t) => {
   const { switching, home } = makeSwitching(t);
   blockClaudeLive(home);
   const claudeStore = seedClaudeProfile(switching);
