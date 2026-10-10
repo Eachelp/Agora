@@ -39,15 +39,14 @@ function startApp(root, dialogPaths = []) {
       getRecord: (id) => records.find((r) => r.id === id) || null,
       discover: async () => records,
     },
-    harnessRuntime: {
-      runTurn: ({ context, invocation }) => {
-        runs.push({ provider: context.providerId, prompt: invocation.prompt });
+    harnessAdapter: {
+      runTurn: ({ invocation }) => {
+        runs.push({ prompt: invocation.prompt });
         let release;
         const gate = new Promise((r) => { release = r; });
         gates.push(release);
         return { promise: gate.then(() => ({ ok: true, text: "네." })), cancel: () => {} };
       },
-      workspaceChanged() {}, workspaceRestored() {}, professionalRunEnded() {}, close() {},
     },
   });
   feature.registerIpcHandlers();

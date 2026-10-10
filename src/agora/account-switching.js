@@ -478,26 +478,17 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
     return profile.active ? `${label} (현재)` : label;
   }
 
-  // Stage C — provider account change는 hard native session boundary입니다.
+  // provider 계정 변경은 전환 경계를 먼저 엽니다.
   //
   // 요구 순서:
-  //   preflight/검증
-  //     → hard session boundary 설치(managed session INVALIDATE + native forget)
-  //     → pre-boundary inflight turn cancel
-  //     → 그 turn들이 **실제로 settle될 때까지 대기**
-  //     → 그제서야 live credential mutation
-  //     → 필요하면 provider 재시작/reload
+  //   preflight/검증 → 전환 경계 열기(같은 provider의 전환 겹침 거부)
+  //     → live credential mutation → 필요하면 provider 재시작/reload
+  //     → 전환 경계 닫기(finally)
   //
-  // 이렇게 해야 "old 계정 CLI가 아직 물리적으로 살아 있는데 live credential은
-  // 이미 새 계정"인 창이 생기지 않습니다. cancel()은 실제 child close보다 먼저
-  // 반환할 수 있으므로 cancel 호출만으로는 부족합니다.
-  //
-  // 이것은 best-effort UI 통지가 아니라 safety boundary입니다: 설치/대기가
-  // 실패하면 예외를 던져서 호출자가 credential을 건드리지 않게 합니다(fail-closed).
-  // managed harness가 아예 없는 구성만 명시적으로 immediately-safe 성공입니다.
-  //
-  // A→B→A도 항상 fresh session입니다. 이 모듈은 adapter internals를 만지지 않고
-  // chatFeature의 provider-neutral seam만 부릅니다.
+  // 이것은 best-effort UI 통지가 아니라 safety boundary입니다: 경계를 열지 못하면
+  // 예외를 던져서 호출자가 credential을 건드리지 않게 합니다(fail-closed).
+  // chat feature가 아직 없는 구성만 명시적으로 immediately-safe 성공입니다.
+  // 이 모듈은 chatFeature의 notifyProviderAccountChanged seam만 부릅니다.
   async function installAccountBoundary(provider) {
     const chatFeature = getChatFeature();
     if (!chatFeature) {

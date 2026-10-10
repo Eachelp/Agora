@@ -35,7 +35,7 @@ function fakeCapabilities() {
   };
 }
 
-function makeFeature(root, harnessRuntime) {
+function makeFeature(root, harnessAdapter) {
   const handlers = new Map();
   const feature = createChatFeature({
     electron: {
@@ -46,7 +46,7 @@ function makeFeature(root, harnessRuntime) {
     },
     storeRoot: root,
     capabilities: fakeCapabilities(),
-    ...(harnessRuntime ? { harnessRuntime } : {}),
+    ...(harnessAdapter ? { harnessAdapter } : {}),
   });
   feature.registerIpcHandlers();
   return { invoke: (c, i = {}) => handlers.get(c)({}, i) };
@@ -145,7 +145,7 @@ function makeStreamingHarness() {
   const runs = [];
   return {
     runs,
-    runtime: {
+    adapter: {
       runTurn({ invocation }) {
         let resolve;
         const st = { settled: false };
@@ -161,11 +161,6 @@ function makeStreamingHarness() {
           },
         };
       },
-      workspaceChanged() {}, workspaceRestored() {}, providerAccountChanged() {},
-      beginProviderAccountBoundary: async (p) => ({ providerId: p.providerId, token: "t", invalidated: 0 }),
-      completeProviderAccountBoundary: () => true,
-      professionalRunEnded() {},
-      close() {},
     },
   };
 }
@@ -205,7 +200,7 @@ async function waitFor(cond, ms = 5000) {
 test("F140: 답변 중인 대화를 삭제하면 실행이 끝나길 기다린 뒤 온전히 휴지통으로 옮긴다", async () => {
   const root = tempRoot();
   const harness = makeStreamingHarness();
-  const feature = makeFeature(root, harness.runtime);
+  const feature = makeFeature(root, harness.adapter);
   const state = await feature.invoke("chat:state");
   const sessionId = state.activeSessionId;
   const sdir = path.join(root, "sessions", sessionId);
@@ -323,7 +318,7 @@ test("R3: 첫 정리가 실패해 속성을 풀 때 폴더에 0o666을 주지 �
 test("R2: 실행이 끝난 직후에도 원본 로그가 닫힐 때까지 기다린 뒤 삭제한다", async () => {
   const root = tempRoot();
   const harness = makeStreamingHarness();
-  const feature = makeFeature(root, harness.runtime);
+  const feature = makeFeature(root, harness.adapter);
   const state = await feature.invoke("chat:state");
   const sessionId = state.activeSessionId;
   const sdir = path.join(root, "sessions", sessionId);

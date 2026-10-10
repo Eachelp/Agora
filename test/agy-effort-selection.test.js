@@ -69,15 +69,11 @@ function startApp(root) {
       discover: async () => records,
     },
     // 실제 CLI 대신 실행 계약(argv)만 받아 둔다.
-    harnessRuntime: {
+    harnessAdapter: {
       runTurn: ({ invocation }) => {
         runs.push(invocation.argv);
         return { promise: Promise.resolve({ ok: true, text: "네." }), cancel: () => {} };
       },
-      workspaceChanged() {},
-      workspaceRestored() {},
-      professionalRunEnded() {},
-      close() {},
     },
   });
   feature.registerIpcHandlers();

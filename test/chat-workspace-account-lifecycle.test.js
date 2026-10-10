@@ -1,10 +1,10 @@
 "use strict";
 
-// Stage C — Session Invalidation / Lifecycle: 상위 control-plane seam.
+// 계정 전환 경계 seam.
 //
 // 검증 목표:
-//   - chat-ipc: workspace choose/clear가 HarnessRuntime.workspaceChanged를 부르고,
-//     chatFeature.notifyProviderAccountChanged가 providerAccountChanged로 위임된다.
+//   - chat-ipc: workspace choose/clear가 프로젝트 폴더를 바꾸고,
+//     chatFeature.notifyProviderAccountChanged가 provider별 전환 가드(겹침 거부 + complete)를 연다.
 //   - account switcher들의 사전 검증 실패는 accountSwitchSafe로 표시된다
 //     (credential 무변경 실패 → 불필요한 invalidation 금지의 근거 fact).
 
@@ -19,7 +19,7 @@ const { ClaudeAccountSwitcher } = require("../src/claude-account-switcher");
 const { AntigravityAccountSwitcher } = require("../src/antigravity-account-switcher");
 const { CodexAccountSwitcher } = require("../src/codex-account-switcher");
 
-// ---- chat-ipc: workspace change / provider account seam ----
+// ---- chat-ipc: workspace / provider account seam ----
 
 function fakeRecord(id) {
   return {
@@ -46,33 +46,8 @@ function fakeCapabilities() {
   };
 }
 
-function runtimeSpy() {
-  const events = [];
-  return {
-    events,
-    runtime: {
-      runTurn: () => ({ promise: Promise.resolve({ ok: true }), cancel: () => {} }),
-      workspaceChanged: (p) => events.push({ kind: "workspaceChanged", ...p }),
-      workspaceRestored: (p) => events.push({ kind: "workspaceRestored", ...p }),
-      providerAccountChanged: (p) => events.push({ kind: "providerAccountChanged", ...p }),
-      // 계정 경계는 awaitable 전환 트랜잭션이다: 상위가 credential을 바꾸기 전에
-      // begin을 await하고, mutation이 확정된 뒤 complete로 admission을 다시 연다.
-      beginProviderAccountBoundary: async (p) => {
-        events.push({ kind: "beginProviderAccountBoundary", ...p });
-        return { providerId: p.providerId, token: `t-${p.providerId}`, invalidated: 0 };
-      },
-      completeProviderAccountBoundary: (p) => {
-        events.push({ kind: "completeProviderAccountBoundary", ...p });
-        return true;
-      },
-      close: () => events.push({ kind: "close" }),
-    },
-  };
-}
-
 function makeFeature(root, dialogResult) {
   const handlers = new Map();
-  const spy = runtimeSpy();
   const feature = createChatFeature({
     electron: {
       ipcMain: { handle: (channel, handler) => handlers.set(channel, handler), on() {} },
@@ -82,68 +57,63 @@ function makeFeature(root, dialogResult) {
     },
     storeRoot: root,
     capabilities: fakeCapabilities(),
-    harnessRuntime: spy.runtime,
+    harnessAdapter: { runTurn: () => ({ promise: Promise.resolve({ ok: true }), cancel: () => {} }) },
   });
   feature.registerIpcHandlers();
   return {
     feature,
-    spy,
     invoke: async (channel, input = {}) => handlers.get(channel)({}, input),
   };
 }
 
-test("chat-ipc: project workspace choose/clear는 WORKSPACE_CHANGED lifecycle을 부른다", async (t) => {
+test("chat-ipc: project workspace choose/clear는 프로젝트 폴더를 바꾸고 해제한다", async (t) => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-lifecycle-ipc-")));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const ws = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-lifecycle-ws-")));
   t.after(() => fs.rmSync(ws, { recursive: true, force: true }));
 
-  const { spy, invoke } = makeFeature(root, { canceled: false, filePaths: [ws] });
+  const { invoke } = makeFeature(root, { canceled: false, filePaths: [ws] });
   const created = await invoke("chat:projects:create", { name: "P" });
   assert.equal(created.ok, true);
   const projectId = created.activeProjectId;
 
   const chosen = await invoke("chat:projects:workspace:choose", { projectId });
   assert.equal(chosen.ok, true);
-  assert.deepEqual(spy.events, [{ kind: "workspaceChanged", projectId }]);
+  assert.equal(chosen.project.workspace, ws);
 
   const cleared = await invoke("chat:projects:workspace:clear", { projectId });
   assert.equal(cleared.ok, true);
-  assert.deepEqual(spy.events.at(-1), { kind: "workspaceChanged", projectId });
-  assert.equal(spy.events.length, 2);
+  assert.equal(cleared.project.workspace, null);
 });
 
-// 리뷰 F1: legacy 세션 경로(chat:workspace:choose/clear)도 같은 authoritative
-// ProjectStore.workspace를 바꾸므로 lifecycle boundary를 우회할 수 없다.
-test("리뷰 F1-N/O: legacy chat:workspace:choose/clear는 실제 mutation당 lifecycle을 정확히 1회 부른다", async (t) => {
+// legacy 세션 경로(chat:workspace:choose/clear)도 같은 ProjectStore.workspace를 바꾼다.
+test("legacy chat:workspace:choose/clear도 프로젝트 폴더를 바꾸고 해제한다", async (t) => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-legacy-ws-ipc-")));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const ws = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-legacy-ws-dir-")));
   t.after(() => fs.rmSync(ws, { recursive: true, force: true }));
 
-  const { spy, invoke } = makeFeature(root, { canceled: false, filePaths: [ws] });
+  const { invoke } = makeFeature(root, { canceled: false, filePaths: [ws] });
   const created = await invoke("chat:projects:create", { name: "P" });
   assert.equal(created.ok, true);
-  const projectId = created.activeProjectId;
   const session = await invoke("chat:sessions:create", {});
   assert.equal(session.ok, true);
   const sessionId = session.session.meta.id;
 
   const chosen = await invoke("chat:workspace:choose", { sessionId });
   assert.equal(chosen.ok, true);
-  assert.deepEqual(spy.events, [{ kind: "workspaceChanged", projectId }], "choose는 정확히 1회");
+  assert.equal(chosen.meta.workspace, ws);
 
   const cleared = await invoke("chat:workspace:clear", { sessionId });
   assert.equal(cleared.ok, true);
-  assert.deepEqual(spy.events.at(-1), { kind: "workspaceChanged", projectId }, "clear도 정확히 1회");
-  assert.equal(spy.events.length, 2);
+  assert.equal(cleared.meta.workspace, null);
 });
 
-test("리뷰 F1-P: 취소된 legacy choose는 mutation이 없으므로 lifecycle 이벤트도 없다", async (t) => {
+test("취소된 legacy choose는 폴더를 바꾸지 않는다", async (t) => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-legacy-ws-cancel-")));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
 
-  const { spy, invoke } = makeFeature(root, { canceled: true, filePaths: [] });
+  const { invoke } = makeFeature(root, { canceled: true, filePaths: [] });
   const created = await invoke("chat:projects:create", { name: "P" });
   assert.equal(created.ok, true);
   const session = await invoke("chat:sessions:create", {});
@@ -152,90 +122,61 @@ test("리뷰 F1-P: 취소된 legacy choose는 mutation이 없으므로 lifecycle
   const chosen = await invoke("chat:workspace:choose", { sessionId });
   assert.equal(chosen.ok, true);
   assert.equal(chosen.canceled, true);
-  assert.deepEqual(spy.events, [], "취소된 choose는 어떤 lifecycle 통지도 만들지 않는다");
 });
 
-test("chatFeature.notifyProviderAccountChanged는 awaitable hard boundary seam이다", async (t) => {
+test("chatFeature.notifyProviderAccountChanged는 complete()로 닫는 전환 handle을 돌려준다", async (t) => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-lifecycle-acct-")));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const { feature, spy } = makeFeature(root, { canceled: true, filePaths: [] });
+  const { feature } = makeFeature(root, { canceled: true, filePaths: [] });
   assert.equal(typeof feature.notifyProviderAccountChanged, "function");
 
   const result = await feature.notifyProviderAccountChanged("codex");
-  assert.deepEqual(spy.events, [
-    { kind: "beginProviderAccountBoundary", providerId: "codex" },
-  ]);
-  assert.equal(result.providerId, "codex", "boundary 결과를 그대로 돌려준다");
-
-  // handle.complete()가 전환 트랜잭션을 닫고 admission을 다시 연다.
+  assert.equal(result.providerId, "codex");
   assert.equal(typeof result.complete, "function");
   assert.equal(result.complete(), true);
-  assert.deepEqual(spy.events.at(-1), {
-    kind: "completeProviderAccountBoundary", providerId: "codex", token: "t-codex",
-  });
-
-  await feature.notifyProviderAccountChanged("codex");
-  assert.equal(spy.events.length, 3);
+  assert.equal(result.complete(), false, "이미 닫힌 전환을 다시 닫아도 무해하다");
 
   // providerId 없는 호출은 조용히 무시되지 않는다(fail-closed): 호출자 버그다.
   await assert.rejects(
     () => feature.notifyProviderAccountChanged(null),
     /providerId가 필요/
   );
-  assert.equal(spy.events.length, 3, "실패한 boundary는 이벤트를 만들지 않는다");
 });
 
-test("chatFeature.notifyProviderAccountChanged는 runtime 실패를 삼키지 않는다(fail-closed)", async (t) => {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-lifecycle-failclosed-")));
+test("같은 provider의 전환이 열려 있으면 두 번째는 거부되고, 다른 provider와 complete 뒤에는 열린다", async (t) => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-lifecycle-overlap-")));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const handlers = new Map();
-  const feature = createChatFeature({
-    electron: {
-      ipcMain: { handle: (channel, handler) => handlers.set(channel, handler), on() {} },
-      dialog: { async showOpenDialog() { return { canceled: true, filePaths: [] }; } },
-      BrowserWindow: class BrowserWindow {},
-      shell: {},
-    },
-    storeRoot: root,
-    capabilities: fakeCapabilities(),
-    harnessRuntime: {
-      runTurn: () => ({ promise: Promise.resolve({ ok: true }), cancel: () => {} }),
-      beginProviderAccountBoundary: async () => {
-        throw new Error("boundary 설치 실패");
-      },
-      completeProviderAccountBoundary: () => true,
-      close() {},
-    },
-  });
+  const { feature } = makeFeature(root, { canceled: true, filePaths: [] });
+
+  const first = await feature.notifyProviderAccountChanged("claude");
   await assert.rejects(
     () => feature.notifyProviderAccountChanged("claude"),
-    /boundary 설치 실패/,
-    "runtime 실패는 log 후 성공으로 둔갑하면 안 된다"
+    (error) => {
+      assert.match(error.message, /계정 전환이 이미 진행 중/);
+      assert.equal(error.accountSwitchSafe, true, "겹침 거부는 credential 무변경이 확실하다");
+      return true;
+    }
   );
+
+  const other = await feature.notifyProviderAccountChanged("codex");
+  assert.equal(other.complete(), true, "다른 provider는 서로 막지 않는다");
+
+  assert.equal(first.complete(), true);
+  const again = await feature.notifyProviderAccountChanged("claude");
+  assert.equal(again.complete(), true, "complete 뒤에는 다시 열 수 있다");
 });
 
-test("chatFeature.notifyProviderAccountChanged는 boundary seam이 없는 runtime을 fail-closed로 거부한다", async (t) => {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-lifecycle-noseam-")));
+test("오래된 handle의 complete는 더 새 전환을 닫지 못한다", async (t) => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-lifecycle-stale-")));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const handlers = new Map();
-  const feature = createChatFeature({
-    electron: {
-      ipcMain: { handle: (channel, handler) => handlers.set(channel, handler), on() {} },
-      dialog: { async showOpenDialog() { return { canceled: true, filePaths: [] }; } },
-      BrowserWindow: class BrowserWindow {},
-      shell: {},
-    },
-    storeRoot: root,
-    capabilities: fakeCapabilities(),
-    harnessRuntime: {
-      runTurn: () => ({ promise: Promise.resolve({ ok: true }), cancel: () => {} }),
-      close() {},
-    },
-  });
-  await assert.rejects(
-    () => feature.notifyProviderAccountChanged("claude"),
-    /managed harness runtime seam이 없습니다/
-  );
+  const { feature } = makeFeature(root, { canceled: true, filePaths: [] });
+
+  const old = await feature.notifyProviderAccountChanged("agy");
+  assert.equal(old.complete(), true);
+  const fresh = await feature.notifyProviderAccountChanged("agy");
+  assert.equal(old.complete(), false, "늦게 온 stale complete는 무시된다");
+  await assert.rejects(() => feature.notifyProviderAccountChanged("agy"), /이미 진행 중/);
+  assert.equal(fresh.complete(), true);
 });
 
 test("account-switching source: 모든 credential mutation 경로가 awaitable boundary 뒤에 있다", () => {
@@ -307,33 +248,4 @@ test("Claude/AGY/Codex switcher의 사전 검증 실패는 accountSwitchSafe=tru
       return true;
     }
   );
-});
-
-test("chatFeature.notifyProviderAccountChanged는 complete seam이 없는 runtime을 열지 않는다", async (t) => {
-  // begin만 있고 complete가 없는 runtime에 전환을 열면 그 provider의 admission이
-  // 영원히 닫힌 채 남는다. 열기 전에 양쪽 seam을 모두 확인해야 한다.
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-lifecycle-halfseam-")));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  let opened = 0;
-  const feature = createChatFeature({
-    electron: {
-      ipcMain: { handle() {}, on() {} },
-      dialog: { async showOpenDialog() { return { canceled: true, filePaths: [] }; } },
-      BrowserWindow: class BrowserWindow {},
-      shell: {},
-    },
-    storeRoot: root,
-    capabilities: fakeCapabilities(),
-    harnessRuntime: {
-      runTurn: () => ({ promise: Promise.resolve({ ok: true }), cancel: () => {} }),
-      beginProviderAccountBoundary: async () => { opened += 1; return { token: "t" }; },
-      // completeProviderAccountBoundary 없음
-      close() {},
-    },
-  });
-  await assert.rejects(
-    () => feature.notifyProviderAccountChanged("claude"),
-    /managed harness runtime seam이 없습니다/
-  );
-  assert.equal(opened, 0, "닫을 수 없는 전환을 애초에 열지 않는다");
 });

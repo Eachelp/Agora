@@ -37,11 +37,9 @@ const {
   PERMISSION_MODES,
   INLINE_TEXT_LIMIT,
   minPermissionMode,
-  normalizeChoice,
 } = require("./chat-argv");
 const { createLineParser } = require("./chat-events");
 const { ProcessHarnessAdapter } = require("../harness/process-harness-adapter");
-const { createDefaultHarnessRuntime } = require("../harness/create-default-harness-runtime");
 const { persistRunMetrics } = require("./chat-run-metrics-store");
 const {
   importAttachment,
@@ -264,17 +262,14 @@ function createChatFeature(options) {
   const rooms = new Map();
   // 세션별 "아직 전송 전" 첨부: id → 내부 레코드(fileName 포함)
   const pendingAttachments = new Map();
-  // Stage C-1: 프로바이더 실행 transport를 HarnessAdapter 경계 뒤로 옮긴다.
-  // ProcessHarnessAdapter는 기존 process-per-invocation 실행(runAgentProcess)을
-  // 그대로 위임하는 compatibility 구현이며, workspace/permission/Evidence 등
-  // control-plane 권한은 makeRunAgent에 그대로 남는다. 테스트는 options로 주입한다.
-  // Stage C: HarnessRuntime이 실행 adapter 선택 · role-scoped logical session ·
-  // session lifecycle(RETIRE/INVALIDATE) 결정을 소유한다. Codex/Claude/AGY managed
-  // adapter가 등록되어 있으며, general chat과 default/unresolved model은 여전히
-  // sessionless ProcessHarnessAdapter one-shot이다. options seam은 backward-compatible:
-  // harnessRuntime 직접 주입 또는 harnessAdapter(=process adapter) 주입 모두 허용.
-  const harnessRuntime = options.harnessRuntime
-    || createDefaultHarnessRuntime({ processAdapter: options.harnessAdapter || new ProcessHarnessAdapter() });
+  // 프로바이더 실행은 HarnessAdapter 경계 뒤에 둔다. ProcessHarnessAdapter는 턴마다 CLI
+  // 프로세스를 새로 띄우는 runAgentProcess에 그대로 위임한다. 권한·작업 폴더·argv 계산은
+  // makeRunAgent에 남는다. 테스트는 options로 주입한다.
+  const harnessAdapter = options.harnessAdapter || new ProcessHarnessAdapter();
+  // 계정 전환 트랜잭션이 열린 provider → token. 같은 provider에서 전환·로그아웃·로그인 준비·
+  // 초기화가 겹치지 않게 막는다(마지막 writer가 이기는 상황 방지).
+  const accountTransitions = new Map();
+  let accountTransitionSeq = 0;
 
   // Stage D-0: canonical workspace one-writer. 프로젝트 하나에 workspace 하나이고
   // 그 아래 세션(room)이 여럿이므로, 서로 다른 room이 같은 폴더를 동시에 바꾸는 것을
@@ -688,9 +683,6 @@ function createChatFeature(options) {
       emitEvent,
       permissionMode: requestedPermission,
       autoApprove = false,
-      // Stage C — provider-neutral same-turn approval 콜백. harness가 지원하면 실행 중 action
-      // 승인을 요청한다. 여기서는 provider를 구분하지 않고 그대로 전달만 한다(codex 분기 없음).
-      requestApproval = null,
     }) => {
       const record = ensureCapabilityService().getRecord(agent.id);
       const meta = store?.readMeta(sessionId);
@@ -777,12 +769,6 @@ function createChatFeature(options) {
 
       const hardOutputLimitBytes = resolveHardOutputLimit();
 
-      // Stage C-3: native local-image delivery metadata(control-plane 준비). ProcessHarnessAdapter는
-      // 이 필드를 무시하고 기존 argv --image 경로를 그대로 쓴다. CodexManagedAdapter만 사용한다.
-      const nativeImages = enriched
-        .filter((a, i) => invocation.deliveries?.[i]?.method === "native-image")
-        .map((a) => a.path)
-        .filter(Boolean);
       const harnessInvocation = {
         commandPath: record.commandPath,
         needsShell: record.needsShell,
@@ -801,37 +787,9 @@ function createChatFeature(options) {
           : {}),
         ...(hardOutputLimitBytes ? { hardOutputLimitBytes } : {}),
         onRawChunk: rawLog.write,
-        images: nativeImages,
-        // provider-neutral: managed adapter만 이 콜백을 실제로 사용한다(process/Claude/AGY는 무시).
-        ...(typeof requestApproval === "function" ? { requestApproval } : {}),
       };
-      // Stage C-2: 이미 계산된 authority 결과만 모아 ExecutionContext를 만든다.
-      // (workspace/permission/provider invocation/prompt/Evidence 순서는 그대로 두고
-      //  결과만 전달한다. authority는 위에 남고 runtime/adapter로 이동하지 않는다.)
-      // workspaceId는 session identity 전용이다: authority는 project.workspace이고,
-      // 여기서 realpath로 identity만 계산한다(실패 시 null → persistent 대상 아님).
-      let workspaceId = null;
-      if (canonicalWorkspace) {
-        try { workspaceId = fs.realpathSync(canonicalWorkspace); } catch { workspaceId = null; }
-      }
-      // Stage C lifecycle facts:
-      //   - providerAccount: 현재 live credential의 계정 namespace fact(아래에서
-      //     turn 직전에 resolver로 확정). known이면 SessionKey가 계정별로 분리되고,
-      //     unknown이면 HarnessRuntime이 fail-closed한다(parked 세션 보존).
-      const context = {
-        projectId: projectIdForMeta(meta),
-        workspaceId,
-        professionalRunId: null,
-        role: null,
-        providerId: agent.id,
-        modelKey: normalizeChoice(agent.model) || null,
-        permissionMode,
-        // turn-level security setting. SessionKey 구성요소가 아니며 매 turn 명시 전달된다.
-        autoApprove: effectiveAutoApprove,
-        effort: normalizeChoice(agent.effort) || null,
-        provenance: { frozenRunId: null, taskHash: null },
-      };
-      const run = harnessRuntime.runTurn({ context, invocation: harnessInvocation });
+      // 대화 턴은 매번 새 CLI 프로세스로 돈다(세션을 이어 붙이지 않는다).
+      const run = harnessAdapter.runTurn({ invocation: harnessInvocation });
       return {
         promise: run.promise.then((result) => {
           const logPath = rawLog.close();
@@ -1317,10 +1275,6 @@ function roomMeta(meta) {
         const workspace = await chooseWorkspace("프로젝트 워크스페이스 선택");
         if (!workspace) return { canceled: true, ...sessionsPayload() };
         const project = ensureProjectStore().updateProject(projectId, { workspace });
-        // Stage C — ProjectStore.workspace가 authority다. 바뀌는 즉시 이 project의
-        // managed harness session 전체를 RETIRE해 old workspace native cache의
-        // switch-back 부활을 막는다.
-        harnessRuntime.workspaceChanged({ projectId });
         syncProjectWorkspaceToSessions(projectId, workspace);
         const payload = sessionsPayload();
         broadcast("chat:sessions-changed", payload);
@@ -1333,7 +1287,6 @@ function roomMeta(meta) {
       wrap(async ({ projectId }) => {
         requireProject(projectId);
         const project = ensureProjectStore().updateProject(projectId, { workspace: null });
-        harnessRuntime.workspaceChanged({ projectId });
         syncProjectWorkspaceToSessions(projectId, null);
         const payload = sessionsPayload();
         broadcast("chat:sessions-changed", payload);
@@ -1414,8 +1367,6 @@ function roomMeta(meta) {
           store.updateMeta(entry.id, patch);
           refreshRoomAgents(entry.id);
         }
-        // 삭제도 workspace 해제와 같은 경계다: 이 프로젝트의 managed harness session을 닫는다.
-        harnessRuntime.workspaceChanged({ projectId: project.id });
         ensureWorkflowStore()?.moveProjectItems(project.id, UNCATEGORIZED_PROJECT_ID);
         if (!ensureProjectStore().deleteProject(project.id)) {
           throw new Error("프로젝트를 삭제하지 못했습니다.");
@@ -1895,9 +1846,6 @@ function roomMeta(meta) {
         const workspace = await chooseWorkspace("프로젝트 워크스페이스 선택");
         if (!workspace) return { canceled: true };
         ensureProjectStore().updateProject(project.id, { workspace });
-        // legacy 세션 경로도 동일한 authoritative ProjectStore.workspace를 바꾸므로
-        // project 경로와 같은 lifecycle boundary를 지나야 한다(mutation당 정확히 1회).
-        harnessRuntime.workspaceChanged({ projectId: project.id });
         syncProjectWorkspaceToSessions(project.id, workspace);
         return { meta: publicMeta(store.readMeta(sessionId)), ...sessionsPayload() };
       })
@@ -1920,7 +1868,6 @@ function roomMeta(meta) {
         const project = projectForSession(store.readMeta(sessionId));
         if (project) {
           ensureProjectStore().updateProject(project.id, { workspace: null });
-          harnessRuntime.workspaceChanged({ projectId: project.id });
           syncProjectWorkspaceToSessions(project.id, null);
         }
         return { meta: publicMeta(store.readMeta(sessionId)), ...sessionsPayload() };
@@ -2103,8 +2050,6 @@ function roomMeta(meta) {
       clearInterval(providerRecheckTimer);
       providerRecheckTimer = null;
     }
-    // Stage C-3: managed harness runtime의 long-lived child(App Server 등)를 정리한다.
-    try { if (typeof harnessRuntime.close === "function") harnessRuntime.close(); } catch {}
     for (const [sessionId, room] of rooms) {
       try {
         if (room.activeRuns > 0 && store && !store.readOnly) {
@@ -2118,45 +2063,30 @@ function roomMeta(meta) {
     }
   }
 
-  // Stage C — provider account change is a hard native session boundary.
-  //
-  // account-switching 모듈이 live credential을 바꾸기 **전에** 반드시 await한다.
-  // HarnessRuntime이 해당 provider의 모든 managed session을 INVALIDATE하고,
-  // pre-boundary inflight turn을 cancel한 뒤 그것이 물리적으로 settle될 때까지
-  // 기다린다. A→B→A도 항상 fresh session이다.
-  //
-  // 이것은 best-effort UI 통지가 아니라 safety boundary다: 실패는 삼키지 않고
-  // 그대로 전파해서 호출자가 credential mutation을 중단하게 한다(fail-closed).
-  //
-  // 반환값은 전환 트랜잭션 handle이다. 호출자는 credential mutation과 restart가
-  // 확정된 뒤 반드시 complete()를 finally에서 불러야 한다. 그때까지 이 provider의
-  // managed admission은 닫혀 있다.
+  // 계정 전환 경계: account-switching이 live credential을 바꾸기 전에 await한다.
+  // 같은 provider의 전환이 이미 열려 있으면 거부한다(fail-closed). 호출자는 credential
+  // 변경이 확정된 뒤 finally에서 complete()를 불러 닫는다.
   async function notifyProviderAccountChanged(providerId) {
     if (!providerId) {
       throw new Error("provider account lifecycle boundary: providerId가 필요합니다.");
     }
-    // 여는 쪽과 닫는 쪽을 **둘 다** 확인한 뒤에 연다. begin만 있고 complete가 없는
-    // runtime에 전환을 열면 그 provider의 admission이 영원히 닫힌 채 남는다.
-    if (
-      !harnessRuntime
-      || typeof harnessRuntime.beginProviderAccountBoundary !== "function"
-      || typeof harnessRuntime.completeProviderAccountBoundary !== "function"
-    ) {
-      throw new Error(
-        "provider account lifecycle boundary를 설치할 수 없습니다: managed harness runtime seam이 없습니다."
-      );
-    }
     const pid = String(providerId);
-    const opened = await harnessRuntime.beginProviderAccountBoundary({ providerId: pid });
+    if (accountTransitions.has(pid)) {
+      const error = new Error(`${pid} 계정 전환이 이미 진행 중입니다.`);
+      error.accountSwitchSafe = true;
+      throw error;
+    }
+    const token = `apt-${pid}-${++accountTransitionSeq}`;
+    accountTransitions.set(pid, token);
     return {
-      ...opened,
+      ok: true,
+      providerId: pid,
+      token,
+      // 오래 늦은 complete가 더 새 전환을 열어 주지 않도록 토큰이 같을 때만 닫는다.
       complete: () => {
-        try {
-          return harnessRuntime.completeProviderAccountBoundary({ providerId: pid, token: opened.token });
-        } catch (error) {
-          console.warn("[agora] provider account transition 해제 실패:", error?.message || error);
-          return false;
-        }
+        if (accountTransitions.get(pid) !== token) return false;
+        accountTransitions.delete(pid);
+        return true;
       },
     };
   }
