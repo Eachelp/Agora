@@ -7,9 +7,6 @@ const PROJECT_SCHEMA_VERSION = 1;
 const UNCATEGORIZED_PROJECT_ID = "uncategorized";
 const DEFAULT_PROJECT_NAME = "분류되지 않음";
 const PERMISSION_MODES = new Set(["chat", "workspace-read", "workspace-write"]);
-// plan_review는 선택 역할이다. 비어 있으면 실행 시 review 담당자를 재사용하므로
-// 기존 프로젝트의 전문 실행 설정과 호환된다.
-const ROLE_IDS = Object.freeze(["planning", "plan_review", "implementation", "review", "recorder"]);
 
 let idSeq = 0;
 
@@ -71,62 +68,14 @@ function sanitizeAgents(value) {
   return agents;
 }
 
-function sanitizeRoleValue(value) {
-  if (typeof value === "string") {
-    const agentId = value.trim();
-    return /^[a-z0-9_-]{1,32}$/i.test(agentId) ? agentId : null;
-  }
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const agentId = String(value.agentId || "").trim();
-  if (!/^[a-z0-9_-]{1,32}$/i.test(agentId)) return null;
-  const model = String(value.model || "").trim().slice(0, 160);
-  const effort = String(value.effort || "").trim().slice(0, 32);
-  return {
-    agentId,
-    ...(model ? { model } : {}),
-    ...(effort ? { effort } : {}),
-  };
-}
-
-function sanitizeRoles(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  const roles = {};
-  for (const roleId of ROLE_IDS) {
-    const role = sanitizeRoleValue(value[roleId]);
-    if (role) roles[roleId] = role;
-  }
-  return roles;
-}
-
-function roleConfigFor(project, roleId) {
-  const role = sanitizeRoleValue(project?.defaultRoles?.[roleId]);
-  if (!role) return { agentId: null, model: "", effort: "" };
-  if (typeof role === "string") return { agentId: role, model: "", effort: "" };
-  return { agentId: role.agentId, model: role.model || "", effort: role.effort || "" };
-}
-
 function defaultPermissionMode(value, workspace) {
   return workspace && PERMISSION_MODES.has(value) ? value : "chat";
 }
 
-// 전문 실행의 자동 보완 정책. 검수가 수정을 요구할 때 몇 번까지 자동으로 다시
-// 돌릴지는 프로젝트마다 다르다 — 실험용 폴더는 자동으로 돌리고, 실제 코드는
-// 매번 확인하고 싶을 수 있다. 예전에는 이 값이 앱 전역(localStorage)이라 한 번
-// 바꾸면 모든 프로젝트가 함께 바뀌었다.
-function sanitizeAutoRevisions(value, fallback = 0) {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isInteger(parsed)) return fallback;
-  return Math.min(3, Math.max(0, parsed));
-}
-
-function sanitizeAutoRevisionPolicy(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return { plan: 0, implementation: 0 };
-  }
-  return {
-    plan: sanitizeAutoRevisions(value.plan, 0),
-    implementation: sanitizeAutoRevisions(value.implementation, 0),
-  };
+// 옛 프로젝트 JSON에 남은 전문 모드 키(역할·자동 보완). 읽을 때 버리고 저장할 때 다시 쓰지 않는다.
+function withoutLegacyKeys(project) {
+  const { defaultRoles, autoRevisions, ...rest } = project;
+  return rest;
 }
 
 function projectDefaults(input = {}) {
@@ -137,8 +86,6 @@ function projectDefaults(input = {}) {
     context: sanitizeContext(input.context),
     defaultPermissionMode: defaultPermissionMode(input.defaultPermissionMode, workspace),
     defaultAgents: sanitizeAgents(input.defaultAgents),
-    defaultRoles: sanitizeRoles(input.defaultRoles),
-    autoRevisions: sanitizeAutoRevisionPolicy(input.autoRevisions),
   };
 }
 
@@ -195,8 +142,6 @@ class ProjectStore {
       context: "",
       defaultPermissionMode: "chat",
       defaultAgents: {},
-      defaultRoles: {},
-      autoRevisions: { plan: 0, implementation: 0 },
     };
     writeJsonAtomic(this.projectPath(project.id), project);
     return project;
@@ -207,10 +152,9 @@ class ProjectStore {
     const project = readJsonSafe(this.projectPath(id));
     if (!project || project.id !== id) return null;
     if (Number(project.schemaVersion) > PROJECT_SCHEMA_VERSION) {
-      return { ...project, readOnly: true };
+      return { ...withoutLegacyKeys(project), readOnly: true };
     }
-    // 이 필드가 없던 시절에 만든 프로젝트도 같은 모양으로 읽힌다(추가 필드).
-    return { ...project, autoRevisions: sanitizeAutoRevisionPolicy(project.autoRevisions) };
+    return withoutLegacyKeys(project);
   }
 
   hasProject(id) {
@@ -269,8 +213,6 @@ class ProjectStore {
         ? patch.defaultPermissionMode
         : current.defaultPermissionMode,
       defaultAgents: Object.hasOwn(patch, "defaultAgents") ? patch.defaultAgents : current.defaultAgents,
-      defaultRoles: Object.hasOwn(patch, "defaultRoles") ? patch.defaultRoles : current.defaultRoles,
-      autoRevisions: Object.hasOwn(patch, "autoRevisions") ? patch.autoRevisions : current.autoRevisions,
     });
     const next = {
       ...current,
@@ -357,10 +299,8 @@ module.exports = {
   PROJECT_SCHEMA_VERSION,
   UNCATEGORIZED_PROJECT_ID,
   DEFAULT_PROJECT_NAME,
-  ROLE_IDS,
   defaultRoot,
   sessionDefaultsFromProject,
   migrateSessionsToProjects,
   defaultPermissionMode,
-  roleConfigFor,
 };

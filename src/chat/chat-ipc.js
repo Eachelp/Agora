@@ -8,7 +8,6 @@ const {
   sessionDefaultsFromProject,
   migrateSessionsToProjects,
   defaultPermissionMode,
-  roleConfigFor,
 } = require("../agora/project-store");
 const {
   WorkflowStore,
@@ -908,7 +907,8 @@ function roomMeta(meta) {
     const decisions = workflow.listDecisions(projectId).filter((d) => d.status === "confirmed");
     const tasks = workflow
       .listTasks(projectId)
-      .filter((t) => ["todo", "in_progress", "review", "blocked"].includes(t.status));
+      // 옛 Planner 카드(origin "planner")는 진행 중에 머문 채 매 프롬프트에 새지 않게 뺀다. 데이터는 그대로 둔다.
+      .filter((t) => t.origin !== "planner" && ["todo", "in_progress", "review", "blocked"].includes(t.status));
     if (decisions.length === 0 && tasks.length === 0) return "";
     const lines = [];
     if (decisions.length > 0) {
@@ -928,37 +928,30 @@ function roomMeta(meta) {
     return lines.join("\n");
   }
 
-  function specialistStageFor(project, room, roleId) {
-    const roleLabel = {
-      planning: "기획",
-      plan_review: "기획 검수",
-      implementation: "구현",
-      review: "검토",
-      recorder: "기록",
-    }[roleId] || roleId;
-    let config = roleConfigFor(project, roleId);
-    // 기획 검수와 기록 역할은 선택 사항이다. 비워 둔 경우에는 기존 검토 담당자를
-    // 재사용하므로, 새 역할 슬롯을 추가해도 기존 프로젝트 설정은 그대로 동작한다.
-    if (!config.agentId && ["plan_review", "recorder"].includes(roleId)) {
-      config = roleConfigFor(project, "review");
+  // 토론 자동 기록 담당: 방금 끝난 구조화 토론의 마지막 단계(종합/판정) 발언자가 있으면 그 에이전트,
+  // 없으면 첫 활성 에이전트. 쓸 수 있는 에이전트가 없으면 null(조용히 건너뜀).
+  function recordAgentFor(project, room) {
+    const usable = (agent) => agent && agent.available && agent.enabled !== false;
+    const meta = room.messages.findLast((m) => m.discussionMeta)?.discussionMeta;
+    const stepCount = meta?.protocol?.stepCount;
+    let agent = null;
+    if (stepCount) {
+      const from = room.messages.findIndex((m) => m.id === meta.startMessageId);
+      const synth = room.messages
+        .slice(Math.max(from, 0))
+        .findLast((m) => m.authorType === "agent" && m.discussionTurnMeta?.step === stepCount);
+      agent = room.findAgent(synth?.author);
     }
-    if (!config.agentId) {
-      return { ok: false, error: `${roleLabel} 담당자를 프로젝트 설정에서 지정해 주세요.` };
-    }
-    const agent = room.findAgent(config.agentId);
-    if (!agent || !agent.available || agent.enabled === false) {
-      return { ok: false, error: `${roleLabel} 담당 에이전트 @${config.agentId}를 사용할 수 없습니다.` };
-    }
-    const projectDefault = project.defaultAgents?.[config.agentId] || {};
-    const agentConfig = {
-      model: config.model && config.model !== "default"
-        ? config.model
-        : projectDefault.model || agent.model || "default",
-      effort: config.effort && config.effort !== "default"
-        ? config.effort
-        : projectDefault.effort || agent.effort || "default",
+    if (!usable(agent)) agent = room.enabledAgents()[0] || null;
+    if (!agent) return null;
+    const projectDefault = project.defaultAgents?.[agent.id] || {};
+    return {
+      agent,
+      agentConfig: {
+        model: projectDefault.model || agent.model || "default",
+        effort: projectDefault.effort || agent.effort || "default",
+      },
     };
-    return { ok: true, agent, agentConfig };
   }
 
   async function recordDiscussion(sessionId) {
@@ -966,8 +959,8 @@ function roomMeta(meta) {
     const meta = store.readMeta(sessionId);
     const project = projectForSession(meta);
     if (!room || !project) return { ok: false, error: "토론 프로젝트를 찾을 수 없습니다." };
-    const recorder = specialistStageFor(project, room, "recorder");
-    if (!recorder.ok) return recorder;
+    const recorder = recordAgentFor(project, room);
+    if (!recorder) return { ok: false, error: "기록을 맡을 에이전트를 사용할 수 없습니다." };
     // 토론 기록은 전문 실행이 아닙니다. 전문 실행 Recorder 단계로 보내면 run 권한과
     // Professional session identity(professionalRunId)를 요구하는데 토론에는 Run이
     // 없어 매번 실패했고, recorder 역할의 context 경계 때문에 정작 요약할 대화조차
@@ -991,13 +984,6 @@ function roomMeta(meta) {
     if (!ensureStore()) return null;
     const session = store.getSession(sessionId);
     if (!session) return null;
-    const sessionProject = projectForSession(session.meta);
-    const workflow = ensureWorkflowStore();
-    if (workflow && sessionProject && sessionProject.workspace && !workflow.readOnly) {
-      try {
-        workflow.reconcileProjectTasks(sessionProject.id, sessionProject.workspace);
-      } catch {}
-    }
 
     const room = new ChatRoom({
       sessionId,
@@ -1313,13 +1299,6 @@ function roomMeta(meta) {
         if (patch?.defaultAgents && typeof patch.defaultAgents === "object" && !Array.isArray(patch.defaultAgents)) {
           next.defaultAgents = patch.defaultAgents;
         }
-        if (patch?.defaultRoles && typeof patch.defaultRoles === "object" && !Array.isArray(patch.defaultRoles)) {
-          next.defaultRoles = patch.defaultRoles;
-        }
-        // 전문 실행 자동 보완 정책(프로젝트 단위). 값 검증·clamp는 project-store가 한다.
-        if (patch?.autoRevisions && typeof patch.autoRevisions === "object" && !Array.isArray(patch.autoRevisions)) {
-          next.autoRevisions = patch.autoRevisions;
-        }
         const project = ensureProjectStore().updateProject(projectId, next);
         for (const [sessionId] of rooms) {
           const meta = store.readMeta(sessionId);
@@ -1557,14 +1536,13 @@ function roomMeta(meta) {
           if (!decision || decision.projectId !== project.id) throw new Error("연결할 결정을 찾을 수 없습니다.");
         }
         const selectedRole = ROLE_DEFS.some((entry) => entry.id === role) ? role : "implementation";
-        const roleConfig = roleConfigFor(project, selectedRole);
         const task = workflow.createTask({
           projectId: project.id,
           title,
           description,
           status,
           role: selectedRole,
-          agentId: agentId || roleConfig.agentId || null,
+          agentId: agentId || null,
           decisionId,
           chatId: sourceChatId,
         });

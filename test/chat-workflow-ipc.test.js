@@ -36,7 +36,7 @@ function makeFeature(root) {
   };
 }
 
-test("프로젝트 기본 에이전트와 역할 담당자를 저장한다", async () => {
+test("프로젝트 기본 에이전트를 저장한다", async () => {
   const feature = makeFeature(makeRoot());
   const initial = await feature.invoke("chat:state");
   const projectId = initial.activeProjectId;
@@ -44,19 +44,11 @@ test("프로젝트 기본 에이전트와 역할 담당자를 저장한다", asy
     projectId,
     patch: {
       defaultAgents: { codex: { enabled: true, model: "gpt-5", effort: "high" } },
-      defaultRoles: {
-        implementation: { agentId: "codex", model: "gpt-5", effort: "high" },
-        review: "claude",
-        recorder: { agentId: "claude", model: "claude-record", effort: "medium" },
-      },
     },
   });
 
   assert.equal(updated.ok, true);
   assert.equal(updated.project.defaultAgents.codex.model, "gpt-5");
-  assert.equal(updated.project.defaultRoles.review, "claude");
-  assert.equal(updated.project.defaultRoles.implementation.model, "gpt-5");
-  assert.equal(updated.project.defaultRoles.recorder.agentId, "claude");
   assert.equal(updated.workflow.tasks.length, 0);
 
   const nextChat = await feature.invoke("chat:sessions:create");
