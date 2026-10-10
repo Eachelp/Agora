@@ -1783,12 +1783,26 @@ function roomMeta(meta) {
           throw new Error("기본 프로젝트는 삭제할 수 없습니다.");
         }
         const deletingActive = getActiveProjectId() === project.id;
+        // 옮겨진 대화는 chat:sessions:move와 같이 대상(기본 프로젝트) 기준으로
+        // workspace·권한을 다시 씁니다. 옛 폴더가 남으면 재시작 때 기본 프로젝트의
+        // workspace로 되살아납니다.
+        const target = ensureProjectStore().getProject(UNCATEGORIZED_PROJECT_ID);
         for (const entry of store.listSessions()) {
           const meta = store.readMeta(entry.id);
           if (projectIdForMeta(meta) !== project.id) continue;
-          store.updateMeta(entry.id, { projectId: UNCATEGORIZED_PROJECT_ID });
+          const patch = { projectId: UNCATEGORIZED_PROJECT_ID };
+          if (target?.workspace) {
+            patch.workspace = target.workspace;
+            patch.permissionMode = defaultPermissionMode(target.defaultPermissionMode, target.workspace);
+          } else {
+            patch.workspace = null;
+            patch.permissionMode = "chat";
+          }
+          store.updateMeta(entry.id, patch);
           refreshRoomAgents(entry.id);
         }
+        // 삭제도 workspace 해제와 같은 경계다: 이 프로젝트의 managed harness session을 닫는다.
+        harnessRuntime.workspaceChanged({ projectId: project.id });
         ensureWorkflowStore()?.moveProjectItems(project.id, UNCATEGORIZED_PROJECT_ID);
         if (!ensureProjectStore().deleteProject(project.id)) {
           throw new Error("프로젝트를 삭제하지 못했습니다.");
