@@ -163,6 +163,7 @@ class ChatRoom extends EventEmitter {
     this.questionTool = options.questionTool || null;
     // runId → { handle, agentId, turnId, run } : 질문 도구가 붙은 실행.
     this.questionRuns = new Map();
+    this.questionShellNoticed = new Set();
     // questionId → 질문 기록. 다시 켠 뒤에는 답을 기다리던 질문이 '중단됨'으로 돌아온다(답할 수 없다).
     this.userQuestions = new Map();
     this.interruptedOnLoad = [];
@@ -1023,6 +1024,11 @@ class ChatRoom extends EventEmitter {
     let questionToolPossible = false;
     try {
       questionToolPossible = Boolean(this.questionTool?.canAttach?.(agent, questionPurpose));
+      // 셸 래퍼(.cmd) 설치는 조용히 빠지면 카드가 왜 안 뜨는지 알 길이 없다. 에이전트마다 한 번 알린다.
+      if (!questionToolPossible && questionPurpose === "chat" && this.questionTool?.support?.(agent, questionPurpose)?.code === "shell" && !this.questionShellNoticed.has(agent.id)) {
+        this.questionShellNoticed.add(agent.id);
+        this.appendSystem(`@${agent.id}는 셸 래퍼(.cmd)로 설치돼 있어 일하는 도중 묻는 질문 카드를 쓰지 못합니다. 결정이 필요하면 응답 끝에서 묻는 방식으로 진행합니다.`);
+      }
     } catch {}
     let prompt;
     let buildPrompt;

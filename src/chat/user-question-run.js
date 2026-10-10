@@ -35,7 +35,7 @@ function resolveMcpScript(dir = __dirname) {
 function questionToolSupport({ providerId, needsShell = false, purpose, hasBroker = true } = {}) {
   if (providerId !== "claude" && providerId !== "codex") return { ok: false, reason: "이 통로는 실행 중 질문 연결을 지원하지 않습니다." };
   if (!ATTACHABLE_PURPOSES.includes(purpose)) return { ok: false, reason: "이 종류의 실행에는 질문 도구를 붙이지 않습니다." };
-  if (needsShell) return { ok: false, reason: "셸 래퍼(.cmd)로 설치된 CLI에는 질문 설정을 안전하게 전달할 수 없습니다." };
+  if (needsShell) return { ok: false, code: "shell", reason: "셸 래퍼(.cmd)로 설치된 CLI에는 질문 설정을 안전하게 전달할 수 없습니다." };
   if (!hasBroker) return { ok: false, reason: "질문 중계소를 사용할 수 없습니다." };
   return { ok: true, reason: "" };
 }
@@ -74,9 +74,11 @@ async function attachUserQuestionTool({
 // needsShellOf(agent)는 그 에이전트 CLI가 셸 래퍼(.cmd)로 설치됐는지 알려 준다(방은 실행 정보를 모른다).
 function createRoomQuestionTool({ broker, sessionId, needsShellOf = () => false } = {}) {
   const target = (agent, purpose) => ({ providerId: agent?.id, needsShell: Boolean(needsShellOf(agent)), purpose });
+  const support = (agent, purpose) => questionToolSupport({ ...target(agent, purpose), hasBroker: Boolean(broker) });
   return {
     broker,
-    canAttach: (agent, purpose) => questionToolSupport({ ...target(agent, purpose), hasBroker: Boolean(broker) }).ok,
+    support,
+    canAttach: (agent, purpose) => support(agent, purpose).ok,
     attach: ({ agent, runId, turnId = null, purpose }) => attachUserQuestionTool({
       broker, runId, ...target(agent, purpose), meta: { sessionId, agentId: agent.id, turnId },
     }),
