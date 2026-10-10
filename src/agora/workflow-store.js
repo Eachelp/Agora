@@ -173,7 +173,8 @@ class WorkflowStore {
   // 내용"으로 오판해 저장을 건너뛰지 않게 합니다. mutate가 데이터를 바꾸고,
   // 실패하면 restore로 이전 스냅숏을 되돌린 뒤 오류를 다시 던집니다.
   mutateAndPersist(mutate) {
-    const snapshot = { decisions: [...this.data.decisions], tasks: [...this.data.tasks] };
+    // 전체(schemaVersion 포함)를 깊은 복사로 보관해야, 항목을 제자리에서 바꾸는 경로도 되돌아갑니다.
+    const snapshot = structuredClone(this.data);
     const result = mutate();
     try {
       this.persist();
