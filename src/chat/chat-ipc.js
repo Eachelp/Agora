@@ -55,6 +55,7 @@ const { createChatWindow } = require("./chat-window");
 // 세션별로 남겨두는 실행 원본 로그 개수. 진단에는 최근 실행만 필요하므로
 // 무한히 쌓이지 않게 오래된 파일부터 지웁니다.
 const MAX_RUN_LOG_FILES = 20;
+const MAX_TASK_FILE_BYTES = 256 * 1024;
 // 앱을 켜 둔 동안 CLI 버전·로그인·모델 목록을 다시 확인하는 간격입니다.
 // (버전 확인은 가볍고, 모델 카탈로그는 캐시 TTL이 지났을 때만 다시 조회합니다.)
 const PROVIDER_RECHECK_INTERVAL_MS = 60 * 60 * 1000;
@@ -142,12 +143,41 @@ function persistInvocationMetrics({ store, sessionId, runId, agent, result }) {
   return Boolean(saved?.ok);
 }
 
+// 파일 기반 작업 카드(contentSource "file")의 본문을 읽기 전용으로 읽는다.
+// 허용: <워크스페이스>/.project-memory/tasks/<이름>.md 일반 파일, 256KB 이하,
+// realpath가 그 폴더 안에 있을 것(심볼릭 링크로 밖을 가리키면 거절).
+function readTaskFileText(workspace, taskPath) {
+  const fail = (message) => { throw new Error(message); };
+  if (!workspace) fail("프로젝트 폴더가 연결되어 있지 않습니다.");
+  const match = /^(?:\.\/)?\.project-memory\/tasks\/([A-Za-z0-9._-]+\.md)$/.exec(
+    String(taskPath || "").replace(/\\/g, "/")
+  );
+  if (!match) fail("올바르지 않은 TASK 파일 경로입니다.");
+  const same = (a, b) => (process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b);
+  let real;
+  try {
+    const expectedDir = path.join(fs.realpathSync(workspace), ".project-memory", "tasks");
+    const dir = fs.realpathSync(expectedDir);
+    if (!same(dir, expectedDir)) fail("프로젝트 폴더 밖을 가리키는 TASK 폴더는 열 수 없습니다.");
+    real = fs.realpathSync(path.join(dir, match[1]));
+    if (!same(path.dirname(real), dir)) fail("TASK 폴더 밖을 가리키는 파일은 열 수 없습니다.");
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") fail("TASK 파일을 찾을 수 없습니다.");
+    throw error;
+  }
+  const stat = fs.statSync(real);
+  if (!stat.isFile()) fail("TASK 파일을 찾을 수 없습니다.");
+  if (stat.size > MAX_TASK_FILE_BYTES) fail("TASK 파일이 너무 커서 열 수 없습니다.");
+  return fs.readFileSync(real, "utf8");
+}
+
 // 오래된 실행 로그를 정리합니다. 실패해도 실행에는 영향을 주지 않습니다.
 // keepPath로 지정한 파일(방금 기록한 로그)은 항상 보존합니다.
 function pruneRunLogs(store, sessionId, keepPath = null) {
   try {
     const dir = store.runLogsDir(sessionId);
-    for (const suffix of [".log", ".evidence.json"]) {
+    // 옛 전문 모드가 남긴 *.evidence.json은 보존 대상이라 정리하지 않는다.
+    for (const suffix of [".log"]) {
       const entries = fs
         .readdirSync(dir)
         .filter((name) => name.endsWith(suffix))
@@ -1479,6 +1509,18 @@ function roomMeta(meta) {
         broadcast("chat:workflow-changed", { projectId: project.id, workflow: workflowForProject(project.id) });
         refreshWorkflowForProject(project.id);
         return { ...payload, task };
+      })
+    );
+
+    // 파일 기반 작업 카드의 본문 읽기(읽기 전용). 저장소가 읽기 전용이어도 열어 볼 수 있다.
+    ipcMain.handle(
+      "chat:tasks:read-file",
+      wrap(async ({ projectId, taskPath }) => {
+        const projects = ensureProjectStore();
+        if (!projects) throw new Error(projectStoreError || "프로젝트 저장소를 사용할 수 없습니다.");
+        const project = projects.getProject(projectId || getActiveProjectId());
+        if (!project) throw new Error("프로젝트를 찾을 수 없습니다.");
+        return { content: readTaskFileText(project.workspace, taskPath), taskPath: String(taskPath || "") };
       })
     );
 

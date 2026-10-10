@@ -2530,6 +2530,42 @@ function openWorkflowPopover(anchor) {
       }
     });
 
+    // 파일 기반 작업 카드(contentSource "file")는 본문이 프로젝트 폴더의 TASK 파일에만 있다.
+    // 읽기 전용으로 펼쳐 보여 준다(textContent만 사용).
+    function taskFileView(task) {
+      if (task.contentSource !== "file" || !task.taskPath) return null;
+      const box = document.createElement("div");
+      box.className = "workflow-card-file";
+      const label = document.createElement("span");
+      label.className = "workflow-card-meta";
+      label.textContent = `TASK 파일: ${String(task.taskPath).split(/[\\/]/).pop()} (프로젝트 폴더)`;
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "button button-small";
+      toggle.textContent = "내용 보기";
+      const body = document.createElement("pre");
+      body.className = "workflow-card-file-body";
+      body.hidden = true;
+      let loaded = false;
+      toggle.addEventListener("click", async () => {
+        if (!body.hidden) {
+          body.hidden = true;
+          toggle.textContent = "내용 보기";
+          return;
+        }
+        if (!loaded) {
+          const result = await call(window.chatApi.tasksReadFile(project.id, task.taskPath));
+          if (!result) return;
+          body.textContent = result.content;
+          loaded = true;
+        }
+        body.hidden = false;
+        toggle.textContent = "내용 닫기";
+      });
+      box.append(label, toggle, body);
+      return box;
+    }
+
     function renderTaskCard(task) {
       const card = document.createElement("article");
       card.className = "workflow-card";
@@ -2538,7 +2574,7 @@ function openWorkflowPopover(anchor) {
       cardTitle.textContent = task.title;
       const cardText = document.createElement("div");
       cardText.className = "workflow-card-text";
-      cardText.textContent = task.description || "설명 없음";
+      cardText.textContent = task.description || (task.contentSource === "file" ? "본문은 TASK 파일에 있습니다." : "설명 없음");
       const meta = document.createElement("div");
       meta.className = "workflow-card-meta";
       const decisionLabel = task.decisionId
@@ -2566,7 +2602,7 @@ function openWorkflowPopover(anchor) {
       const owner = document.createElement("select");
       const projectDefault = document.createElement("option");
       projectDefault.value = "";
-      projectDefault.textContent = "프로젝트 기본";
+      projectDefault.textContent = "담당자 미지정";
       owner.append(projectDefault);
       for (const agent of agents) {
         const option = document.createElement("option");
@@ -2618,7 +2654,8 @@ function openWorkflowPopover(anchor) {
         openWorkflowPopover(anchor);
       });
       controls.append(status, role, owner, edit, save, remove);
-      card.append(cardTitle, cardText, meta, controls);
+      const fileView = taskFileView(task);
+      card.append(cardTitle, cardText, ...(fileView ? [fileView] : []), meta, controls);
       return card;
     }
 

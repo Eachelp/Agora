@@ -26,6 +26,7 @@ const INVOKE = Object.freeze({
   TASKS_UPDATE: "chat:tasks:update",
   TASKS_DELETE: "chat:tasks:delete",
   TASKS_RESOLVE: "chat:tasks:resolve",
+  TASKS_READ_FILE: "chat:tasks:read-file",
   SESSIONS_CREATE: "chat:sessions:create",
   SESSIONS_SELECT: "chat:sessions:select",
   SESSIONS_MOVE: "chat:sessions:move",
@@ -91,6 +92,8 @@ contextBridge.exposeInMainWorld("chatApi", {
   tasksCreate: (input) => ipcRenderer.invoke(INVOKE.TASKS_CREATE, input),
   tasksUpdate: (projectId, taskId, patch) =>
     ipcRenderer.invoke(INVOKE.TASKS_UPDATE, { projectId, taskId, patch }),
+  tasksReadFile: (projectId, taskPath) =>
+    ipcRenderer.invoke(INVOKE.TASKS_READ_FILE, { projectId, taskPath }),
   tasksDelete: (projectId, taskId) => ipcRenderer.invoke(INVOKE.TASKS_DELETE, { projectId, taskId }),
   tasksResolve: (projectId, ids, action) =>
     ipcRenderer.invoke(INVOKE.TASKS_RESOLVE, { projectId, ids, action }),

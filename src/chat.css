@@ -2802,6 +2802,24 @@ textarea:focus-visible {
   overflow-wrap: anywhere;
 }
 
+.workflow-card-file {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.workflow-card-file-body {
+  flex-basis: 100%;
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+
 .workflow-card-meta {
   color: var(--muted);
   font-size: 10.5px;
