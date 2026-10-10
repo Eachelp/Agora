@@ -196,6 +196,8 @@ function runAgentProcess({
   promptTransport = "stdin",
   silenceWarningMs = DEFAULT_SILENCE_WARNING_MS,
   requireFinal = null,
+  // 이 실행에만 더할 환경 변수(없으면 상위 환경 그대로). 질문 도구를 붙인 Claude 실행의 MCP_TOOL_TIMEOUT에 쓴다.
+  extraEnv = null,
 }) {
   // 호출자가 명시한 경우에만 구조화된 final을 요구한다. 일반 채팅은 CLI 버전
   // 호환을 위해 중간 출력을 최종 결과로 승격하는 fallback을 쓴다.
@@ -312,6 +314,7 @@ function runAgentProcess({
         shell: Boolean(needsShell),
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
+        ...(extraEnv ? { env: { ...process.env, ...extraEnv } } : {}),
       });
     } catch (error) {
       finish({ ok: false, error: `실행 실패: ${error.message}` });

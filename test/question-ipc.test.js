@@ -383,9 +383,26 @@ test("앱이 만든 실행 인자로 띄운 진짜 MCP 서버를 거쳐 답이 �
   assert.match(text, /A: "그냥요"/);
   assert.match(text, /도구·파일 사용을 허락한 것이 아닙니다/);
   assert.equal(captured.length, 1, "실행은 한 번뿐이다");
+  assert.deepEqual(captured[0].extraEnv, { MCP_TOOL_TIMEOUT: "1800000" }, "Claude의 MCP 도구 시간 제한을 30분으로 맞춘다");
   assert.match(captured[0].prompt, /agora_user_question 서버의 ask_user 도구/);
   assert.deepEqual(waiting, [true, false]);
   await waitFor(() => env.channel("chat:user-question").at(-1).question.status === "answered", 5000, "전달 확인");
+});
+
+test("질문 도구를 붙이지 않는 실행은 실행 인자도 환경도 예전 모양 그대로 하네스에 간다", async (t) => {
+  const captured = [];
+  const harnessAdapter = { runTurn: ({ invocation }) => { captured.push(invocation); return { promise: Promise.resolve({ ok: true, text: "완료" }), cancel() {} }; } };
+  const records = [fakeRecord("claude", "Claude", ["claude"], { needsShell: true }), fakeRecord("agy", "Antigravity", ["agy"])];
+  const env = await setup(t, { harnessAdapter, records });
+  await env.invoke("chat:send", { sessionId: env.sessionId, text: "@claude 안녕" });
+  await waitFor(() => captured.length === 1);
+  await env.invoke("chat:send", { sessionId: env.sessionId, text: "@agy 안녕" });
+  await waitFor(() => captured.length === 2);
+  for (const invocation of captured) {
+    assert.equal("extraEnv" in invocation, false);
+    assert.equal(invocation.argv.some((arg) => /^--mcp-config$|agora_user_question|^--allowedTools$/.test(arg)), false);
+    assert.doesNotMatch(invocation.prompt, /ask_user|agora_user_question/);
+  }
 });
 
 test("preload·main·화면이 같은 채널 이름을 쓴다", () => {

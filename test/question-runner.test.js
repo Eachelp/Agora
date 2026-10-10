@@ -97,6 +97,14 @@ test("답을 기다리다 끝난 실행도 기다린 시간을 지표에 남기�
   assert.doesNotThrow(() => run.setWaitingUser(true));
 });
 
+test("extraEnv는 그 실행의 자식 프로세스에만 더해지고, 주지 않으면 환경을 건드리지 않는다", async () => {
+  const script = "process.stdout.write(String(process.env.AGORA_TEST_EXTRA_ENV))";
+  const base = { commandPath: process.execPath, argv: ["-e", script], prompt: "", cwd: os.tmpdir(), silenceWarningMs: 0 };
+  assert.equal((await runAgentProcess({ ...base, extraEnv: { AGORA_TEST_EXTRA_ENV: "켜짐" } }).promise).text, "켜짐");
+  assert.equal((await runAgentProcess(base).promise).text, "undefined");
+  assert.equal(process.env.AGORA_TEST_EXTRA_ENV, undefined);
+});
+
 test("대기 시간은 지표 파일에도 저장된다", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agora-qmetrics-"));
   const metrics = buildRunMetrics({ startedAt: 1000, finishedAt: 9000, promptChars: 5, userWaitingMs: 6000, result: { ok: true } });
