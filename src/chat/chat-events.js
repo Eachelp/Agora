@@ -150,7 +150,9 @@ function parseClaudeLine(line) {
     // API 오류(로그인 만료·429·한도)는 subtype이 "success"인 채 is_error:true로 온다.
     // 성공 검사를 먼저 하면 오류 문구가 정상 답변으로 저장되므로 오류를 먼저 본다.
     if (event.is_error || (event.subtype && event.subtype !== "success")) {
-      return { kind: "error", message: truncateLabel(event.result || event.subtype || "실행 오류", 200) };
+      // subtype이 "success"인 채 result가 비어 오면 "success"라는 단어가 오류 문구가 되므로 쓰지 않는다.
+      const fallback = event.subtype && event.subtype !== "success" ? event.subtype : "Claude가 오류로 실행을 마쳤지만 내용을 알려 주지 않았습니다.";
+      return { kind: "error", message: truncateLabel(event.result || fallback, 200) };
     }
     if (event.subtype === "success" && typeof event.result === "string") {
       return { kind: "final", text: event.result };

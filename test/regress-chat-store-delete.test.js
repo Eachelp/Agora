@@ -258,3 +258,97 @@ test("F140: 삭제가 끝내 실패하면 세션은 그대로 남고 오류가 �
     cleanup(root);
   }
 });
+
+// R3: 실패한 첫 rmSync 뒤 속성을 풀 때 폴더에 0o666을 주면 POSIX에서 x(탐색) 비트가 사라져 다시 실패한다.
+// Windows에는 이 권한 모델이 없어 재현되지 않는다. 그래서 win32(와 root)에서는 건너뛰며,
+// 이 머신(Windows)에서는 실행해 보지 못했다 — POSIX 빌드에서 처음 검증된다.
+test("R3: 쓰기 불가 하위 폴더가 든 오래된 휴지통 항목도 정리되고 저장소는 정상 시작한다",
+  { skip: process.platform === "win32" || (typeof process.getuid === "function" && process.getuid() === 0) },
+  () => {
+    const root = tempRoot();
+    try {
+      const store = new ChatStore({ root }).init();
+      const session = store.createSession({});
+      store.deleteSession(session.id);
+      const dir = path.join(root, "trash", session.id);
+      fs.writeFileSync(path.join(dir, "trash.json"), JSON.stringify({ deletedAt: 1 }));
+      const sub = path.join(dir, "checkpoints");
+      fs.mkdirSync(sub, { recursive: true });
+      fs.writeFileSync(path.join(sub, "copy.txt"), "x");
+      fs.chmodSync(sub, 0o555); // 안의 파일을 지울 수 없어 첫 rmSync가 EACCES로 실패한다
+      new ChatStore({ root }).init();
+      assert.equal(fs.existsSync(dir), false, "속성을 푼 뒤 다시 시도해 실제로 지워져야 한다");
+    } finally {
+      try { for (const p of fs.readdirSync(root, { recursive: true })) { try { fs.chmodSync(path.join(root, p), 0o777); } catch {} } } catch {}
+      cleanup(root);
+    }
+  });
+
+// R3 (Windows에서도 도는 판): 속성을 풀 때 폴더에는 x 비트를 지키는 모드를, 파일에는 0o666을 준다.
+test("R3: 첫 정리가 실패해 속성을 풀 때 폴더에 0o666을 주지 않는다", () => {
+  const root = tempRoot();
+  const calls = [];
+  const chmod = fs.chmodSync;
+  let unpatch = () => {};
+  try {
+    const store = new ChatStore({ root }).init();
+    const session = store.createSession({});
+    store.deleteSession(session.id);
+    const dir = path.join(root, "trash", session.id);
+    fs.writeFileSync(path.join(dir, "trash.json"), JSON.stringify({ deletedAt: 1 }));
+    fs.mkdirSync(path.join(dir, "checkpoints"), { recursive: true });
+    const ro = path.join(dir, "checkpoints", "copy.txt");
+    fs.writeFileSync(ro, "x");
+    fs.chmodSync(ro, 0o444);
+    unpatch = patchReadOnlyRm();
+    fs.chmodSync = function patched(target, mode) {
+      calls.push([path.relative(dir, String(target)), mode]);
+      return chmod.call(fs, target, mode);
+    };
+    new ChatStore({ root }).init();
+    assert.equal(fs.existsSync(dir), false);
+    const sub = calls.find(([rel]) => rel === "checkpoints");
+    const file = calls.find(([rel]) => rel === path.join("checkpoints", "copy.txt"));
+    assert.ok(sub && (sub[1] & 0o100) !== 0, "폴더는 탐색(x) 비트를 유지해야 한다");
+    assert.equal(file && file[1], 0o666);
+  } finally {
+    fs.chmodSync = chmod;
+    unpatch();
+    cleanup(root);
+  }
+});
+
+// R2: 실행이 끝나(liveRuns 0) 뒤에도 원본 로그 스트림은 잠시 더 열려 있다. Windows에서는 그동안 폴더를
+// 옮기거나 지울 수 없으므로 삭제는 로그가 실제로 닫힐 때까지 기다려야 한다. 닫힘을 150ms 늦춰 그 틈을 만든다.
+test("R2: 실행이 끝난 직후에도 원본 로그가 닫힐 때까지 기다린 뒤 삭제한다", async () => {
+  const root = tempRoot();
+  const harness = makeStreamingHarness();
+  const feature = makeFeature(root, harness.runtime);
+  const state = await feature.invoke("chat:state");
+  const sessionId = state.activeSessionId;
+  const sdir = path.join(root, "sessions", sessionId);
+  const streams = [];
+  const createWriteStream = fs.createWriteStream;
+  fs.createWriteStream = function patched(...args) {
+    const stream = createWriteStream.apply(fs, args);
+    const destroy = stream._destroy.bind(stream);
+    stream._destroy = (error, cb) => setTimeout(() => destroy(error, cb), 150);
+    streams.push(stream);
+    return stream;
+  };
+  let unpatch = () => {};
+  try {
+    const sent = await feature.invoke("chat:send", { sessionId, text: "@claude 긴 답변을 써줘" });
+    assert.equal(sent.ok, true);
+    await waitFor(() => harness.runs.length >= 1 && streams.length >= 1);
+    unpatch = patchWindowsLock(sessionId, () => streams.some((s) => !s.closed));
+    const deleted = await feature.invoke("chat:sessions:delete", { sessionId });
+    assert.equal(deleted.ok, true, deleted.error);
+    assert.equal(fs.existsSync(sdir), false);
+    assert.equal(fs.existsSync(path.join(root, "trash", sessionId, "meta.json")), true);
+  } finally {
+    fs.createWriteStream = createWriteStream;
+    unpatch();
+    cleanup(root);
+  }
+});

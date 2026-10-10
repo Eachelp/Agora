@@ -71,6 +71,10 @@ const MAX_TASK_READ_BYTES = 5 * 1024 * 1024;
 // Stage D-0 workspace mutation provenance journal의 상한(process 수명 기준).
 const MAX_WORKSPACE_MUTATION_EVENTS = 2000;
 
+// end() 이후 파일 핸들이 실제로 닫힐 때까지의 Promise. 세션 삭제가 기다린다(Windows는 열린 파일이 있으면
+// 폴더를 옮기거나 지울 수 없다).
+const closingRunLogs = new Set();
+
 // 실행 원본 stdout을 파일로 흘려보내는 writer.
 // 메모리에 전체를 들고 있지 않으므로 출력이 아무리 길어도 진단 정보를 남길 수 있습니다.
 // 파일을 만들 수 없는 환경에서는 조용히 비활성화되고 실행에는 영향을 주지 않습니다.
@@ -117,7 +121,10 @@ function createRunLogWriter(store, sessionId, runId) {
         try {
           // 정리는 flush 이후에 합니다. 그렇지 않으면 방금 만든 로그의 mtime이
           // 아직 갱신되지 않아 스스로 삭제 대상이 될 수 있습니다.
+          const closed = new Promise((resolve) => (stream.closed ? resolve() : stream.once("close", resolve)));
           stream.end(() => pruneRunLogs(store, sessionId, closedPath));
+          closingRunLogs.add(closed);
+          closed.then(() => closingRunLogs.delete(closed));
         } catch {}
       } else if (closedPath) {
         pruneRunLogs(store, sessionId, closedPath);
@@ -2107,6 +2114,8 @@ function roomMeta(meta) {
           if (room.liveRuns > 0) {
             throw new Error("답변 중인 작업이 아직 끝나지 않아 삭제하지 못했습니다. 잠시 뒤 다시 시도해 주세요.");
           }
+          // 실행이 끝나도 원본 로그 핸들은 잠시 더 열려 있다. 닫힐 때까지 기다린다.
+          await Promise.all([...closingRunLogs]);
         }
         // 실패하면 던진다: 세션은 그대로 남고 화면에 오류가 보인다(좀비 세션 방지).
         store.deleteSession(sessionId);

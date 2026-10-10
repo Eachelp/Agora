@@ -37,7 +37,7 @@ if errorlevel 1 goto :fetchfail
 
 set BEHIND=0
 for /f "delims=" %%n in ('git rev-list --count HEAD..origin/main') do set BEHIND=%%n
-if "%BEHIND%"=="0" goto :uptodate
+if "%BEHIND%"=="0" if exist "node_modules\electron\dist\electron.exe" goto :uptodate
 
 set OLDLOCK=
 for /f "delims=" %%h in ('git hash-object package-lock.json') do set OLDLOCK=%%h
@@ -52,7 +52,7 @@ if "%NEWVER%"=="" set NEWVER=알 수 없음
 
 set NEWLOCK=
 for /f "delims=" %%h in ('git hash-object package-lock.json') do set NEWLOCK=%%h
-if "%OLDLOCK%"=="%NEWLOCK%" goto :skipnpm
+if "%OLDLOCK%"=="%NEWLOCK%" if exist "node_modules\electron\dist\electron.exe" goto :skipnpm
 
 echo [3/3] 패키지 업데이트 중...
 call npm install

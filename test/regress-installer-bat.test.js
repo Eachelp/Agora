@@ -33,3 +33,17 @@ test("업데이트 스크립트도 npm install 뒤 electron.exe를 확인하고 
   assert.ok(check < update.indexOf("goto :done", npm), "완료 안내로 가기 전에 확인해야 합니다");
   assert.match(update.slice(update.indexOf("\r\n:electronfail\r\n")), /pause\r\nexit \/b 1\r\n$/);
 });
+
+// R1: git pull이 이미 끝난 뒤에는 다시 실행해도 "최신 버전"으로 끝나 npm install을 못 돌린다.
+// electron.exe가 없으면 "최신"·"lock 변경 없음" 어느 쪽 지름길도 타지 않고 npm install로 가야
+// :electronfail의 "다시 실행해 주세요" 안내가 실제로 복구 경로가 된다.
+test("업데이트 스크립트는 electron.exe가 없으면 최신·lock 무변경 지름길을 타지 않고 npm install을 다시 시도한다", () => {
+  const exe = 'if exist "node_modules\\electron\\dist\\electron.exe" goto ';
+  const uptodate = update.indexOf('if "%BEHIND%"=="0" ' + exe + ":uptodate\r\n");
+  const skip = update.indexOf('if "%OLDLOCK%"=="%NEWLOCK%" ' + exe + ":skipnpm\r\n");
+  assert.ok(uptodate >= 0, "이미 최신이어도 electron.exe가 없으면 :uptodate로 끝내면 안 됩니다");
+  assert.ok(skip > uptodate, "lock이 같아도 electron.exe가 없으면 :skipnpm으로 건너뛰면 안 됩니다");
+  assert.ok(skip < update.indexOf("call npm install\r\n"), "지름길 판정은 npm install보다 앞에 있어야 합니다");
+  assert.ok(!/(^|\r\n)if "%BEHIND%"=="0" goto :uptodate/.test(update), "무조건 :uptodate로 가는 줄이 남아 있으면 안 됩니다");
+  assert.ok(!/(^|\r\n)if "%OLDLOCK%"=="%NEWLOCK%" goto :skipnpm/.test(update), "무조건 :skipnpm으로 가는 줄이 남아 있으면 안 됩니다");
+});

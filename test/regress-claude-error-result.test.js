@@ -86,6 +86,21 @@ test("parseClaudeLine: success + is_error:true는 final이 아니라 error", () 
   assert.match(parsed.message, /OAuth session expired/);
 });
 
+// R5: result가 비어 있으면 오류 문구가 "success"라는 단어가 되던 문제.
+for (const result of ["", undefined]) {
+  test(`parseClaudeLine: success + is_error:true + result ${result === undefined ? "없음" : "빈 문자열"}이면 읽을 수 있는 안내를 쓴다`, () => {
+    const parsed = parseClaudeLine(resultLine(result));
+    assert.equal(parsed.kind, "error");
+    assert.equal(parsed.message, "Claude가 오류로 실행을 마쳤지만 내용을 알려 주지 않았습니다.");
+  });
+}
+
+test("parseClaudeLine: 실패 subtype은 result가 없을 때 subtype을 그대로 보여 준다", () => {
+  const parsed = parseClaudeLine(resultLine("", { subtype: "error_max_turns" }));
+  assert.equal(parsed.kind, "error");
+  assert.equal(parsed.message, "error_max_turns");
+});
+
 for (const exitCode of [0, 1]) {
   test(`chat:send: 로그인 만료 결과(종료 코드 ${exitCode})는 정상 답변이 아니라 오류 말풍선이다`, async (t) => {
     const messages = await runClaudeTurn(t, [INIT,

@@ -44,7 +44,10 @@ function rmTreeForce(dir) {
   } catch {}
   try {
     for (const rel of fs.readdirSync(dir, { recursive: true })) {
-      try { fs.chmodSync(path.join(dir, rel), 0o666); } catch {}
+      // 폴더는 x(탐색) 비트를 지키고 쓰기만 열어 둔다. 0o666이면 POSIX에서 폴더에 못 들어가 다시 실패한다.
+      // (Windows에서는 두 모드 모두 읽기 전용 속성만 푼다.)
+      const entry = path.join(dir, rel);
+      try { fs.chmodSync(entry, fs.lstatSync(entry).isDirectory() ? 0o777 : 0o666); } catch {}
     }
   } catch {}
   fs.rmSync(dir, { recursive: true, force: true });
