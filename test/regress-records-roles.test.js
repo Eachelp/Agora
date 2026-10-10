@@ -1,7 +1,7 @@
 "use strict";
 
 // 전문 모드 제거 S6 — 프로젝트 역할·자동 보완 설정 제거, Planner 작업 카드 프롬프트 제외,
-// 토론 자동 기록 담당 선정. 진입점(createChatFeature + fake ipcMain)으로 확인한다.
+// (토론 자동 기록 담당은 regress-discussion-record.test.js). 진입점(createChatFeature + fake ipcMain)으로 확인한다.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -61,41 +61,6 @@ async function waitFor(condition, timeoutMs = 3000) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
-
-const CONCLUDE = "[[CODEPET_DISCUSSION:CONCLUDE]]";
-// 토론 기록 호출은 토론 발언과 달리 결론 신호 없이 본문만 돌려준다.
-const reply = ({ prompt }) => (prompt.includes("토론 기록자") ? "기록 본문" : `의견 ${CONCLUDE}`);
-
-async function recordedBy(feature, calls, discussionInput) {
-  const state = await feature.invoke("chat:state");
-  const sessionId = state.activeSessionId;
-  await feature.invoke("chat:send", { sessionId, text: "토론 주제입니다" });
-  await waitFor(() => calls.length >= 2);
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  calls.length = 0;
-  const started = await feature.invoke("chat:discussion:start", { sessionId, ...discussionInput });
-  assert.equal(started.ok, true, started.error);
-  // 토론이 끝나면 자동으로 기록 턴이 한 번 더 돈다 — 기록이 메모리에 쌓일 때까지 기다린다.
-  await waitFor(async () => (await feature.invoke("chat:memory:read", {})).content.includes("토론 요약 초안"));
-  return calls[calls.length - 1].agentId;
-}
-
-test("자유 토론이 끝나면 첫 활성 에이전트가 자동 기록을 맡는다", async () => {
-  const calls = [];
-  const feature = makeFeature(makeRoot(), calls, reply);
-  const agent = await recordedBy(feature, calls, { agentIds: ["codex", "claude"], turnBudget: 4 });
-  assert.equal(agent, "claude", "활성 에이전트 목록의 첫 에이전트가 기록한다(발언 순서와 무관)");
-});
-
-test("구조화 토론이 끝나면 마지막 단계(종합/판정) 발언자가 자동 기록을 맡는다", async () => {
-  const calls = [];
-  const feature = makeFeature(makeRoot(), calls, reply);
-  // shaping의 종합자 slot은 세 번째 배정(codex)이다.
-  const agent = await recordedBy(feature, calls, {
-    presetId: "shaping", cycleBudget: 1, roleAssignments: ["claude", "codex", "codex"],
-  });
-  assert.equal(agent, "codex");
-});
 
 test("옛 프로젝트 JSON의 역할·자동 보완 키는 읽을 때만 걸러지고 파일에는 그대로 남는다", async () => {
   const root = makeRoot();

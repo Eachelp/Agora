@@ -73,9 +73,45 @@ function defaultPermissionMode(value, workspace) {
 }
 
 // 옛 프로젝트 JSON에 남은 전문 모드 키(역할·자동 보완). 읽을 때만 걸러 내고 파일에는 그대로 둔다.
+// 단, 자동 기록은 recordAgent가 없으면 v1.1.1처럼 옛 recorder→review 역할을 따르므로 그 담당 값만
+// legacyRecorder로 풀어 내보낸다(역할 전체는 내보내지 않는다).
+function sanitizeRecordAgent(value) {
+  if (typeof value !== "string") return undefined;
+  const id = value.trim();
+  return id === "" || /^[a-z0-9_-]{1,32}$/i.test(id) ? id : undefined;
+}
+
+function legacyRecorderOf(defaultRoles) {
+  for (const key of ["recorder", "review"]) {
+    const raw = defaultRoles?.[key];
+    const role = typeof raw === "string" ? { agentId: raw } : raw;
+    const agentId = typeof role?.agentId === "string" ? role.agentId.trim() : "";
+    if (!/^[a-z0-9_-]{1,32}$/i.test(agentId)) continue;
+    const model = String(role.model || "").trim().slice(0, 160);
+    const effort = String(role.effort || "").trim().slice(0, 32);
+    return { agentId, ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
+  }
+  return null;
+}
+
 function withoutLegacyKeys(project) {
   const { defaultRoles, autoRevisions, ...rest } = project;
-  return rest;
+  const legacyRecorder = legacyRecorderOf(defaultRoles);
+  return legacyRecorder ? { ...rest, legacyRecorder } : rest;
+}
+
+// 토론 자동 기록 담당 해석. recordAgent(문자열 id, ""은 끔)가 있으면 그것이, 없으면 v1.1.1처럼
+// 옛 recorder 역할(없으면 review 역할)이 정한다. agents는 지금 쓸 수 있는(활성) 에이전트 목록이고,
+// 담당이 꺼졌거나 쓸 수 없으면 null(조용히 건너뜀).
+function resolveRecordTarget(project, agents) {
+  const recordAgent = sanitizeRecordAgent(project?.recordAgent);
+  if (recordAgent === "") return null;
+  const legacy = recordAgent === undefined ? project?.legacyRecorder : null;
+  const agent = (agents || []).find((a) => a.id === (recordAgent || legacy?.agentId));
+  if (!agent) return null;
+  const saved = project?.defaultAgents?.[agent.id] || {};
+  const pick = (own, key) => (own && own !== "default" ? own : saved[key] || agent[key] || "default");
+  return { agent, agentConfig: { model: pick(legacy?.model, "model"), effort: pick(legacy?.effort, "effort") } };
 }
 
 function projectDefaults(input = {}) {
@@ -214,6 +250,9 @@ class ProjectStore {
         : current.defaultPermissionMode,
       defaultAgents: Object.hasOwn(patch, "defaultAgents") ? patch.defaultAgents : current.defaultAgents,
     });
+    // 자동 기록 담당: patch에 없으면 건드리지 않고(옛 역할 폴백 유지), 유효한 값만 저장한다("" = 끔).
+    const recordAgent = sanitizeRecordAgent(patch.recordAgent);
+    if (recordAgent !== undefined) defaults.recordAgent = recordAgent;
     // 옛 defaultRoles·autoRevisions를 지우지 않도록 디스크 원본 위에 합친다(호출자에게는 걸러서 돌려준다).
     const next = {
       ...(readJsonSafe(this.projectPath(id)) || current),
@@ -304,4 +343,5 @@ module.exports = {
   sessionDefaultsFromProject,
   migrateSessionsToProjects,
   defaultPermissionMode,
+  resolveRecordTarget,
 };

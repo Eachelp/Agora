@@ -881,6 +881,23 @@ function openProjectSettings(anchor, project) {
       defaultAgentControls.set(agent.id, { enabled, model, effort });
     }
 
+    // 토론 자동 기록: 실제 적용값(저장한 recordAgent, 없으면 옛 recorder→review 역할)을 보여 준다.
+    const record = document.createElement("select");
+    const recordOff = document.createElement("option");
+    recordOff.value = "";
+    recordOff.textContent = "기록 안 함";
+    record.append(recordOff);
+    for (const agent of agents) {
+      if (!agent.available || (project.defaultAgents?.[agent.id]?.enabled ?? agent.enabled) === false) continue;
+      const option = document.createElement("option");
+      option.value = agent.id;
+      option.textContent = `${agent.name} (@${agent.id})`;
+      record.append(option);
+    }
+    record.value = typeof project.recordAgent === "string" ? project.recordAgent : project.legacyRecorder?.agentId || "";
+    if (record.selectedIndex < 0) record.value = "";
+    const recordInitial = record.value;
+
     const actions = document.createElement("div");
     actions.className = "project-popover-actions";
     const save = document.createElement("button");
@@ -901,6 +918,8 @@ function openProjectSettings(anchor, project) {
         context: context.value,
         defaultPermissionMode: permission.value,
         defaultAgents,
+        // 건드리지 않았으면 보내지 않아 옛 역할 폴백을 그대로 둔다.
+        ...(record.value !== recordInitial ? { recordAgent: record.value } : {}),
       }));
       if (result) {
         closePopover();
@@ -934,6 +953,7 @@ function openProjectSettings(anchor, project) {
       makeField("새 대화 기본 권한", permission),
       makeField("프로젝트 폴더", workspaceField),
       defaultAgentSection,
+      makeField("토론 자동 기록", record),
       actions
     );
   });

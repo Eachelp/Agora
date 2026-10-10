@@ -8,6 +8,7 @@ const {
   sessionDefaultsFromProject,
   migrateSessionsToProjects,
   defaultPermissionMode,
+  resolveRecordTarget,
 } = require("../agora/project-store");
 const {
   WorkflowStore,
@@ -886,39 +887,14 @@ function roomMeta(meta) {
     return lines.join("\n");
   }
 
-  // 토론 자동 기록 담당: 방금 끝난 구조화 토론의 마지막 단계(종합/판정) 발언자가 있으면 그 에이전트,
-  // 없으면 첫 활성 에이전트. 쓸 수 있는 에이전트가 없으면 null(조용히 건너뜀).
-  function recordAgentFor(project, room) {
-    const usable = (agent) => agent && agent.available && agent.enabled !== false;
-    const meta = room.messages.findLast((m) => m.discussionMeta)?.discussionMeta;
-    const stepCount = meta?.protocol?.stepCount;
-    let agent = null;
-    if (stepCount) {
-      const from = room.messages.findIndex((m) => m.id === meta.startMessageId);
-      const synth = room.messages
-        .slice(Math.max(from, 0))
-        .findLast((m) => m.authorType === "agent" && m.discussionTurnMeta?.step === stepCount);
-      agent = room.findAgent(synth?.author);
-    }
-    if (!usable(agent)) agent = room.enabledAgents()[0] || null;
-    if (!agent) return null;
-    const projectDefault = project.defaultAgents?.[agent.id] || {};
-    return {
-      agent,
-      agentConfig: {
-        model: projectDefault.model || agent.model || "default",
-        effort: projectDefault.effort || agent.effort || "default",
-      },
-    };
-  }
-
   async function recordDiscussion(sessionId) {
     const room = getRoom(sessionId);
     const meta = store.readMeta(sessionId);
     const project = projectForSession(meta);
     if (!room || !project) return { ok: false, error: "토론 프로젝트를 찾을 수 없습니다." };
-    const recorder = recordAgentFor(project, room);
-    if (!recorder) return { ok: false, error: "기록을 맡을 에이전트를 사용할 수 없습니다." };
+    // 기록 담당을 정한 프로젝트에서만 기록한다(recordAgent, 없으면 옛 recorder→review 역할).
+    const recorder = resolveRecordTarget(project, room.enabledAgents());
+    if (!recorder) return { ok: false, error: "이 프로젝트는 토론 자동 기록을 쓰지 않거나, 담당 에이전트를 사용할 수 없습니다." };
     // 토론 기록은 전문 실행이 아닙니다. 전문 실행 Recorder 단계로 보내면 run 권한과
     // Professional session identity(professionalRunId)를 요구하는데 토론에는 Run이
     // 없어 매번 실패했고, recorder 역할의 context 경계 때문에 정작 요약할 대화조차
@@ -1254,6 +1230,7 @@ function roomMeta(meta) {
         if (typeof patch?.defaultPermissionMode === "string") {
           next.defaultPermissionMode = patch.defaultPermissionMode;
         }
+        if (typeof patch?.recordAgent === "string") next.recordAgent = patch.recordAgent;
         if (patch?.defaultAgents && typeof patch.defaultAgents === "object" && !Array.isArray(patch.defaultAgents)) {
           next.defaultAgents = patch.defaultAgents;
         }
