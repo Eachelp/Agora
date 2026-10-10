@@ -1,10 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const os = require("node:os");
-const path = require("node:path");
 
-const { ChatStore } = require("../src/chat/chat-store");
 const {
   JOURNAL_SCHEMA_VERSION,
   JOURNAL_EVENT_TYPES,
@@ -12,16 +8,6 @@ const {
   journalEventsForTransition,
 } = require("../src/agora/professional-journal");
 const { createProfessionalRun } = require("../src/agora/professional-run");
-const { ChatRoom } = require("../src/chat/chat-room");
-
-function makeStore(options = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agora-journal-"));
-  const store = new ChatStore({ root, ...options });
-  store.init();
-  return store;
-}
-
-// --- 저장 계층 (chat-store) ---
 
 // --- 이벤트 생성과 전이 매핑 (professional-journal) ---
 
@@ -125,18 +111,3 @@ test("매핑에 없는 전이는 이벤트를 만들지 않는다", () => {
   assert.deepEqual(journalEventsForTransition(run, { type: "SOMETHING_ELSE" }, run), []);
   assert.deepEqual(journalEventsForTransition(run, {}, run), []);
 });
-
-// --- FSM seam 통합 (transitionProfessional) ---
-
-function makeMixinRoom(overrides = {}) {
-  const room = Object.create(ChatRoom.prototype);
-  room.professionalRun = createProfessionalRun({ node: "PLANNING", status: "RUNNING" });
-  room.persistProfessionalRun = () => true;
-  room.emitSpecialistState = () => {};
-  room.harnessLifecycle = null;
-  room.journalWriteFailureNotified = false;
-  room.systemNotices = [];
-  room.appendSystem = (text) => room.systemNotices.push(text);
-  Object.assign(room, overrides);
-  return room;
-}

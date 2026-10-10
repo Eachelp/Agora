@@ -3,13 +3,6 @@
 // Stage C — Session Invalidation / Lifecycle: 상위 control-plane seam.
 //
 // 검증 목표:
-//   - ChatRoom(SpecialistMixin)이 canonical terminal transition에서만
-//     harnessLifecycle.professionalRunEnded를 부른다(COMPLETED/INTERRUPTED/INVALID/
-//     REPLAN_RESET; WAITING/BLOCKED류 비-terminal은 호출 없음).
-//   - checkpoint restore 결과 소비: 성공/ambiguous 실패 → workspaceRestored,
-//     mutation-전 실패(mutated:false) → 세션 유지(호출 없음).
-//   - ChatRoom.respond가 canonical Frozen Task provenance(RUN-###+taskHash)를
-//     runAgent에 전달한다(transport runId와 별개).
 //   - chat-ipc: workspace choose/clear가 HarnessRuntime.workspaceChanged를 부르고,
 //     chatFeature.notifyProviderAccountChanged가 providerAccountChanged로 위임된다.
 //   - turn-checkpoint.restoreCheckpoint가 mutation 여부 fact(mutated)를 보고한다.
@@ -23,44 +16,11 @@ const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 
-const { ChatRoom } = require("../src/chat/chat-room");
 const { createChatFeature } = require("../src/chat/chat-ipc");
 const turnCheckpoint = require("../src/agora/turn-checkpoint");
 const { ClaudeAccountSwitcher } = require("../src/claude-account-switcher");
 const { AntigravityAccountSwitcher } = require("../src/antigravity-account-switcher");
 const { CodexAccountSwitcher } = require("../src/codex-account-switcher");
-
-function makeAgents() {
-  return [
-    { id: "claude", name: "Claude", aliases: ["claude"], available: true, enabled: true },
-  ];
-}
-
-function lifecycleSpy() {
-  const events = [];
-  return {
-    events,
-    hook: {
-      workspaceRestored: () => events.push({ kind: "workspaceRestored" }),
-      professionalRunEnded: (payload) => events.push({ kind: "professionalRunEnded", ...payload }),
-    },
-  };
-}
-
-function roomWith(run, spy, extra = {}) {
-  return new ChatRoom({
-    agents: makeAgents(),
-    initialProfessionalRun: run,
-    harnessLifecycle: spy.hook,
-    ...extra,
-  });
-}
-
-// ---- Professional Run terminal boundary ----
-
-// ---- checkpoint restore 소비 seam ----
-
-// ---- respond → runAgent canonical Frozen provenance ----
 
 // ---- chat-ipc: workspace change / provider account seam ----
 
