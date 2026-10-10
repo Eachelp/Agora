@@ -31,7 +31,12 @@ const ASK_TWO = [
   { question: "이유를 적어 주세요." },
 ];
 
-async function setup(t, { runner, harnessAdapter, records = [fakeRecord("claude", "Claude", ["claude"])], storeRoot } = {}) {
+// 임시 폴더는 시험이 끝나면 지운다(윈도에서 막 닫은 파일이 잠깐 잡혀 있을 수 있어 몇 번 다시 시도한다).
+const cleanup = (...dirs) => { for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); };
+
+// permission: 방 권한. 일하는 도중 묻는 질문은 파일 작업 권한(읽기·쓰기)이 있는 방에서만 붙으므로 기본은 workspace-read다.
+// 'chat'(대화 전용)이면 프로젝트 없이 기본 방을 쓴다.
+async function setup(t, { runner, harnessAdapter, records = [fakeRecord("claude", "Claude", ["claude"])], storeRoot, permission = "workspace-read" } = {}) {
   const sent = [];
   const handlers = new Map();
   const windows = [];
@@ -46,6 +51,7 @@ async function setup(t, { runner, harnessAdapter, records = [fakeRecord("claude"
     }
   }
   const root = storeRoot || fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-question-")));
+  const workspace = !storeRoot && permission !== "chat" ? fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-question-ws-"))) : null;
   const feature = createChatFeature({
     electron: {
       ipcMain: { handle: (channel, handler) => handlers.set(channel, handler), on() {}, send() {} },
@@ -64,10 +70,18 @@ async function setup(t, { runner, harnessAdapter, records = [fakeRecord("claude"
   });
   feature.registerIpcHandlers();
   feature.openWindow();
-  t.after(() => feature.shutdown());
+  t.after(() => {
+    feature.shutdown();
+    cleanup(...(storeRoot ? [] : [root]), ...(workspace ? [workspace] : []));
+  });
   const invoke = async (channel, input = {}) => handlers.get(channel)({}, input);
   const state = await invoke("chat:state");
-  const env = { feature, invoke, sent, windows, root, handlers, sessionId: state.activeSessionId, state };
+  let sessionId = state.activeSessionId;
+  if (workspace) {
+    sessionId = (await invoke("chat:projects:create", { name: "질문", workspace })).session.meta.id;
+    await invoke("chat:permission:set", { sessionId, mode: permission });
+  }
+  const env = { feature, invoke, sent, windows, root, handlers, sessionId, state };
   env.channel = (name) => sent.filter((entry) => entry.channel === name).map((entry) => entry.payload);
   env.statusOf = (sessionId) => {
     const last = sent.filter((entry) => entry.channel === "chat:sessions-changed").pop();
@@ -215,6 +229,7 @@ test("앱을 끄면 답을 기다리던 질문은 '중단됨'으로 기록에 �
 
 test("다시 켜면 답을 기다리던 질문은 '중단됨'이라 기록에만 남고 답할 수 없으며, 기록은 한 번만 덧붙는다", async (t) => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-question-restart-")));
+  t.after(() => cleanup(root));
   const seed = new ChatStore({ root }).init();
   const sessionId = seed.createSession({}).id;
   const question = {
@@ -301,6 +316,7 @@ test("방마다 질문이 따로이고, 한 방의 중지는 다른 방의 질�
   const env = await setup(t, { runner: scriptedRunner(askAndEcho(), log) });
   const a = env.sessionId;
   const b = (await env.invoke("chat:sessions:create", {})).session.meta.id;
+  await env.invoke("chat:permission:set", { sessionId: b, mode: "workspace-read" });
   await env.invoke("chat:send", { sessionId: a, text: "@claude A" });
   await env.invoke("chat:send", { sessionId: b, text: "@claude B" });
   await waitFor(() => env.channel("chat:user-question").filter((p) => p.question.status === "pending").length === 2);
@@ -421,4 +437,36 @@ test("preload·main·화면이 같은 채널 이름을 쓴다", () => {
   assert.match(main, /"chat:question:answer"/);
   assert.match(main, /"chat:question:cancel"/);
   assert.match(main, /broadcast\("chat:user-question"/);
+});
+
+// 대화 전용(chat) 권한의 방은 파일 작업이 없어 답도 짧게 끝난다. 일하는 도중 묻는 도구를 붙이면 시작이 느려지고
+// 토큰만 늘므로(특히 Codex) 붙이지 않고, 예전처럼 응답 끝에서 묻는다. 중계소(루프백 서버)도 시작하지 않는다.
+test("대화 전용 방의 실행에는 질문 도구도, 셸 래퍼 안내도, 중계소도 없고 인자·환경은 예전 그대로다", async (t) => {
+  const http = require("node:http");
+  const originalCreateServer = http.createServer;
+  let servers = 0;
+  http.createServer = (...args) => { servers += 1; return originalCreateServer.apply(http, args); };
+  t.after(() => { http.createServer = originalCreateServer; });
+
+  const captured = [];
+  const harnessAdapter = { runTurn: ({ invocation }) => { captured.push(invocation); return { promise: Promise.resolve({ ok: true, text: "완료" }), cancel() {} }; } };
+  const records = [
+    fakeRecord("claude", "Claude", ["claude"]),
+    fakeRecord("codex", "Codex", ["codex"], { needsShell: true }),
+  ];
+  const env = await setup(t, { harnessAdapter, records, permission: "chat" });
+  await env.invoke("chat:send", { sessionId: env.sessionId, text: "@claude 안녕" });
+  await waitFor(() => captured.length === 1);
+  await env.invoke("chat:send", { sessionId: env.sessionId, text: "@codex 안녕" });
+  await waitFor(() => captured.length === 2);
+
+  for (const invocation of captured) {
+    assert.equal("extraEnv" in invocation, false, "MCP 도구 시간 제한 환경 변수도 더하지 않는다");
+    assert.equal(invocation.argv.some((arg) => /^--mcp-config$|^--allowedTools$|mcp_servers|agora_user_question/.test(arg)), false);
+    assert.doesNotMatch(invocation.prompt, /ask_user|agora_user_question/);
+    assert.match(invocation.prompt, /ASK_USER: <질문 한 줄>/, "끝에서 묻는 방식은 그대로다");
+  }
+  assert.equal(servers, 0, "중계소는 시작하지 않는다");
+  const session = (await env.invoke("chat:sessions:select", { sessionId: env.sessionId })).session;
+  assert.equal(session.messages.some((m) => m.authorType === "system" && /셸 래퍼|\.cmd|질문 도구/.test(m.text)), false, "대화 전용 방에서는 설치 방식 안내가 나오지 않는다");
 });

@@ -59,6 +59,8 @@ const PROGRESS_STALL_MINUTES = 10;
 // 실행 중 질문(ask_user) 기록. 끝난(되돌릴 수 없는) 상태와, 방이 기억하는 기록 수 상한.
 const QUESTION_TERMINAL = new Set(["answered", "cancelled", "interrupted"]);
 const MAX_USER_QUESTIONS = 200;
+// 일하는 도중 묻는 질문 도구를 붙일 수 있는 방 권한(파일 작업). 대화 전용(chat)에는 붙이지 않는다.
+const FILE_WORK_PERMISSIONS = new Set(["workspace-read", "workspace-write"]);
 // 중계소가 쓰는 상태 이름 → 화면·기록이 쓰는 상태 이름.
 const QUESTION_STATUS = Object.freeze({
   pending: "pending",
@@ -1019,8 +1021,10 @@ class ChatRoom extends EventEmitter {
 
     const mentionDepth = context.mentionDepth || 0;
 
-    // 이 턴이 실행 중 질문 도구를 붙일 수 있는 종류인가(토론·결론 종합·쉽게 설명 같은 도우미 턴은 아니다).
-    const questionPurpose = this.isFreeChatContext(context) ? "chat" : "other";
+    // 이 턴이 실행 중 질문 도구를 붙일 수 있는 종류인가. 자유 대화이면서 파일 작업 권한(읽기·쓰기)이 있는
+    // 턴만이다. 토론·결론 종합·쉽게 설명 같은 도우미 턴과 대화 전용(chat) 턴은 아니다 — 대화 전용 답은
+    // 짧아 끝에서 묻는 것으로 충분하고, 붙이면 시작이 느려지고 토큰이 늘기만 한다.
+    const questionPurpose = this.isFreeChatContext(context) && FILE_WORK_PERMISSIONS.has(permissionMode) ? "chat" : "other";
     let questionToolPossible = false;
     try {
       questionToolPossible = Boolean(this.questionTool?.canAttach?.(agent, questionPurpose));

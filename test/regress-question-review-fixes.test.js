@@ -33,7 +33,7 @@ test("질문 카드가 스크롤돼도 보내기·건너뛰기 줄은 카드 아
   assert.ok(vh > 0 && vh < 50, `카드 영역 높이 상한이 ${vh}vh`);
 });
 
-function shellRoom(t) {
+function shellRoom(t, meta = { permissionMode: "workspace-read" }) {
   const broker = createUserQuestionBroker({ onCallbackError: () => {} });
   t.after(() => broker.stop());
   const log = {};
@@ -45,6 +45,7 @@ function shellRoom(t) {
       { id: "agy", name: "Antigravity", aliases: ["agy"], available: true, enabled: true },
     ],
     runAgent: scriptedRunner(async () => "네", log),
+    meta,
     questionTool: createRoomQuestionTool({ broker, sessionId: "s1", needsShellOf: (a) => a.id === "codex" }),
   });
   return { room, log };
@@ -80,4 +81,12 @@ test("사용자 문서가 .cmd 한계와 매 턴 붙는 비용(Codex 시작 지�
   const record = read("docs", "design", "AGORA_REVISION_2026-10-11_QUESTION_UI.md");
   assert.doesNotMatch(record, /필요한 실행에만 붙인다/, "실제로는 일반 대화 턴마다 붙는다");
   assert.match(record, /매번[^\n]*붙/);
+});
+
+test("대화 전용 방에서는 셸 래퍼(.cmd) 안내가 나오지 않는다(붙일 일이 없었으므로)", async (t) => {
+  const { room, log } = shellRoom(t, { permissionMode: "chat" });
+  room.sendUserMessage("@codex 안녕");
+  await room.waitForIdle();
+  assert.equal(room.messages.filter((m) => m.authorType === "system").length, 0);
+  assert.ok(log.calls.every((c) => !("userQuestion" in c)));
 });

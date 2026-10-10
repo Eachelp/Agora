@@ -34,6 +34,7 @@ function setup(t, { sessions = ["s1"], runner, needsShellOf, brokerOptions = {},
       sessionId,
       agents: AGENTS(),
       runAgent: runner,
+      meta: { permissionMode: "workspace-read" }, // 일하는 도중 묻기는 파일 작업 권한이 있는 방에서만 붙는다
       questionTool: createRoomQuestionTool({ broker, sessionId, needsShellOf }),
       ...roomOptions,
     });
@@ -347,6 +348,7 @@ test("질문 도구를 붙이지 못하면 이유를 알리고, 프롬프트도 
     sessionId: "s1",
     agents: AGENTS(),
     runAgent: (args) => { calls.push(args); return { promise: Promise.resolve({ ok: true, text: "완료" }), cancel() {} }; },
+    meta: { permissionMode: "workspace-read" }, // 일하는 도중 묻기는 파일 작업 권한이 있는 방에서만 붙는다
     questionTool: {
       broker: {},
       canAttach: () => true,
@@ -412,4 +414,27 @@ test("질문을 기다리는 동안 뒤 차례의 안내 문구는 사용자의 
   assert.ok(room.messages.some((m) => m.authorType === "system" && /사용자의 답을 기다리는 질문이 있습니다/.test(m.text)));
   room.stopAll();
   await room.waitForIdle();
+});
+
+test("대화 전용(chat) 방의 일반 대화에는 질문 도구를 붙이지 않고 실행 인자 모양도 예전 그대로다(파일 작업 권한이 있는 방에는 붙는다)", async (t) => {
+  for (const [mode, attached] of [["chat", false], ["workspace-read", true], ["workspace-write", true]]) {
+    const log = {};
+    const { room, broker } = setup(t, {
+      runner: scriptedRunner(async () => "끝", log),
+      roomOptions: { meta: { permissionMode: mode } },
+    });
+    room.sendUserMessage("@claude 안녕");
+    room.sendUserMessage("@codex 안녕");
+    await room.waitForIdle();
+    assert.equal(log.calls.length, 2, mode);
+    for (const call of log.calls) {
+      assert.equal("userQuestion" in call, attached, `${mode}: ${call.agent.id}`);
+      if (attached) continue;
+      assert.deepEqual(Object.keys(call).sort(), ["agent", "attachments", "autoApprove", "emitEvent", "permissionMode", "prompt", "runId"]);
+      assert.doesNotMatch(call.prompt, /ask_user|agora_user_question/);
+      assert.match(call.prompt, /ASK_USER: <질문 한 줄>/, "끝에서 묻는 방식은 그대로다");
+    }
+    // 중계소는 질문 도구를 실제로 붙일 때만 시작한다(대화 전용 방에서는 등록된 실행도 없다).
+    assert.equal(broker.listPending().length, 0);
+  }
 });

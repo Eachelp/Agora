@@ -25,6 +25,7 @@ function setup(t, runner, roomOptions = {}) {
     sessionId: "s1",
     agents: AGENTS(),
     runAgent: runner,
+    meta: { permissionMode: "workspace-read" }, // 일하는 도중 묻기는 파일 작업 권한이 있는 방에서만 붙는다
     questionTool: createRoomQuestionTool({ broker, sessionId: "s1" }),
     ...roomOptions,
   });
