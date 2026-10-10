@@ -52,3 +52,22 @@
 ### 회귀 테스트
 
 `test/regress-settings-ui.test.js`(F131·F163·F132: 실제 `settings.js`를 가짜 DOM과 가짜 `settingsApi`로 실행), `test/regress-settings-persistence.test.js`(F144·F134·F133), `test/regress-provider-capabilities-cache-env.test.js`(F168·F160). 모두 수정 전 코드에서 실패하고 수정 후 통과한다. `test/provider-capabilities.test.js`의 AGY 캐시 버전 단언은 고정 숫자 대신 내보낸 상수를 본다.
+
+## 묶음 B3 — 저장소·첨부·마크다운·작업 기록 저장소
+
+| ID | 상태 | 원인 | 수정 |
+|---|---|---|---|
+| F17 | 수정(토크나이저) | 목록 줄의 번호를 버리고 `<ol>`이 항상 1부터 매겼다. `2026. 10. 10.` 같은 날짜 줄은 연도가 사라지고, 하위 불릿으로 끊긴 단계 목록은 모두 `1.`로 보였다. | 순서 목록의 번호가 1, 2, 3…으로 이어질 때만 목록으로 만들고, 아니면 원문 번호 그대로 문단으로 돌려준다. 렌더러(`chat.js`)는 건드리지 않는다. |
+| F80 | 수정 | 첫 두 글자가 `MZ`이기만 하면 실행 파일로 거부해 `MZ세대 …` 보고서·`MZ,40%` CSV가 막혔다. | `MZ`로 시작하면서 앞쪽 8000바이트 안에 NUL 바이트가 있을 때만 실행 파일로 본다(DOS/PE 헤더에는 항상 있고 텍스트에는 없다). ELF·Mach-O와 위험 확장자 거부는 그대로다. |
+| F143 | 수정 | 마지막 줄이 개행 없이 끊긴 뒤 새 기록이 그 조각 뒤에 이어 붙어 둘 다 못 읽는 줄이 됐다. System Journal(`appendProfessionalEvent`)은 전문 모드 제거로 이미 없다. | `appendEvent`가 파일이 개행으로 끝나지 않으면 새 줄부터 쓴다(`appendJsonlLine`). 읽기(`readJsonlTolerant`)는 조각에 붙어 버린 옛 파일에서 뒤쪽 온전한 기록을 건진다. |
+| F94 | 수정 | 저장 실패 롤백이 `{decisions, tasks}` 얕은 복사로 되돌려 `schemaVersion`이 사라졌고, 항목을 제자리에서 바꾼 경로는 되돌아가지 않았다. | `structuredClone(this.data)` 전체를 보관했다가 되돌린다. |
+
+### 한계
+
+- F17: 1부터 이어지지 않는 번호 목록은 목록 모양(들여쓰기·점) 대신 문단으로 보인다. `chat.js`에서 `<ol start>`·`li.value`를 쓰면 목록 모양까지 살릴 수 있으나 병렬 단계가 소유한 파일이라 손대지 않았다.
+- F80: NUL이 없는 MZ 파일(사실상 없음)은 통과하지만 확장자 거부는 그대로 적용된다. 기존 테스트의 위장 실행 파일 고정값에 NUL 바이트를 넣었다(실제 실행 파일 모양에 맞춤).
+- F143: 조각 복구는 `{"v":1,"ts":` 로 시작하는 기록 하나만 건진다(수정 전 한 번 이어 붙은 경우).
+
+### 회귀 테스트
+
+`test/regress-markdown-ordered-list.test.js`(F17), `test/regress-attachment-mz-text.test.js`(F80), `test/regress-jsonl-torn-line.test.js`(F143, 실제 `ChatStore.appendEvent`), `test/regress-workflow-rollback.test.js`(F94). 수정 전 코드에서 실패하고 수정 후 통과한다.
