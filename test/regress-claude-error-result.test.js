@@ -37,7 +37,7 @@ function fakeRecord(id) {
 // Claude CLI 자리에만 stream-json을 흘려 주는 node 스크립트를 둔다.
 async function runClaudeTurn(t, lines, exitCode) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-claude-err-")));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  t.after(() => fs.promises.rm(root, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 }));
   const script = path.join(root, "fake-claude.js");
   fs.writeFileSync(script,
     `process.stdin.resume();process.stdin.on("data",()=>{});process.stdin.on("end",()=>{});\n` +
