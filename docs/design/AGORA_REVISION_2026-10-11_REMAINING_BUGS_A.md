@@ -10,7 +10,7 @@
 | F122 | 수정 | 삭제 가드(`removePathIfInsideHome`)가 홈 디렉터리 안만 허용해, `AGORA_HOME`이 홈 밖이면 백업 정리·로그인 병합·로그아웃이 모두 거부됐다. | 홈 안 **또는** 자기 저장소(`codex-switch`) 안이면 허용한다. 그 밖 경로는 여전히 거부한다. |
 | F123 | 수정 | `logout()`이 active 표시만 보고 프로필을 지웠다. 설정 목록의 '현재'는 라이브 신원 기준이라 둘이 어긋나면 다른 계정의 저장 로그인이 사라졌다. | 라이브 신원이 맞는 프로필을 먼저 보고, 라이브가 없을 때만 active 표시를 쓴다. |
 | F125 | 수정 | 프록시는 저장 프로필 사본만 토큰을 갱신한다. 시작·전환 때 `saveCurrentAccount`가 더 오래된 라이브 사본으로 그 프로필을 덮어써 새 토큰을 잃었다. | 프로필 사본의 `last_refresh`가 더 새로우면 덮어쓰지 않는다(라이브가 더 새로우면 예전처럼 갱신). 라이브 파일은 건드리지 않는다. 전환할 때는 어차피 프로필이 라이브가 된다. |
-| F127 | 수정 | 프록시가 클라이언트 끊김을 듣지 않아 upstream 응답 스트림이 살아 있었다. | 응답 `close` 때 끝나지 않은 upstream 응답을 `destroy`한다. |
+| F127 | 수정 | 프록시가 클라이언트 끊김을 듣지 않아 upstream 응답 스트림이 살아 있었다. upstream 응답 헤더가 오기 전에 끊기는 경우(Codex를 요청 직후 중지)도 같았다. `close`는 이미 지나간 뒤에 `streamToClient`가 리스너를 달아 영영 불리지 않았고, 헤더를 기다리던 upstream 요청 자체도 취소되지 않았다. | 응답 `close` 때 끝나지 않은 upstream 응답을 `destroy`한다. 요청마다 `AbortController`를 두고 응답 `close`에서 `abort()`해, 그 신호를 `forwardOnce`/`forwardStream`의 upstream 요청에 넘긴다(헤더를 기다리는 요청도 바로 취소되고, 끊긴 뒤에 시작하려는 계정 로테이션 재시도도 upstream으로 나가지 않는다). `streamToClient`는 시작할 때 응답이 이미 닫혀 있으면 upstream 응답을 바로 `destroy`하고 끝낸다. 클라이언트가 먼저 끊은 요청의 오류는 실패로 기록하지 않는다. |
 | F128 | 수정 | AGY 전환·계정 추가는 자격 증명을 바꾼 뒤에 IDE를 재시작한다. 재시작이 실패하면 변경은 적용됐는데 실패로만 보고되고 목록이 갱신되지 않았다. | 스위처가 재시작 실패에 `restartFailedAfterChange`를 달아 던지고, `switchProviderAccount`는 이를 부분 성공으로 처리(성공 반환·사유 안내·목록 갱신)한다. 계정 추가는 오류를 유지하되 "로그인 정보는 지웠지만 AGY를 다시 실행하지 못했습니다" 문구와 함께 목록을 갱신한다. |
 | F129 | 수정 | Codex Desktop을 먼저 끈 뒤 전환이 실패해도 앱을 다시 띄우지 않았다. | 실패 경로에서 `launch()`를 시도하고 결과(이전 계정 그대로 다시 실행함 / 직접 열기)를 안내에 붙인다. |
 | F165 | 수정 | 사용량 조회가 Claude refresh 토큰을 교환했다. 일회용 토큰이라 교환 뒤 저장이 실패하면 새 토큰이 사라져 CLI 로그인이 조용히 풀렸다. | 사용량 조회를 읽기 전용으로 만들었다(`refreshClaudeOAuth` 삭제). 만료·401은 "토큰 만료 (Claude를 한 번 쓰면 갱신)"으로 표시한다. 갱신은 CLI가 한다(Atelier의 최종 결정과 같다). |
@@ -27,7 +27,7 @@
 
 ### 회귀 테스트
 
-`test/regress-codex-account-store.test.js`(F122·F123·F125), `test/regress-account-switching-partial.test.js`(F128·F129·저장소 주입), `test/regress-claude-usage-readonly.test.js`(F165), `test/regress-codex-proxy-abort.test.js`(F127). 모두 수정 전 코드에서 실패하고 수정 후 통과한다.
+`test/regress-codex-account-store.test.js`(F122·F123·F125), `test/regress-account-switching-partial.test.js`(F128·F129·저장소 주입), `test/regress-claude-usage-readonly.test.js`(F165), `test/regress-codex-proxy-abort.test.js`(F127: 스트리밍 도중과 응답 헤더 전 끊김 둘 다). 새 동작을 확인하는 테스트는 수정 전 코드에서 실패하고 수정 후 통과한다. 수정 전에도 통과하는 가드 테스트(옛 동작이 그대로여야 하는 경계)는 `regress-codex-account-store`의 'F122: 홈 밖·저장소 밖 경로는 여전히 지우지 않는다'·'F123: 라이브 인증이 없으면 active 표시의 프로필을 지운다'·'F125: 라이브가 더 새로우면 (Codex CLI가 먼저 갱신) 프로필 사본을 갱신한다'와 `regress-account-switching-partial`의 'F128: 전환 검증 실패(자격 증명 무변경)는 여전히 실패로 던진다' 넷뿐이다.
 
 ## 묶음 B2 — 설정·시작·플랫폼·제공자 기능 탐지
 
@@ -51,7 +51,7 @@
 
 ### 회귀 테스트
 
-`test/regress-settings-ui.test.js`(F131·F163·F132: 실제 `settings.js`를 가짜 DOM과 가짜 `settingsApi`로 실행), `test/regress-settings-persistence.test.js`(F144·F134·F133), `test/regress-provider-capabilities-cache-env.test.js`(F168·F160). 모두 수정 전 코드에서 실패하고 수정 후 통과한다. `test/provider-capabilities.test.js`의 AGY 캐시 버전 단언은 고정 숫자 대신 내보낸 상수를 본다.
+`test/regress-settings-ui.test.js`(F131·F163·F132: 실제 `settings.js`를 가짜 DOM과 가짜 `settingsApi`로 실행), `test/regress-settings-persistence.test.js`(F144·F134·F133), `test/regress-provider-capabilities-cache-env.test.js`(F168·F160). 새 동작을 확인하는 테스트는 수정 전 코드에서 실패하고 수정 후 통과한다. 수정 전에도 통과하는 가드 테스트는 `regress-settings-ui`의 'F131: 이벤트 없이 응답만 오면 그대로 진행 중 패널을 만든다'와 'F163: 진행 중인 로그인이 없으면 패널이 없다' 둘뿐이다. `regress-settings-persistence`는 수정 전에는 새 모듈(`settings-file.js`·`session-end.js`)이 없어 파일 자체를 불러오지 못한다. 그중 F144·F133의 단위 테스트 네 건은 새 모듈 자체의 동작을 확인하므로 수정 전에는 모듈이 없어서 실패할 뿐이고, 옛 동작과 새 동작을 실제로 가르는 것은 F134 테스트 세 건과 `main.js` 연결을 확인하는 두 건(F133·F144)이다. `test/provider-capabilities.test.js`의 AGY 캐시 버전 단언은 고정 숫자 대신 내보낸 상수를 보고, 상수의 형식(`규칙 번호:표 지문`)도 정규식으로 고정한다.
 
 ## 묶음 B3 — 저장소·첨부·마크다운·작업 기록 저장소
 
@@ -70,4 +70,4 @@
 
 ### 회귀 테스트
 
-`test/regress-markdown-ordered-list.test.js`(F17), `test/regress-attachment-mz-text.test.js`(F80), `test/regress-jsonl-torn-line.test.js`(F143, 실제 `ChatStore.appendEvent`), `test/regress-workflow-rollback.test.js`(F94). 수정 전 코드에서 실패하고 수정 후 통과한다.
+`test/regress-markdown-ordered-list.test.js`(F17), `test/regress-attachment-mz-text.test.js`(F80), `test/regress-jsonl-torn-line.test.js`(F143, 실제 `ChatStore.appendEvent`), `test/regress-workflow-rollback.test.js`(F94). 새 동작을 확인하는 테스트는 수정 전 코드에서 실패하고 수정 후 통과한다. 수정 전에도 통과하는 가드 테스트는 `regress-markdown-ordered-list`의 'F17 1부터 이어지는 목록은 그대로 순서 목록이다'와 `regress-attachment-mz-text`의 'F80 진짜 PE 실행 파일은 확장자를 바꿔도 계속 거부한다' 둘뿐이다.
