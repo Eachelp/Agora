@@ -171,6 +171,28 @@ function readTaskFileText(workspace, taskPath) {
   return fs.readFileSync(real, "utf8");
 }
 
+// 이 세션이 지금까지 쓴 가장 큰 runId 번호. 디스크의 로그·지표·증거 파일 이름과
+// 대화 기록의 runId를 함께 본다(로그만 정리돼도 말풍선이 가리키는 번호는 남는다).
+// 앱을 다시 켜면 방이 새로 만들어지므로, 여기서 이어 매기지 않으면 번호가 겹쳐
+// 이전 실행의 원본 로그에 덧붙고 지표·증거 파일을 덮어쓴다.
+function maxRunSeq(store, sessionId, messages = []) {
+  // 파일 이름은 runId를 [^\w.-] → "_"로 바꾼 것이라 같은 규칙으로 맞춰 비교한다.
+  const safe = (value) => String(value || "").replace(/[^\w.-]/g, "_");
+  const prefix = safe(`r${sessionId}-`);
+  const seqOf = (name) => {
+    const text = safe(name);
+    if (!text.startsWith(prefix)) return 0;
+    const match = /^(\d+)(?:\.|$)/.exec(text.slice(prefix.length));
+    return match ? Number(match[1]) : 0;
+  };
+  let max = 0;
+  for (const message of messages) max = Math.max(max, seqOf(message?.runId));
+  try {
+    for (const name of fs.readdirSync(store.runLogsDir(sessionId))) max = Math.max(max, seqOf(name));
+  } catch {}
+  return max;
+}
+
 // 오래된 실행 로그를 정리합니다. 실패해도 실행에는 영향을 주지 않습니다.
 // keepPath로 지정한 파일(방금 기록한 로그)은 항상 보존합니다.
 function pruneRunLogs(store, sessionId, keepPath = null) {
@@ -949,6 +971,7 @@ function roomMeta(meta) {
       sessionId,
       agents: buildRoomAgents(session.meta),
       initialMessages: session.messages,
+      runSeqStart: maxRunSeq(store, sessionId, session.messages),
       runAgent: options.runAgent || makeRunAgent(sessionId),
       prepareAgent: options.prepareAgent,
       meta: roomMeta(session.meta),
@@ -958,7 +981,14 @@ function roomMeta(meta) {
     });
 
     room.on("message", (message) => {
-      store.appendEvent(sessionId, { kind: "message", message });
+      // 저장이 실패해도 예외를 방 안쪽(토론·턴 진행)으로 올리지 않는다. 올리면 토론 플래그가
+      // 남아 대화가 멈춘다. 대신 화면에는 그대로 보여 주고, 저장 실패는 알림으로 알린다.
+      try {
+        store.appendEvent(sessionId, { kind: "message", message });
+      } catch (error) {
+        console.warn("[agora] 대화 기록 저장 실패:", error?.message || error);
+        showSystemNotice(`대화 기록을 디스크에 저장하지 못했습니다. 방금 메시지는 다시 열면 보이지 않을 수 있습니다. (${error?.message || error})`);
+      }
       const claudeObservationChanged = rememberClaudeResolvedModel(message);
       // renderer로는 첨부 내부 레코드(fileName/sha256)를 제거한 사본만 보냅니다.
       const outbound = message.attachments

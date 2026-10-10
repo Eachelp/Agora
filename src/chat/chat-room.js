@@ -10,6 +10,7 @@ const {
   isFinalStep,
   DISCUSSION_HARD_TURN_CEILING,
 } = require("../agora/discussion-protocol");
+const { RATE_LIMITED_STOP_REASON } = require("./rate-limit-signal");
 // 응답 꼬리의 질문 계약(ASK_USER + OPTION).
 const { parseControlOutput, stripControlOutput } = require("./control-output");
 
@@ -89,7 +90,9 @@ class ChatRoom extends EventEmitter {
     this.random = typeof options.random === "function" ? options.random : Math.random;
     this.messages = Array.isArray(options.initialMessages) ? [...options.initialMessages] : [];
     this.generation = 0;
-    this.runSeq = 0;
+    // 앱을 다시 켜도 이전 실행의 로그·지표 파일과 runId가 겹치지 않도록, 호출자가
+    // 디스크에 이미 있는 번호를 읽어 그 다음부터 매기게 넘겨 준다.
+    this.runSeq = Number.isInteger(options.runSeqStart) && options.runSeqStart > 0 ? options.runSeqStart : 0;
     this.turnSeq = 0;
     this.turnQueue = [];
     this.deferredTurnQueue = [];
@@ -319,10 +322,12 @@ class ChatRoom extends EventEmitter {
   // 턴을 공유해, 한 릴레이에서 같은 발언권이 중복 예약되지 않게 합니다.
   scheduleResponse(agent, context = {}) {
     const generation = this.generation;
+    // 담당 에이전트까지 키에 넣는다. 빼면 같은 토론·메시지를 다른 AI에게 한 두 번째
+    // 요청이 첫 턴의 promise를 받고 조용히 사라진다.
     const dedupeKey = context.discussionSummary
-      ? `summary:${context.discussionSummary.discussionId}`
+      ? `summary:${context.discussionSummary.discussionId}:${agent.id}`
       : context.simplifyMeta
-        ? `simplify:${context.simplifyMeta.messageId}`
+        ? `simplify:${context.simplifyMeta.messageId}:${agent.id}`
         : (context.discussion || !context.turnRootId ? null : `${context.turnRootId}:${agent.id}`);
     if (dedupeKey) {
       if (this.pendingTurns.has(dedupeKey)) {
@@ -1340,14 +1345,20 @@ class ChatRoom extends EventEmitter {
     const budget = protocol
       ? protocol.totalTurns
       : clampDiscussionTurnBudget(options.turnBudget, this.discussionRunBudget);
-    if (protocol) {
-      this.appendSystem(
-        `구조화 토론 시작 · ${protocol.presetName} Preset · ${pool.map((agent) => `@${agent.id}`).join(", ")} · ${protocol.cycleBudget}사이클(최대 ${budget}턴)`
-      );
-    } else {
-      this.appendSystem(
-        `자율 토론 시작 · ${pool.map((agent) => `@${agent.id}`).join(", ")} · 최대 ${budget}턴`
-      );
+    // 시작 안내를 기록하다 실패해도 토론 플래그가 남아 대화가 멈추지 않게 한다.
+    try {
+      if (protocol) {
+        this.appendSystem(
+          `구조화 토론 시작 · ${protocol.presetName} Preset · ${pool.map((agent) => `@${agent.id}`).join(", ")} · ${protocol.cycleBudget}사이클(최대 ${budget}턴)`
+        );
+      } else {
+        this.appendSystem(
+          `자율 토론 시작 · ${pool.map((agent) => `@${agent.id}`).join(", ")} · 최대 ${budget}턴`
+        );
+      }
+    } catch (error) {
+      this.endDiscussionState();
+      throw error;
     }
 
     const generation = this.generation;
@@ -1358,15 +1369,23 @@ class ChatRoom extends EventEmitter {
     let failures = 0;
     let wasStopped = false;
     let protocolFailedStep = null;
+    // 자유 토론에서 사용 한도에 걸린 참가자는 남은 토론 동안 차례에서 뺀다.
+    const limitedIds = new Set();
+    let poolExhausted = false;
+    // 주제 메시지의 첨부는 대화 기록에 [첨부: …]로 보이므로 참가자 턴에도 실어 준다.
+    const topicAttachments = this.attachmentsOfMessages([startMessageId]);
     try {
       for (let turn = 1; turn <= budget; turn += 1) {
         if (generation !== this.generation) { wasStopped = true; break; }
         if (this.discussionInterrupted) { concluded = true; wasStopped = true; break; }
         const speaker = protocol ? speakerForTurn(protocol, turn) : null;
+        const activePool = pool.filter((candidate) => !limitedIds.has(candidate.id));
+        if (!protocol && activePool.length < 2) { poolExhausted = true; break; }
         const agent = protocol
           ? agentById.get(speaker.agentId)
-          : pool[(turn - 1) % pool.length];
+          : activePool[(turn - 1) % activePool.length];
         const outcome = await this.scheduleResponse(agent, {
+          ...(topicAttachments.length > 0 ? { attachments: topicAttachments } : {}),
           discussion: protocol
             ? {
                 turn,
@@ -1385,6 +1404,10 @@ class ChatRoom extends EventEmitter {
         if (outcome?.ok) successfulSteps += 1;
         else failures += 1;
         const signal = outcome?.discussionSignal || "CONTINUE";
+        if (!protocol && outcome?.stopReason === RATE_LIMITED_STOP_REASON && !limitedIds.has(agent.id)) {
+          limitedIds.add(agent.id);
+          this.appendSystem(`@${agent.id}가 사용 한도에 도달해 이 토론의 남은 차례에서 제외합니다.`);
+        }
         if (protocol) {
           // 구조화 토론의 각 단계는 다음 단계의 입력 계약이다. 한 단계가
           // 실패한 채 계속 가면 "비평 없는 비평 반영"처럼 계약이 조용히
@@ -1405,16 +1428,22 @@ class ChatRoom extends EventEmitter {
           continue;
         }
         if (signal === "CONCLUDE") { concluded = true; break; }
-        if (signal === "AGREE" || signal === "PASS") settled += 1;
-        else settled = 0;
-        if (settled >= pool.length) { concluded = true; break; }
+        // 실패한 턴은 합의 여부를 알려 주지 않으므로 카운터를 건드리지 않는다.
+        if (outcome?.ok) {
+          if (signal === "AGREE" || signal === "PASS") settled += 1;
+          else settled = 0;
+        }
+        // 한도로 빠진 참가자를 뺀 나머지가 둘 이상일 때만 "남은 전원 합의"로 본다.
+        const remaining = pool.length - limitedIds.size;
+        if (remaining >= 2 && settled >= remaining) { concluded = true; break; }
       }
     } finally {
       if (generation !== this.generation) wasStopped = true;
       const endMessageId = this.messages[this.messages.length - 1]?.id || startMessageId;
       const incomplete = Boolean(wasStopped || (!concluded && completed >= budget) || failures > 0);
-      // "failed"는 구조화 토론의 즉시 중단(단계 실패로 break)에만 쓴다 —
-      // protocolFailedStep이 그 유일한 신호다. 자유토론은 한 명이 실패해도
+      // "failed"는 구조화 토론의 즉시 중단(단계 실패로 break)과, 자유토론에서
+      // 한도에 걸리지 않은 참가자가 한 명만 남아 더 이어갈 수 없을 때 쓴다.
+      // 자유토론은 한 명이 실패해도
       // 나머지가 계속 말하고 예산까지 진행하므로, 도중의 일시적 실패로
       // "실패로 마쳤습니다"로 오표기하지 않는다(실제 종료 사유는 예산 도달).
       const structuredFailure = Boolean(protocolFailedStep);
@@ -1422,7 +1451,7 @@ class ChatRoom extends EventEmitter {
       const allFailed = !protocol && completed > 0 && failures >= completed && !concluded;
       const reason = wasStopped
         ? "interrupted"
-        : (structuredFailure || allFailed)
+        : (structuredFailure || allFailed || poolExhausted)
           ? "failed"
           : (!concluded && completed >= budget)
             ? "budget"
@@ -1437,11 +1466,13 @@ class ChatRoom extends EventEmitter {
           ? `${protocolFailedStep.role.name} 단계 응답 실패로 구조화 토론을 중단했습니다.`
           : allFailed
             ? "모든 에이전트 응답이 실패해 토론을 마쳤습니다."
+            : poolExhausted
+              ? "사용 한도에 걸리지 않은 참가자가 한 명뿐이라 토론을 여기서 마쳤습니다."
             : (!concluded && completed >= budget)
               ? budgetText
             : "참가자들이 합의하거나 결론에 도달해 토론을 마쳤습니다.";
 
-      this.appendMessage({
+      const conclusionMessage = {
         authorType: "system",
         author: "system",
         text: conclusionText,
@@ -1483,15 +1514,25 @@ class ChatRoom extends EventEmitter {
               }
             : {}),
         },
-      });
-      this.discussionActive = false;
-      this.discussionRequested = false;
-      this.discussionInterrupted = false;
-      this.turnQueue.push(...this.deferredTurnQueue.splice(0));
-      this.emitTurnState();
-      this.pumpTurnQueue();
+      };
+      // 결론 기록이 예외를 던져도 플래그·대기 턴 복구는 반드시 거친다.
+      try {
+        this.appendMessage(conclusionMessage);
+      } finally {
+        this.endDiscussionState();
+      }
     }
     return { ok: true, completed, truncated: !concluded && completed >= budget, concluded };
+  }
+
+  // 토론 상태를 풀고, 토론 동안 미뤄 둔 일반 턴을 큐로 돌려보낸다.
+  endDiscussionState() {
+    this.discussionActive = false;
+    this.discussionRequested = false;
+    this.discussionInterrupted = false;
+    this.turnQueue.push(...this.deferredTurnQueue.splice(0));
+    this.emitTurnState();
+    this.pumpTurnQueue();
   }
 
   stopAll() {
