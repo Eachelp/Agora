@@ -7,9 +7,9 @@
 // workspace(비코딩 과업 포함)도 동일하게 보호한다.
 //
 // 참여자(AGORA_STAGE_D_ASSURANCE_CHARTER.md D-0):
-//   1. Professional 실행의 mutation~판정 구간 (이후 verification 실행 포함)
-//   2. Checkpoint restore
-//   3. workspace-write 일반 채팅 turn
+//   - workspace-write 일반 채팅 turn
+//   (옛 Professional 실행·checkpoint restore 참여자는 단계 3에서 제거됐다.
+//    lease 자체는 단계 4에서 정리하기 전까지 그대로 둔다.)
 //
 // 확정된 계약:
 //   - 충돌은 fail-closed(BUSY)다. 대기열도 강탈도 없다.
@@ -66,9 +66,8 @@ function cleanString(value, limit = 200) {
 //   symlink · junction alias      → fs.realpathSync
 //   Windows 대소문자              → toLowerCase
 //
-// realpath까지 하는 이유는 checkpoint/diff 등 실제 mutation 주체가 이미
-// realpath 기준으로 workspace를 잡기 때문이다(turn-checkpoint, task-manager,
-// workspace-diff). lease만 lexical이면 junction 두 개가 같은 폴더를 가리켜도
+// realpath까지 하는 이유는 실제 mutation 주체(CLI가 도는 작업 폴더)가 이미
+// realpath 기준으로 workspace를 잡기 때문이다. lease만 lexical이면 junction 두 개가 같은 폴더를 가리켜도
 // 서로 다른 lease key가 되어 동시에 획득된다.
 //
 // 경로가 아직 없으면 realpath는 실패한다. 그때는 lexical 기준으로 되돌아간다 —

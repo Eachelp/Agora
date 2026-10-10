@@ -498,7 +498,7 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
     }
     if (typeof chatFeature.notifyProviderAccountChanged !== "function") {
       // chat feature는 있는데 boundary seam이 없다 = wiring 결함입니다.
-      // "managed runtime 없음"으로 오분류해 통과시키면 fail-open이 됩니다.
+      // "진행 중인 턴 없음"으로 오분류해 통과시키면 fail-open이 됩니다.
       throw new Error(
         `${provider} 계정 세션 경계 seam이 없습니다: chat feature에 notifyProviderAccountChanged가 없습니다.`
       );
@@ -524,7 +524,7 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
     return result;
   }
 
-  // 전환 트랜잭션을 닫아 managed admission을 다시 엽니다.
+  // 전환 트랜잭션을 닫아 새 턴 시작(admission)을 다시 엽니다.
   // credential mutation이 성공하든 실패하든 확정된 뒤 finally에서 호출합니다.
   // 여기서 실패해도 전환 결과 자체를 뒤집지는 않습니다(로그만 남깁니다).
   function completeAccountBoundary(boundary, provider) {
@@ -623,7 +623,7 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
     }
 
     // stop → auth 교체 → 재실행까지가 하나의 전환 트랜잭션이다. 그 전체 구간 동안
-    // managed admission을 닫아 둔다.
+    // 새 턴 시작(admission)을 닫아 둔다.
     try {
       showAccountNotice(
         "Codex Desktop App을 멈추고 계정 전환을 준비하는 중입니다."
@@ -708,7 +708,7 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
 
   // 이 PC에서 로그아웃한다. 라이브 자격 증명(이 PC의 로컬 복사본)을 지우므로
   // credential mutation이다 — 전환·로그인과 똑같이 계정 경계 뒤에서 한다.
-  // 진행 중이던 managed turn이 반쯤 지워진 자격 증명으로 이어지지 않게 막고,
+  // 진행 중이던 턴이 반쯤 지워진 자격 증명으로 이어지지 않게 막고,
   // 로그아웃이 끝나면 경계를 닫는다. 다른 기기의 로그인 세션은 건드리지 않는다.
   async function logoutProvider(provider) {
     const switcher = provider === "codex"
@@ -733,7 +733,7 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
   }
 
   // 반납용: 이 PC의 세 CLI 로그인과 저장 계정을 전부 지운다. provider마다 경계를
-  // 세우고(그 provider의 managed turn을 멈춘 뒤) 지운다. 한 provider가 실패해도
+  // 세우고(그 provider의 진행 중인 턴을 멈춘 뒤) 지운다. 한 provider가 실패해도
   // 나머지는 계속 지우고, 실패는 모아서 알린다.
   async function wipeAllAccounts() {
     const providers = ["claude", "codex", "agy"];
@@ -857,7 +857,7 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
           onExit: async (result) => {
             // 로그인 프로세스가 끝난 뒤에야 경계를 닫는다. 예전의 터미널 로그인은
             // 앱이 관측할 수 없어 실행 직후 닫았지만, 이제는 credential이 바뀌는
-            // 순간까지 지켜볼 수 있다(그 동안 새 managed turn은 잠깐 막힌다. 사용자가
+            // 순간까지 지켜볼 수 있다(그 동안 새 턴은 잠깐 막힌다. 사용자가
             // 브라우저에서 끝내지 않으면 러너의 시간 제한이 프로세스를 끊고 여기로 온다).
             completeAccountBoundary(boundary, "claude");
             clearUsageCache("claude");

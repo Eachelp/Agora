@@ -765,8 +765,7 @@ function createChatFeature(options) {
         );
       }
 
-      // Stage C-3: effective auto-approval을 한 번만 계산해 process invocation과
-      // managed context(Codex turn approval policy)에서 동일하게 사용한다.
+      // effective auto-approval을 한 번만 계산해 process invocation에 넘긴다.
       const effectiveAutoApprove = permissionMode === "workspace-write" && Boolean(config.autoApprove || autoApprove);
       const invocation = buildAgentInvocation({
         provider: record,
@@ -925,10 +924,7 @@ function roomMeta(meta) {
     // 기록 담당을 정한 프로젝트에서만 기록한다(recordAgent, 없으면 옛 recorder→review 역할).
     const recorder = resolveRecordTarget(project, room.enabledAgents());
     if (!recorder) return { ok: false, error: "이 프로젝트는 토론 자동 기록을 쓰지 않거나, 담당 에이전트를 사용할 수 없습니다." };
-    // 토론 기록은 전문 실행이 아닙니다. 전문 실행 Recorder 단계로 보내면 run 권한과
-    // Professional session identity(professionalRunId)를 요구하는데 토론에는 Run이
-    // 없어 매번 실패했고, recorder 역할의 context 경계 때문에 정작 요약할 대화조차
-    // 보지 못했습니다. 대화를 읽는 일반 턴으로 실행하고 출력 형식만 기록 계약을 씁니다.
+    // 토론 기록은 대화를 읽는 일반 턴으로 실행하고 출력 형식만 기록 계약을 씁니다.
     const result = await room.scheduleResponse(recorder.agent, {
       discussionSummary: { record: true },
       agentConfig: recorder.agentConfig,

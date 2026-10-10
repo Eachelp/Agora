@@ -311,8 +311,10 @@ class ChatStore {
     if (Number(meta.schemaVersion) > STORE_SCHEMA_VERSION) {
       return { ...meta, readOnly: true };
     }
-    // 예전 전문 실행이 남긴 professionalRun·pendingRecovery 필드는 읽기만 하고 쓰지
-    // 않는다. 그 실행은 지웠으므로 이 필드가 대화를 잠그면 안 된다.
+    // 예전 전문 실행이 남긴 professionalRun·pendingRecovery 필드는 있는 그대로 둔다.
+    // 해석하지 않으며(그 실행은 지웠으므로 이 필드가 대화를 잠그면 안 된다), 지우지도
+    // 않는다. updateMeta가 meta를 통째로 다시 저장하므로 값은 바뀌지 않은 채 함께
+    // 다시 기록된다.
     return meta;
   }
 
