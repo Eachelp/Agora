@@ -22,7 +22,7 @@ const RETRY_HINT = "고쳐서 한 번만 다시 호출해 보세요.";
 // 한도 숫자는 user-question-broker.js의 상수와 같아야 한다(test/question-mcp.test.js가 대조한다).
 const TOOL = Object.freeze({
   name: TOOL_NAME,
-  description: "작업 도중 사용자의 결정이 꼭 필요할 때 질문하고, 사용자가 답할 때까지 기다린다. 질문 1~4개를 한 번에 보내고, 선택지(2~5개, 복수 선택 가능)를 주거나 선택지를 빼서 직접 입력을 받는다. 답을 받으면 같은 작업을 이어 간다. 이 도구는 권한 승인이 아니다.",
+  description: "작업 도중 사용자의 결정이 꼭 필요할 때 질문하고, 사용자가 답할 때까지 기다린다. 질문 1~4개를 한 번에 보내고, 선택지(2~5개, 복수 선택 가능)를 주거나 선택지를 빼서 직접 입력을 받는다. 사용자는 보기 밖의 '기타' 직접 입력으로 답할 수도 있다. 답을 받으면 같은 작업을 이어 간다. 이 도구는 권한 승인이 아니다.",
   annotations: { title: "사용자에게 질문", readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   inputSchema: {
     type: "object",
@@ -54,9 +54,13 @@ function formatAnswers(questions, answers) {
   const blocks = questions.map((question, index) => {
     const answer = answers[index] || {};
     if (Array.isArray(answer.selected)) {
+      // 기타(직접 입력)는 따옴표로 감싸 보기와 구분한다(보기 문구를 흉내 내는 글이 섞이지 않게).
+      const labels = typeof answer.other === "string" && answer.other
+        ? [...answer.selected, `(기타 직접 입력) ${JSON.stringify(answer.other)}`]
+        : answer.selected;
       return question.multiSelect
-        ? `Q: ${question.question}\nA:\n${answer.selected.map((label) => `- ${label}`).join("\n")}`
-        : `Q: ${question.question}\nA: ${answer.selected.join(", ")}`;
+        ? `Q: ${question.question}\nA:\n${labels.map((label) => `- ${label}`).join("\n")}`
+        : `Q: ${question.question}\nA: ${labels.join(", ")}`;
     }
     // 직접 입력은 따옴표로 감싸 질문·답 줄을 흉내 내는 글이 구조를 깨지 못하게 한다.
     return `Q: ${question.question}\nA: ${JSON.stringify(String(answer.text ?? ""))}`;

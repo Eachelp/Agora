@@ -81,7 +81,8 @@ function normalizeQuestions(input) {
 }
 
 // 사용자의 답 검증. answers[i]는 questions[i]에 대응한다.
-//   선택지가 있는 질문: { selected: ["선택지 문구", ...] } (복수 선택이 아니면 정확히 1개)
+//   선택지가 있는 질문: { selected: ["선택지 문구", ...], other?: "기타 직접 입력" }
+//     (복수 선택이 아니면 보기와 기타를 합쳐 정확히 1개, 복수 선택이면 합쳐 1개 이상)
 //   선택지가 없는 질문: { text: "직접 입력" }
 function normalizeAnswers(input, questions) {
   if (!Array.isArray(input) || input.length !== questions.length) {
@@ -97,16 +98,23 @@ function normalizeAnswers(input, questions) {
       if (item.text !== undefined || !Array.isArray(item.selected)) {
         return { ok: false, error: `${where}은 선택지에서 골라야 합니다.` };
       }
+      // '기타' 직접 입력(other): 단일 선택이면 고른 보기 대신(selected 비움), 복수 선택이면 보기에 더해 보낸다.
+      // text는 선택지 없는 질문 전용이라 위에서 그대로 거절한다.
+      const other = item.other === undefined ? "" : typeof item.other === "string" ? item.other.trim() : null;
+      if (other === null || other.length > MAX_ANSWER_CHARS) {
+        return { ok: false, error: `${where}의 기타 입력은 1~${MAX_ANSWER_CHARS}자의 글이어야 합니다.` };
+      }
       const selected = item.selected;
       if (selected.some((entry) => typeof entry !== "string" || !question.options.includes(entry))) {
         return { ok: false, error: `${where}에 없는 선택지입니다.` };
       }
       if (new Set(selected).size !== selected.length) return { ok: false, error: `${where}에서 같은 선택지를 두 번 골랐습니다.` };
-      if (selected.length < 1 || (!question.multiSelect && selected.length > 1)) {
+      const count = selected.length + (other ? 1 : 0);
+      if (count < 1 || (!question.multiSelect && count > 1)) {
         return { ok: false, error: question.multiSelect ? `${where}은 하나 이상 골라야 합니다.` : `${where}은 하나만 고를 수 있습니다.` };
       }
       // 화면에서 누른 순서가 아니라 질문에 적힌 순서로 정리한다.
-      answers.push({ selected: question.options.filter((option) => selected.includes(option)) });
+      answers.push({ selected: question.options.filter((option) => selected.includes(option)), ...(other ? { other } : {}) });
       continue;
     }
     const text = typeof item.text === "string" ? item.text.trim() : "";
