@@ -73,14 +73,20 @@ class CodexAccountSwitcher {
     }
   }
 
-  // 삭제는 홈 디렉터리 내부로 확인된 경로에만 수행합니다.
+  // 삭제는 홈 디렉터리 안, 또는 Agora 자기 저장소(codex-switch) 안으로 확인된 경로에만 수행합니다.
+  // AGORA_HOME으로 저장소를 홈 밖에 둔 경우에도 자기 저장소는 지울 수 있어야 합니다.
   removePathIfInsideHome(targetPath) {
     if (!targetPath || !fs.existsSync(targetPath)) return;
 
     const resolved = path.resolve(targetPath);
-    const home = path.resolve(this.homeDir);
-    const homePrefix = home.endsWith(path.sep) ? home : `${home}${path.sep}`;
-    if (!resolved.toLowerCase().startsWith(homePrefix.toLowerCase())) {
+    const lower = resolved.toLowerCase();
+    const switchHome = path.resolve(this.switchHome);
+    const isInside = (root) => {
+      const base = path.resolve(root);
+      const prefix = base.endsWith(path.sep) ? base : `${base}${path.sep}`;
+      return lower.startsWith(prefix.toLowerCase());
+    };
+    if (!isInside(this.homeDir) && !isInside(switchHome) && lower !== switchHome.toLowerCase()) {
       throw new Error(`홈 디렉터리 밖 경로는 삭제하지 않습니다: ${resolved}`);
     }
 
@@ -439,6 +445,15 @@ class CodexAccountSwitcher {
     };
   }
 
+  // auth.json의 last_refresh(ms). 없거나 읽을 수 없으면 0입니다.
+  lastRefreshMs(authPath) {
+    try {
+      return Date.parse(this.readJson(authPath).last_refresh) || 0;
+    } catch {
+      return 0;
+    }
+  }
+
   // 현재 live ~/.codex/auth.json을 저장소에 등록합니다.
   saveCurrentAccount() {
     const summary = this.readCurrentAuthSummary();
@@ -448,16 +463,21 @@ class CodexAccountSwitcher {
 
     const profileKey = this.ensureUniqueProfileName(this.profileNameForSummary(summary), summary);
     const destination = this.profileAuthPath(profileKey);
-    const backupId = fs.existsSync(destination)
-      ? this.backupExistingFile(destination, new Date())
-      : null;
-
-    try {
-      this.copyFileAtomic(this.targetAuthPath, destination);
+    // 프록시는 저장 프로필 사본만 갱신한다. 라이브가 더 오래됐다면 덮어써서 새 토큰을 잃지 않는다.
+    if (this.lastRefreshMs(destination) > this.lastRefreshMs(this.targetAuthPath)) {
       this.writeActiveProfileKey(profileKey);
-    } catch (error) {
-      this.restoreBackupTo(backupId, destination);
-      throw error;
+    } else {
+      const backupId = fs.existsSync(destination)
+        ? this.backupExistingFile(destination, new Date())
+        : null;
+
+      try {
+        this.copyFileAtomic(this.targetAuthPath, destination);
+        this.writeActiveProfileKey(profileKey);
+      } catch (error) {
+        this.restoreBackupTo(backupId, destination);
+        throw error;
+      }
     }
 
     return this.listProfiles().find((profile) => profile.key === profileKey) || {
@@ -510,11 +530,14 @@ class CodexAccountSwitcher {
   }
 
   // 이 PC에서 로그아웃한다. 라이브 ~/.codex/auth.json과 활성 표시를 지우고,
-  // 현재 활성 프로필 폴더도 지운다. 다른 기기 로그인은 건드리지 않는다.
+  // 라이브 계정의 저장 프로필 폴더도 지운다. 다른 기기 로그인은 건드리지 않는다.
+  // 설정 목록의 '현재'(listProfiles)와 같은 기준으로 라이브 신원을 먼저 보고, 그게 없을 때만
+  // active 표시를 쓴다. 표시와 라이브가 어긋나도 엉뚱한 계정의 저장 로그인을 지우지 않는다.
   logout() {
     const live = fs.existsSync(this.targetAuthPath);
+    const current = this.readCurrentAuthSummary();
+    const activeKey = (current.hasAuth && this.findMatchingProfile(current)) || this.readActiveProfileKey();
     this.removePathIfInsideHome(this.targetAuthPath);
-    const activeKey = this.readActiveProfileKey();
     this.removePathIfInsideHome(this.activePath);
     let removedProfile = false;
     if (activeKey) {
