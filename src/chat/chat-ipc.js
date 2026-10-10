@@ -532,9 +532,13 @@ function createChatFeature(options) {
   }
 
   // Show account/proxy errors in the chat window when the pet is off.
-  function showSystemNotice(text) {
-    broadcast("chat:system-notice", { text });
+  // sessionId가 있으면 그 방에서만 보인다(없으면 지금 열린 방).
+  function showSystemNotice(text, sessionId) {
+    broadcast("chat:system-notice", sessionId ? { text, sessionId } : { text });
   }
+
+  // 저장 실패 안내는 방마다 한 번만 낸다. 다시 저장에 성공하면 다음 실패 때 또 알린다.
+  const saveFailureNoticed = new Set();
 
   function projectIdForMeta(meta) {
     const projects = ensureProjectStore();
@@ -954,9 +958,13 @@ function roomMeta(meta) {
       // 남아 대화가 멈춘다. 대신 화면에는 그대로 보여 주고, 저장 실패는 알림으로 알린다.
       try {
         store.appendEvent(sessionId, { kind: "message", message });
+        saveFailureNoticed.delete(sessionId);
       } catch (error) {
         console.warn("[agora] 대화 기록 저장 실패:", error?.message || error);
-        showSystemNotice(`대화 기록을 디스크에 저장하지 못했습니다. 방금 메시지는 다시 열면 보이지 않을 수 있습니다. (${error?.message || error})`);
+        if (!saveFailureNoticed.has(sessionId)) {
+          saveFailureNoticed.add(sessionId);
+          showSystemNotice(`대화 기록을 디스크에 저장하지 못했습니다. 방금 메시지는 다시 열면 보이지 않을 수 있습니다. (${error?.message || error})`, sessionId);
+        }
       }
       const claudeObservationChanged = rememberClaudeResolvedModel(message);
       // renderer로는 첨부 내부 레코드(fileName/sha256)를 제거한 사본만 보냅니다.

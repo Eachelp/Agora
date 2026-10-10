@@ -1231,7 +1231,7 @@ class ChatRoom extends EventEmitter {
     const generation = this.generation;
     let completed = 0;
     let successfulSteps = 0;
-    let settled = 0;
+    const agreed = new Set();
     let concluded = false;
     let failures = 0;
     let wasStopped = false;
@@ -1295,14 +1295,16 @@ class ChatRoom extends EventEmitter {
           continue;
         }
         if (signal === "CONCLUDE") { concluded = true; break; }
-        // 실패한 턴은 합의 여부를 알려 주지 않으므로 카운터를 건드리지 않는다.
+        // 실패한 턴은 합의 여부를 알려 주지 않으므로 건드리지 않는다. 합의는 "참가자별
+        // 최신 성공 신호가 AGREE/PASS"인 사람의 집합으로 세어, 한 명이 두 번 동의해도
+        // 다른 참가자가 아직 답하지 않았다면 끝나지 않게 한다.
         if (outcome?.ok) {
-          if (signal === "AGREE" || signal === "PASS") settled += 1;
-          else settled = 0;
+          if (signal === "AGREE" || signal === "PASS") agreed.add(agent.id);
+          else agreed.delete(agent.id);
         }
-        // 한도로 빠진 참가자를 뺀 나머지가 둘 이상일 때만 "남은 전원 합의"로 본다.
-        const remaining = pool.length - limitedIds.size;
-        if (remaining >= 2 && settled >= remaining) { concluded = true; break; }
+        // 한도로 빠진 참가자를 뺀 나머지가 둘 이상이고 그 전원이 합의했을 때만 끝낸다.
+        const remainingPool = pool.filter((candidate) => !limitedIds.has(candidate.id));
+        if (remainingPool.length >= 2 && remainingPool.every((candidate) => agreed.has(candidate.id))) { concluded = true; break; }
       }
     } finally {
       if (generation !== this.generation) wasStopped = true;

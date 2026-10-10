@@ -213,9 +213,8 @@ test("F173: 한도에 걸리지 않은 참가자가 한 명만 남으면 예산�
   assert.match(conclusion.text, /한 명뿐/);
 });
 
-test("F173: 한도가 아닌 일시 실패는 합의 카운터를 되돌리지 않는다", async () => {
+test("F173: 한도가 아닌 일시 실패는 합의 기록을 되돌리지 않고, 참가자 전원이 동의해야 끝난다", async () => {
   const codexReplies = [
-    { ok: true, text: `동의 ${AGREE}` },
     { ok: false, error: "일시적 오류" },
     { ok: true, text: `동의 ${AGREE}` },
   ];
@@ -227,13 +226,11 @@ test("F173: 한도가 아닌 일시 실패는 합의 카운터를 되돌리지 �
   room.sendUserMessage("@claude 주제");
   await settle(room);
   calls.length = 0;
-  // claude AGREE(1) → codex AGREE(2)에서 이미 끝나므로, 실패가 낀 순서를 만들려면 codex가 먼저 실패해야 한다.
-  codexReplies.unshift({ ok: false, error: "일시적 오류" });
   const result = await room.startDiscussion({ turnBudget: 9 });
   await settle(room);
-  // claude AGREE(1) → codex 실패(카운터 유지 1) → claude AGREE(2) → 전원 합의
+  // claude 동의 → codex 실패(기록 유지) → claude 또 동의(같은 사람이라 합의 아님) → codex 동의 → 전원 합의
   assert.equal(result.concluded, true);
-  assert.equal(calls.map((c) => c.agentId).join(","), "claude,codex,claude");
+  assert.equal(calls.map((c) => c.agentId).join(","), "claude,codex,claude,codex");
 });
 
 // F192: 주제 메시지의 첨부가 토론 참가자 턴에도 전달돼야 한다.

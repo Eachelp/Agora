@@ -4206,7 +4206,8 @@ window.chatApi.onReset(({ sessionId }) => {
   syncComposerLock();
   renderTyping();
 });
-window.chatApi.onSystemNotice(({ text }) => {
+window.chatApi.onSystemNotice(({ text, sessionId }) => {
+  if (sessionId && sessionId !== activeSessionId) return;
   appendMessage({ authorType: "system", error: true, text, ts: Date.now() });
 });
 window.chatApi.onRunEvent(handleRunEvent);
