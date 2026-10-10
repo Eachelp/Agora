@@ -1,4 +1,5 @@
 const { buildConversationWindow } = require("./chat-summary-window");
+const { USER_QUESTION_INSTRUCTION } = require("./user-question-run");
 
 const DEFAULT_MAX_MESSAGES = 40;
 
@@ -55,6 +56,8 @@ function buildAgentPrompt({
   mentionsEnabled = !discussion,
   discussionSummary = null,
   simplifyMeta = null,
+  // 이번 실행에 질문 도구(ask_user)가 실제로 붙었는가. 붙지 않았으면 프롬프트는 예전과 같다.
+  userQuestionTool = false,
   extraLines = [],
 }) {
   const isDiscussionSummary = Boolean(discussionSummary);
@@ -150,6 +153,13 @@ function buildAgentPrompt({
       lines.push(
         "- 제어 줄은 화면에 보이지 않고 '답변 대기' 표시와 선택 버튼으로 바뀝니다. 질문은 본문에도 자연스럽게 적으세요. 선택지를 제안하며 마무리하는 경우나 \"더 도울 일이 있을까요?\" 같은 마무리 인사에는 붙이지 마세요 — 그런 답은 사용자가 읽고 알아서 이어갑니다."
       );
+      // 질문 도구가 이번 실행에 붙었을 때만: 작업 도중 막히는 결정은 ask_user로 묻고 같은 작업을 이어 간다.
+      // 위의 끝 ASK_USER 줄은 도구가 없거나 실패할 때의 대체 수단으로 그대로 남는다.
+      if (userQuestionTool) {
+        lines.push(...USER_QUESTION_INSTRUCTION.split("\n").map((line) => `- ${line}`));
+        lines.push("- 스스로 정할 수 있는 것은 묻지 말고, 잡담이나 단순 확인에는 이 도구를 쓰지 마세요. 서로 관련된 질문은 한 번에 묶고 선택지는 짧게 쓰세요.");
+        lines.push("- ask_user를 쓸 수 없거나 실패하면 위에 적은 응답 맨 끝의 ASK_USER 줄로 대신하세요.");
+      }
     }
   }
   lines.push(permissionRule(permissionMode));

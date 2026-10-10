@@ -405,6 +405,17 @@ class ChatStore {
       .map((event) => event.message);
   }
 
+  // 질문 이벤트(user_question_* / user_answer_*)를 질문별 마지막 상태로 모은다. 다시 켠 뒤 기록·중단 표시에 쓴다.
+  readUserQuestions(id) {
+    const questions = new Map();
+    for (const event of this.readTranscript(id)) {
+      if (event?.question?.questionId && /^user_(question|answer)_/.test(event.kind || "")) {
+        questions.set(event.question.questionId, event.question);
+      }
+    }
+    return [...questions.values()];
+  }
+
   getSession(id) {
     const meta = this.readMeta(id);
     if (!meta) return null;

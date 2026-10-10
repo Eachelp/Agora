@@ -42,6 +42,8 @@ const INVOKE = Object.freeze({
   RUN_LOG_OPEN_FOLDER: "chat:run-log:open-folder",
   MESSAGE_HANDOFF: "chat:message:handoff",
   APPROVAL_RESPOND: "chat:approval:respond",
+  QUESTION_ANSWER: "chat:question:answer",
+  QUESTION_CANCEL: "chat:question:cancel",
   WORKSPACE_CHOOSE: "chat:workspace:choose",
   WORKSPACE_CLEAR: "chat:workspace:clear",
   PERMISSION_SET: "chat:permission:set",
@@ -126,6 +128,12 @@ contextBridge.exposeInMainWorld("chatApi", {
   approvalRespond: (sessionId, approvalId, decision) =>
     ipcRenderer.invoke(INVOKE.APPROVAL_RESPOND, { sessionId, approvalId, decision }),
 
+  // 실행 중 질문(ask_user): answers[i]는 questions[i]에 대응한다 — 선택지 질문은 { selected: [문구] }, 직접 입력은 { text }.
+  questionAnswer: (sessionId, questionId, answers) =>
+    ipcRenderer.invoke(INVOKE.QUESTION_ANSWER, { sessionId, questionId, answers }),
+  questionCancel: (sessionId, questionId) =>
+    ipcRenderer.invoke(INVOKE.QUESTION_CANCEL, { sessionId, questionId }),
+
   workspaceChoose: (sessionId) => ipcRenderer.invoke(INVOKE.WORKSPACE_CHOOSE, { sessionId }),
   workspaceClear: (sessionId) => ipcRenderer.invoke(INVOKE.WORKSPACE_CLEAR, { sessionId }),
   permissionSet: (sessionId, mode) =>
@@ -161,6 +169,7 @@ contextBridge.exposeInMainWorld("chatApi", {
   onProviders: (handler) => subscribe("chat:providers", handler),
   onApprovalRequest: (handler) => subscribe("chat:approval-request", handler),
   onApprovalResolved: (handler) => subscribe("chat:approval-resolved", handler),
+  onUserQuestion: (handler) => subscribe("chat:user-question", handler),
   onSystemNotice: (handler) => subscribe("chat:system-notice", handler),
   onAppearance: (handler) => subscribe("appearance:update", handler),
   onMaximizedState: (handler) => subscribe("chat:maximized-state", handler),

@@ -207,6 +207,30 @@ function runAgentProcess({
   let outputLimitHit = false;
   let timer = null;
   let silenceTimer = null;
+  // 질문 도구로 사용자의 답을 기다리는 동안은 실행 시간 제한과 무음 경고를 멈춘다(setWaitingUser).
+  // 사용자가 오래 고민했다고 실행이 시간 초과로 죽거나 "N분째 응답 없음"이 뜨면 안 된다.
+  let waitingUser = false;
+  let waitStartedAt = null;
+  let userWaitingMs = null;
+  let remainingMs = timeoutMs;
+  let timerStartedAt = null;
+  let armTimeout = () => {};
+  let resetProgress = () => {};
+  const setWaitingUser = (value) => {
+    if (settled || waitingUser === Boolean(value)) return;
+    waitingUser = Boolean(value);
+    if (waitingUser) {
+      waitStartedAt = Date.now();
+      if (timer) clearTimeout(timer);
+      if (timerStartedAt !== null) remainingMs = Math.max(1, remainingMs - (Date.now() - timerStartedAt));
+      timerStartedAt = null;
+    } else {
+      userWaitingMs = (userWaitingMs || 0) + (Date.now() - waitStartedAt);
+      waitStartedAt = null;
+      resetProgress();
+      armTimeout();
+    }
+  };
   let explorationWarningRank = 0;
   const commandEvents = [];
   const pendingCommands = [];
@@ -255,11 +279,14 @@ function runAgentProcess({
         ...(evidence ? { evidence } : {}),
         ...(resolvedModel ? { resolvedModel } : {}),
       };
+      // 답을 기다리던 중에 끝났으면 그 시간까지 더한다. 질문 도구를 쓰지 않은 실행에는 이 값이 없다.
+      if (waitStartedAt !== null) userWaitingMs = (userWaitingMs || 0) + (Date.now() - waitStartedAt);
       const runMetrics = buildRunMetrics({
         startedAt: runStartedAt,
         finishedAt: Date.now(),
         promptChars: String(prompt || "").length,
         result: baseResult,
+        ...(userWaitingMs !== null ? { userWaitingMs } : {}),
       });
       if (typeof onEvent === "function") {
         try {
@@ -315,6 +342,7 @@ function runAgentProcess({
       lastProgressAt = Date.now();
       nextSilenceWarnAt = lastProgressAt + silenceWarningMs;
     };
+    resetProgress = noteProgress;
     let rateLimitInfo = null;
 
     const notifyExplorationStatus = () => {
@@ -345,7 +373,7 @@ function runAgentProcess({
 
     if (Number.isFinite(silenceWarningMs) && silenceWarningMs > 0) {
       silenceTimer = setInterval(() => {
-        if (settled) return;
+        if (settled || waitingUser) return;
         const now = Date.now();
         if (now < nextSilenceWarnAt) return;
         const idleMinutes = Math.max(1, Math.round((now - lastProgressAt) / 60000));
@@ -669,7 +697,9 @@ function runAgentProcess({
     child.stdin.on("error", () => {});
     child.stdin.end(promptTransport === "stdin" ? prompt : "", "utf8");
 
-    if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+    armTimeout = () => {
+      if (settled || waitingUser || !Number.isFinite(timeoutMs) || timeoutMs <= 0) return;
+      timerStartedAt = Date.now();
       timer = setTimeout(() => {
         cancelled = true;
         killTree(child, platform);
@@ -679,9 +709,10 @@ function runAgentProcess({
           error: `시간 초과 (${Math.round(timeoutMs / 1000)}초)`,
           ...(deltaText.trim() ? { partialText: deltaText.trim() } : {}),
         });
-      }, timeoutMs);
+      }, remainingMs);
       if (typeof timer.unref === "function") timer.unref();
-    }
+    };
+    armTimeout();
   });
 
   const cancel = () => {
@@ -689,7 +720,7 @@ function runAgentProcess({
     killTree(child, platform);
   };
 
-  return { promise, cancel };
+  return { promise, cancel, setWaitingUser };
 }
 
 module.exports = {

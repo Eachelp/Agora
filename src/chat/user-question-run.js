@@ -70,7 +70,33 @@ async function attachUserQuestionTool({
   }
 }
 
+// 방(ChatRoom)에 꽂는 질문 도구 묶음. 중계소는 앱 전체에서 하나이고 방마다 sessionId만 다르다.
+// needsShellOf(agent)는 그 에이전트 CLI가 셸 래퍼(.cmd)로 설치됐는지 알려 준다(방은 실행 정보를 모른다).
+function createRoomQuestionTool({ broker, sessionId, needsShellOf = () => false } = {}) {
+  const target = (agent, purpose) => ({ providerId: agent?.id, needsShell: Boolean(needsShellOf(agent)), purpose });
+  return {
+    broker,
+    canAttach: (agent, purpose) => questionToolSupport({ ...target(agent, purpose), hasBroker: Boolean(broker) }).ok,
+    attach: ({ agent, runId, turnId = null, purpose }) => attachUserQuestionTool({
+      broker, runId, ...target(agent, purpose), meta: { sessionId, agentId: agent.id, turnId },
+    }),
+  };
+}
+
+// 중계소 콜백 → 방. 질문이 속한 방(sessionId)을 getRoom으로 찾아 넘긴다. 방이 없으면(삭제) 버린다.
+function questionBrokerHooks(getRoom) {
+  const toRoom = (method) => (payload) => getRoom(payload?.sessionId)?.[method]?.(payload);
+  return {
+    onRequested: toRoom("noteQuestionSet"),
+    onSubmitted: toRoom("noteQuestionSet"),
+    onDelivered: toRoom("noteQuestionSet"),
+    onCancelled: toRoom("noteQuestionSet"),
+    onExpired: toRoom("noteQuestionSet"),
+    onRepeatLimit: toRoom("noteQuestionRepeatLimit"),
+  };
+}
+
 module.exports = {
   SERVER_KEY, TOOL_BASE_NAME, TOOL_NAME, ENV_URL, ENV_TOKEN, ATTACHABLE_PURPOSES, USER_QUESTION_INSTRUCTION,
-  resolveMcpScript, questionToolSupport, attachUserQuestionTool,
+  resolveMcpScript, questionToolSupport, attachUserQuestionTool, createRoomQuestionTool, questionBrokerHooks,
 };

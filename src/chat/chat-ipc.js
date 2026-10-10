@@ -47,6 +47,8 @@ const {
   readInlineText,
 } = require("./chat-attachments");
 const { createChatWindow } = require("./chat-window");
+const { createUserQuestionBroker } = require("./user-question-broker");
+const { createRoomQuestionTool, questionBrokerHooks } = require("./user-question-run");
 
 // 채팅 기능 전체(저장소·세션·프로바이더 실행·IPC·창)를 묶는 조립 모듈.
 // main.js는 createChatFeature() 한 번과 openWindow()/shutdown()만 호출합니다.
@@ -61,6 +63,16 @@ const PROVIDER_RECHECK_INTERVAL_MS = 60 * 60 * 1000;
 // 옛 역할 호출(@기획자 등)을 받았을 때 chat:send가 돌려주는 안내.
 const LEGACY_ROLE_NOTICE =
   "역할 호출·팀 실행은 없어졌습니다. @claude / @gpt / @gemini로 직접 부르거나 @모두를 쓰세요.";
+
+// 질문 이벤트(방의 user-question)를 대화 기록에 남길 때의 종류. 상태마다 한 줄씩 쌓이고,
+// 다시 켤 때는 질문별 마지막 줄이 그 질문의 상태다(chat-store readUserQuestions).
+const QUESTION_EVENT_KINDS = Object.freeze({
+  pending: "user_question_requested",
+  submitting: "user_answer_submitted",
+  answered: "user_answer_delivered",
+  cancelled: "user_question_cancelled",
+  interrupted: "user_question_interrupted",
+});
 
 // end() 이후 파일 핸들이 실제로 닫힐 때까지의 Promise. 세션 삭제가 기다린다(Windows는 열린 파일이 있으면
 // 폴더를 옮기거나 지울 수 없다).
@@ -310,6 +322,19 @@ function createChatFeature(options) {
   let chatWindow = null;
   let shuttingDown = false;
   const rooms = new Map();
+  // 실행 중 질문 중계소: 앱 전체에서 하나, 처음 질문 도구를 붙일 때 시작하고 종료 때 멈춘다.
+  // 콜백은 질문이 속한 방(sessionId)으로 전달된다.
+  let questionBroker = null;
+  function ensureQuestionBroker() {
+    if (!questionBroker) {
+      questionBroker = createUserQuestionBroker({
+        ...(options.questionBrokerOptions || {}),
+        ...questionBrokerHooks((sessionId) => rooms.get(sessionId) || null),
+        onCallbackError: (error, name) => console.warn(`[agora] 질문 중계소 콜백(${name}) 오류:`, error?.message || error),
+      });
+    }
+    return questionBroker;
+  }
   // 세션별 "아직 전송 전" 첨부: id → 내부 레코드(fileName 포함)
   const pendingAttachments = new Map();
   // 프로바이더 실행은 HarnessAdapter 경계 뒤에 둔다. ProcessHarnessAdapter는 턴마다 CLI
@@ -715,6 +740,7 @@ function createChatFeature(options) {
       emitEvent,
       permissionMode: requestedPermission,
       autoApprove = false,
+      userQuestion = null,
     }) => {
       const record = ensureCapabilityService().getRecord(agent.id);
       const meta = store?.readMeta(sessionId);
@@ -779,6 +805,7 @@ function createChatFeature(options) {
         attachmentsDir,
         outputFile,
         autoApprove: effectiveAutoApprove,
+        userQuestion,
       });
       if (!invocation.ok) {
         return {
@@ -846,6 +873,8 @@ function createChatFeature(options) {
             : { ...enrichedResult, metricsPersisted };
         }),
         cancel: run.cancel,
+        // 질문 도구로 답을 기다리는 동안 실행 시간 제한·무음 경고를 멈추는 손잡이(러너가 줄 때만).
+        ...(typeof run.setWaitingUser === "function" ? { setWaitingUser: (value) => run.setWaitingUser(value) } : {}),
       };
     };
   }
@@ -954,6 +983,13 @@ function roomMeta(meta) {
       runAgent: options.runAgent || makeRunAgent(sessionId),
       prepareAgent: options.prepareAgent,
       meta: roomMeta(session.meta),
+      // 실행 중 질문(ask_user) 도구. CLI가 셸 래퍼로 설치됐는지는 방이 모르므로 여기서 알려 준다.
+      questionTool: createRoomQuestionTool({
+        broker: ensureQuestionBroker(),
+        sessionId,
+        needsShellOf: (agent) => ensureCapabilityService().getRecord(agent.id)?.needsShell,
+      }),
+      initialQuestions: store.readUserQuestions(sessionId),
     });
 
     // 방 이벤트 리스너에서 난 예외는 emit한 방 코드(턴 시작·승인 카드·중지)로 올라가 응답을
@@ -1015,12 +1051,32 @@ function roomMeta(meta) {
     on("agents", (agents) => broadcast("chat:agents", { sessionId, agents }));
     on("approval-request", (payload) => broadcast("chat:approval-request", { sessionId, ...payload }));
     on("approval-resolved", (payload) => broadcast("chat:approval-resolved", { sessionId, ...payload }));
+    // 질문 기록은 저장이 실패해도 화면에는 그대로 알린다. 저장 실패는 방(실행·답)으로 올리지 않고 알림으로만 알린다.
+    const persistQuestion = (question) => {
+      const noticeKey = `question:${sessionId}`;
+      try {
+        store.appendEvent(sessionId, { kind: QUESTION_EVENT_KINDS[question.status] || "user_question_interrupted", question });
+        saveFailureNoticed.delete(noticeKey);
+      } catch (error) {
+        console.warn("[agora] 질문 기록 저장 실패:", error?.message || error);
+        if (!saveFailureNoticed.has(noticeKey)) {
+          const delivered = showSystemNotice(`질문과 답을 디스크에 저장하지 못했습니다. 다시 열면 방금 질문이 보이지 않을 수 있습니다. (${error?.message || error})`, sessionId);
+          if (delivered) saveFailureNoticed.add(noticeKey);
+        }
+      }
+    };
+    on("user-question", (question) => {
+      persistQuestion(question);
+      broadcast("chat:user-question", { sessionId, question });
+    });
+    // 앱을 다시 켜기 전에 답을 기다리던 질문은 방이 '중단됨'으로 돌려놓았다. 그 줄도 기록에 남긴다.
+    for (const question of room.interruptedOnLoad) persistQuestion(question);
     // 승인 카드를 기다리는 방은 실행 중 턴이 없어도 일하는 중이다. 다른 방을 보고 있어도
     // 사이드바에 표시가 남도록 상태를 함께 센다.
     const syncRoomStatus = () => {
       if (shuttingDown) return;
       const writeStatus = () => {
-        const working = room.activeRuns > 0 || room.pendingApprovals.size > 0;
+        const working = room.activeRuns > 0 || room.pendingApprovals.size > 0 || room.hasPendingQuestion();
         store.setSessionStatus(sessionId, working ? "running" : "idle");
       };
       try {
@@ -1072,6 +1128,9 @@ function roomMeta(meta) {
       turnState: room.turnState(),
       // 창이 닫혀 있던 사이 온 승인 요청도 창이 다시 붙을 때 이 목록으로 되살아난다.
       pendingApprovals: room.pendingApprovalList().map((approval) => ({ sessionId, ...approval })),
+      // 답을 기다리는 질문(창이 다시 붙을 때 되살아난다)과, 끝난 것·중단된 것을 포함한 질문 기록 전체.
+      pendingQuestions: room.pendingUserQuestionList(),
+      userQuestions: room.userQuestionList(),
       pendingAttachments: [...pendingFor(sessionId).values()].map(publicAttachment),
     };
   }
@@ -1900,6 +1959,28 @@ function roomMeta(meta) {
       })
     );
 
+    // 실행 중 질문(ask_user)에 대한 답 / 답하지 않기. 같은 실행으로 돌아가 작업이 이어진다.
+    // 검증: 대화·질문·실행 id, 이미 처리됨, 없는 선택지, 글자 수 상한, 답 개수는 방과 중계소가 거절한다.
+    ipcMain.handle(
+      "chat:question:answer",
+      wrap(async ({ sessionId, questionId, runId, answers }) => {
+        requireSession(sessionId);
+        const result = getRoom(sessionId).answerUserQuestion({ questionId, runId, answers });
+        if (!result.ok) throw new Error(result.error);
+        return {};
+      })
+    );
+
+    ipcMain.handle(
+      "chat:question:cancel",
+      wrap(async ({ sessionId, questionId, runId }) => {
+        requireSession(sessionId);
+        const result = getRoom(sessionId).cancelUserQuestion({ questionId, runId });
+        if (!result.ok) throw new Error(result.error);
+        return {};
+      })
+    );
+
     ipcMain.handle(
       "chat:workspace:choose",
       wrap(async ({ sessionId }) => {
@@ -2115,6 +2196,10 @@ function roomMeta(meta) {
       providerRecheckTimer = null;
     }
     for (const [sessionId, room] of rooms) {
+      // 답을 기다리던 질문은 '중단됨'으로 남기고(다시 켜도 같은 상태), 그다음 실행을 끊는다.
+      try {
+        room.interruptQuestions();
+      } catch {}
       try {
         if (room.activeRuns > 0 && store && !store.readOnly) {
           store.setSessionStatus(sessionId, "running");
@@ -2125,6 +2210,8 @@ function roomMeta(meta) {
         room.stopAllSilently();
       } catch {}
     }
+    // 중계소는 질문 연결이 모두 정리된 뒤 멈춘다. 멈추는 중 오류는 종료를 막지 않는다.
+    if (questionBroker) questionBroker.stop().catch((error) => console.warn("[agora] 질문 중계소 종료 실패:", error?.message || error));
   }
 
   // 계정 전환 경계: account-switching이 live credential을 바꾸기 전에 await한다.

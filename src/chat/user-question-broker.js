@@ -283,6 +283,8 @@ function createUserQuestionBroker({
     server = http.createServer((req, res) => {
       handle(req, res).catch((error) => send(res, 500, { error: `내부 오류: ${error?.message || error}` }));
     });
+    // 이 서버가 앱(또는 테스트 프로세스)의 종료를 붙들지 않게 한다. 실행 중인 질문 연결은 그 소켓이 따로 붙든다.
+    server.unref();
     server.on("connection", (socket) => {
       sockets.add(socket);
       socket.once("close", () => sockets.delete(socket));

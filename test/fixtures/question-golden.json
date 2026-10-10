@@ -1,0 +1,536 @@
+{
+  "_comment": "질문 도구를 붙이지 않는 실행의 프롬프트·실행 인자가 질문 도구 연결 직전의 코드(658984a)와 글자 하나까지 같은지 보는 기준값. input은 손으로 쓰고 expected는 그 코드의 모듈로 만들었다.",
+  "prompts": [
+    {
+      "name": "일반 대화(채팅 권한)",
+      "input": {
+        "agent": {
+          "id": "claude",
+          "name": "Claude"
+        },
+        "agents": [
+          {
+            "id": "claude",
+            "name": "Claude"
+          },
+          {
+            "id": "codex",
+            "name": "Codex"
+          }
+        ],
+        "messages": [
+          {
+            "authorType": "user",
+            "text": "@claude 안녕"
+          }
+        ],
+        "permissionMode": "chat",
+        "mentionsEnabled": true
+      },
+      "expected": "당신은 여러 AI 코딩 에이전트가 사용자와 함께 있는 그룹 채팅의 참가자 \"@claude\"(Claude)입니다.\n참가자: 사용자(User), @claude(Claude), @codex(Codex)\n\n규칙:\n- 아래 대화의 마지막 메시지에 이어 자연스럽게 답하세요.\n- 출력 전체가 채팅 메시지 하나로 그대로 전송됩니다. \"[@claude]\" 같은 접두어나 서명을 붙이지 마세요.\n- 다른 참가자를 호출하려면 @이름(@codex)을 쓰세요. 그러면 그 참가자가 이어서 답합니다. 호출 없이 언급만 할 때는 @ 없이 이름만 쓰세요. 호출은 꼭 필요할 때만 하세요.\n- 한 번에 한 명만 발언합니다. 답을 마치면 사용자에게 결정을 넘기거나, 추가 의견이 꼭 필요할 때만 다른 참가자를 @로 호출해 다음 턴을 넘기세요.\n- 맡은 작업을 이어가려면 사용자의 결정이 꼭 필요할 때만, 응답 **맨 끝**에 `ASK_USER: <질문 한 줄>`을 붙이세요. 고르는 질문이면 그 아래 `OPTION: <보기>` 줄을 2~5개 이어 붙이세요(짧은 명사구). 보기를 여러 개 고를 수 있으면 OPTION 줄 바로 앞에 `MULTI: yes` 줄을 넣으세요. 제어 줄은 응답 마지막의 연속된 줄이어야 합니다(뒤에 다른 문장 금지).\n- 제어 줄은 화면에 보이지 않고 '답변 대기' 표시와 선택 버튼으로 바뀝니다. 질문은 본문에도 자연스럽게 적으세요. 선택지를 제안하며 마무리하는 경우나 \"더 도울 일이 있을까요?\" 같은 마무리 인사에는 붙이지 마세요 — 그런 답은 사용자가 읽고 알아서 이어갑니다.\n- 도구 실행이나 파일 수정 없이 대화로만 답하세요.\n- 채팅에 어울리게 간결히 답하세요.\n- 대화에서 쓰인 언어로 답하세요.\n\n=== 대화 ===\n[User] @claude 안녕\n=== 대화 끝 ===\n\n지금 \"@claude\"로서 답할 차례입니다."
+    },
+    {
+      "name": "일반 대화(쓰기 권한·맥락 포함)",
+      "input": {
+        "agent": {
+          "id": "codex",
+          "name": "Codex"
+        },
+        "agents": [
+          {
+            "id": "claude",
+            "name": "Claude"
+          },
+          {
+            "id": "codex",
+            "name": "Codex"
+          }
+        ],
+        "messages": [
+          {
+            "authorType": "user",
+            "text": "표를 정리해 줘"
+          },
+          {
+            "authorType": "agent",
+            "author": "claude",
+            "text": "초안입니다."
+          }
+        ],
+        "permissionMode": "workspace-write",
+        "projectContext": "프로젝트 맥락",
+        "rulesContext": "규칙 하나",
+        "workflowContext": "[확정된 결정]\n- 결정",
+        "memoryContext": "누적 요약",
+        "mentionsEnabled": false
+      },
+      "expected": "당신은 여러 AI 코딩 에이전트가 사용자와 함께 있는 그룹 채팅의 참가자 \"@codex\"(Codex)입니다.\n참가자: 사용자(User), @claude(Claude), @codex(Codex)\n\n규칙:\n- 아래 대화의 마지막 메시지에 이어 자연스럽게 답하세요.\n- 출력 전체가 채팅 메시지 하나로 그대로 전송됩니다. \"[@codex]\" 같은 접두어나 서명을 붙이지 마세요.\n- 이번 턴에는 다른 참가자를 추가 호출할 수 없습니다. 다른 참가자를 언급하려면 @ 없이 이름만 쓰세요.\n- 맡은 작업을 이어가려면 사용자의 결정이 꼭 필요할 때만, 응답 **맨 끝**에 `ASK_USER: <질문 한 줄>`을 붙이세요. 고르는 질문이면 그 아래 `OPTION: <보기>` 줄을 2~5개 이어 붙이세요(짧은 명사구). 보기를 여러 개 고를 수 있으면 OPTION 줄 바로 앞에 `MULTI: yes` 줄을 넣으세요. 제어 줄은 응답 마지막의 연속된 줄이어야 합니다(뒤에 다른 문장 금지).\n- 제어 줄은 화면에 보이지 않고 '답변 대기' 표시와 선택 버튼으로 바뀝니다. 질문은 본문에도 자연스럽게 적으세요. 선택지를 제안하며 마무리하는 경우나 \"더 도울 일이 있을까요?\" 같은 마무리 인사에는 붙이지 마세요 — 그런 답은 사용자가 읽고 알아서 이어갑니다.\n- 워크스페이스 파일을 읽고 수정할 수 있습니다. 요청 범위를 벗어난 변경은 하지 마세요.\n- 채팅에 어울리게 간결히 답하세요.\n- 대화에서 쓰인 언어로 답하세요.\n\n=== 프로젝트 현재 규칙 ===\n규칙 하나\n=== 프로젝트 현재 규칙 끝 ===\n- 이 규칙은 반드시 지키세요.\n\n=== 프로젝트 공통 맥락 ===\n프로젝트 맥락\n=== 프로젝트 공통 맥락 끝 ===\n\n=== 확정된 결정과 진행 중 작업 ===\n[확정된 결정]\n- 결정\n=== 확정된 결정과 진행 중 작업 끝 ===\n\n=== 프로젝트 누적 요약 ===\n누적 요약\n=== 프로젝트 누적 요약 끝 ===\n- 누적 요약에는 검증되지 않은 기록관 초안이 섞여 있습니다. 확정된 사실·결정·규칙으로 취급하지 말고, 원문 대화와 구분해 사용하세요.\n\n=== 대화 ===\n[User] 표를 정리해 줘\n[@claude] 초안입니다.\n=== 대화 끝 ===\n\n지금 \"@codex\"로서 답할 차례입니다."
+    },
+    {
+      "name": "자율 토론 발언",
+      "input": {
+        "agent": {
+          "id": "claude",
+          "name": "Claude"
+        },
+        "agents": [
+          {
+            "id": "claude",
+            "name": "Claude"
+          },
+          {
+            "id": "codex",
+            "name": "Codex"
+          }
+        ],
+        "messages": [
+          {
+            "authorType": "user",
+            "text": "주제"
+          }
+        ],
+        "permissionMode": "chat",
+        "discussion": {
+          "turn": 1,
+          "maxTurns": 9
+        }
+      },
+      "expected": "당신은 여러 AI 코딩 에이전트가 사용자와 함께 있는 그룹 채팅의 참가자 \"@claude\"(Claude)입니다.\n참가자: 사용자(User), @claude(Claude), @codex(Codex)\n\n규칙:\n- 아래 대화의 마지막 메시지에 이어 자연스럽게 답하세요.\n- 출력 전체가 채팅 메시지 하나로 그대로 전송됩니다. \"[@claude]\" 같은 접두어나 서명을 붙이지 마세요.\n- 이번 턴에는 다른 참가자를 추가 호출할 수 없습니다. 다른 참가자를 언급하려면 @ 없이 이름만 쓰세요.\n- 도구 실행이나 파일 수정 없이 대화로만 답하세요.\n- 채팅에 어울리게 간결히 답하세요.\n- 대화에서 쓰인 언어로 답하세요.\n- 지금은 자율 토론 1/9턴입니다. 앞선 답변을 검토해 새 근거가 있을 때만 짧게 기여하세요.\n- 응답 마지막 줄에 반드시 다음 중 하나만 붙이세요: [[CODEPET_DISCUSSION:CONTINUE]], [[CODEPET_DISCUSSION:AGREE]], [[CODEPET_DISCUSSION:PASS]], [[CODEPET_DISCUSSION:CONCLUDE]].\n- 새 기여는 CONTINUE, 새 내용 없이 동의하면 AGREE, 할 말이 없으면 PASS, 충분한 최종 결론을 제시하면 CONCLUDE를 선택하세요.\n\n=== 대화 ===\n[User] 주제\n=== 대화 끝 ===\n\n지금 \"@claude\"로서 답할 차례입니다."
+    },
+    {
+      "name": "토론 결론 종합",
+      "input": {
+        "agent": {
+          "id": "claude",
+          "name": "Claude"
+        },
+        "agents": [
+          {
+            "id": "claude",
+            "name": "Claude"
+          },
+          {
+            "id": "codex",
+            "name": "Codex"
+          }
+        ],
+        "messages": [
+          {
+            "authorType": "agent",
+            "author": "codex",
+            "text": "의견"
+          }
+        ],
+        "permissionMode": "chat",
+        "discussionSummary": {
+          "discussionId": "d1",
+          "incomplete": false,
+          "failures": 0
+        }
+      },
+      "expected": "당신은 Agora의 토론 결론 종합자 \"@claude\"(Claude)입니다.\n앞서 진행된 논의(사용자 질문, 사전 발언, 토론 전체)를 객관적으로 분석해 핵심 결론을 명확하고 구조화된 요약 카드로 정리하세요.\n\n작성 규칙:\n- 새로운 파일 수정이나 도구 명령을 제안하지 말고, 오직 제시된 대화 내용에만 근거해 정리하세요.\n- 다른 참가자를 @멘션으로 호출하지 마세요.\n- 대화에서 쓰인 언어로 답하세요.\n- 아래의 고정 섹션 구조를 정확히 지켜 Markdown으로 작성하세요:\n  ## 논의 주제\n  ## 공통 합의점\n  ## 주요 쟁점과 입장\n  ## 권장 결론\n  ## 사용자 결정 사항 / 다음 행동\n- 도구 실행이나 파일 수정 없이 대화로만 답하세요.\n- 채팅에 어울리게 간결히 답하세요.\n- 대화에서 쓰인 언어로 답하세요.\n\n=== 대화 ===\n[@codex] 의견\n=== 대화 끝 ===\n\n위 지침과 고정 섹션 형식에 맞추어 토론 결론 요약을 작성하세요."
+    },
+    {
+      "name": "쉽게 설명",
+      "input": {
+        "agent": {
+          "id": "claude",
+          "name": "Claude"
+        },
+        "agents": [
+          {
+            "id": "claude",
+            "name": "Claude"
+          }
+        ],
+        "messages": [],
+        "permissionMode": "chat",
+        "simplifyMeta": {
+          "text": "어려운 문장",
+          "fromAgentId": "codex",
+          "messageId": "m1"
+        }
+      },
+      "expected": "당신은 복잡한 기술적 내용을 비개발자도 이해하기 쉽게 풀어주는 통역가(\"@claude\")입니다.\n\n작성 규칙:\n- 전문 개발 용어나 내부 아키텍처, 단순 로그 설명을 걷어내세요.\n- 비개발자 시점에서 명확하고 깔끔한 업무 언어로 핵심(원인, 결과, 결정할 사항)만 재작성하세요.\n- 과도한 비유나 어린아이 대하듯 하는 어투는 피하고, 보고서처럼 담백하게 정리하세요.\n- 다른 참가자를 @멘션으로 호출하지 마세요.\n- 인사말이나 서론 없이, 결과만 바로 출력하세요.\n- 도구 실행이나 파일 수정 없이 대화로만 답하세요.\n- 채팅에 어울리게 간결히 답하세요.\n- 대화에서 쓰인 언어로 답하세요.\n\n=== 풀어볼 원문 메시지 ===\n작성자: codex\n어려운 문장\n=== 원문 메시지 끝 ===\n- 위 메시지를 작성 규칙에 맞게 쉬운 말로 다시 작성해 주세요.\n\n위 메시지를 비개발자가 이해하기 쉬운 말로 번역해 반환하세요."
+    },
+    {
+      "name": "전달(handoff)",
+      "input": {
+        "agent": {
+          "id": "claude",
+          "name": "Claude"
+        },
+        "agents": [
+          {
+            "id": "claude",
+            "name": "Claude"
+          },
+          {
+            "id": "codex",
+            "name": "Codex"
+          }
+        ],
+        "messages": [
+          {
+            "authorType": "user",
+            "text": "이어서"
+          }
+        ],
+        "permissionMode": "workspace-read",
+        "handoff": {
+          "intent": "CONTINUE",
+          "text": "이전 메시지",
+          "fromAgentId": "codex",
+          "messageId": "m2"
+        }
+      },
+      "expected": "당신은 여러 AI 코딩 에이전트가 사용자와 함께 있는 그룹 채팅의 참가자 \"@claude\"(Claude)입니다.\n참가자: 사용자(User), @claude(Claude), @codex(Codex)\n\n규칙:\n- 아래 대화의 마지막 메시지에 이어 자연스럽게 답하세요.\n- 출력 전체가 채팅 메시지 하나로 그대로 전송됩니다. \"[@claude]\" 같은 접두어나 서명을 붙이지 마세요.\n- 다른 참가자를 호출하려면 @이름(@codex)을 쓰세요. 그러면 그 참가자가 이어서 답합니다. 호출 없이 언급만 할 때는 @ 없이 이름만 쓰세요. 호출은 꼭 필요할 때만 하세요.\n- 한 번에 한 명만 발언합니다. 답을 마치면 사용자에게 결정을 넘기거나, 추가 의견이 꼭 필요할 때만 다른 참가자를 @로 호출해 다음 턴을 넘기세요.\n- 맡은 작업을 이어가려면 사용자의 결정이 꼭 필요할 때만, 응답 **맨 끝**에 `ASK_USER: <질문 한 줄>`을 붙이세요. 고르는 질문이면 그 아래 `OPTION: <보기>` 줄을 2~5개 이어 붙이세요(짧은 명사구). 보기를 여러 개 고를 수 있으면 OPTION 줄 바로 앞에 `MULTI: yes` 줄을 넣으세요. 제어 줄은 응답 마지막의 연속된 줄이어야 합니다(뒤에 다른 문장 금지).\n- 제어 줄은 화면에 보이지 않고 '답변 대기' 표시와 선택 버튼으로 바뀝니다. 질문은 본문에도 자연스럽게 적으세요. 선택지를 제안하며 마무리하는 경우나 \"더 도울 일이 있을까요?\" 같은 마무리 인사에는 붙이지 마세요 — 그런 답은 사용자가 읽고 알아서 이어갑니다.\n- 워크스페이스 파일을 읽고 검색할 수 있지만, 수정하거나 명령을 실행하지 마세요.\n- 채팅에 어울리게 간결히 답하세요.\n- 대화에서 쓰인 언어로 답하세요.\n\n=== 이전 메시지 전달 (Handoff) ===\n전달 의도: 이어서 작업\n선택한 에이전트가 보낸 메시지:\n이전 메시지\n=== 이전 메시지 전달 끝 ===\n- 전달받은 메시지를 출발점으로 후속 작업을 이어가세요.\n\n=== 대화 ===\n[User] 이어서\n=== 대화 끝 ===\n\n지금 \"@claude\"로서 답할 차례입니다."
+    },
+    {
+      "name": "독립 발언 묶음(쓰기)",
+      "input": {
+        "agent": {
+          "id": "codex",
+          "name": "Codex"
+        },
+        "agents": [
+          {
+            "id": "claude",
+            "name": "Claude"
+          },
+          {
+            "id": "codex",
+            "name": "Codex"
+          }
+        ],
+        "messages": [
+          {
+            "authorType": "user",
+            "text": "각자 해 줘"
+          }
+        ],
+        "permissionMode": "workspace-write",
+        "parallel": {
+          "folder": "codex",
+          "total": 2
+        },
+        "broadcast": {
+          "position": 2,
+          "total": 2
+        }
+      },
+      "expected": "당신은 여러 AI 코딩 에이전트가 사용자와 함께 있는 그룹 채팅의 참가자 \"@codex\"(Codex)입니다.\n참가자: 사용자(User), @claude(Claude), @codex(Codex)\n\n규칙:\n- 아래 대화의 마지막 메시지에 이어 자연스럽게 답하세요.\n- 출력 전체가 채팅 메시지 하나로 그대로 전송됩니다. \"[@codex]\" 같은 접두어나 서명을 붙이지 마세요.\n- 다른 참가자를 호출하려면 @이름(@claude)을 쓰세요. 그러면 그 참가자가 이어서 답합니다. 호출 없이 언급만 할 때는 @ 없이 이름만 쓰세요. 호출은 꼭 필요할 때만 하세요.\n- 한 번에 한 명만 발언합니다. 답을 마치면 사용자에게 결정을 넘기거나, 추가 의견이 꼭 필요할 때만 다른 참가자를 @로 호출해 다음 턴을 넘기세요.\n- 맡은 작업을 이어가려면 사용자의 결정이 꼭 필요할 때만, 응답 **맨 끝**에 `ASK_USER: <질문 한 줄>`을 붙이세요. 고르는 질문이면 그 아래 `OPTION: <보기>` 줄을 2~5개 이어 붙이세요(짧은 명사구). 보기를 여러 개 고를 수 있으면 OPTION 줄 바로 앞에 `MULTI: yes` 줄을 넣으세요. 제어 줄은 응답 마지막의 연속된 줄이어야 합니다(뒤에 다른 문장 금지).\n- 제어 줄은 화면에 보이지 않고 '답변 대기' 표시와 선택 버튼으로 바뀝니다. 질문은 본문에도 자연스럽게 적으세요. 선택지를 제안하며 마무리하는 경우나 \"더 도울 일이 있을까요?\" 같은 마무리 인사에는 붙이지 마세요 — 그런 답은 사용자가 읽고 알아서 이어갑니다.\n- 워크스페이스 파일을 읽고 수정할 수 있습니다. 요청 범위를 벗어난 변경은 하지 마세요.\n- 채팅에 어울리게 간결히 답하세요.\n- 대화에서 쓰인 언어로 답하세요.\n- 사용자 메시지에 참가자 2명이 차례로 답하는 중이고, 당신은 2번째입니다. 앞선 참가자의 답변을 읽고, 겹치는 내용은 반복하지 말고 보완하거나 다른 관점만 더하세요.\n- 지금 참가자 2명이 같은 작업 폴더에서 동시에 실행되고 있습니다. 서로의 결과를 덮어쓰지 않도록 다음을 지키세요.\n  · 새로 만들거나 고치는 파일은 작업 폴더 아래 `codex/` 하위에만 두세요. 그 밖의 기존 파일은 고치지 마세요(읽기는 자유입니다).\n  · git·패키지 설치·빌드처럼 작업 폴더 전체에 영향을 주는 명령은 실행하지 마세요. 다른 참가자의 작업과 섞입니다.\n\n=== 대화 ===\n[User] 각자 해 줘\n=== 대화 끝 ===\n\n지금 \"@codex\"로서 답할 차례입니다."
+    }
+  ],
+  "invocations": [
+    {
+      "name": "Claude 채팅",
+      "input": {
+        "provider": {
+          "id": "claude",
+          "name": "Claude",
+          "status": "cli",
+          "needsShell": false,
+          "permissions": {
+            "chat": {
+              "supported": true,
+              "enforcement": "tool-policy"
+            },
+            "workspace-read": {
+              "supported": true,
+              "enforcement": "tool-policy"
+            },
+            "workspace-write": {
+              "supported": true,
+              "enforcement": "sandbox"
+            }
+          }
+        },
+        "permissionMode": "chat",
+        "model": "haiku",
+        "effort": "medium",
+        "chatCwd": "C:/chat"
+      },
+      "expected": {
+        "ok": true,
+        "argv": [
+          "-p",
+          "--no-session-persistence",
+          "--output-format",
+          "stream-json",
+          "--include-partial-messages",
+          "--verbose",
+          "--model",
+          "haiku",
+          "--effort",
+          "medium",
+          "--tools",
+          "Skill",
+          "--strict-mcp-config"
+        ],
+        "questionToolAttached": false,
+        "cwd": "C:/chat",
+        "stdinPrompt": true,
+        "promptTransport": "stdin",
+        "deliveries": [],
+        "enforcement": "tool-policy"
+      }
+    },
+    {
+      "name": "Claude 쓰기 자동 승인",
+      "input": {
+        "provider": {
+          "id": "claude",
+          "name": "Claude",
+          "status": "cli",
+          "needsShell": false,
+          "permissions": {
+            "chat": {
+              "supported": true,
+              "enforcement": "tool-policy"
+            },
+            "workspace-read": {
+              "supported": true,
+              "enforcement": "tool-policy"
+            },
+            "workspace-write": {
+              "supported": true,
+              "enforcement": "sandbox"
+            }
+          }
+        },
+        "permissionMode": "workspace-write",
+        "workspace": "C:/ws",
+        "chatCwd": "C:/chat",
+        "attachmentsDir": "C:/att",
+        "autoApprove": true
+      },
+      "expected": {
+        "ok": true,
+        "argv": [
+          "-p",
+          "--no-session-persistence",
+          "--output-format",
+          "stream-json",
+          "--include-partial-messages",
+          "--verbose",
+          "--permission-mode",
+          "acceptEdits",
+          "--strict-mcp-config",
+          "--dangerously-skip-permissions",
+          "--add-dir",
+          "C:/ws"
+        ],
+        "questionToolAttached": false,
+        "cwd": "C:/ws",
+        "stdinPrompt": true,
+        "promptTransport": "stdin",
+        "deliveries": [],
+        "enforcement": "sandbox"
+      }
+    },
+    {
+      "name": "Codex 채팅",
+      "input": {
+        "provider": {
+          "id": "codex",
+          "name": "Codex",
+          "status": "cli",
+          "needsShell": false,
+          "permissions": {
+            "chat": {
+              "supported": true,
+              "enforcement": "sandbox"
+            },
+            "workspace-read": {
+              "supported": true,
+              "enforcement": "sandbox"
+            },
+            "workspace-write": {
+              "supported": true,
+              "enforcement": "sandbox"
+            }
+          }
+        },
+        "permissionMode": "chat",
+        "model": "gpt-6",
+        "effort": "high",
+        "chatCwd": "C:/chat",
+        "outputFile": "C:/out.txt"
+      },
+      "expected": {
+        "ok": true,
+        "argv": [
+          "exec",
+          "-",
+          "--skip-git-repo-check",
+          "--ephemeral",
+          "--color",
+          "never",
+          "--json",
+          "-o",
+          "C:/out.txt",
+          "--model",
+          "gpt-6",
+          "-c",
+          "model_reasoning_effort=high",
+          "--sandbox",
+          "read-only"
+        ],
+        "questionToolAttached": false,
+        "cwd": "C:/chat",
+        "stdinPrompt": true,
+        "promptTransport": "stdin",
+        "deliveries": [],
+        "enforcement": "sandbox"
+      }
+    },
+    {
+      "name": "Codex 읽기",
+      "input": {
+        "provider": {
+          "id": "codex",
+          "name": "Codex",
+          "status": "cli",
+          "needsShell": false,
+          "permissions": {
+            "chat": {
+              "supported": true,
+              "enforcement": "sandbox"
+            },
+            "workspace-read": {
+              "supported": true,
+              "enforcement": "sandbox"
+            },
+            "workspace-write": {
+              "supported": true,
+              "enforcement": "sandbox"
+            }
+          }
+        },
+        "permissionMode": "workspace-read",
+        "workspace": "C:/ws",
+        "chatCwd": "C:/chat"
+      },
+      "expected": {
+        "ok": true,
+        "argv": [
+          "exec",
+          "-",
+          "--skip-git-repo-check",
+          "--ephemeral",
+          "--color",
+          "never",
+          "--json",
+          "--sandbox",
+          "read-only",
+          "--cd",
+          "C:/ws"
+        ],
+        "questionToolAttached": false,
+        "cwd": "C:/ws",
+        "stdinPrompt": true,
+        "promptTransport": "stdin",
+        "deliveries": [],
+        "enforcement": "sandbox"
+      }
+    },
+    {
+      "name": "AGY 쓰기",
+      "input": {
+        "provider": {
+          "id": "agy",
+          "name": "Antigravity",
+          "status": "cli",
+          "needsShell": false,
+          "modelOptions": [],
+          "permissions": {
+            "chat": {
+              "supported": true,
+              "enforcement": "sandbox"
+            },
+            "workspace-read": {
+              "supported": true,
+              "enforcement": "sandbox"
+            },
+            "workspace-write": {
+              "supported": true,
+              "enforcement": "sandbox"
+            }
+          }
+        },
+        "permissionMode": "workspace-write",
+        "workspace": "C:/ws",
+        "chatCwd": "C:/chat"
+      },
+      "expected": {
+        "ok": true,
+        "argv": [
+          "--sandbox",
+          "--disable-slash-commands",
+          "--output-format",
+          "stream-json",
+          "--print-timeout",
+          "10h",
+          "--mode",
+          "accept-edits",
+          "--add-dir",
+          "C:/ws"
+        ],
+        "questionToolAttached": false,
+        "cwd": "C:/ws",
+        "stdinPrompt": false,
+        "promptTransport": "argv",
+        "deliveries": [],
+        "enforcement": "sandbox"
+      }
+    },
+    {
+      "name": "Claude 셸 래퍼(.cmd)",
+      "input": {
+        "provider": {
+          "id": "claude",
+          "name": "Claude",
+          "status": "cli",
+          "needsShell": true,
+          "permissions": {
+            "chat": {
+              "supported": true,
+              "enforcement": "tool-policy"
+            },
+            "workspace-read": {
+              "supported": true,
+              "enforcement": "tool-policy"
+            },
+            "workspace-write": {
+              "supported": true,
+              "enforcement": "sandbox"
+            }
+          }
+        },
+        "permissionMode": "chat",
+        "chatCwd": "C:/chat"
+      },
+      "expected": {
+        "ok": true,
+        "argv": [
+          "-p",
+          "--no-session-persistence",
+          "--output-format",
+          "stream-json",
+          "--include-partial-messages",
+          "--verbose",
+          "--tools",
+          "Skill",
+          "--strict-mcp-config"
+        ],
+        "questionToolAttached": false,
+        "cwd": "C:/chat",
+        "stdinPrompt": true,
+        "promptTransport": "stdin",
+        "deliveries": [],
+        "enforcement": "tool-policy"
+      }
+    }
+  ]
+}

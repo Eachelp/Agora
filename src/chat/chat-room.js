@@ -56,6 +56,18 @@ const LOST_TURN_STALL_SECONDS = 120;
 // 한도로 조용히 멈춘 실행에는 이 안내가 유일한 탈출 신호다.
 const PROGRESS_STALL_MINUTES = 10;
 
+// 실행 중 질문(ask_user) 기록. 끝난(되돌릴 수 없는) 상태와, 방이 기억하는 기록 수 상한.
+const QUESTION_TERMINAL = new Set(["answered", "cancelled", "interrupted"]);
+const MAX_USER_QUESTIONS = 200;
+// 중계소가 쓰는 상태 이름 → 화면·기록이 쓰는 상태 이름.
+const QUESTION_STATUS = Object.freeze({
+  pending: "pending",
+  submitted: "submitting",
+  delivered: "answered",
+  cancelled: "cancelled",
+  expired: "cancelled",
+});
+
 let messageSeq = 0;
 function nextMessageId() {
   messageSeq += 1;
@@ -121,6 +133,21 @@ class ChatRoom extends EventEmitter {
     this.liveRuns = 0;
     this.approvalSeq = 0;
     this.pendingApprovals = new Map();
+    // 실행 중 질문(ask_user). questionTool = { broker, canAttach(agent, purpose), attach({...}) }.
+    // 없으면 질문 도구 없이 예전처럼 돈다.
+    this.questionTool = options.questionTool || null;
+    // runId → { handle, agentId, turnId, run } : 질문 도구가 붙은 실행.
+    this.questionRuns = new Map();
+    // questionId → 질문 기록. 다시 켠 뒤에는 답을 기다리던 질문이 '중단됨'으로 돌아온다(답할 수 없다).
+    this.userQuestions = new Map();
+    this.interruptedOnLoad = [];
+    for (const question of options.initialQuestions || []) {
+      if (!question?.questionId) continue;
+      const open = question.status === "pending" || question.status === "submitting";
+      const restored = open ? { ...question, status: "interrupted", reason: "app-restart" } : { ...question };
+      this.userQuestions.set(restored.questionId, restored);
+      if (open) this.interruptedOnLoad.push({ ...restored });
+    }
   }
 
 
@@ -328,6 +355,165 @@ class ChatRoom extends EventEmitter {
     entry.resolve(decision === "approve");
     this.emit("approval-wait");
     return true;
+  }
+
+  // ---- 실행 중 질문(ask_user) ----
+  // 질문 하나 = 도구 호출 하나(질문 1~4개 묶음). 실행 프로세스는 답이 올 때까지 같은 자리에서 기다린다.
+
+  userQuestionList() {
+    return [...this.userQuestions.values()].map((question) => ({ ...question }));
+  }
+
+  // 지금 사용자의 답을 기다리는 질문. 화면이 (다시) 붙을 때 상태 스냅숏에 실려 나간다.
+  pendingUserQuestionList() {
+    return this.userQuestionList().filter((question) => question.status === "pending");
+  }
+
+  hasPendingQuestion() {
+    return this.pendingUserQuestionList().length > 0;
+  }
+
+  // 중계소가 알려 준 질문 묶음(set)을 기록에 반영한다. 끝난 질문은 되살리지 않는다.
+  noteQuestionSet(set) {
+    if (!set?.setId || set.sessionId !== this.sessionId) return;
+    const status = QUESTION_STATUS[set.status];
+    if (!status) return;
+    const previous = this.userQuestions.get(set.setId);
+    if (previous && QUESTION_TERMINAL.has(previous.status)) return;
+    this.setQuestion({
+      questionId: set.setId,
+      sessionId: this.sessionId,
+      agentId: set.agentId,
+      runId: set.runId,
+      turnId: set.turnId ?? null,
+      questions: set.questions,
+      status,
+      createdAt: set.createdAt,
+      ...(set.answers ? { answers: set.answers } : {}),
+      ...(status === "submitting" || status === "answered" ? { answeredAt: previous?.answeredAt || Date.now() } : {}),
+      ...(set.reason ? { reason: set.reason } : {}),
+    });
+  }
+
+  setQuestionStatus(question, status, extra = {}) {
+    this.setQuestion({
+      ...question,
+      status,
+      ...extra,
+      ...(status === "answered" && !question.answeredAt ? { answeredAt: Date.now() } : {}),
+    });
+  }
+
+  setQuestion(record) {
+    this.userQuestions.set(record.questionId, record);
+    if (this.userQuestions.size > MAX_USER_QUESTIONS) {
+      for (const [id, question] of this.userQuestions) {
+        if (this.userQuestions.size <= MAX_USER_QUESTIONS) break;
+        if (QUESTION_TERMINAL.has(question.status)) this.userQuestions.delete(id);
+      }
+    }
+    // 시간 제한을 먼저 맞춘다. 알림을 받는 쪽이 예외를 던져도 실행이 멈춘 채 남지 않게.
+    this.syncQuestionWaiting(record.runId);
+    this.emit("user-question", { ...record });
+  }
+
+  // 답을 기다리는 질문이 있는 동안 그 실행의 시간 제한·무음 경고를 멈춘다.
+  syncQuestionWaiting(runId) {
+    const entry = this.questionRuns.get(runId);
+    const run = entry?.run;
+    if (typeof run?.setWaitingUser !== "function") return;
+    const waiting = [...this.userQuestions.values()].some((question) => question.runId === runId && question.status === "pending");
+    if (Boolean(entry.waiting) === waiting) return;
+    entry.waiting = waiting;
+    try {
+      run.setWaitingUser(waiting);
+    } catch (error) {
+      console.warn("[agora] 질문 대기 시간 제한 조정 실패:", error?.message || error);
+    }
+  }
+
+  // 사용자가 보낸 답(또는 건너뛰기)을 받을 수 있는 질문인지 확인한다. 아니면 이유를 돌려준다.
+  findAnswerableQuestion(questionId, runId) {
+    const question = this.userQuestions.get(String(questionId || ""));
+    if (!question) return { ok: false, error: "이 대화에 없는 질문입니다." };
+    if (runId !== undefined && runId !== question.runId) return { ok: false, error: "이 질문은 다른 작업에 속합니다." };
+    if (question.status !== "pending") return { ok: false, error: "이 질문은 이미 처리되었습니다." };
+    if (!this.questionTool?.broker || !this.questionRuns.has(question.runId)) {
+      return { ok: false, error: "이 질문을 던진 작업은 이미 끝났습니다." };
+    }
+    return { ok: true, question };
+  }
+
+  // 답은 같은 실행으로 돌아간다. 검증(질문 수·선택지·글자 수)은 중계소가 한 번 더 한다.
+  answerUserQuestion({ questionId, runId, answers } = {}) {
+    const found = this.findAnswerableQuestion(questionId, runId);
+    if (!found.ok) return found;
+    const result = this.questionTool.broker.answer({ runId: found.question.runId, setId: found.question.questionId, answers });
+    return result.ok ? { ok: true } : { ok: false, error: result.error, code: result.code };
+  }
+
+  // 사용자가 답하지 않기로 한다. 모델에는 "답 없이 이어 가라"는 결과가 돌아간다.
+  cancelUserQuestion({ questionId, runId } = {}) {
+    const found = this.findAnswerableQuestion(questionId, runId);
+    if (!found.ok) return found;
+    const result = this.questionTool.broker.cancel({ runId: found.question.runId, setId: found.question.questionId, reason: "user-skip" });
+    return result.ok ? { ok: true } : { ok: false, error: result.error, code: result.code };
+  }
+
+  // 사용자가 답하지 않기로 한 질문을 모델이 계속 던지면 실행을 멈춘다(중계소가 알려 준다).
+  noteQuestionRepeatLimit(info) {
+    const entry = this.questionRuns.get(info?.runId);
+    if (!entry) return;
+    try {
+      entry.run?.cancel();
+    } catch {}
+    this.appendSystem(
+      `@${entry.agentId}가 ${info.reason === "budget" ? "질문 횟수 한도를 넘겨" : "답하지 않기로 한 질문을 계속 던져"} 이번 실행을 멈췄습니다. 필요하면 다시 말을 걸어 주세요.`
+    );
+  }
+
+  // 질문 도구를 붙인다. 붙이지 못하면 이유를 안내하고 null(끝에서 묻는 방식으로 진행).
+  async beginQuestionRun(agent, runId, turnId, purpose) {
+    let handle;
+    try {
+      handle = await this.questionTool.attach({ agent, runId, turnId, purpose });
+    } catch (error) {
+      handle = { attached: false, reason: error?.message || String(error) };
+    }
+    if (!handle?.attached) {
+      this.appendSystem(`@${agent.id}에게 실행 중 질문 도구를 붙이지 못해 응답 끝에서 묻는 방식으로 진행합니다. (${handle?.reason || "이유를 알 수 없음"})`);
+      return null;
+    }
+    this.questionRuns.set(runId, { handle, agentId: agent.id, turnId: turnId ?? null, run: null });
+    return handle;
+  }
+
+  // 실행이 끝났다(성공·실패·중지·삭제·종료). 기다리던 질문을 정리하고 중계소의 실행 등록을 푼다.
+  // pending: 답을 기다리던 질문이 되는 상태, submitting: 답은 보냈지만 도구 결과 전달 확인이 없던 질문이 되는 상태.
+  closeQuestionRun(runId, { reason = "run-ended", pending = "cancelled", submitting = "interrupted" } = {}) {
+    const entry = this.questionRuns.get(runId);
+    this.questionRuns.delete(runId);
+    const open = [...this.userQuestions.values()].filter(
+      (question) => question.runId === runId && (question.status === "pending" || question.status === "submitting")
+    );
+    try {
+      for (const question of open) {
+        this.setQuestionStatus(question, question.status === "pending" ? pending : submitting, { reason });
+      }
+    } finally {
+      try {
+        entry?.handle?.cleanup?.(reason);
+      } catch (error) {
+        console.warn("[agora] 질문 연결 정리 실패:", error?.message || error);
+      }
+    }
+  }
+
+  // 앱 종료: 답을 기다리던 질문을 '중단됨'으로 남긴다(다시 켜도 같은 상태).
+  interruptQuestions() {
+    for (const runId of [...this.questionRuns.keys()]) {
+      this.closeQuestionRun(runId, { reason: "app-quit", pending: "interrupted" });
+    }
   }
 
   // 방 전체 단일 턴 큐. 일반 응답과 멘션 호출은 대기 중인 같은 에이전트의
@@ -547,7 +733,7 @@ class ChatRoom extends EventEmitter {
     try {
       outcome = await this.respond(
         item.agent,
-        { ...item.context, promptLimit: item.promptLimit },
+        { ...item.context, promptLimit: item.promptLimit, turnId: item.turnId },
         item.generation
       );
     } catch {
@@ -651,6 +837,7 @@ class ChatRoom extends EventEmitter {
       const running = [...this.runningTurns].map((entry) => `@${entry.agent.id}`).join(", ");
       this.appendSystem(
         "@" + item.agent.id + " 응답은 아직 차례를 기다리고 있습니다 (" + running + " 실행 중). 그대로 기다리면 이어서 실행됩니다."
+        + (this.hasPendingQuestion() ? " 실행 중인 응답이 사용자의 답을 기다리는 질문이 있습니다. 그 질문에 답하면 이어집니다." : "")
       );
       return;
     }
@@ -790,9 +977,16 @@ class ChatRoom extends EventEmitter {
 
     const mentionDepth = context.mentionDepth || 0;
 
-    let prompt;
+    // 이 턴이 실행 중 질문 도구를 붙일 수 있는 종류인가(토론·결론 종합·쉽게 설명 같은 도우미 턴은 아니다).
+    const questionPurpose = this.isFreeChatContext(context) ? "chat" : "other";
+    let questionToolPossible = false;
     try {
-      prompt = buildAgentPrompt({
+      questionToolPossible = Boolean(this.questionTool?.canAttach?.(agent, questionPurpose));
+    } catch {}
+    let prompt;
+    let buildPrompt;
+    try {
+      buildPrompt = (userQuestionTool) => buildAgentPrompt({
         agent,
         agents: this.enabledAgents(),
         messages: context.discussionSummaryMessages || this.promptMessages(context.promptLimit, context.independent),
@@ -814,7 +1008,9 @@ class ChatRoom extends EventEmitter {
         handoff: context.handoff || null,
         // 토론·결론 종합·쉽게 설명에서는 @멘션 호출을 끈다. 연쇄 깊이 상한도 여기서 막는다.
         mentionsEnabled: !context.discussion && !context.discussionSummary && !context.simplifyMeta && mentionDepth < this.mentionChainLimit,
+        userQuestionTool,
       });
+      prompt = buildPrompt(questionToolPossible);
     } catch (error) {
       const stopReason = error?.code || "PROMPT_BUILD_FAILED";
       this.appendSystem(`프롬프트를 만들지 못해 응답을 시작하지 않았습니다. (${error?.message || "알 수 없는 오류"})`);
@@ -842,6 +1038,8 @@ class ChatRoom extends EventEmitter {
       this.trackRunStart();
       emitEvent({ kind: "run-start" });
       let run;
+      let runPrompt = prompt;
+      let questionHandle = null;
       try {
         if (typeof this.prepareAgent === "function") {
           await this.prepareAgent({ agent, runId });
@@ -850,16 +1048,28 @@ class ChatRoom extends EventEmitter {
             return;
           }
         }
+        if (questionToolPossible) {
+          questionHandle = await this.beginQuestionRun(agent, runId, context.turnId, questionPurpose);
+          if (generation !== this.generation) {
+            this.discardLiveRun(runId, agent);
+            return;
+          }
+          // 못 붙였으면 프롬프트도 도구 없는 모양으로(ask_user를 쓰라고 해 놓고 없으면 안 된다).
+          if (!questionHandle) runPrompt = buildPrompt(false);
+        }
         run = this.runAgent({
           agent,
-          prompt,
+          prompt: runPrompt,
           runId,
           attachments: context.attachments || [],
           emitEvent,
           permissionMode,
           // 자동 승인은 workspace-write에서만 실제 argv에 반영된다(IPC 경계가 다시 막는다).
           autoApprove: agent.autoApprove || approvedRetry,
+          ...(questionHandle ? { userQuestion: questionHandle } : {}),
         });
+        const questionRun = this.questionRuns.get(runId);
+        if (questionRun) questionRun.run = run;
         this.cancels.add(run.cancel);
         result = await run.promise;
         // 별칭(fable)으로 실행했더라도 CLI가 보고한 실제 모델을 응답 헤더에 남깁니다.
@@ -871,6 +1081,8 @@ class ChatRoom extends EventEmitter {
         result = { ok: false, error: detail || "에이전트 실행 중 내부 오류가 발생했습니다." };
       } finally {
         if (run) this.cancels.delete(run.cancel);
+        // 질문 도구가 붙었던 실행이면 남은 질문을 정리하고 중계소 등록을 푼다(중지로 이미 정리됐어도 안전하다).
+        this.closeQuestionRun(runId, { submitting: result?.ok ? "answered" : "interrupted" });
         this.setTyping(agent.id, false);
         this.trackRunEnd();
       }
@@ -1450,6 +1662,7 @@ class ChatRoom extends EventEmitter {
     this.stopAllSilently();
     this.messages = [];
     this.awaitingUsers.clear();
+    this.userQuestions.clear();
     this.emit("reset");
   }
 
@@ -1463,6 +1676,12 @@ class ChatRoom extends EventEmitter {
       } catch {}
     }
     this.cancels.clear();
+    // 답을 기다리던 질문도 함께 끝낸다. 프로세스는 위에서 이미 끊었다.
+    try {
+      for (const runId of [...this.questionRuns.keys()]) this.closeQuestionRun(runId, { reason: "stopped" });
+    } catch (error) {
+      console.warn("[agora] 중지 중 질문 정리 실패:", error?.message || error);
+    }
     for (const item of [...this.turnQueue, ...this.deferredTurnQueue]) {
       this.retireTurn(item, undefined, { lost: notifyLost });
     }

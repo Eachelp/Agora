@@ -58,6 +58,7 @@ function persistRunMetrics({
       startedAt: metrics.startedAt,
       finishedAt: metrics.finishedAt,
       promptChars: metrics.promptChars,
+      userWaitingMs: metrics.userWaitingMs,
       result: {
         ok: metrics.ok,
         stopReason: metrics.stopReason,

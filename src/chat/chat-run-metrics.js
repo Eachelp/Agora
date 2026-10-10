@@ -28,6 +28,7 @@ function buildRunMetrics({
   startedAt = null,
   finishedAt = null,
   promptChars = 0,
+  userWaitingMs = null,
   result = {},
 } = {}) {
   const start = finiteTimestamp(startedAt, null);
@@ -37,6 +38,8 @@ function buildRunMetrics({
   const tools = evidence.toolSummary || {};
   const exploration = evidence.exploration || {};
   const output = result?.output || {};
+  const waiting = userWaitingMs == null ? null : nonNegativeInteger(userWaitingMs);
+  const durationMs = start != null && finish != null ? Math.max(0, finish - start) : null;
 
   return {
     schemaVersion: 1,
@@ -47,7 +50,9 @@ function buildRunMetrics({
     stage: stage ? String(stage).slice(0, 48) : null,
     startedAt: start,
     finishedAt: finish,
-    durationMs: start != null && finish != null ? Math.max(0, finish - start) : null,
+    durationMs,
+    // 사용자 답을 기다린 시간은 모델 실행 시간과 따로 둔다. 질문 도구를 쓴 실행에만 있다.
+    ...(waiting != null ? { userWaitingMs: waiting, modelDurationMs: durationMs != null ? Math.max(0, durationMs - waiting) : null } : {}),
     promptChars: nonNegativeInteger(promptChars),
     stdoutBytes: nonNegativeInteger(output.stdoutBytes),
     captureTruncated: Boolean(output.captureTruncated),
