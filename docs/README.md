@@ -4,7 +4,7 @@
 
 처음 사용하는 팀원은 [설치 가이드](../설치-가이드.md) → [사용 안내](../사용-안내.md) 순서로 읽으면 됩니다. 전체 소개는 [README](../README.md)에 있습니다.
 
-이 문서는 2026-09-06 문서 정리 기준입니다. 아래의 현재 기능 설명과 과거 설계·검수 기록을 구분해서 읽어 주세요. 문서 날짜만으로 앱 실행 검증이나 배포 완료를 의미하지는 않습니다.
+이 문서는 2026-09-06 문서 정리를 바탕으로 하고, 2026-10-11 전문 모드 제거를 반영했습니다. 아래의 현재 기능 설명과 과거 설계·검수 기록을 구분해서 읽어 주세요. 문서 날짜만으로 앱 실행 검증이나 배포 완료를 의미하지는 않습니다.
 
 ## 현재 지원 범위
 
@@ -12,8 +12,10 @@
 |---|---|
 | 일반 대화 | `@claude`·`@gpt`·`@gemini`, `@모두` 이어 발언·독립 발언 |
 | 토론 | 발언 수를 정하는 자유토론, Preset과 사이클에 따른 구조화 토론 |
-| 답변 대기·승인 | AI가 되묻는 질문에 답하면 이어 진행, 권한 밖 작업은 "이 턴 승인 후 다시 실행" 카드로 확인 |
-| 프로젝트 기록 | 프로젝트별 메모리·결정·작업 기록과 공통 규칙을 대화에 전달, 끝난 토론 자동 기록 |
+| 답변 대기·승인 | AI가 되묻는 질문에 답하면 이어 진행, 권한 밖 작업은 "도구 실행 권한 요청" 창의 **[이 턴 승인 후 다시 실행]**·**[거부]**로 확인. 요청은 대화별로 보이고 창을 다시 열어도 남음 |
+| 중지·잠깐·대기 취소 | 응답 중이거나 승인을 기다리는 대화에서 **[중지]**(전부 멈춤), **[잠깐]**(멈추고 발언권을 사용자에게), 대기 발언의 **×**(그 발언만 취소) |
+| 동시 대화 | 한 프로젝트 폴더에서 두 대화가 동시에 일할 수 있음. 같은 파일을 동시에 고치면 나중에 저장한 쪽이 남음 |
+| 프로젝트 기록 | 프로젝트별 메모리·결정·작업 기록과 규칙을 대화에 전달. 끝난 토론은 프로젝트 설정의 "토론 자동 기록"에서 기록 담당을 고른 프로젝트에서만 자동 기록 |
 | 모델 목록 | CLI 버전·로그인 1시간 재확인, 모델 목록 캐시 6시간. Codex·AGY 목록과 Claude 도움말 별칭 갱신 |
 
 전문 모드·역할 상담·`@팀 실행`은 제거되었고, 일반 대화 안의 오케스트레이터 모드는 아직 구현되지 않았습니다. 모델 자동 갱신은 CLI와 계정이 제공하는 목록에 한정되며, 모든 신모델의 실시간 발견을 보장하지 않습니다. 갱신 후 열려 있던 모델 선택창은 다시 열어야 합니다.
@@ -37,14 +39,14 @@
 | [V1.5 제안](design/AGORA_V1_5_PROPOSAL.md) | 최초 제안 기록. 전체가 현재 기능 명세는 아님 |
 | [로컬 실행 체크리스트](design/AGORA_V1_5_LOCAL_SMOKE_CHECKLIST.md) | 현재 UI·실제 CLI 확인 시나리오와 수행 결과 |
 | [초기 구현 계획](design/AGORA_IMPLEMENTATION_PLAN.md) | 초기 전환 당시 계획 |
-| [Managed Harness 개발일지](design/AGORA_MANAGED_HARNESS_EVOLUTION_LOG.md) | Stage별 개발·검증 이력. 본문의 ‘다음 단계’는 작성 당시 기준 |
-| [Stage C 최종 검수](design/AGORA_STAGE_C_FINAL_REVIEW.md) | 2026-08-20 검수 대상 커밋의 판정 |
-| [Stage C 결정 기록](design/AGORA_STAGE_C_SESSION_LIFECYCLE_DECISIONS.md) | 검수 대기 시점의 결정과 후속 최종 검수 링크 |
+| [Managed Harness 개발일지](design/AGORA_MANAGED_HARNESS_EVOLUTION_LOG.md) | (제거됨·역사 기록) Stage별 개발·검증 이력. 본문의 ‘다음 단계’는 작성 당시 기준 |
+| [Stage C 최종 검수](design/AGORA_STAGE_C_FINAL_REVIEW.md) | (대체됨·역사 기록) 2026-08-20 검수 대상 커밋의 판정 |
+| [Stage C 결정 기록](design/AGORA_STAGE_C_SESSION_LIFECYCLE_DECISIONS.md) | (대체됨·역사 기록) 검수 대기 시점의 결정과 후속 최종 검수 링크 |
 | [개정 기록 2026-10-11](design/AGORA_REVISION_2026-10-11_REMOVE_PROFESSIONAL_MODE.md) | 전문 모드·역할 상담 제거 결정과 아래 Stage C·D 문서의 대체됨 표시 근거 |
 | [D-0 결정 기록](design/AGORA_STAGE_D0_WORKSPACE_LEASE_DECISIONS.md) | (제거됨·역사 기록) 워크스페이스 변경 소유권의 결정·검수 이력. 2026-10-11 stage 4에서 lease 제거 — 개정 기록 §4a |
-| [D-A0 결정 기록](design/AGORA_STAGE_DA0_VERIFICATION_BOUNDARY_DECISIONS.md) | 검증 안전 경계의 결정·검수 이력 |
-| [Stage D Charter](design/AGORA_STAGE_D_ASSURANCE_CHARTER.md) | 승인된 v0.5 의미 계약. 이번 정리는 계약을 변경하지 않음 |
-| [Stage D 결정 기록](design/AGORA_STAGE_D_ASSURANCE_DECISIONS.md) | 2026-08-25 완료 기준과 당시 한계. 승인 UI 후속 구현은 상단 안내 참조 |
+| [D-A0 결정 기록](design/AGORA_STAGE_DA0_VERIFICATION_BOUNDARY_DECISIONS.md) | (제거됨·역사 기록) 검증 안전 경계의 결정·검수 이력 |
+| [Stage D Charter](design/AGORA_STAGE_D_ASSURANCE_CHARTER.md) | (대체됨·역사 기록) 전문 모드 제거로 적용 대상이 없어진 v0.5 의미 계약. 폐기 사유는 개정 기록 §4 |
+| [Stage D 결정 기록](design/AGORA_STAGE_D_ASSURANCE_DECISIONS.md) | (대체됨·역사 기록) 2026-08-25 완료 기준과 당시 한계. 승인 UI 후속 구현은 상단 안내 참조 |
 | [이 문서](README.md) | 팀 공유 진입점과 전체 문서 분류 |
 
 CodePet 분리 당시의 초기 명세·검수 보고서·기준선 감사와 초기 화면 목업은 지금 앱과 맞지 않아 삭제했습니다. 필요하면 git 기록에서 볼 수 있습니다. 작업 폴더의 `.project-memory`는 옛 전문 모드가 만들던 기록으로, 현재 버전은 새로 만들지 않고 읽지도 않으며 지우지도 않습니다. 로컬 검수 사본인 `.codex-review-*`와 의존성 문서는 이 제품 문서 목록에서 제외합니다.
