@@ -40,6 +40,10 @@ Stage D 불변식(INV-1~5, R-1~8 등)은 "전문 모드의 실행·검증·완�
 
 ## 6. 사용자 데이터
 
-이전 버전이 남긴 `~/.agora/sessions/*/checkpoints`, `professional-events.jsonl`, `<workspace>/.project-memory/`와 세션 `meta.json`의 `professionalRun`·`pendingRecovery`는 지우거나 다시 쓰지 않는다. 읽더라도 무시한다.
+이전 버전이 남긴 `~/.agora/sessions/*/checkpoints`, `professional-events.jsonl`, `<workspace>/.project-memory/`는 지우거나 다시 쓰지 않는다. 읽더라도 무시한다.
+
+세션 `meta.json`의 `professionalRun`·`pendingRecovery`는 **있는 그대로 보존하고 해석하지 않는다**. 대화를 저장할 때마다 meta.json은 통째로 다시 저장되므로 파일이 다시 쓰이지만, 이 두 필드의 값은 바뀌지 않은 채 함께 기록된다("다시 쓰지 않는다"가 아니라 "지우지도 바꾸지도 않는다").
+
+`run-logs/*.evidence.json`과 파일 기반 작업 카드(`contentSource: "file"`)의 본문(`<workspace>/.project-memory/tasks/TASK-*.md`)도 그대로 둔다. 실행 로그 정리는 `.log`만 다루므로 옛 evidence 파일은 지워지지 않고, 파일 기반 작업 카드는 본문을 읽기 전용으로만 보여 준다(`chat:tasks:read-file`, 프로젝트 폴더의 `.project-memory/tasks/*.md`·256KB 이하·폴더 밖을 가리키는 링크 거절).
 
 프로젝트 JSON(`~/.agora/projects/*.json`)의 옛 `defaultRoles`·`autoRevisions` 키도 지우거나 다시 쓰지 않는다. 읽을 때만 걸러 내고, 프로젝트를 수정해 저장해도 파일에는 그대로 남는다(v1.1.1로 되돌려도 설정이 유지된다).
