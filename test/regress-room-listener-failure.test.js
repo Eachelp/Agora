@@ -44,7 +44,7 @@ fs.renameSync = function patchedRename(from, to, ...rest) {
 };
 test.after(() => { fs.renameSync = realRename; });
 
-function setup({ approval = false } = {}) {
+function setup({ approval = false, hold = false } = {}) {
   const handlers = new Map();
   const sent = [];
   class FakeBrowserWindow {
@@ -57,6 +57,7 @@ function setup({ approval = false } = {}) {
   }
   const records = [fakeRecord("claude", "Claude", ["claude"])];
   const calls = [];
+  let release = () => {};
   const feature = createChatFeature({
     electron: {
       ipcMain: { handle: (channel, handler) => handlers.set(channel, handler), on() {}, send() {} },
@@ -72,6 +73,7 @@ function setup({ approval = false } = {}) {
     },
     runAgent: () => {
       calls.push(calls.length);
+      if (hold) return { promise: new Promise((resolve) => { release = () => resolve({ ok: true, text: "완료" }); }), cancel() {} };
       const result = approval && calls.length === 1
         ? { ok: false, approvalRequired: true, approval: { summary: "도구 실행 권한", detail: "파일 쓰기" } }
         : { ok: true, text: "완료" };
@@ -81,7 +83,7 @@ function setup({ approval = false } = {}) {
   feature.registerIpcHandlers();
   feature.openWindow();
   const invoke = async (channel, input = {}) => handlers.get(channel)({}, input);
-  return { feature, invoke, sent, calls };
+  return { feature, invoke, sent, calls, release: () => release() };
 }
 
 async function newRoom(env) {
@@ -198,4 +200,34 @@ test("방: 중지는 approval-wait 리스너가 던져도 실행 중인 프로�
   assert.equal(room.typingCounts.size, 0);
   assert.equal(room.activeRuns, 0);
   assert.equal(room.pendingApprovals.size, 0);
+});
+
+// 사이드바가 보는 상태: 마지막 chat:sessions-changed 알림 속 이 대화의 status.
+function sidebarStatus(env, sessionId) {
+  const payloads = env.sent.filter((entry) => entry.channel === "chat:sessions-changed").map((entry) => entry.payload);
+  const last = payloads[payloads.length - 1];
+  const entries = Object.values(last.sessionsByProject).flat();
+  return entries.find((entry) => entry.id === sessionId)?.status;
+}
+
+test("끝날 때 상태 저장이 한 번 실패해도 알림은 가고, 잠시 뒤 다시 써서 'running'이 디스크에 남지 않는다", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const env = setup({ hold: true });
+  const sessionId = await newRoom(env);
+  assert.equal((await env.invoke("chat:send", { sessionId, text: "@claude 안녕" })).ok, true);
+  await waitFor(() => env.calls.length >= 1);
+  await settle();
+  assert.equal(sidebarStatus(env, sessionId), "running", "응답 중에는 실행 표시");
+  const before = env.sent.length;
+  failMeta = true;
+  try {
+    env.release();
+    await settle();
+    assert.ok(env.sent.length > before, "저장이 실패해도 사이드바 알림은 보낸다");
+    assert.equal(sidebarStatus(env, sessionId), "running", "저장이 안 됐으니 아직 그대로");
+  } finally {
+    failMeta = false;
+  }
+  await waitFor(() => sidebarStatus(env, sessionId) === "idle", 3000);
+  assert.equal((await sessionOf(env, sessionId)).meta.status, "idle", "다시 쓴 상태가 디스크에도 남는다");
 });

@@ -1019,9 +1019,28 @@ function roomMeta(meta) {
     // 사이드바에 표시가 남도록 상태를 함께 센다.
     const syncRoomStatus = () => {
       if (shuttingDown) return;
-      const working = room.activeRuns > 0 || room.pendingApprovals.size > 0;
-      store.setSessionStatus(sessionId, working ? "running" : "idle");
-      broadcast("chat:sessions-changed", sessionsPayload());
+      const writeStatus = () => {
+        const working = room.activeRuns > 0 || room.pendingApprovals.size > 0;
+        store.setSessionStatus(sessionId, working ? "running" : "idle");
+      };
+      try {
+        writeStatus();
+      } catch (error) {
+        // 저장이 한 번 실패해도 디스크에 'running'이 남아 다시 켠 뒤 "앱 종료로 중단" 안내가 잘못 뜨지
+        // 않게, 잠시 뒤 지금 상태로 한 번 더 쓰고 사이드바도 맞춘다. 이번 예외는 on()이 기록만 남긴다.
+        setTimeout(() => {
+          if (shuttingDown) return;
+          try {
+            writeStatus();
+            broadcast("chat:sessions-changed", sessionsPayload());
+          } catch (retryError) {
+            console.warn("[agora] 대화 상태 저장 재시도 실패:", retryError?.message || retryError);
+          }
+        }, 500).unref?.();
+        throw error;
+      } finally {
+        broadcast("chat:sessions-changed", sessionsPayload());
+      }
     };
     on("busy", syncRoomStatus);
     on("approval-wait", syncRoomStatus);
