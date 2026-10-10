@@ -661,8 +661,17 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
         );
         return true;
       } catch (switchError) {
+        // 위에서 Codex Desktop을 먼저 껐으므로, 전환이 실패해도(auth는 그대로) 앱을 다시 띄운다.
+        let relaunchText = "";
+        try {
+          const relaunch = await codexDesktop.launch();
+          if (!relaunch?.skipped) relaunchText = "\nCodex Desktop App은 이전 계정 그대로 다시 실행을 요청했습니다.";
+        } catch (launchError) {
+          relaunchText = `\n꺼 둔 Codex Desktop App을 다시 실행하지 못했어요. 직접 열어 주세요.\n${launchError.message || String(launchError)}`;
+          appendDebugLog(`Codex Desktop launch failed after failed switch: ${launchError.message || String(launchError)}`);
+        }
         showAccountNotice(
-          `Codex auth 전환에 실패했습니다.\n${switchError.message || String(switchError)}`
+          `Codex auth 전환에 실패했습니다.\n${switchError.message || String(switchError)}${relaunchText}`
         );
         return false;
       }
@@ -693,16 +702,27 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
     // boundary 설치 + old inflight turn 실제 settle까지 대기. 실패하면 여기서
     // 던져서 switchToProfile(=credential mutation)에 도달하지 않는다.
     const boundary = await installAccountBoundaryOrFail(provider);
+    let restartError = null;
     try {
       // switchToProfile은 write 이전에 await snapshotCurrent() 같은 async 구간을
       // 갖는다. 전환 트랜잭션이 끝날 때까지 admission이 닫혀 있어야 그 구간에
       // 새 turn이 old credential로 시작하지 않는다.
       await switcher.switchToProfile(profileKey);
+    } catch (error) {
+      // 자격 증명은 이미 바뀌었고 IDE 재시작만 실패한 경우는 실패가 아니라 부분 성공이다.
+      if (!error?.restartFailedAfterChange) throw error;
+      restartError = error;
     } finally {
       completeAccountBoundary(boundary, provider);
     }
     clearUsageCache(provider);
     refreshTrayMenu();
+    if (restartError) {
+      showAccountNotice(
+        `계정은 전환했지만 AGY를 다시 실행하지 못했어요. AGY를 직접 열어 주세요.
+${restartError.message || String(restartError)}`
+      );
+    }
     return true;
   }
 
@@ -819,6 +839,14 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
       try {
         // prepareLogin도 clear 이전에 await read() async 구간을 갖는다.
         await antigravityAccountSwitcher.prepareLogin(meta);
+      } catch (error) {
+        if (!error?.restartFailedAfterChange) throw error;
+        // 로그인 정보는 이미 지워졌다. 목록을 새로 고치고, 무슨 일이 일어났는지 그대로 알린다.
+        clearUsageCache("agy");
+        refreshTrayMenu();
+        error.message = `AGY 로그인 정보는 지웠지만 AGY를 다시 실행하지 못했어요. AGY를 직접 열어 로그인해 주세요.
+${error.message}`;
+        throw error;
       } finally {
         completeAccountBoundary(boundary, "agy");
       }
@@ -1127,7 +1155,8 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
   });
 
   // macOS에서는 Claude Code live 자격 증명이 Keychain에 있으므로 플랫폼 저장소를 주입합니다.
-  const claudeLiveStore = createClaudeLiveStore();
+  // 테스트가 OS와 무관하게 같은 동작을 검증하도록 live 저장소를 주입할 수 있다(운영은 플랫폼 기본값).
+  const claudeLiveStore = ui.claudeLiveStore || createClaudeLiveStore();
   const claudeAccountSwitcher = new ClaudeAccountSwitcher({ liveStore: claudeLiveStore });
   const antigravityAccountSwitcher = new AntigravityAccountSwitcher({
     read: async () => JSON.parse(await readCredential("gemini:antigravity")),

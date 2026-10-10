@@ -125,6 +125,17 @@ class AntigravityAccountSwitcher {
     atomicWrite(this.accountFile, { ...current, active: email, old });
   }
 
+  // 자격 증명을 이미 바꾼 뒤의 IDE 재시작이다. 실패해도 변경은 적용된 상태이므로,
+  // 호출자가 '실패'로 오해하지 않게 표시를 달아 던진다(restartFailedAfterChange).
+  async restartAfterChange() {
+    try {
+      await this.restart();
+    } catch (error) {
+      if (error && typeof error === "object") error.restartFailedAfterChange = true;
+      throw error;
+    }
+  }
+
   async switchToProfile(key) {
     const profile = this.store.get(key);
     if (!profile?.secret?.token?.refresh_token) {
@@ -142,7 +153,7 @@ class AntigravityAccountSwitcher {
     await this.write(profile.secret);
     this.store.setActive(key);
     this.updateAccountHint(profile.email);
-    await this.restart();
+    await this.restartAfterChange();
     return safeProfile(profile, true);
   }
 
@@ -167,7 +178,7 @@ class AntigravityAccountSwitcher {
       await this.clear();
       this.clearAccountHint();
       this.store.clearActive();
-      await this.restart();
+      await this.restartAfterChange();
     } catch (error) {
       // clear()가 시도된 이후의 모든 실패(restart 실패 포함)는 live 계정 상태가
       // 부분 변경됐을 수 있으므로 accountSwitchSafe를 절대 갖지 않는다.
