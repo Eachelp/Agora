@@ -197,13 +197,28 @@ function readImagePreview({ attachmentsDir, fileName, fsApi = fs }) {
   return { ok: true, dataUrl: `data:${mime};base64,${content.toString("base64")}` };
 }
 
+// 텍스트 첨부 디코딩: BOM(UTF-8/UTF-16) 우선, 없으면 엄격한 UTF-8, 실패하면 CP949(한국어 엑셀 CSV 등).
+function decodeText(content) {
+  if (startsWith(content, [0xff, 0xfe])) return new TextDecoder("utf-16le").decode(content);
+  if (startsWith(content, [0xfe, 0xff])) return new TextDecoder("utf-16be").decode(content);
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(content);
+  } catch {
+    try {
+      return new TextDecoder("euc-kr").decode(content);
+    } catch {
+      return content.toString("utf8");
+    }
+  }
+}
+
 function readInlineText({ attachmentsDir, fileName, limit, fsApi = fs }) {
   const clean = String(fileName || "");
   if (!COPY_NAME_PATTERN.test(clean)) return null;
   try {
     const content = fsApi.readFileSync(path.join(attachmentsDir, clean));
     if (limit && content.length > limit) return null;
-    return content.toString("utf8");
+    return decodeText(content);
   } catch {
     return null;
   }

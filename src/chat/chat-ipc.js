@@ -718,6 +718,16 @@ function createChatFeature(options) {
     return null;
   }
 
+  // 이미 보낸 메시지(대기 중인 턴 포함)가 같은 사본 파일을 쓰는지 확인합니다.
+  // 사본 이름이 내용 해시라 같은 파일을 다시 붙이면 보낸 첨부와 같은 파일을 가리킵니다.
+  function isAttachmentCopyInUse(sessionId, fileName) {
+    const room = rooms.get(sessionId);
+    const messages = room ? room.messages : ensureStore() ? store.readMessages(sessionId) : [];
+    return messages.some((message) =>
+      (message.attachments || []).some((attachment) => attachment.fileName === fileName)
+    );
+  }
+
   function makeRunAgent(sessionId) {
     return ({
       agent,
@@ -2799,8 +2809,8 @@ function roomMeta(meta) {
         const record = pending.get(String(attachmentId || ""));
         pending.delete(String(attachmentId || ""));
         // 미전송 첨부만 취소한 경우에만 복사본을 함께 삭제해 디스크 낭비를 막습니다.
-        // 전송이 완료돼 대화에 저장된 첨부는 여기서 지우지 않습니다.
-        if (record?.fileName) {
+        // 전송이 완료돼 대화에 저장된 첨부(같은 내용을 다시 붙인 경우 포함)는 여기서 지우지 않습니다.
+        if (record?.fileName && !isAttachmentCopyInUse(sessionId, record.fileName)) {
           try {
             const filePath = path.join(store.attachmentsDir(sessionId), record.fileName);
             if (path.dirname(filePath) === path.normalize(store.attachmentsDir(sessionId))) {
