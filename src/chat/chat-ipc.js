@@ -16,7 +16,6 @@ const {
   ROLE_DEFS,
 } = require("../agora/workflow-store");
 const { MemoryStore } = require("../agora/memory-store");
-const { WorkspaceMutationLease } = require("../agora/workspace-mutation-lease");
 const { parseRecorderOutput } = require("../agora/recorder-output");
 const {
   createCapabilityService,
@@ -62,8 +61,6 @@ const PROVIDER_RECHECK_INTERVAL_MS = 60 * 60 * 1000;
 // 옛 역할 호출(@기획자 등)을 받았을 때 chat:send가 돌려주는 안내.
 const LEGACY_ROLE_NOTICE =
   "역할 호출·팀 실행은 없어졌습니다. @claude / @gpt / @gemini로 직접 부르거나 @모두를 쓰세요.";
-// Stage D-0 workspace mutation provenance journal의 상한(process 수명 기준).
-const MAX_WORKSPACE_MUTATION_EVENTS = 2000;
 
 // end() 이후 파일 핸들이 실제로 닫힐 때까지의 Promise. 세션 삭제가 기다린다(Windows는 열린 파일이 있으면
 // 폴더를 옮기거나 지울 수 없다).
@@ -323,31 +320,6 @@ function createChatFeature(options) {
   // 초기화가 겹치지 않게 막는다(마지막 writer가 이기는 상황 방지).
   const accountTransitions = new Map();
   let accountTransitionSeq = 0;
-
-  // Stage D-0: canonical workspace one-writer. 프로젝트 하나에 workspace 하나이고
-  // 그 아래 세션(room)이 여럿이므로, 서로 다른 room이 같은 폴더를 동시에 바꾸는 것을
-  // 막는 소유권은 room 밖(control plane)에 있어야 한다. memory-only이며 보증 경계는
-  // 단일 main process다(main.js requestSingleInstanceLock).
-  //
-  // Charter는 provenance를 D-C에서 몰아 만들지 말고 각 단계가 "결정 시점"에 남기라고
-  // 요구한다. 그래서 emit seam만 내지 않고 실제 sink를 여기서 연결한다. 기록의 수명은
-  // lease 자체와 같은 process 수명이다(lease가 memory-only이므로 그보다 오래 남는
-  // 기록은 의미가 없다). 영속 저장과 graph projection은 D-C 범위다.
-  const workspaceMutationJournal = [];
-  const workspaceMutationLease = options.workspaceMutationLease || new WorkspaceMutationLease({
-    onEvent: (event) => {
-      workspaceMutationJournal.push(event);
-      if (workspaceMutationJournal.length > MAX_WORKSPACE_MUTATION_EVENTS) {
-        workspaceMutationJournal.splice(0, workspaceMutationJournal.length - MAX_WORKSPACE_MUTATION_EVENTS);
-      }
-      // 거부는 사용자가 재시도로 마주치는 유일한 사건이라 운영 로그에도 남긴다.
-      if (event?.type === "lease-denied") {
-        console.warn(
-          `[agora] workspace mutation denied (sameHolder=${Boolean(event.sameHolder)}) held by run=${event.heldBy?.runId || "-"} purpose=${event.heldBy?.purpose || "-"}`
-        );
-      }
-    },
-  });
 
   const CLAUDE_MODEL_ALIASES = Object.freeze(["fable", "opus", "sonnet", "haiku"]);
 
@@ -975,9 +947,6 @@ function roomMeta(meta) {
       runAgent: options.runAgent || makeRunAgent(sessionId),
       prepareAgent: options.prepareAgent,
       meta: roomMeta(session.meta),
-      // Stage D-0 — workspace mutation ownership. room은 자기 sessionId를 holder로
-      // 소유권을 요청할 뿐, 누가 쥐고 있는지·어느 room과 경합하는지는 모른다.
-      mutationLease: workspaceMutationLease,
     });
 
     room.on("message", (message) => {
@@ -1694,9 +1663,6 @@ function roomMeta(meta) {
         requireSession(sessionId);
         const room = rooms.get(sessionId);
         if (room) {
-          // Stage D-0: 실행이 남아 있지 않은 방의 소유권만 정리한다.
-          // stopAllSilently가 activeRuns를 0으로 만들기 전에 판단해야 한다.
-          room.releaseWorkspaceMutationsIfIdle();
           room.stopAllSilently();
           // 실행이 실제로 끝나 로그 파일이 닫힐 때까지 기다린다. 열린 파일이 있으면
           // Windows에서 폴더를 옮기거나 지울 수 없어 삭제가 중간에 끊긴다.

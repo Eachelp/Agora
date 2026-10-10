@@ -21,16 +21,10 @@
 //                transport는 이를 실행 의미로 재해석하지 않는다.
 //   invocation : 현재 process runner(runAgentProcess)가 소비하는 실행 payload.
 //   반환       : { promise, cancel } — 기존 호출자(ChatRoom)가 그대로 사용한다.
-//
-// capability hook:
-//   supportsPersistentSession : 지속 세션을 관리하는 어댑터인지. 기본 false이고
-//     지금 유일한 구현인 ProcessHarnessAdapter(턴마다 새 CLI 프로세스)도 false다.
-//     읽는 코드는 없다(자리만 남겨 둔 값).
 
 class HarnessAdapter {
-  constructor({ id, supportsPersistentSession = false } = {}) {
+  constructor({ id } = {}) {
     this.id = id || null;
-    this.supportsPersistentSession = Boolean(supportsPersistentSession);
   }
 
   // 하위 어댑터가 반드시 구현한다. 기본 구현은 조용히 성공을 흉내내지 않고

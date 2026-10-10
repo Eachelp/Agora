@@ -4,7 +4,7 @@
 //
 // 검증 목표:
 //   1) HarnessAdapter 경계의 최소 contract(runTurn)와 fail-closed 기본 동작.
-//   2) capability hook(supportsPersistentSession) 기본값.
+//   2) 어댑터 id 기본값.
 //   3) ProcessHarnessAdapter가 canonical { context, invocation }에서 invocation만
 //      꺼내 process runner에 재작성 없이 위임하는지(+ flat 최소 호환).
 //   4) 기본 어댑터가 실제 runAgentProcess로 one-shot 실행을 그대로 보존하는지.
@@ -24,18 +24,15 @@ test("HarnessAdapter 기본 runTurn은 fail-closed로 명시적 오류를 던진
   assert.throws(() => base.runTurn({}), /runTurn을 구현하지 않았습니다/);
 });
 
-test("HarnessAdapter id는 주지 않으면 null, capability 기본은 false다", () => {
+test("HarnessAdapter id는 주지 않으면 null이다", () => {
   const base = new HarnessAdapter();
   assert.equal(base.id, null);
-  assert.equal(base.supportsPersistentSession, false);
-  assert.equal(new HarnessAdapter({ supportsPersistentSession: true }).supportsPersistentSession, true);
 });
 
-test("ProcessHarnessAdapter는 HarnessAdapter이며 id=process, persistent=false다", () => {
+test("ProcessHarnessAdapter는 HarnessAdapter이며 id=process다", () => {
   const adapter = new ProcessHarnessAdapter({ runProcess: () => ({ promise: Promise.resolve({ ok: true }), cancel() {} }) });
   assert.ok(adapter instanceof HarnessAdapter);
   assert.equal(adapter.id, "process");
-  assert.equal(adapter.supportsPersistentSession, false);
 });
 
 test("runTurn은 canonical { context, invocation }에서 invocation만 재작성 없이 위임한다", async () => {

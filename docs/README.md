@@ -41,7 +41,7 @@
 | [Stage C 최종 검수](design/AGORA_STAGE_C_FINAL_REVIEW.md) | 2026-08-20 검수 대상 커밋의 판정 |
 | [Stage C 결정 기록](design/AGORA_STAGE_C_SESSION_LIFECYCLE_DECISIONS.md) | 검수 대기 시점의 결정과 후속 최종 검수 링크 |
 | [개정 기록 2026-10-11](design/AGORA_REVISION_2026-10-11_REMOVE_PROFESSIONAL_MODE.md) | 전문 모드·역할 상담 제거 결정과 아래 Stage C·D 문서의 대체됨 표시 근거 |
-| [D-0 결정 기록](design/AGORA_STAGE_D0_WORKSPACE_LEASE_DECISIONS.md) | 워크스페이스 변경 소유권의 결정·검수 이력 |
+| [D-0 결정 기록](design/AGORA_STAGE_D0_WORKSPACE_LEASE_DECISIONS.md) | (제거됨·역사 기록) 워크스페이스 변경 소유권의 결정·검수 이력. 2026-10-11 stage 4에서 lease 제거 — 개정 기록 §4a |
 | [D-A0 결정 기록](design/AGORA_STAGE_DA0_VERIFICATION_BOUNDARY_DECISIONS.md) | 검증 안전 경계의 결정·검수 이력 |
 | [Stage D Charter](design/AGORA_STAGE_D_ASSURANCE_CHARTER.md) | 승인된 v0.5 의미 계약. 이번 정리는 계약을 변경하지 않음 |
 | [Stage D 결정 기록](design/AGORA_STAGE_D_ASSURANCE_DECISIONS.md) | 2026-08-25 완료 기준과 당시 한계. 승인 UI 후속 구현은 상단 안내 참조 |

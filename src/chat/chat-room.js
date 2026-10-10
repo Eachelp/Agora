@@ -72,9 +72,6 @@ class ChatRoom extends EventEmitter {
     // runAgent({agent, prompt, runId, attachments, emitEvent}) => { promise, cancel }
     this.runAgent = options.runAgent;
     this.prepareAgent = options.prepareAgent;
-    // Stage D-0 Workspace Mutation Lease. 주입되지 않으면 소유권 통제 없이
-    // 기존 동작을 유지합니다(legacy 호출/테스트 호환).
-    this.mutationLease = options.mutationLease || null;
     this.meta = {
       permissionMode: "chat",
       ...(options.meta || {}),
@@ -120,7 +117,7 @@ class ChatRoom extends EventEmitter {
     this.activeRuns = 0;
     // activeRuns는 화면 busy 표시용이라 중지하면 즉시 0으로 되돌린다.
     // liveRuns는 "정말로 살아 있는 실행"이며, subprocess가 실제로 끝나야만
-    // 줄어든다. 소유권 정리는 이쪽만 본다.
+    // 줄어든다. 세션 삭제는 이쪽이 0이 될 때까지 기다린다.
     this.liveRuns = 0;
     this.approvalSeq = 0;
     this.pendingApprovals = new Map();
@@ -517,7 +514,7 @@ class ChatRoom extends EventEmitter {
     this.currentTurn = this.runningTurns.size > 0 ? [...this.runningTurns][0] : null;
   }
 
-  async runQueuedTurn(item, { parentToken = null } = {}) {
+  async runQueuedTurn(item) {
     if (item.generation !== this.generation) {
       this.retireTurn(item, undefined, { lost: true });
       this.emitTurnState();
@@ -531,11 +528,7 @@ class ChatRoom extends EventEmitter {
     try {
       outcome = await this.respond(
         item.agent,
-        {
-          ...item.context,
-          promptLimit: item.promptLimit,
-          ...(parentToken ? { workspaceLeaseParentToken: parentToken } : {}),
-        },
+        { ...item.context, promptLimit: item.promptLimit },
         item.generation
       );
     } catch {
@@ -549,36 +542,14 @@ class ChatRoom extends EventEmitter {
 
   // 독립 발언 묶음을 동시에 실행한다.
   //
-  // 쓰기 권한에서는 턴마다 workspace 소유권을 잡는데, 그대로 두면 두 번째 턴이
-  // 곧바로 "이미 작업 폴더를 변경하고 있습니다"로 튕긴다. 그래서 그룹이 소유권을
-  // 한 번 잡고 각 턴은 그 안에서 중첩(re-entrant)으로 들어간다. 다른 대화가
-  // 같은 폴더를 만지는 것은 예전처럼 그대로 막힌다.
-  //
   // 같은 파일을 두 담당자가 함께 고치면 나중 쓰기가 이깁니다 — 사용자가 각자
   // 따로 만들라고 지시한 경우를 위한 실행 방식이며, 파일 단위 충돌은 막지 않습니다.
   async runParallelTurns(batch) {
-    const needsLease = batch.some((item) => this.needsWorkspaceLease(item.context));
-    let lease = { ok: true, token: null };
-    if (needsLease) {
-      lease = this.acquireWorkspaceMutation({ purpose: "chat-turn-group" });
-      if (!lease.ok) {
-        this.appendSystem(lease.error);
-        for (const item of batch) {
-          this.retireTurn(item, { ok: false, stopReason: "WORKSPACE_BUSY", error: lease.error });
-        }
-        this.emitTurnState();
-        return;
-      }
-    }
     // 담당자별 폴더 계약이 지켜졌는지는 실행이 끝난 뒤에 본다. 시작 시각만
-    // 기억해 두면 되므로 실행이 늦어지지 않는다.
-    const startedAt = needsLease ? Date.now() : null;
+    // 기억해 두면 되므로 실행이 늦어지지 않는다. 쓰기 권한 방에서만 본다.
+    const startedAt = this.meta.permissionMode === "workspace-write" ? Date.now() : null;
     const generation = this.generation;
-    try {
-      await Promise.all(batch.map((item) => this.runQueuedTurn(item, { parentToken: lease.token })));
-    } finally {
-      this.releaseWorkspaceMutation(lease.token);
-    }
+    await Promise.all(batch.map((item) => this.runQueuedTurn(item)));
     // 중지·초기화로 세대가 바뀌었으면 알리지 않는다. 비워진 대화에 뒤늦은
     // 안내만 남는다.
     if (startedAt !== null && generation === this.generation) {
@@ -613,7 +584,7 @@ class ChatRoom extends EventEmitter {
     const rest = outside.length > 8 ? ` 외 ${outside.length - 8}개` : "";
     const folders = batch.map((item) => `\`${item.agent.id}/\``).join(", ");
     this.appendSystem(
-      `동시 실행 중에 담당자 폴더(${folders}) 밖의 파일이 바뀌었습니다: ${shown}${rest}. `
+      `이 묶음이 실행되는 동안 담당자 폴더(${folders}) 밖에서 바뀐 파일(다른 대화나 직접 수정일 수 있음): ${shown}${rest}. `
       + "각자 자기 폴더에서만 작업하도록 안내했지만 강제되지는 않습니다 — "
       + "서로의 결과를 덮어썼을 수 있으니 확인해 주세요."
     );
@@ -745,67 +716,6 @@ class ChatRoom extends EventEmitter {
     if (this.activeRuns === 0) this.emit("busy", false);
   }
 
-  // Stage D-0 — canonical workspace one-writer.
-  //
-  // 같은 프로젝트의 workspace는 하나이고 그 아래 대화(room)는 여럿이므로, 다른
-  // 대화가 같은 폴더를 바꾸는 동안에는 변경을 시작하지 않는다(fail-closed).
-  //
-  // 재진입은 같은 대화라는 것만으로 허용되지 않는다. 바깥 작업이 자기 안에서
-  // 다시 요청하는 진짜 중첩임을 parentToken으로 증명해야 한다. 그렇지 않으면
-  // 같은 대화에 mutation IPC가 두 번 들어오는 것(복원 버튼 중복 호출 등)만으로
-  // 동시 변경이 열린다.
-  //
-  // token이 null이면 통제 대상이 아니라는 뜻이며(주입 없음 또는 workspace 없음),
-  // release는 그대로 무시된다.
-  acquireWorkspaceMutation({ purpose = null, runId = null, role = null, parentToken = null } = {}) {
-    if (!this.mutationLease) return { ok: true, token: null };
-    const workspace = this.meta.workspace;
-    if (!workspace) return { ok: true, token: null };
-    const got = this.mutationLease.acquire({
-      resourceKind: "workspace",
-      resourceId: workspace,
-      holderId: this.sessionId,
-      runId,
-      role,
-      purpose,
-      parentToken,
-    });
-    if (got.ok) return { ok: true, token: got.token, reentered: Boolean(got.reentered) };
-    // 내부 어휘(lease/holder/resourceId)를 사용자 표면으로 내보내지 않는다(Charter §9).
-    const error = got.code !== "BUSY"
-      ? "작업 폴더 변경 권한을 확인하지 못해 실행을 시작하지 않았습니다."
-      : got.sameHolder
-        ? "이 대화에서 이미 작업 폴더를 변경하고 있습니다. 그 작업이 끝난 뒤 다시 시도해 주세요."
-        : "같은 작업 폴더를 다른 대화가 변경하고 있습니다. 그 작업이 끝난 뒤 다시 시도해 주세요.";
-    return { ok: false, code: got.code, sameHolder: Boolean(got.sameHolder), error };
-  }
-
-  releaseWorkspaceMutation(token) {
-    if (!token || !this.mutationLease) return false;
-    return this.mutationLease.release(token) === true;
-  }
-
-  // 방이 닫힐 때 남은 소유권을 정리한다. 실행이 남아 있지 않은 경우에만.
-  //
-  // 중지(stop/cancel)는 subprocess 종료를 기다려 주지 않는다. 아직 파일을 쓰고
-  // 있을 수 있는 writer의 소유권을 정리 편의로 먼저 풀면, 다른 대화가 그 틈에
-  // 소유권을 얻어 잠시 동시에 workspace를 바꾸게 된다. 그래서 실행이 남아 있으면
-  // 소유권을 그대로 둔다 — memory-only라 앱을 다시 켜면 사라지므로, 잘못 푸는 것보다
-  // 남기는 쪽이 안전하다(fail-closed).
-  releaseWorkspaceMutationsIfIdle() {
-    // activeRuns가 아니라 liveRuns를 본다. stopAllSilently가 화면 표시를 위해
-    // activeRuns를 즉시 0으로 되돌리기 때문에, 그 값으로 판단하면 방금 kill한
-    // — 아직 살아서 파일을 쓰고 있는 — 실행을 "없다"고 읽고 소유권을 넘겨
-    // 다른 대화가 같은 폴더를 동시에 바꾸게 된다.
-    if (this.liveRuns > 0 || this.activeRuns > 0) return 0;
-    return this.releaseAllWorkspaceMutations();
-  }
-
-  releaseAllWorkspaceMutations() {
-    if (!this.mutationLease?.releaseAllFor) return 0;
-    return this.mutationLease.releaseAllFor(this.sessionId);
-  }
-
   promptMessages(promptLimit = null, independent = false) {
     const messages = this.messages;
     if (!Number.isInteger(promptLimit) || promptLimit < 0) {
@@ -823,42 +733,11 @@ class ChatRoom extends EventEmitter {
     return [...base, ...extra].filter((message) => message.authorType !== "system" && !message.error);
   }
 
-  // Stage D-0 — workspace-write 일반 채팅 turn은 workspace 변경 소유권을 잡는다.
-  // 토론 결론 종합과 쉽게 설명은 대화 전용이라 잡지 않는다.
-  needsWorkspaceLease(context = {}) {
-    return Boolean(
-      !context.discussionSummary &&
-      !context.simplifyMeta &&
-      this.meta.permissionMode === "workspace-write"
-    );
-  }
-
   async respond(agent, context = {}, generation = this.generation) {
     // 이 에이전트가 새 턴을 시작한다 = 직전 되질문에 대한 응답이 진행된다.
     // 대기 배지를 먼저 내려, 답을 받는 동안 옛 질문이 남아 있지 않게 한다.
     this.clearAwaitingUser(agent.id);
-    if (!this.needsWorkspaceLease(context)) return this.runResponseTurn(agent, context, generation);
-
-    // 병렬 그룹 안의 턴은 그룹이 이미 잡아 둔 소유권 안으로 중첩해 들어간다.
-    const parentToken = context.workspaceLeaseParentToken || null;
-    const lease = this.acquireWorkspaceMutation({ purpose: "chat-turn", parentToken });
-    if (!lease.ok) {
-      this.appendSystem(lease.error);
-      return { ok: false, stopReason: "WORKSPACE_BUSY", error: lease.error };
-    }
-    // 턴 도중 승인 대기로 소유권을 잠시 놓았다가 다시 잡을 수 있다. finally는
-    // 처음 받은 token이 아니라 "지금 들고 있는" token을 돌려줘야 한다.
-    const leaseState = { token: lease.token, parentToken };
-    try {
-      return await this.runResponseTurn(
-        agent,
-        { ...context, workspaceLeaseState: leaseState },
-        generation
-      );
-    } finally {
-      this.releaseWorkspaceMutation(leaseState.token);
-      leaseState.token = null;
-    }
+    return this.runResponseTurn(agent, context, generation);
   }
 
   async runResponseTurn(agent, context = {}, generation = this.generation) {
@@ -988,15 +867,6 @@ class ChatRoom extends EventEmitter {
         };
         break;
       }
-      // 승인 카드는 사용자가 답할 때까지 기다린다(제한 시간 없음). 그동안 workspace
-      // 변경 소유권을 쥐고 있으면 같은 폴더를 쓰는 다른 대화가 전부 막힌다.
-      // 이 시점의 실행은 이미 끝났으므로(run-end) 파일을 더 건드리지 않는다 —
-      // 기다리는 동안은 소유권을 놓고, 승인을 받은 뒤 다시 잡는다.
-      const leaseState = context.workspaceLeaseState || null;
-      if (leaseState?.token) {
-        this.releaseWorkspaceMutation(leaseState.token);
-        leaseState.token = null;
-      }
       const approved = await this.requestApproval(agent, result.approval);
       if (generation !== this.generation) return;
       if (!approved) {
@@ -1010,19 +880,6 @@ class ChatRoom extends EventEmitter {
           error: "권한 요청을 거부했습니다.",
         };
         break;
-      }
-      if (leaseState) {
-        // 기다리는 사이 다른 대화가 같은 폴더를 잡았을 수 있다. 되찾지 못하면
-        // 승인을 받았더라도 재실행하지 않는다(동시 변경 금지).
-        const regained = this.acquireWorkspaceMutation({
-          purpose: "chat-turn",
-          parentToken: leaseState.parentToken,
-        });
-        if (!regained.ok) {
-          this.appendSystem(regained.error);
-          return { ok: false, stopReason: "WORKSPACE_BUSY", error: regained.error };
-        }
-        leaseState.token = regained.token;
       }
       approvedRetry = true;
     }
