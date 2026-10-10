@@ -2,7 +2,6 @@ const crypto = require("node:crypto");
 const os = require("node:os");
 const { createClaudeFileStore } = require("./claude-live-credentials");
 
-const CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const cache = new Map();
 
 class HttpError extends Error {
@@ -195,32 +194,14 @@ async function json(url, options, timeout = 8000) {
   }
 }
 
-async function refreshClaudeOAuth(credentials, store) {
-  const oauth = credentials.claudeAiOauth;
-  if (!oauth?.refreshToken) throw new Error("Claude 로그인 정보가 만료됐습니다.");
-  const refresh = await json("https://platform.claude.com/v1/oauth/token", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "anthropic-beta": "oauth-2025-04-20",
-    },
-    body: JSON.stringify({
-      grant_type: "refresh_token",
-      refresh_token: oauth.refreshToken,
-      client_id: CLAUDE_CLIENT_ID,
-    }),
-  });
-  const expiresAt = Number(refresh.expires_at) ||
-    (Number(refresh.expires_in) ? Date.now() + Number(refresh.expires_in) * 1000 : oauth.expiresAt);
-  const next = {
-    ...oauth,
-    accessToken: refresh.access_token || oauth.accessToken,
-    refreshToken: refresh.refresh_token || oauth.refreshToken,
-    expiresAt,
-  };
-  credentials.claudeAiOauth = next;
-  store.write(credentials);
-  return next;
+// 사용량 조회는 읽기 전용이다. refresh 토큰은 한 번 쓰면 새 것으로 바뀌는 일회용이라, 여기서 갱신하고
+// 저장에 실패하면 새 토큰이 사라져 Claude CLI 로그인이 조용히 풀린다. 갱신은 CLI가 쓸 때 스스로 한다.
+const CLAUDE_EXPIRED_MESSAGE = "토큰 만료 (Claude를 한 번 쓰면 갱신)";
+class ClaudeTokenExpiredError extends Error {
+  constructor() {
+    super(CLAUDE_EXPIRED_MESSAGE);
+    this.expired = true;
+  }
 }
 
 // credentialStore를 넘기지 않으면 파일 저장소를 사용합니다. (macOS 실사용은 main.js가 Keychain 저장소를 주입)
@@ -228,16 +209,11 @@ async function fetchClaudeUsage({ home = os.homedir(), force = false, credential
   const store = credentialStore || createClaudeFileStore(home);
   const credentials = store.read();
   if (!credentials) throw new Error("Claude 로그인 정보가 없습니다.");
-  let oauth = credentials.claudeAiOauth;
+  const oauth = credentials.claudeAiOauth;
   if (!oauth?.accessToken) throw new Error("Claude 로그인 정보가 없습니다.");
   const key = tokenKey("claude", oauth.refreshToken || oauth.accessToken);
 
   return cached(key, async () => {
-    // refreshToken이 없는 자격 증명(데스크톱 앱 관리 인증)은 현재 accessToken으로 그대로 시도합니다.
-    if (oauth.refreshToken && oauth.expiresAt && Number(oauth.expiresAt) <= Date.now() + 60000) {
-      oauth = await refreshClaudeOAuth(credentials, store);
-    }
-
     const request = () => json("https://api.anthropic.com/api/oauth/usage", {
       headers: {
         authorization: `Bearer ${oauth.accessToken}`,
@@ -249,9 +225,8 @@ async function fetchClaudeUsage({ home = os.homedir(), force = false, credential
     try {
       data = await request();
     } catch (error) {
-      if (error.status !== 401 || !oauth.refreshToken) throw error;
-      oauth = await refreshClaudeOAuth(credentials, store);
-      data = await request();
+      if (error.status === 401) throw new ClaudeTokenExpiredError();
+      throw error;
     }
     return { provider: "claude", gauges: normalizeClaudeUsage(data) };
   }, { force });

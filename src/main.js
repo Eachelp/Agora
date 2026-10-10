@@ -607,14 +607,15 @@ async function loadClaudeProvider(forceUsage) {
   let usage;
   try {
     const data = await fetchClaudeUsage({ force: forceUsage, credentialStore: claudeLiveStore });
-    // 토큰 갱신으로 live 파일이 바뀌었을 수 있으므로 최신 값을 다시 저장합니다.
+    // 조회하는 동안 Claude CLI가 토큰을 갱신했을 수 있으므로 최신 값을 다시 저장합니다.
     claudeAccountSwitcher.snapshotCurrent({
       email: status.email,
       plan: status.subscriptionType,
     });
     usage = { id: "claude", label: "Claude", gauges: data.gauges };
-  } catch {
-    usage = { id: "claude", label: "Claude", error: "조회 불가", gauges: [] };
+  } catch (error) {
+    // 만료는 사용자가 할 일이 있는 상태라 이유를 그대로 보여 준다.
+    usage = { id: "claude", label: "Claude", error: error?.expired ? error.message : "조회 불가", gauges: [] };
   }
   return { accounts: claudeAccountSwitcher.listProfiles(), usage };
 }
