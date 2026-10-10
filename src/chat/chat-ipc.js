@@ -953,7 +953,17 @@ function roomMeta(meta) {
       meta: roomMeta(session.meta),
     });
 
-    room.on("message", (message) => {
+    // 방 이벤트 리스너에서 난 예외는 emit한 방 코드(턴 시작·승인 카드·중지)로 올라가 응답을
+    // 삼키거나 중지를 막는다. 저장소·화면 쓰기 실패는 기록만 남기고 방에는 올리지 않는다.
+    const on = (event, listener) => room.on(event, (...args) => {
+      try {
+        listener(...args);
+      } catch (error) {
+        console.warn(`[agora] 방 이벤트(${event}) 처리 실패:`, error?.message || error);
+      }
+    });
+
+    on("message", (message) => {
       // 저장이 실패해도 예외를 방 안쪽(토론·턴 진행)으로 올리지 않는다. 올리면 토론 플래그가
       // 남아 대화가 멈춘다. 대신 화면에는 그대로 보여 주고, 저장 실패는 알림으로 알린다.
       try {
@@ -966,7 +976,12 @@ function roomMeta(meta) {
           showSystemNotice(`대화 기록을 디스크에 저장하지 못했습니다. 방금 메시지는 다시 열면 보이지 않을 수 있습니다. (${error?.message || error})`, sessionId);
         }
       }
-      const claudeObservationChanged = rememberClaudeResolvedModel(message);
+      let claudeObservationChanged = false;
+      try {
+        claudeObservationChanged = rememberClaudeResolvedModel(message);
+      } catch (error) {
+        console.warn("[agora] Claude 모델 확인값 저장 실패:", error?.message || error);
+      }
       // renderer로는 첨부 내부 레코드(fileName/sha256)를 제거한 사본만 보냅니다.
       const outbound = message.attachments
         ? { ...message, attachments: message.attachments.map(publicAttachment) }
@@ -989,13 +1004,13 @@ function roomMeta(meta) {
         }
       }
     });
-    room.on("typing", (payload) => broadcast("chat:typing", { sessionId, ...payload }));
-    room.on("turn-state", (payload) => broadcast("chat:turn-state", { sessionId, ...payload }));
-    room.on("reset", () => broadcast("chat:reset", { sessionId }));
-    room.on("run-event", (payload) => broadcast("chat:run-event", { sessionId, ...payload }));
-    room.on("agents", (agents) => broadcast("chat:agents", { sessionId, agents }));
-    room.on("approval-request", (payload) => broadcast("chat:approval-request", { sessionId, ...payload }));
-    room.on("approval-resolved", (payload) => broadcast("chat:approval-resolved", { sessionId, ...payload }));
+    on("typing", (payload) => broadcast("chat:typing", { sessionId, ...payload }));
+    on("turn-state", (payload) => broadcast("chat:turn-state", { sessionId, ...payload }));
+    on("reset", () => broadcast("chat:reset", { sessionId }));
+    on("run-event", (payload) => broadcast("chat:run-event", { sessionId, ...payload }));
+    on("agents", (agents) => broadcast("chat:agents", { sessionId, agents }));
+    on("approval-request", (payload) => broadcast("chat:approval-request", { sessionId, ...payload }));
+    on("approval-resolved", (payload) => broadcast("chat:approval-resolved", { sessionId, ...payload }));
     // 승인 카드를 기다리는 방은 실행 중 턴이 없어도 일하는 중이다. 다른 방을 보고 있어도
     // 사이드바에 표시가 남도록 상태를 함께 센다.
     const syncRoomStatus = () => {
@@ -1004,8 +1019,8 @@ function roomMeta(meta) {
       store.setSessionStatus(sessionId, working ? "running" : "idle");
       broadcast("chat:sessions-changed", sessionsPayload());
     };
-    room.on("busy", syncRoomStatus);
-    room.on("approval-wait", syncRoomStatus);
+    on("busy", syncRoomStatus);
+    on("approval-wait", syncRoomStatus);
 
     rooms.set(sessionId, room);
     return room;

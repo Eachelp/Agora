@@ -1422,6 +1422,13 @@ class ChatRoom extends EventEmitter {
 
   stopAllSilently() {
     this.generation += 1;
+    // 실행 중인 프로세스부터 끊는다. 아래 emit 리스너가 예외를 던져도 중지는 이미 걸려 있다.
+    for (const cancel of this.cancels) {
+      try {
+        cancel();
+      } catch {}
+    }
+    this.cancels.clear();
     for (const item of [...this.turnQueue, ...this.deferredTurnQueue]) {
       this.retireTurn(item, undefined, { lost: true });
     }
@@ -1443,16 +1450,8 @@ class ChatRoom extends EventEmitter {
       this.emit("approval-resolved", { approvalId });
       entry.resolve(false);
     }
-    if (this.pendingApprovals.size > 0) {
-      this.pendingApprovals.clear();
-      this.emit("approval-wait");
-    }
-    for (const cancel of this.cancels) {
-      try {
-        cancel();
-      } catch {}
-    }
-    this.cancels.clear();
+    const hadApprovals = this.pendingApprovals.size > 0;
+    this.pendingApprovals.clear();
     for (const agentId of [...this.typingCounts.keys()]) {
       this.typingCounts.delete(agentId);
       this.emit("typing", { agentId, busy: false });
@@ -1462,6 +1461,7 @@ class ChatRoom extends EventEmitter {
       this.emit("busy", false);
     }
     this.resolveIdleWaiters();
+    if (hadApprovals) this.emit("approval-wait");
   }
 }
 
