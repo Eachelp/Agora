@@ -62,7 +62,7 @@ test("F128: AGY 전환이 자격 증명을 바꾼 뒤 재시작만 실패하면 
   assert.equal(await switching.switchProviderAccount("agy", saved.key), true);
   assert.equal(state.trayRefreshes, 1, "트레이/목록을 새로 고친다");
   assert.equal(agy.store.get(saved.key) != null, true);
-  assert.ok(state.notices.some((text) => /전환했지만[\s\S]*다시 실행하지 못했어요[\s\S]*실행 파일을 찾지 못했습니다/.test(text)));
+  assert.ok(state.notices.some((text) => /전환했지만[\s\S]*다시 실행하지 못했습니다[\s\S]*실행 파일을 찾지 못했습니다/.test(text)));
 });
 
 test("F128: 전환 검증 실패(자격 증명 무변경)는 여전히 실패로 던진다", async (t) => {
@@ -92,7 +92,7 @@ test("F129: Codex 전환이 실패하면 먼저 끈 Codex Desktop을 다시 띄�
   assert.equal(await switching.switchCodexAccount("낡은-키"), false);
   assert.equal(state.stopped, 1);
   assert.equal(state.launched, 1, "꺼 둔 앱을 다시 띄운다");
-  assert.ok(state.notices.some((text) => /전환에 실패했습니다[\s\S]*다시 실행을 요청했습니다/.test(text)));
+  assert.ok(state.notices.some((text) => /전환에 실패했습니다[\s\S]*이전 계정 그대로 다시 실행했습니다/.test(text)));
 });
 
 test("F129: 다시 띄우기도 실패하면 직접 열라고 알린다", async (t) => {

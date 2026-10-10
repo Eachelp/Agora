@@ -675,9 +675,9 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
         let relaunchText = "";
         try {
           const relaunch = await codexDesktop.launch();
-          if (!relaunch?.skipped) relaunchText = "\nCodex Desktop App은 이전 계정 그대로 다시 실행을 요청했습니다.";
+          if (!relaunch?.skipped) relaunchText = "\nCodex Desktop App을 이전 계정 그대로 다시 실행했습니다.";
         } catch (launchError) {
-          relaunchText = `\n꺼 둔 Codex Desktop App을 다시 실행하지 못했어요. 직접 열어 주세요.\n${launchError.message || String(launchError)}`;
+          relaunchText = `\n꺼 둔 Codex Desktop App을 다시 실행하지 못했습니다. 직접 열어 주세요.\n${launchError.message || String(launchError)}`;
           appendDebugLog(`Codex Desktop launch failed after failed switch: ${launchError.message || String(launchError)}`);
         }
         showAccountNotice(
@@ -729,7 +729,7 @@ Write-Output "Stopped $($ids.Count) Codex Desktop process(es)."
     refreshTrayMenu();
     if (restartError) {
       showAccountNotice(
-        `계정은 전환했지만 AGY를 다시 실행하지 못했어요. AGY를 직접 열어 주세요.
+        `계정은 전환했지만 AGY를 다시 실행하지 못했습니다. AGY를 직접 열어 주세요.
 ${restartError.message || String(restartError)}`
       );
     }
@@ -854,7 +854,7 @@ ${restartError.message || String(restartError)}`
         // 로그인 정보는 이미 지워졌다. 목록을 새로 고치고, 무슨 일이 일어났는지 그대로 알린다.
         clearUsageCache("agy");
         refreshTrayMenu();
-        error.message = `AGY 로그인 정보는 지웠지만 AGY를 다시 실행하지 못했어요. AGY를 직접 열어 로그인해 주세요.
+        error.message = `AGY 로그인 정보는 지웠지만 AGY를 다시 실행하지 못했습니다. AGY를 직접 열어 로그인해 주세요.
 ${error.message}`;
         throw error;
       } finally {
