@@ -23,6 +23,7 @@ const path = require("node:path");
 const { AntigravityAccountSwitcher } = require("../src/antigravity-account-switcher");
 const { createAccountSwitching } = require("../src/agora/account-switching");
 const { createChatFeature } = require("../src/chat/chat-ipc");
+const { createClaudeFileStore } = require("../src/claude-live-credentials");
 
 // ---- AGY prepareLogin의 accountSwitchSafe 의미론 (switcher 단위) ----
 
@@ -654,6 +655,9 @@ function makeInAppSwitching(t, { cliLogin, commands = ["claude", "codex"] } = {}
   const opened = [];
   const switching = createAccountSwitching({
     codexDesktop: { stop: async () => {}, launch: async () => ({ skipped: true }) },
+    // macOS의 기본 Claude 저장소는 Keychain이라 파일을 지웠는지 볼 수 없다(실제 Keychain도 건드린다).
+    // 어느 OS에서든 같은 동작을 검증하도록 파일 저장소를 주입한다.
+    claudeLiveStore: createClaudeFileStore(home),
     electron: {
       app: { getPath: () => userData },
       shell: { openPath: async () => "", openExternal: async (url) => { opened.push(url); } },
