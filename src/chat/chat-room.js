@@ -165,23 +165,28 @@ class ChatRoom extends EventEmitter {
       awaitingQuestion: this.awaitingUsers.get(agent.id)?.question || null,
       // 산문에서 뽑은 보기(있으면). 화면이 클릭 가능한 칩으로 띄운다.
       awaitingOptions: this.awaitingUsers.get(agent.id)?.options || [],
+      // 보기를 여러 개 고를 수 있는 질문인가(MULTI: yes).
+      awaitingMulti: Boolean(this.awaitingUsers.get(agent.id)?.multi),
     }));
   }
 
   // 되질문으로 끝난 에이전트를 '답변 대기'로 세운다. 질문·보기가 그대로면
   // 재방출하지 않아 렌더러가 불필요하게 다시 그리지 않는다.
-  setAwaitingUser(agentId, question, options = []) {
+  setAwaitingUser(agentId, question, options = [], multi = false) {
     const trimmed = (question || "").trim() || null;
     const opts = Array.isArray(options) ? options : [];
+    // 고를 보기가 없으면 '여러 개 고르기'는 뜻이 없다.
+    const isMulti = Boolean(multi) && opts.length > 0;
     const prev = this.awaitingUsers.get(agentId);
     if (
       prev &&
       prev.question === trimmed &&
+      Boolean(prev.multi) === isMulti &&
       JSON.stringify(prev.options || []) === JSON.stringify(opts)
     ) {
       return;
     }
-    this.awaitingUsers.set(agentId, { question: trimmed, options: opts });
+    this.awaitingUsers.set(agentId, { question: trimmed, options: opts, multi: isMulti });
     this.emit("agents", this.publicAgents());
   }
 
@@ -1032,7 +1037,7 @@ class ChatRoom extends EventEmitter {
       // 에이전트가 "사용자 답 없이는 못 간다"고 스스로 표시한 것만 세우는 편이
       // 맞다. 사용자는 선택지 칩이나 입력창 타이핑으로 답하고, ×로 답 없이 지운다.
       if (controlRequest?.action === "ASK_USER" && !controlRequest.ambiguous) {
-        this.setAwaitingUser(agent.id, controlRequest.question || "", controlRequest.options || []);
+        this.setAwaitingUser(agent.id, controlRequest.question || "", controlRequest.options || [], controlRequest.multi);
       }
     }
     return {

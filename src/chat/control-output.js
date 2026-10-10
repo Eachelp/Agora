@@ -25,6 +25,10 @@ const ASK_USER_LINE_PATTERN = /^[ \t]*ASK_USER:[ \t]*([^\r\n]+?)[ \t]*$/gim;
 // ASK_USER의 보기. 고르는 질문일 때 질문 아래 줄마다 하나씩 적는다. ASK_USER
 // 없이 OPTION만 있으면 제어가 아니다.
 const OPTION_LINE_PATTERN = /^[ \t]*OPTION:[ \t]*([^\r\n]+?)[ \t]*$/gim;
+// OPTION과 같은 꼬리 규칙을 따르는 보조 줄. "MULTI: yes"면 보기를 여러 개 고를 수
+// 있는 질문이다. ASK_USER 없이 MULTI만 있으면 제어가 아니다.
+const MULTI_LINE_PATTERN = /^[ \t]*MULTI:[ \t]*([^\r\n]+?)[ \t]*$/gim;
+const MULTI_TRUE_VALUES = new Set(["yes", "y", "true", "예"]);
 const PURPOSE_LINE_PATTERN = /^[ \t]*PURPOSE:[ \t]*([^\r\n]+?)[ \t]*$/im;
 const REASON_LINE_PATTERN = /^[ \t]*REASON:[ \t]*([^\r\n]+?)[ \t]*$/im;
 
@@ -34,6 +38,7 @@ const CONTROL_LINE_PATTERNS = Object.freeze([
   /^[ \t]*COMPLETE(?::[ \t]*[^\r\n]*?)?[ \t]*$/i,
   /^[ \t]*ASK_USER:[ \t]*[^\r\n]+?[ \t]*$/i,
   /^[ \t]*OPTION:[ \t]*[^\r\n]+?[ \t]*$/i,
+  /^[ \t]*MULTI:[ \t]*[^\r\n]+?[ \t]*$/i,
   /^[ \t]*PURPOSE:[ \t]*[^\r\n]+?[ \t]*$/i,
   /^[ \t]*REASON:[ \t]*[^\r\n]+?[ \t]*$/i,
 ]);
@@ -125,13 +130,16 @@ function parseControlOutput(text) {
     // 잃는 것이므로 ambiguous로 반환한다.
     const questions = [...new Set(asks.map((match) => (match[1] || "").trim()))];
     if (questions.length > 1) {
-      return { action: "ASK_USER", question: null, options: [], ambiguous: true };
+      return { action: "ASK_USER", question: null, options: [], multi: false, ambiguous: true };
     }
     // 보기는 적힌 순서를 지키고 같은 줄 반복만 접는다.
     const options = [...new Set(
       [...source.matchAll(OPTION_LINE_PATTERN)].map((match) => (match[1] || "").trim()).filter(Boolean)
     )];
-    return { action: "ASK_USER", question: questions[0] || null, options, ambiguous: false };
+    // MULTI 줄이 여럿이면 마지막 값을 따른다. yes/y/true/예 외의 값은 단일 선택.
+    const multiValues = [...source.matchAll(MULTI_LINE_PATTERN)].map((match) => (match[1] || "").trim().toLowerCase());
+    const multi = MULTI_TRUE_VALUES.has(multiValues[multiValues.length - 1]);
+    return { action: "ASK_USER", question: questions[0] || null, options, multi, ambiguous: false };
   }
 
   const distinct = [...new Set(handoffTargets)];

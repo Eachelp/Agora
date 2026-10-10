@@ -917,6 +917,34 @@ textarea:focus-visible {
   color: var(--accent-strong);
 }
 
+.awaiting-option.is-checked {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+
+.awaiting-option:focus-visible,
+.awaiting-fill:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.awaiting-fill {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  border-radius: 8px;
+  padding: 3px 10px;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.awaiting-fill:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 /* --- 입력창 --- */
 .composer {
   background: var(--surface);

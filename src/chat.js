@@ -4177,6 +4177,7 @@ window.chatApi.onReset(({ sessionId }) => {
   for (const agent of agents) {
     agent.awaitingUser = false;
     agent.awaitingQuestion = null;
+    agent.awaitingMulti = false;
   }
   renderAgents();
   roomTurnState = { current: null, running: [], queue: [], deferred: [] };

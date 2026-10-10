@@ -47,6 +47,7 @@ test("parseControlOutput: COMPLETE와 ASK_USER 행동을 파싱한다", () => {
     action: "ASK_USER",
     question: "배포 대상 환경이 스테이징인가요?",
     options: [],
+    multi: false,
     ambiguous: false,
   });
 });
@@ -60,6 +61,7 @@ test("parseControlOutput: ASK_USER 아래 OPTION 줄을 보기로 읽고, OPTION
     action: "ASK_USER",
     question: "어느 쪽으로 갈까요?",
     options: ["A안", "B안"],
+    multi: false,
     ambiguous: false,
   });
   // OPTION 줄도 꼬리 제어 블록의 일부라 표시 텍스트에서 함께 사라진다.
