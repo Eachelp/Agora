@@ -18,8 +18,6 @@ const {
 const { MemoryStore } = require("../agora/memory-store");
 const { WorkspaceMutationLease } = require("../agora/workspace-mutation-lease");
 const { parseRecorderOutput } = require("../agora/recorder-output");
-const turnCheckpoint = require("../agora/turn-checkpoint");
-const { TaskManager } = require("../agora/task-manager");
 const {
   createCapabilityService,
   claudeResolvedModelLabel,
@@ -35,19 +33,16 @@ const {
   clampDiscussionTurnBudget,
 } = require("./chat-room");
 const { DISCUSSION_PRESETS, maxCycleBudget } = require("../agora/discussion-protocol");
-const { MAX_SPECIALIST_PROMPT_CHARS } = require("./chat-prompt");
 const {
   buildAgentInvocation,
   PERMISSION_MODES,
   INLINE_TEXT_LIMIT,
   minPermissionMode,
-  specialistPermissionMode,
   normalizeChoice,
 } = require("./chat-argv");
 const { createLineParser } = require("./chat-events");
 const { ProcessHarnessAdapter } = require("../harness/process-harness-adapter");
 const { createDefaultHarnessRuntime } = require("../harness/create-default-harness-runtime");
-const { probeGitHead } = require("../harness/harness-session-lifecycle");
 const { persistRunMetrics } = require("./chat-run-metrics-store");
 const {
   importAttachment,
@@ -134,40 +129,7 @@ function createRunLogWriter(store, sessionId, runId) {
   };
 }
 
-function writeBoundedEvidence(store, sessionId, runId, provider, evidence) {
-  if (!store || !sessionId || !runId || !evidence) return true;
-  try {
-    const dir = store.runLogsDir(sessionId);
-    fs.mkdirSync(dir, { recursive: true });
-    const safeId = String(runId).replace(/[^\w.-]/g, "_");
-    const file = path.join(dir, `${safeId}.evidence.json`);
-    const commands = Array.isArray(evidence.commands)
-      ? evidence.commands
-        .filter((entry) => entry?.kind === "command-finished" || Number.isInteger(entry?.exitCode))
-        .slice(0, 20)
-        .map((entry) => ({
-          kind: entry.kind || "command-finished",
-          command: entry.command || null,
-          exitCode: Number.isInteger(entry.exitCode) ? entry.exitCode : null,
-          stdoutTail: String(entry.stdoutTail || "").slice(-2 * 1024),
-          stderrTail: String(entry.stderrTail || "").slice(-2 * 1024),
-          startedAt: Number.isFinite(entry.startedAt) ? entry.startedAt : null,
-          finishedAt: Number.isFinite(entry.finishedAt) ? entry.finishedAt : null,
-          truncated: Boolean(entry.truncated),
-          source: { kind: "provider-event", provider },
-        }))
-      : [];
-    const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify({ schemaVersion: 1, invocationId: runId, provider, commands }, null, 2), "utf8");
-    fs.renameSync(tmp, file);
-    pruneRunLogs(store, sessionId, file);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function persistInvocationMetrics({ store, sessionId, runId, agent, specialistStage = null, result }) {
+function persistInvocationMetrics({ store, sessionId, runId, agent, result }) {
   if (!result?.runMetrics) return false;
   const saved = persistRunMetrics({
     store,
@@ -176,7 +138,7 @@ function persistInvocationMetrics({ store, sessionId, runId, agent, specialistSt
     provider: agent?.id || null,
     model: agent?.model || null,
     effort: agent?.effort || null,
-    stage: specialistStage || null,
+    stage: null,
     metrics: result.runMetrics,
   });
   return Boolean(saved?.ok);
@@ -726,15 +688,10 @@ function createChatFeature(options) {
       attachments,
       emitEvent,
       permissionMode: requestedPermission,
-      specialistStage = null,
       autoApprove = false,
       // Stage C — provider-neutral same-turn approval 콜백. harness가 지원하면 실행 중 action
       // 승인을 요청한다. 여기서는 provider를 구분하지 않고 그대로 전달만 한다(codex 분기 없음).
       requestApproval = null,
-      // Stage C — canonical Frozen Task provenance({ runId: RUN-###, taskHash }).
-      // ChatRoom이 frozenTask 실행 context에서 전달한다. transport runId(r...)와
-      // 무관한 lifecycle fact이며 pre-freeze 단계에서는 null일 수 있다(정상).
-      frozenTask = null,
     }) => {
       const record = ensureCapabilityService().getRecord(agent.id);
       const meta = store?.readMeta(sessionId);
@@ -746,35 +703,16 @@ function createChatFeature(options) {
       }
       const config = meta.agents?.[agent.id] || {};
       const sessionPermission = meta.permissionMode || "chat";
-      const room = getRoom(sessionId);
-      const runAuth = room?.activeRunAuthorization || null;
-      let stagePermission = null;
-      if (specialistStage) {
-        if (!runAuth) {
-          return {
-            promise: Promise.resolve({ ok: false, error: "전문 실행 권한이 없어 실행할 수 없습니다." }),
-            cancel: () => {},
-          };
-        }
-        stagePermission = specialistPermissionMode(specialistStage, runAuth);
-      } else {
-        stagePermission = sessionPermission;
-      }
-      if (!stagePermission) {
-        return {
-          promise: Promise.resolve({ ok: false, error: "알 수 없는 전문 실행 단계라 권한을 계산할 수 없습니다." }),
-          cancel: () => {},
-        };
-      }
-      const authority = specialistStage ? (runAuth || "workspace-write") : sessionPermission;
+      // 권한은 방 권한과 요청 권한 중 낮은 쪽이다. 방은 결론 종합·쉽게 설명을
+      // 대화 전용(chat)으로 요청한다.
       const permissionMode = minPermissionMode(
-        authority,
-        requestedPermission || authority,
-        stagePermission
+        sessionPermission,
+        requestedPermission || sessionPermission,
+        sessionPermission
       );
       if (!permissionMode) {
         return {
-          promise: Promise.resolve({ ok: false, error: "전문 실행 권한을 안전하게 계산할 수 없습니다." }),
+          promise: Promise.resolve({ ok: false, error: "실행 권한을 안전하게 계산할 수 없습니다." }),
           cancel: () => {},
         };
       }
@@ -834,15 +772,6 @@ function createChatFeature(options) {
         attachmentsDir,
       });
       if (extraLines.length > 0) fullPrompt = `${prompt}\n${extraLines.join("\n")}`;
-      if (specialistStage && fullPrompt.length > MAX_SPECIALIST_PROMPT_CHARS) {
-        const error = new Error(`전문 실행 프롬프트 예산을 초과했습니다 (${fullPrompt.length}/${MAX_SPECIALIST_PROMPT_CHARS}자).`);
-        error.code = "PROMPT_BUDGET_EXCEEDED";
-        return {
-          promise: Promise.resolve({ ok: false, error: error.message, stopReason: error.code }),
-          cancel: () => {},
-        };
-      }
-
       // 원본 출력은 필요할 때만 파일로 흘려보냅니다. 메모리에 전체를 들고 있지 않으므로
       // 아주 긴 실행에서도 진단 정보를 잃지 않습니다.
       const rawLog = createRunLogWriter(store, sessionId, runId);
@@ -866,7 +795,6 @@ function createChatFeature(options) {
         parseLine: createLineParser(agent.id),
         onEvent: emitEvent,
         timeoutMs: options.timeoutMs,
-        requireFinal: Boolean(specialistStage),
         // 출력이 길다는 이유로 실행을 죽이지 않습니다. hard limit은 사용자가
         // 명시적으로 켜지 않으면 undefined(=상한 없음)로 남습니다.
         ...(Number.isFinite(options.captureOutputBytes) && options.captureOutputBytes > 0
@@ -887,39 +815,22 @@ function createChatFeature(options) {
       if (canonicalWorkspace) {
         try { workspaceId = fs.realpathSync(canonicalWorkspace); } catch { workspaceId = null; }
       }
-      // Stage C lifecycle facts(Professional managed turn 전용):
-      //   - frozenRunId/taskHash: TaskManager가 만든 canonical Frozen provenance만
-      //     전달한다. chat transport runId(r...)는 provenance가 아니다.
-      //   - gitHead: 실행 직전 authoritative workspace(ProjectStore.workspace)의
-      //     현재 HEAD fact. non-Git은 unsupported(정상), 판독 불가는 error로
-      //     전달되어 HarnessRuntime이 fail-closed한다. adapter는 HEAD를 계산하지 않는다.
+      // Stage C lifecycle facts:
       //   - providerAccount: 현재 live credential의 계정 namespace fact(아래에서
       //     turn 직전에 resolver로 확정). known이면 SessionKey가 계정별로 분리되고,
       //     unknown이면 HarnessRuntime이 fail-closed한다(parked 세션 보존).
       const context = {
         projectId: projectIdForMeta(meta),
         workspaceId,
-        // professionalRunId와 role은 반드시 함께 있거나 함께 없어야 한다.
-        // professionalRun은 세션에 한 번 생기면 계속 남으므로, 이 값을 무조건 실으면
-        // 전문 실행을 한 번이라도 돌린 세션의 "모든" 일반 턴(채팅·토론 종합·기록)이
-        // professional intent로 오인된다. 그러면 role이 없어 SessionKey를 만들 수 없고
-        // harness가 fail-closed하면서 "Professional harness session identity를 안전하게
-        // 계산할 수 없습니다"로 죽는다. 아래 provenance 필드들과 같은 게이트를 쓴다.
-        professionalRunId: specialistStage ? (room?.professionalRun?.professionalRunId || null) : null,
-        role: specialistStage || null,
+        professionalRunId: null,
+        role: null,
         providerId: agent.id,
         modelKey: normalizeChoice(agent.model) || null,
         permissionMode,
         // turn-level security setting. SessionKey 구성요소가 아니며 매 turn 명시 전달된다.
         autoApprove: effectiveAutoApprove,
         effort: normalizeChoice(agent.effort) || null,
-        provenance: {
-          frozenRunId: specialistStage ? (frozenTask?.runId || null) : null,
-          taskHash: specialistStage ? (frozenTask?.taskHash || null) : null,
-          ...(specialistStage
-            ? { gitHead: canonicalWorkspace ? probeGitHead(canonicalWorkspace) : { status: "unsupported" } }
-            : {}),
-        },
+        provenance: { frozenRunId: null, taskHash: null },
       };
       const run = harnessRuntime.runTurn({ context, invocation: harnessInvocation });
       return {
@@ -940,26 +851,11 @@ function createChatFeature(options) {
             sessionId,
             runId,
             agent,
-            specialistStage,
             result: enrichedResult,
           });
-          const persistedEvidence = specialistStage
-            ? writeBoundedEvidence(
-                store,
-                sessionId,
-                runId,
-                agent.id,
-                enrichedResult.evidence || { commands: [] }
-              )
-            : true;
           return enrichedResult.ok
-            ? {
-                ...enrichedResult,
-                deliveries: invocation.deliveries,
-                evidencePersisted: persistedEvidence,
-                metricsPersisted,
-              }
-            : { ...enrichedResult, evidencePersisted: persistedEvidence, metricsPersisted };
+            ? { ...enrichedResult, deliveries: invocation.deliveries, metricsPersisted }
+            : { ...enrichedResult, metricsPersisted };
         }),
         cancel: run.cancel,
       };
@@ -1047,11 +943,11 @@ function roomMeta(meta) {
       config = roleConfigFor(project, "review");
     }
     if (!config.agentId) {
-      return { ok: false, error: `전문 모드의 ${roleLabel} 담당자를 프로젝트 설정에서 지정해 주세요.` };
+      return { ok: false, error: `${roleLabel} 담당자를 프로젝트 설정에서 지정해 주세요.` };
     }
     const agent = room.findAgent(config.agentId);
     if (!agent || !agent.available || agent.enabled === false) {
-      return { ok: false, error: `전문 모드의 ${roleLabel} 담당 에이전트 @${config.agentId}를 사용할 수 없습니다.` };
+      return { ok: false, error: `${roleLabel} 담당 에이전트 @${config.agentId}를 사용할 수 없습니다.` };
     }
     const projectDefault = project.defaultAgents?.[config.agentId] || {};
     const agentConfig = {
@@ -1110,40 +1006,9 @@ function roomMeta(meta) {
       runAgent: options.runAgent || makeRunAgent(sessionId),
       prepareAgent: options.prepareAgent,
       meta: roomMeta(session.meta),
-      checkpoint: options.checkpoint || turnCheckpoint,
-      checkpointRoot: store.checkpointsDir(sessionId),
       // Stage D-0 — workspace mutation ownership. room은 자기 sessionId를 holder로
       // 소유권을 요청할 뿐, 누가 쥐고 있는지·어느 room과 경합하는지는 모른다.
       mutationLease: workspaceMutationLease,
-      strictReviewDiff: true,
-      persistRecovery: (pendingRecovery) => {
-        const updated = store.updateMeta(sessionId, { pendingRecovery: pendingRecovery || null });
-        return Boolean(updated);
-      },
-      // 옛 meta의 professionalRun·pendingRecovery는 읽지 않는다(파일은 그대로 둔다) —
-      // 복원하면 사라진 전문 실행 상태가 대화를 잠근다.
-      persistProfessionalRun: (professionalRun) => {
-        const updated = store.updateMeta(sessionId, { professionalRun: professionalRun || null });
-        return Boolean(updated);
-      },
-      // V1.5 System Journal — 전문 실행 사실 기록(append-only). transcript와
-      // 별도 파일이며, 실패는 false로 드러나 room이 사용자에게 알린다.
-      appendProfessionalEvent: (event) =>
-        store.appendProfessionalEvent(sessionId, { ...event, sessionId }),
-      readProfessionalEvents: () => store.readProfessionalEvents(sessionId),
-      // Stage C — provider-neutral harness lifecycle seam. room은 restore/run 종료
-      // fact만 전달하고, project 범위 해석과 registry/adapter 반영은 여기(control
-      // plane)와 HarnessRuntime이 맡는다.
-      harnessLifecycle: {
-        workspaceRestored: () => {
-          const projectId = projectIdForMeta(store?.readMeta(sessionId));
-          harnessRuntime.workspaceRestored({ projectId });
-        },
-        professionalRunEnded: ({ professionalRunId, invalid = false } = {}) => {
-          harnessRuntime.professionalRunEnded({ professionalRunId, invalid });
-        },
-      },
-      taskManager: options.taskManager || new TaskManager(),
     });
 
     room.on("message", (message) => {
@@ -1209,7 +1074,6 @@ function roomMeta(meta) {
       })),
       typing: room.state().typing,
       turnState: room.turnState(),
-      specialist: room.specialistState(),
       pendingAttachments: [...pendingFor(sessionId).values()].map(publicAttachment),
     };
   }

@@ -6,7 +6,6 @@ const {
   assertSafeArgv,
   INLINE_TEXT_LIMIT,
   minPermissionMode,
-  specialistPermissionMode,
 } = require("../src/chat/chat-argv");
 
 const CHAT_CWD = "C:\\Users\\u\\.agora\\runtime\\chat";
@@ -42,14 +41,9 @@ function build(id, input = {}) {
   });
 }
 
-test("전문 단계 권한 cap은 세션 권한보다 높아지지 않는다", () => {
+test("권한 상한은 낮은 쪽으로 정해진다", () => {
   assert.equal(minPermissionMode("workspace-write", "workspace-read"), "workspace-read");
-  assert.equal(specialistPermissionMode("planner", "workspace-write"), "workspace-read");
-  assert.equal(specialistPermissionMode("plan_review", "workspace-write"), "workspace-read");
-  assert.equal(specialistPermissionMode("implementation", "workspace-write"), "workspace-write");
-  assert.equal(specialistPermissionMode("review", "workspace-write"), "workspace-read");
-  assert.equal(specialistPermissionMode("recorder", "workspace-write"), "chat");
-  assert.equal(specialistPermissionMode("unknown", "workspace-write"), null);
+  assert.equal(minPermissionMode("chat", "workspace-write"), "chat");
 });
 
 // 대화 모드는 파일·셸 도구를 전부 막되, 스킬 지시문을 불러오는 Skill 도구만 연다.

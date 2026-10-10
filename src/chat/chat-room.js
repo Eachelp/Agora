@@ -5,45 +5,13 @@ const { parseMentions } = require("./chat-mention");
 const { filesModifiedSince } = require("../agora/workspace-scan");
 const { buildAgentPrompt } = require("./chat-prompt");
 const {
-  specialistPermissionMode,
-  minPermissionMode,
-  SPECIALIST_STAGE_CAPS,
-} = require("./chat-argv");
-const {
-  createProfessionalRun,
-  transitionProfessionalRun,
-  publicProfessionalState,
-  phaseForNode,
-} = require("../agora/professional-run");
-const { TaskManager, hashText } = require("../agora/task-manager");
-const { REQUIRED_SECTIONS, validateTaskContract } = require("../agora/task-contract-validator");
-// Stage D-B — 자원/행동 심사. 실제 변경 직전에 이 관문을 통과해야 한다(§23).
-const {
-  adjudicateAction,
-  admitAction,
-  RESOURCE_KINDS,
-  ACTIONS,
-} = require("../agora/assurance/resource-governance");
-const {
-  installSpecialistMethods,
-  safeBlockReason,
-  hasOpenQuestions,
-  structuredIssuesFromReview,
-  stripCodeFences,
-  findControlMarker,
-  runGeneratedPaths,
-} = require("./chat-specialist");
-const {
-  installDeterministicProfessionalRecorder,
-} = require("./chat-professional-recorder");
-const {
   resolveProtocol,
   speakerForTurn,
   isFinalStep,
   DISCUSSION_HARD_TURN_CEILING,
 } = require("../agora/discussion-protocol");
-// V1.5 Stage 5 — 역할 출력의 구조화 제어 행동(HANDOFF/COMPLETE/ASK_USER).
-const { parseControlOutput, stripControlOutput } = require("../agora/interaction-contract");
+// 응답 꼬리의 질문 계약(ASK_USER + OPTION).
+const { parseControlOutput, stripControlOutput } = require("./control-output");
 
 // 채팅방 오케스트레이션.
 // - 멘션이 없으면 세션 참가자 전체, 있으면 멘션된 참가자만 응답합니다.
@@ -103,37 +71,9 @@ class ChatRoom extends EventEmitter {
     // runAgent({agent, prompt, runId, attachments, emitEvent}) => { promise, cancel }
     this.runAgent = options.runAgent;
     this.prepareAgent = options.prepareAgent;
-    // TASK-006 Turn Checkpoint 엔진. 제공되지 않으면 사용하지 않습니다.
-    // { createCheckpoint, restoreCheckpoint, cleanupCheckpoint } 형태입니다.
-    this.checkpointEngine = options.checkpoint || null;
-    this.checkpointRoot = options.checkpointRoot || null;
     // Stage D-0 Workspace Mutation Lease. 주입되지 않으면 소유권 통제 없이
     // 기존 동작을 유지합니다(legacy 호출/테스트 호환).
     this.mutationLease = options.mutationLease || null;
-    this.strictReviewDiff = Boolean(options.strictReviewDiff);
-    this.persistRecovery = typeof options.persistRecovery === "function"
-      ? options.persistRecovery
-      : null;
-    // TASK-007 Task Manager — Planner Task 저장/Freeze/Run 정규화를 담당합니다.
-    // workspace 복원용 checkpoint와는 별개의 실행 계약 보존 모듈입니다.
-    this.taskManager = options.taskManager || new TaskManager();
-    // TASK-007: Planner가 TASK.md를 만들면 호출되는 콜백으로, 호출 측(chat-ipc)이
-    // workflow.json에 metadata를 등록합니다. chat-room은 workflow 저장소를 직접 모릅니다.
-    this.onTaskCreated = typeof options.onTaskCreated === "function" ? options.onTaskCreated : null;
-    this.onTaskUpdated = typeof options.onTaskUpdated === "function" ? options.onTaskUpdated : null;
-    this.onProfessionalTaskState = typeof options.onProfessionalTaskState === "function"
-      ? options.onProfessionalTaskState
-      : null;
-    // 전문 실행 재개(기획 답변·재기획) 시 기획·기획검수 담당자를 현재 프로젝트
-    // 설정에서 다시 조회해 스냅샷을 갱신하는 훅이다. null이면 기존처럼 실행 시작
-    // 시점에 저장된 stages를 그대로 쓴다.
-    this.planStagesRefresher = typeof options.planStagesRefresher === "function"
-      ? options.planStagesRefresher
-      : null;
-    // Stage C — provider-neutral harness lifecycle seam(chat-ipc가 주입).
-    // { workspaceRestored(), professionalRunEnded({ professionalRunId, invalid }) }
-    // 형태이며, room은 lifecycle facts만 전달하고 세션/adapter 내부는 모른다.
-    this.harnessLifecycle = options.harnessLifecycle || null;
     this.meta = {
       permissionMode: "chat",
       ...(options.meta || {}),
@@ -170,166 +110,6 @@ class ChatRoom extends EventEmitter {
     this.idleWaiters = [];
     this.discussionActive = false;
     this.discussionRequested = false;
-    this.specialistActive = false;
-    // V1.5 역할/팀 상담(CONSULT)이 진행 중임을 나타내는 재진입 카운터.
-    // consultTeam이 consultRole을 중첩 호출하므로 불리언이 아닌 카운터다.
-    // 상담 중에는 토론·전문실행 시작을 막고 일반 턴을 defer해 순차 계약을
-    // 보호한다(discussionActive/specialistActive와 동일한 상호배제).
-    this.consultActiveCount = 0;
-    // 전문 실행 중 "기획 승인 후 이어서 진행"할 상태(step/auto에서 PLAN_READY로 멈출 때 저장).
-    this.specialistResume = null;
-    // 기획 검수를 통과하고 사용자가 승인한 live Task입니다. 구현·검수 블록은
-    // 이 Task를 시작 시점에 Frozen Run Contract로 동결해 사용합니다.
-    this.professionalPlan = null;
-    // BLOCKED로 멈췄을 때 사용자의 후속 선택(복원/유지/폐기)을 기다리는 상태.
-    // A안: BLOCKED 시점에 즉시 되돌리지 않고, 사용자가 결정할 때까지 작업물을 보존합니다.
-    this.activeRunAuthorization = null;
-    this.specialistStages = null;
-    this.persistProfessionalRun = typeof options.persistProfessionalRun === "function"
-      ? options.persistProfessionalRun
-      : null;
-    // V1.5 System Journal appender. 없으면 기록을 생략한다(테스트·레거시 호환).
-    this.appendProfessionalEvent = typeof options.appendProfessionalEvent === "function"
-      ? options.appendProfessionalEvent
-      : null;
-    // Journal reader — Archivist가 실행 사실 기록을 읽을 때 쓴다(읽기 전용).
-    this.readProfessionalEvents = typeof options.readProfessionalEvents === "function"
-      ? options.readProfessionalEvents
-      : null;
-    this.journalWriteFailureNotified = false;
-    // V1.5 Stage 5 — 살아 있는 Handoff 원장(현재 root 발화의 budget epoch).
-    // 영속 authority는 professionalRun.handoffState이고, 복원은
-    // ensureHandoffLedger가 recoverHandoffLedgerForRoot로만 수행한다.
-    this.handoffLedger = null;
-    const initialProfessionalRun = options.initialProfessionalRun || options.meta?.professionalRun || null;
-    this.professionalRun = initialProfessionalRun ? createProfessionalRun(initialProfessionalRun) : null;
-    if (this.professionalRun?.status === "RUNNING") {
-      this.professionalRun = {
-        ...this.professionalRun,
-        status: "INTERRUPTED",
-        stopReason: "EXECUTION_INTERRUPTED",
-        updatedAt: Date.now(),
-      };
-      try {
-        this.persistProfessionalRun?.(this.professionalRun);
-      } catch {}
-    }
-    this.specialistStages = this.professionalRun?.stages || null;
-    // 답변 대기(PLANNING/PLAN_REVIEW + WAITING)도 복원한다. 예전에는 READY만
-    // 복원해서, 그 상태로 앱을 껐다 켜면 입력칸은 열리는데 답변은 거부됐다.
-    this.specialistResume = this.resumeForWaitingPlan();
-    if (this.professionalRun?.node === "READY" && this.professionalRun.taskPath) {
-      let contract = null;
-      try {
-        contract = this.taskManager.resolveTaskContract(
-          { contentSource: "file", taskPath: this.professionalRun.taskPath },
-          this.meta.workspace
-        );
-      } catch {}
-
-      if (contract) {
-        const contractCheck = validateTaskContract(contract.content);
-        const hasValidApproval =
-          contractCheck.valid &&
-          this.professionalRun.stopReason !== "TASK_CONTRACT_INCOMPLETE" &&
-          Boolean(this.professionalRun.approvedTaskHash) &&
-          this.professionalRun.approvedTaskHash === hashText(contract.content);
-
-        if (hasValidApproval) {
-          this.professionalPlan = {
-            stages: this.professionalRun.stages || {},
-            mode: "auto",
-            implementationAutoRevisions: this.professionalRun.policy?.implementationAutoRevisions || 0,
-            taskInfo: {
-              relativePath: this.professionalRun.taskPath,
-              filename: path.basename(this.professionalRun.taskPath),
-              content: contract.content,
-              hash: this.professionalRun.approvedTaskHash,
-            },
-            feedback: contract.content,
-          };
-        } else {
-          // Task 계약이 불완전하거나, 외부 수정/이전 실패로 승인 상태가 무효화된 경우
-          // 정상 READY로 복원하지 않고 TASK_CONTRACT_INCOMPLETE 복구 대기 상태로 전환한다.
-          const missingSections = contractCheck.valid ? [] : contractCheck.missing;
-          const transition = transitionProfessionalRun(this.professionalRun, {
-            type: "TASK_CONTRACT_INCOMPLETE",
-            missingSections,
-          });
-          if (transition.ok) {
-            this.professionalRun = transition.state;
-            try {
-              this.persistProfessionalRun?.(this.professionalRun);
-            } catch {}
-          }
-          this.specialistResume = {
-            stages: this.professionalRun.stages || {},
-            mode: "auto",
-            phase: "task_contract_incomplete",
-            taskInfo: {
-              relativePath: this.professionalRun.taskPath,
-              filename: path.basename(this.professionalRun.taskPath),
-              content: contract.content || "",
-              hash: hashText(contract.content || ""),
-            },
-            feedback: contract.content || "",
-            missingSections,
-            taskError: contractCheck.valid
-              ? "작업 지시서 내용은 현재 필수 계약을 만족하지만, 승인 상태가 무효화되어 재검수가 필요합니다."
-              : `실행 계약(Task)에 필수 섹션이 빠졌습니다: ${contractCheck.missing.join(", ")}`,
-            maxAutoRevisions: this.professionalRun.policy?.implementationAutoRevisions || 0,
-          };
-        }
-      } else {
-        // resolveTaskContract가 null인 경우 (파일 누락 또는 읽기 불가)
-        // READY 상태로 방치하지 않고 fail-closed recovery 상태로 전환한다.
-        const allMissing = [...REQUIRED_SECTIONS];
-        const transition = transitionProfessionalRun(this.professionalRun, {
-          type: "TASK_CONTRACT_INCOMPLETE",
-          missingSections: allMissing,
-        });
-        if (transition.ok) {
-          this.professionalRun = transition.state;
-          try {
-            this.persistProfessionalRun?.(this.professionalRun);
-          } catch {}
-        }
-        this.specialistResume = {
-          stages: this.professionalRun.stages || {},
-          mode: "auto",
-          phase: "task_contract_incomplete",
-          taskInfo: {
-            relativePath: this.professionalRun.taskPath,
-            filename: path.basename(this.professionalRun.taskPath),
-            content: "",
-            hash: hashText(""),
-          },
-          feedback: "",
-          missingSections: allMissing,
-          taskError: "작업 지시서(TASK.md) 파일을 찾을 수 없거나 읽을 수 없습니다.",
-          maxAutoRevisions: this.professionalRun.policy?.implementationAutoRevisions || 0,
-        };
-      }
-    }
-    // v3의 실행 상태는 professionalRun이 기준이다. v2의 pendingRecovery는
-    // 기존 세션을 여는 호환 입력으로만 사용한다.
-    let initialRecovery = this.recoveryFromProfessionalRun(this.professionalRun) || (!this.professionalRun ? options.initialRecovery : null);
-    if (initialRecovery?.status === "completed" && initialRecovery.checkpointId && this.checkpointEngine) {
-      try {
-        const cleanup = this.checkpointEngine.cleanupCheckpoint({
-          supported: true,
-          checkpointId: initialRecovery.checkpointId,
-          storageRoot: this.checkpointRoot,
-          sessionId: this.sessionId,
-          runId: initialRecovery.runId || null,
-        });
-        if (cleanup?.ok !== false) {
-          this.persistRecoveryState(null);
-          initialRecovery = null;
-        }
-      } catch {}
-    }
-    this.specialistBlocked = this.rehydrateRecovery(initialRecovery);
     this.cancels = new Set();
     this.typingCounts = new Map();
     // agentId → { question } : 되질문으로 턴을 끝내 사용자 답을 기다리는 에이전트.
@@ -421,77 +201,6 @@ class ChatRoom extends EventEmitter {
     };
   }
 
-  // 전문 실행 상태는 renderer 재연결·대화 전환에도 대화별로 복원할 수 있어야 합니다.
-  // 실행 중(active), 사람 승인 대기(available), BLOCKED는 서로 다른 상태입니다.
-  specialistState() {
-    const professional = this.professionalRun
-      ? publicProfessionalState(this.professionalRun, {
-          canRestore: Boolean(this.specialistBlocked?.canRestore),
-        })
-      : null;
-    const legacyTaskPath =
-      this.professionalPlan?.taskInfo?.relativePath ||
-      this.specialistResume?.taskInfo?.relativePath ||
-      null;
-    const taskPath = professional?.taskPath || legacyTaskPath;
-    const taskId =
-      professional?.taskId ||
-      this.professionalPlan?.taskInfo?.filename?.replace(/\.md$/i, "") ||
-      this.specialistResume?.taskInfo?.filename?.replace(/\.md$/i, "") ||
-      null;
-    return {
-      active: Boolean(this.specialistActive),
-      available: Boolean(this.specialistResume),
-      mode: this.specialistResume?.mode || null,
-      phase: professional?.phase || this.specialistResume?.phase || null,
-      // 재개 phase는 따로 낸다. 위 phase는 professional run이 있으면 언제나
-      // 그쪽 값('PLAN'/'ACT')이 이겨서, 화면의 재개 phase 대비책(승인 대기 판정
-      // 같은 것)이 영영 참이 되지 않았다.
-      resumePhase: this.specialistResume?.phase || null,
-      node: professional?.node || null,
-      status: professional?.status || null,
-      needsInput: Boolean(professional?.needsInput) || ["needs_decision", "plan_review_fix_required", "task_contract_incomplete"].includes(this.specialistResume?.phase),
-      planReady: (Boolean(professional?.planReady) || Boolean(this.professionalPlan)) && this.specialistResume?.phase !== "task_contract_incomplete" && professional?.stopReason !== "TASK_CONTRACT_INCOMPLETE",
-      // 구현을 실제로 시작할 수 있는가. planReady는 FSM 노드(READY)만 보므로,
-      // 앱을 다시 켰을 때 TASK.md를 읽지 못해 승인된 기획을 복원하지 못한 경우에도
-      // 참이다. 그 상태에서 '실행 ▶'을 켜면 백엔드는 "기획 검수가 통과한 뒤에
-      // 실행할 수 있습니다"로 거절한다 — 화면이 켤 수 있는 조건을 백엔드와 맞춘다.
-      implementationReady: Boolean(this.professionalPlan?.taskInfo),
-      // 승인된 기획안(Frozen Task 원본)을 채팅에서 열어볼 수 있게 경로/제목을 노출합니다.
-      planTaskPath: taskPath,
-      planTaskId: taskId,
-      blocked: Boolean(professional?.blocked) || Boolean(this.specialistBlocked),
-      blockReason: professional?.blockReason ||
-        (this.specialistBlocked ? safeBlockReason(this.specialistBlocked.blockReason) : null),
-      canRestore: professional?.canRestore || Boolean(this.specialistBlocked?.canRestore),
-      hasTask: professional?.hasTask || Boolean(
-        this.specialistBlocked?.taskPath || this.specialistResume?.taskInfo?.relativePath
-      ),
-      frozenRunId: professional?.frozenRunId || this.specialistResume?.runInfo?.runId || null,
-      planRound: professional?.planRound || 1,
-      implementationRound: professional?.implementationRound || 0,
-      stopReason: professional?.stopReason || null,
-      checkpointProtection: professional?.checkpointProtection || null,
-      checkpointFailReason: professional?.checkpointFailReason || null,
-      missingSections: this.specialistResume?.missingSections || professional?.missingSections || null,
-    };
-  }
-
-  emitSpecialistState() {
-    this.emit("specialist-resume-state", this.specialistState());
-  }
-
-  // "실행 중이라 바쁘다"와 "사용자를 기다린다"는 다른 상태다. 둘을 한 판정으로
-  // 묶으면 사용자가 다시 시작하고 싶은 바로 그 상태(BLOCKED·답변 대기)에서
-  // 새 기획까지 막혀, 걸려 있는 질문에 답하는 것 말고 길이 없어진다.
-  isSpecialistBusy() {
-    return Boolean(this.specialistActive);
-  }
-
-  isSpecialistLocked() {
-    return Boolean(this.specialistActive || this.specialistResume || this.specialistBlocked);
-  }
-
   appendMessage(message) {
     const entry = { id: nextMessageId(), ts: Date.now(), ...message };
     this.messages.push(entry);
@@ -512,19 +221,7 @@ class ChatRoom extends EventEmitter {
     const trimmed = String(payload.text || "").trim();
     const attachments = Array.isArray(payload.attachments) ? payload.attachments : [];
     const independent = Boolean(payload.independent);
-    const recordOnly = Boolean(payload.recordOnly);
     if (!trimmed && attachments.length === 0) return null;
-    // renderer 잠금이 늦게 반영되거나 우회되어도 전문 실행 맥락에는 일반 대화가 끼지 않습니다.
-    //
-    // 다만 recordOnly는 예외입니다. 이것은 응답을 예약하지 않고 메시지만 남기므로
-    // 진행 중인 실행에 끼어들지 않고, 구현자·검수자·기록자는 대화를 아예 보지
-    // 않으므로(ROLE_CONTEXT_POLICY) 동결된 계약도 오염되지 않습니다. 기획자만
-    // 다음 라운드에 읽습니다. 이걸 막으면 실행이 도는 동안 사용자가 방향을
-    // 일러 줄 수단이 사라집니다.
-    if (!recordOnly && this.isSpecialistLocked()) {
-      throw new Error("전문 실행이 진행 중이거나 승인 대기 중입니다. 먼저 작업을 완료하거나 취소해 주세요.");
-    }
-
     const entry = this.appendMessage({
       authorType: "user",
       author: "user",
@@ -534,9 +231,6 @@ class ChatRoom extends EventEmitter {
     entry.turnRootId = entry.id;
 
     this.mentionsMuted = false;
-    // 전문 모드의 작업 요청은 실행 지시 원문으로만 기록한다. 여기서 일반
-    // 응답을 예약하면 Planner/Plan Reviewer와 일반 채팅 턴이 섞인다.
-    if (recordOnly) return entry;
     const mentionedIds = parseMentions(trimmed, this.agents, GROUP_ALIASES);
     const targets = mentionedIds.length > 0
       ? mentionedIds.map((agentId) => this.findAgent(agentId)).filter(Boolean)
@@ -704,14 +398,8 @@ class ChatRoom extends EventEmitter {
     };
     if (dedupeKey) this.pendingTurns.set(dedupeKey, item);
     this.trackTurnWait(item);
-    // While a discussion, specialist run, or consult is active, defer ordinary
-    // (non-discussion, non-specialist, non-consult) turns so they cannot
-    // interject. 상담 턴 자체(context.consult)는 defer 대상이 아니다 — 그러면
-    // 상담이 자기 자신을 기다리며 멈춘다.
-    const deferGeneral = (this.discussionActive || this.specialistActive || this.isConsultActive())
-      && !context.discussion
-      && !context.specialist
-      && !context.consult;
+    // 토론이 진행 중이면 일반 턴은 끼어들지 못하게 뒤로 미룬다.
+    const deferGeneral = this.discussionActive && !context.discussion;
     const queue = deferGeneral
       ? this.deferredTurnQueue
       : this.turnQueue;
@@ -748,11 +436,6 @@ class ChatRoom extends EventEmitter {
   // 사용자에게 돌려줍니다. 중지 직전에 도착한 응답이나 @멘션도 세대 가드로
   // 버리며, 다음 사용자 발화 전까지 에이전트발 호출을 만들지 않습니다.
   interject() {
-    if (this.specialistActive || this.specialistResume) {
-      const cancelled = this.cancelSpecialist("개입으로 ");
-      this.mentionsMuted = true;
-      return { dropped: 0, interrupted: Boolean(cancelled.ok) };
-    }
     const dropped = this.turnQueue.length + this.deferredTurnQueue.length;
     const interrupted = dropped > 0 || this.currentTurn !== null || this.cancels.size > 0;
     this.stopAllSilently();
@@ -968,10 +651,10 @@ class ChatRoom extends EventEmitter {
     return new Promise((resolve) => this.idleWaiters.push(resolve));
   }
 
-  // General (non-discussion, non-specialist) turns lost to stop/generation
-  // bumps must not disappear silently: tell the user to resend.
+  // 토론이 아닌 일반 턴이 중지·세대 교체로 사라지면 조용히 넘기지 않고
+  // 다시 보내라고 알린다.
   isGeneralTurn(item) {
-    return !item.context.discussion && !item.context.specialist;
+    return !item.context.discussion;
   }
 
   trackTurnWait(item) {
@@ -1011,7 +694,7 @@ class ChatRoom extends EventEmitter {
   }
 
   isFreeChatContext(context = {}) {
-    return !context.specialist && !context.discussion && !context.discussionSummary && !context.simplifyMeta && !context.consult;
+    return !context.discussion && !context.discussionSummary && !context.simplifyMeta;
   }
 
   // 실행 중인 일반 턴 뒤에서 기다리는 다른 에이전트들(이어 발언은 단일 큐라 함께 막힌다).
@@ -1112,47 +795,7 @@ class ChatRoom extends EventEmitter {
       purpose,
       parentToken,
     });
-    if (got.ok) {
-      // Stage D-B §23 — 소유권을 얻었다고 곧바로 변경해도 되는 것은 아니다.
-      // 실제 변경 직전에 자원/행동 심사를 통과해야 한다. 심사는 소유권을 확보한
-      // 뒤에 한다 — "lease를 든 상태에서 이 행동이 허용되는가"가 실제 질문이다.
-      const adjudication = adjudicateAction(
-        {
-          resourceKind: RESOURCE_KINDS.WORKSPACE,
-          action: ACTIONS.MUTATE,
-          resourceId: workspace,
-          requestedPermission: "workspace-write",
-        },
-        {
-          permissionCap: "workspace-write",
-          leaseHeld: true,
-          checkpointProtected: this.professionalRun?.checkpointProtection === "protected",
-        }
-      );
-      const admitted = admitAction(adjudication, { humanApprovalGranted: false });
-      if (!admitted.ok) {
-        // 사전 승인이 필요한 행동을 승인 없이 실행하지 않는다. 소유권은 돌려준다.
-        this.mutationLease.release(got.token);
-        return {
-          ok: false,
-          code: admitted.code,
-          error: admitted.error || "이 작업은 사용자 승인이 필요합니다.",
-        };
-      }
-
-      // Stage D-C — workspace 변경 소유권 획득도 provenance 사슬의 한 마디다(§26).
-      // 기록 실패가 실행을 막지는 않는다(관측 실패 ≠ governance 실패).
-      try {
-        this.assuranceRun?.recordWorkspaceMutation({
-          event: got.reentered ? "reentered" : "acquired",
-          resourceId: workspace,
-          holderId: this.sessionId,
-          purpose,
-          controlClass: adjudication.controlClass,
-        });
-      } catch {}
-      return { ok: true, token: got.token, reentered: Boolean(got.reentered) };
-    }
+    if (got.ok) return { ok: true, token: got.token, reentered: Boolean(got.reentered) };
     // 내부 어휘(lease/holder/resourceId)를 사용자 표면으로 내보내지 않는다(Charter §9).
     const error = got.code !== "BUSY"
       ? "작업 폴더 변경 권한을 확인하지 못해 실행을 시작하지 않았습니다."
@@ -1179,7 +822,7 @@ class ChatRoom extends EventEmitter {
     // activeRuns를 즉시 0으로 되돌리기 때문에, 그 값으로 판단하면 방금 kill한
     // — 아직 살아서 파일을 쓰고 있는 — 실행을 "없다"고 읽고 소유권을 넘겨
     // 다른 대화가 같은 폴더를 동시에 바꾸게 된다.
-    if (this.liveRuns > 0 || this.activeRuns > 0 || this.specialistActive === true) return 0;
+    if (this.liveRuns > 0 || this.activeRuns > 0) return 0;
     return this.releaseAllWorkspaceMutations();
   }
 
@@ -1205,19 +848,12 @@ class ChatRoom extends EventEmitter {
     return [...base, ...extra].filter((message) => message.authorType !== "system" && !message.error);
   }
 
-  // Stage D-0 — workspace-write 일반 채팅 turn은 mutation 참여자다.
-  // 전문 실행은 turn 단위가 아니라 실행 블록 전체(mutation~판정 구간)에서 소유권을
-  // 쥐므로 여기서 다시 잡지 않는다(같은 room이라 재진입으로 통과하기도 한다).
-  // 이 턴이 workspace 변경 소유권을 필요로 하는가.
-  // V1.5 역할 상담(CONSULT)은 workspace-read 상한으로 강등되는 읽기 전용 턴이라
-  // mutation 참여자가 아니다. 여기서 lease를 잡으면 다른 방의 실제 쓰기 실행과
-  // 서로를 불필요하게 막는다.
+  // Stage D-0 — workspace-write 일반 채팅 turn은 workspace 변경 소유권을 잡는다.
+  // 토론 결론 종합과 쉽게 설명은 대화 전용이라 잡지 않는다.
   needsWorkspaceLease(context = {}) {
     return Boolean(
-      !context.specialist &&
       !context.discussionSummary &&
       !context.simplifyMeta &&
-      !context.consult &&
       this.meta.permissionMode === "workspace-write"
     );
   }
@@ -1263,46 +899,15 @@ class ChatRoom extends EventEmitter {
       resolvedModel: agent.resolvedModel || (agent.model && agent.model !== "default" ? agent.model : null),
       effort: agent.effort || "default",
       version: agent.version || "",
-      ...(context.specialist?.stage ? { specialistStage: context.specialist.stage } : {}),
-      ...(context.specialist?.frozenTask?.runId
-        ? { runId: context.specialist.frozenTask.runId }
-        : {}),
-      ...(context.specialist?.frozenTask?.taskId
-        ? { taskId: context.specialist.frozenTask.taskId }
-        : {}),
-      ...(context.specialist?.frozenTask?.taskHash
-        ? { taskHash: context.specialist.frozenTask.taskHash }
-        : {}),
       ...(context.discussionSummary
         ? { discussionSummary: context.discussionSummary }
         : {}),
     };
 
-    const specialistStage = context.specialist?.stage || null;
-    let permissionMode;
-    if (context.discussionSummary || context.simplifyMeta) {
-      permissionMode = "chat";
-    } else if (context.consult) {
-      // V1.5 역할 상담(CONSULT)은 읽기 전용 단일 응답이다(INV-3). 역할 cap과
-      // 세션 권한, workspace-read 상한의 최솟값으로 강등된다 — Builder에게
-      // 물어봐도 파일을 수정할 수 없고, 세션 권한보다 높은 권한을 얻는
-      // 경로도 아니다(chat 권한 세션이면 chat 그대로).
-      permissionMode = minPermissionMode(
-        this.meta.permissionMode,
-        "workspace-read",
-        SPECIALIST_STAGE_CAPS[context.consult.stage] || "workspace-read"
-      );
-    } else if (specialistStage) {
-      const auth = this.activeRunAuthorization || "workspace-write";
-      permissionMode = specialistPermissionMode(specialistStage, auth);
-    } else {
-      permissionMode = this.meta.permissionMode;
-    }
-    if (!permissionMode) {
-      this.appendSystem("전문 실행 단계의 권한을 계산할 수 없어 실행을 중단했습니다.");
-      return { ok: false, stopReason: "UNKNOWN_SPECIALIST_STAGE" };
-    }
-    const builderStage = specialistStage === "implementation";
+    // 토론 결론 종합과 쉽게 설명은 대화 전용이다. 나머지는 방 권한 그대로다.
+    const permissionMode = context.discussionSummary || context.simplifyMeta
+      ? "chat"
+      : this.meta.permissionMode;
 
     const mentionDepth = context.mentionDepth || 0;
 
@@ -1311,9 +916,7 @@ class ChatRoom extends EventEmitter {
       prompt = buildAgentPrompt({
         agent,
         agents: this.enabledAgents(),
-        messages: builderStage
-          ? []
-          : context.discussionSummaryMessages || this.promptMessages(context.promptLimit, context.independent),
+        messages: context.discussionSummaryMessages || this.promptMessages(context.promptLimit, context.independent),
         maxMessages: this.maxPromptMessages,
         permissionMode,
         projectContext: this.meta.projectContext,
@@ -1323,8 +926,6 @@ class ChatRoom extends EventEmitter {
         discussion: context.discussion || null,
         discussionSummary: context.discussionSummary || null,
         simplifyMeta: context.simplifyMeta || null,
-        specialist: context.specialist || null,
-        consult: context.consult || null,
         broadcast: context.broadcast || null,
         // 독립 발언 묶음으로 동시에 도는 턴이면, 각자 자기 폴더에서만 쓰도록
         // 계약을 준다(폴더 이름은 담당자 id — 누가 만들었는지 그대로 남는다).
@@ -1332,13 +933,12 @@ class ChatRoom extends EventEmitter {
           ? { folder: agent.id, total: context.parallelTotal || 0 }
           : null,
         handoff: context.handoff || null,
-        // 전문 모드 실행 중에는 @멘션 호출을 끕니다. 구현·검토·기록이
-        // 담당자 밖으로 새어 나가는 것을 막기 위해서입니다.
-        mentionsEnabled: !context.discussion && !context.specialist && !context.discussionSummary && !context.simplifyMeta && !context.consult && mentionDepth < this.mentionChainLimit,
+        // 토론·결론 종합·쉽게 설명에서는 @멘션 호출을 끈다. 연쇄 깊이 상한도 여기서 막는다.
+        mentionsEnabled: !context.discussion && !context.discussionSummary && !context.simplifyMeta && mentionDepth < this.mentionChainLimit,
       });
     } catch (error) {
       const stopReason = error?.code || "PROMPT_BUILD_FAILED";
-      this.appendSystem(`프롬프트 예산을 초과해 전문 실행을 중단했습니다. (${error?.message || "프롬프트를 만들지 못했습니다."})`);
+      this.appendSystem(`프롬프트를 만들지 못해 응답을 시작하지 않았습니다. (${error?.message || "알 수 없는 오류"})`);
       return { ok: false, stopReason, error: error?.message || stopReason };
     }
 
@@ -1356,9 +956,6 @@ class ChatRoom extends EventEmitter {
           agentId: agent.id,
           model: responseAgentMeta.model,
           effort: responseAgentMeta.effort,
-          ...(responseAgentMeta.specialistStage
-            ? { specialistStage: responseAgentMeta.specialistStage }
-            : {}),
           ...event,
         });
       };
@@ -1378,23 +975,8 @@ class ChatRoom extends EventEmitter {
           attachments: context.attachments || [],
           emitEvent,
           permissionMode,
-          specialistStage,
-          // Stage C — canonical Frozen Task provenance(RUN-### + taskHash). transport
-          // runId(r...)와 구분되는 lifecycle fact로, TaskManager가 만든 값만 전달한다.
-          frozenTask: context.specialist?.frozenTask
-            ? {
-                runId: context.specialist.frozenTask.runId || null,
-                taskHash: context.specialist.frozenTask.taskHash || null,
-              }
-            : null,
-          // IPC 경계에서 최종 permissionMode를 다시 계산해 실제 invocation을 제한합니다.
-          // 여기서는 기존 승인 재시도 계약을 유지한 요청값만 전달합니다.
-          // 일반 채팅의 승인 재시도 계약은 유지한다. 실제 provider argv에서는
-          // IPC 경계가 workspace-write가 아닌 autoApprove를 다시 차단한다.
-          // 전문 실행만 stage cap을 이미 적용한 최종 권한으로 제한한다.
-          autoApprove: context.specialist
-            ? permissionMode === "workspace-write" && (agent.autoApprove || approvedRetry)
-            : agent.autoApprove || approvedRetry,
+          // 자동 승인은 workspace-write에서만 실제 argv에 반영된다(IPC 경계가 다시 막는다).
+          autoApprove: agent.autoApprove || approvedRetry,
           // Stage C — same-turn approval seam(provider-neutral). harness가 지원하면 실행 중
           // action 승인을 이 콜백으로 요청한다. 미지원 provider는 이 콜백을 무시하고 기존
           // approvalRequired -> whole-turn retry 경로를 그대로 쓴다.
@@ -1423,14 +1005,14 @@ class ChatRoom extends EventEmitter {
       // 띄우면 사용자가 승인해도 같은 실행이 같은 이유로 실패한다 — 카드를 띄우지
       // 않고, 무엇을 바꿔야 하는지 사유로 알린다.
       if (permissionMode !== "workspace-write") {
-        // 이 단계의 권한이 방 권한보다 낮게 잡힌 경우(전문 실행 단계 상한, 역할 상담)는
-        // 방 설정을 올려도 풀리지 않는다. 무엇을 바꿔야 하는지 그대로 구분해 알린다.
-        const cappedByStage = this.meta.permissionMode === "workspace-write";
+        // 방 권한은 쓰기인데 이 응답만 대화 전용으로 돈 경우(결론 종합·쉽게 설명)는
+        // 방 설정을 올려도 풀리지 않는다. 무엇을 바꿔야 하는지 구분해 알린다.
+        const cappedByTurn = this.meta.permissionMode === "workspace-write";
         result = {
           ...result,
           ok: false,
-          error: cappedByStage
-            ? "이 단계는 읽기 전용이라 도구 실행 권한을 승인할 수 없습니다. 파일을 바꾸는 일은 구현 단계에서 진행해 주세요."
+          error: cappedByTurn
+            ? "이 응답은 대화 전용이라 도구 실행 권한을 승인할 수 없습니다."
             : "이 도구 실행에는 파일 변경 권한이 필요합니다. 방 권한을 '워크스페이스 쓰기'로 올린 뒤 다시 시도해 주세요.",
         };
         break;
@@ -1516,69 +1098,21 @@ class ChatRoom extends EventEmitter {
 
     let rawText = String(result.text || "").trim();
     let discussionSignal = null;
-    let specialistSignal = null;
-    let plannerStatus = null;
-    let builderStatus = null;
     if (context.discussion) {
       const match = rawText.match(/\[\[CODEPET_DISCUSSION:(CONTINUE|AGREE|PASS|CONCLUDE)\]\]\s*$/i);
       discussionSignal = match ? match[1].toUpperCase() : "CONTINUE";
       if (match) rawText = rawText.slice(0, match.index).trim();
     }
-    if (context.specialist?.stage === "review" || context.specialist?.stage === "plan_review") {
-      // 끝줄에 단독으로 붙는 앵커 마커만 신뢰합니다. 본문 중간의 VERDICT: 언급(인용,
-      // 예시, 부정문)은 이 마커를 덮어쓰지 않습니다 — parseReviewContract가 별도로
-      // 다루며, 앵커가 없을 때만 본문 마커를 (모호성 검사와 함께) 보조로 씁니다.
-      const match = rawText.match(/\[\[CODEPET_REVIEW:(PASS|REVISE|FIX_REQUIRED|UNKNOWN)\]\]\s*$/i);
-      if (match) {
-        specialistSignal = match[1].toUpperCase();
-        // 예전 Provider 출력·테스트 호환을 위해 REVISE는 FIX_REQUIRED로 정규화한다.
-        if (specialistSignal === "REVISE") specialistSignal = "FIX_REQUIRED";
-        rawText = rawText.slice(0, match.index).trim();
-      }
-    }
-    if (context.specialist?.stage === "planner") {
-      const { value, ambiguous } = findControlMarker(rawText, /STATUS:\s*(PLAN_READY|NEEDS_DECISION)\b/i);
-      // 서로 다른 STATUS 마커가 여러 번 나오면 어느 쪽이 진짜 결론인지 단정하지
-      // 않고 안전한 쪽(NEEDS_DECISION, 사용자 개입)으로 돌려보냅니다.
-      plannerStatus = ambiguous ? "NEEDS_DECISION" : value || "NEEDS_DECISION";
-    }
-    if (context.specialist?.stage === "implementation") {
-      const { value, ambiguous } = findControlMarker(rawText, /STATUS:\s*(DONE|BLOCKED)\b/i);
-      // DONE을 선언하지 않은 실행을 성공으로 단정하지 않습니다. 모호하거나
-      // 누락된 선언은 실제 BLOCKED와 구분해 사용자 개입으로 돌립니다.
-      builderStatus = ambiguous ? "AMBIGUOUS" : value || "MISSING";
-    }
-    // V1.5 Stage 5 — 전문 역할 출력의 제어 행동 추출. 응답 꼬리의 연속 제어
-    // 블록만 인식한다(end-anchor). 여기서는 추출·기록만 하고 실행하지 않는다
-    // — 모델은 요청하고 Runtime(소비 지점)이 결정한다(INV-6). 요청 사실은
-    // 소비 여부와 무관하게 Journal에 남긴다.
-    // 소비자가 붙은 턴(controlOutputs:true — auto/full 결정 지점)에서만
-    // 추출한다. step mode처럼 소비자가 없는 specialist 턴에서 parse/strip을
-    // 하면 화면에서 지워지고 HANDOFF_REQUESTED만 남는 ghost 요청이 생긴다.
-    // 일반 채팅 턴도 같은 계약을 읽되 ASK_USER만 받는다. HANDOFF·COMPLETE는
-    // 역할 실행의 제어라 여기서는 산문으로 남긴다(strip도 하지 않는다).
+    // 일반 채팅 턴은 응답 꼬리의 질문 계약(ASK_USER + OPTION)만 읽는다. 다른 제어
+    // 줄(HANDOFF·COMPLETE)은 산문으로 남긴다(strip하지 않는다).
     let controlRequest = null;
-    const freeChat = this.isFreeChatContext(context);
-    if (context.specialist?.controlOutputs === true || freeChat) {
+    if (this.isFreeChatContext(context)) {
       const parsed = parseControlOutput(rawText);
-      if (parsed && (!freeChat || parsed.action === "ASK_USER")) {
+      if (parsed && parsed.action === "ASK_USER") {
         controlRequest = parsed;
-        // 모호한 제어(질문 2개, ASK_USER+HANDOFF 혼합 등)는 소비 지점에서
-        // CONTROL_AMBIGUOUS로 거부된다. 그때 strip까지 하면 질문 전부가
-        // 화면에서 사라지고 "답하라"는 안내만 남는다 — 모호하면 원문 제어
-        // 줄을 그대로 남겨 사용자가 무엇을 물었는지 잃지 않게 한다.
+        // 모호한 질문(질문 2개 등)은 원문 제어 줄을 그대로 남겨, 사용자가 무엇을
+        // 물었는지 잃지 않게 한다.
         if (!parsed.ambiguous) rawText = stripControlOutput(rawText);
-        if (parsed.action === "HANDOFF") {
-          this.recordJournalEvent?.({
-            type: "HANDOFF_REQUESTED",
-            role: parsed.targetRole || null,
-            purpose: parsed.purpose || null,
-            reason: parsed.reason || null,
-            status: parsed.ambiguous ? "AMBIGUOUS" : null,
-            professionalRunId: this.professionalRun?.professionalRunId || null,
-            frozenRunId: this.professionalRun?.frozenRunId || null,
-          });
-        }
       }
     }
 
@@ -1600,8 +1134,7 @@ class ChatRoom extends EventEmitter {
       }
     }
 
-    // WAITING 전이가 "이 발화가 정지를 만들었다"를 기록할 수 있도록 id를 돌려준다.
-    // 이게 없으면 재시작 뒤 Reviewer 지적을 되찾을 방법이 없다.
+    // 호출한 쪽(토론 결론 종합 등)이 이 발화를 가리킬 수 있도록 id를 돌려준다.
     const appended = this.appendMessage({
       authorType: "agent",
       author: agent.id,
@@ -1628,8 +1161,7 @@ class ChatRoom extends EventEmitter {
       ...(result.deliveries ? { deliveries: result.deliveries } : {}),
     });
     // 토론 모드는 자체 턴 오케스트레이션이 있으므로 멘션 호출을 만들지 않습니다.
-    // 역할 상담(consult)도 단일 응답 계약이라 연쇄를 만들지 않습니다.
-    if (!context.discussion && !context.specialist && !context.discussionSummary && !context.simplifyMeta && !context.consult) {
+    if (!context.discussion && !context.discussionSummary && !context.simplifyMeta) {
       this.scheduleMentionReplies(
         agent,
         text,
@@ -1649,15 +1181,10 @@ class ChatRoom extends EventEmitter {
     return {
       ok: true,
       discussionSignal,
-      specialistSignal,
-      plannerStatus,
-      builderStatus,
       controlRequest,
       messageId: appended?.id || null,
       text,
       runId,
-      evidence: result.evidence || null,
-      evidencePersisted: result.evidencePersisted !== false,
       transport: "COMPLETED",
     };
   }
@@ -1676,136 +1203,11 @@ class ChatRoom extends EventEmitter {
     }
   }
 
-  // V1.5 직접 역할 호출(CONSULT) — 제안서 §7. 멘션은 Target이지 실행 승인이
-  // 아니므로(INV-2) 읽기 전용 단일 응답만 만든다. Professional Run·Task·
-  // Freeze를 만들지 않고 전문 FSM도 시작하지 않는다 — recordDiscussion처럼
-  // 일반 턴으로 실행하고 역할 관점과 읽기 전용 계약만 프롬프트로 덧씌운다.
-  // (specialist stage 턴은 harness가 professionalRunId를 요구하므로 run 없는
-  // 상담을 stage 턴으로 보내면 fail-closed로 죽는다.)
-  isConsultActive() {
-    return this.consultActiveCount > 0;
-  }
-
-  // 상담 구간이 끝나면 그 사이 defer된 일반 턴을 다시 흘려보낸다.
-  // 토론·전문실행의 finally와 같은 정리다(가장 바깥 상담만 flush한다).
-  releaseConsultDeferred() {
-    if (this.consultActiveCount > 0) return;
-    if (this.deferredTurnQueue.length > 0) {
-      this.turnQueue.push(...this.deferredTurnQueue.splice(0));
-      this.emitTurnState();
-      this.pumpTurnQueue();
-    }
-  }
-
-  async consultRole({ roleId, stage, agent, agentConfig, roleLabel, attachments, nested = false }) {
-    if (this.discussionRequested || this.discussionActive) {
-      return { ok: false, error: "토론이 진행 중에는 역할을 호출할 수 없습니다." };
-    }
-    if (this.isSpecialistLocked()) {
-      return {
-        ok: false,
-        error: "전문 실행이 진행 중이거나 결정을 기다리고 있어 역할 상담을 시작할 수 없습니다.",
-      };
-    }
-    // 상담이 이미 진행 중이면 새 상담을 같은 큐에 끼워 넣지 않는다 — 팀 상담의
-    // step 사이에 다른 상담이 interleave되면 순차 계약이 깨진다. consultTeam이
-    // 자기 step으로 부르는 중첩 호출(nested)만 통과한다.
-    if (!nested && this.isConsultActive()) {
-      return { ok: false, error: "이미 역할·팀 상담이 진행 중입니다. 끝난 뒤 다시 요청해 주세요." };
-    }
-    const target = agent && agent.id ? this.findAgent(agent.id) : null;
-    if (!target || !target.available || target.enabled === false) {
-      return { ok: false, error: "이 역할의 담당 에이전트를 사용할 수 없습니다." };
-    }
-    const label = roleLabel || roleId;
-    this.consultActiveCount += 1;
-    try {
-      this.appendSystem(`@${target.id}가 ${label} 역할의 관점에서 답합니다. (읽기 전용 상담)`);
-      // Role Invocation도 Journal 대상이다 — FSM 전이만 감시하는 seam으로는
-      // 직접 역할 호출 중심의 전문모드를 감사할 수 없다.
-      this.recordJournalEvent?.({ type: "ROLE_STARTED", role: roleId, purpose: "consult" });
-      const outcome = await this.scheduleResponse(target, {
-        consult: { role: roleId, stage: stage || null, label },
-        agentConfig,
-        // 질문에 딸린 첨부는 상담 턴에도 전달한다 — 기록만 되고 정작 답하는
-        // 에이전트가 파일을 못 받는 공백을 막는다.
-        attachments: Array.isArray(attachments) ? attachments : [],
-      });
-      this.recordJournalEvent?.({
-        type: "ROLE_FINISHED",
-        role: roleId,
-        purpose: "consult",
-        status: !outcome ? "INTERRUPTED" : outcome.ok ? "DONE" : "FAILED",
-      });
-      if (!outcome) return { ok: false, cancelled: true };
-      return outcome.ok
-        ? { ok: true, messageId: outcome.messageId || null }
-        : { ok: false, error: outcome.error || "역할 상담 응답에 실패했습니다." };
-    } finally {
-      this.consultActiveCount -= 1;
-      this.releaseConsultDeferred();
-    }
-  }
-
-  // V1.5 팀 상담(제안서 §9.2) — Planner-first 제한 순차 상담. 역할을 병렬
-  // 또는 랜덤 호출하지 않고(INV-1, INV-4) 정해진 순서로 한 명씩 답한다.
-  // Professional Run을 만들지 않고, Task를 Freeze하지 않고, 쓰기 권한을 주지
-  // 않고, Recorder를 자동 호출하지 않는다.
-  async consultTeam(steps = []) {
-    if (this.discussionRequested || this.discussionActive) {
-      return { ok: false, error: "토론이 진행 중에는 팀 상담을 시작할 수 없습니다." };
-    }
-    if (this.isSpecialistLocked()) {
-      return {
-        ok: false,
-        error: "전문 실행이 진행 중이거나 결정을 기다리고 있어 팀 상담을 시작할 수 없습니다.",
-      };
-    }
-    if (!Array.isArray(steps) || steps.length === 0) {
-      return { ok: false, error: "팀 상담에 참여할 역할이 없습니다." };
-    }
-    if (this.isConsultActive()) {
-      return { ok: false, error: "이미 역할·팀 상담이 진행 중입니다. 끝난 뒤 다시 요청해 주세요." };
-    }
-    // 팀 상담 전체 구간을 상담 활성으로 표시한다. 이렇게 해야 step 사이의
-    // await 창에서 토론·전문실행이 끼어들어 순차 계약이 반쪽으로 무너지거나,
-    // 일반 메시지가 step들 사이에 실행되는 것을 막는다(중첩 consultRole은
-    // 카운터로 흡수된다).
-    this.consultActiveCount += 1;
-    try {
-      const order = steps.map((step) => step.roleLabel || step.roleId).join(" → ");
-      this.appendSystem(`팀 상담 시작 · ${order} 순서로 답합니다. (읽기 전용, 실행 없음)`);
-      const generation = this.generation;
-      for (const step of steps) {
-        if (generation !== this.generation) return { ok: false, cancelled: true };
-        const result = await this.consultRole({ ...step, nested: true });
-        if (!result.ok) {
-          // 중간 중단을 조용히 넘기지 않는다. IPC는 시작 확인 후 결과를 받지
-          // 않으므로(pending 반환), 남은 순서가 실행되지 않은 이유는 여기서
-          // 채팅에 남겨야 사용자에게 보인다. 사용자 중지(cancelled)는 중지
-          // 경로가 이미 자체 안내를 남기므로 제외한다.
-          if (!result.cancelled) {
-            this.appendSystem(
-              `팀 상담이 중간에 중단되었습니다: ${result.error || "역할 상담 응답에 실패했습니다."}`
-            );
-          }
-          return result;
-        }
-      }
-      if (generation !== this.generation) return { ok: false, cancelled: true };
-      this.appendSystem("팀 상담을 마쳤습니다. 실행이 필요하면 PLAN 또는 실행 버튼으로 시작해 주세요.");
-      return { ok: true };
-    } finally {
-      this.consultActiveCount -= 1;
-      this.releaseConsultDeferred();
-    }
-  }
-
   // 다른 AI가 보낸 특정 메시지를 선택한 에이전트에게 전달해 이어서 답하게 합니다.
   // intent: "REVIEW_OPINION"(검토 요청) 또는 "CONTINUE"(이어서 작업).
   handoffMessage(targetAgentId, messageId, intent = "CONTINUE") {
-    if (this.discussionRequested || this.discussionActive || this.isSpecialistLocked()) {
-      return { ok: false, error: "토론이나 전문 실행이 진행 중에는 전달할 수 없습니다." };
+    if (this.discussionRequested || this.discussionActive) {
+      return { ok: false, error: "토론이 진행 중에는 전달할 수 없습니다." };
     }
     const target = this.findAgent(targetAgentId);
     if (!target || !target.available || target.enabled === false) {
@@ -1879,8 +1281,8 @@ class ChatRoom extends EventEmitter {
 
   // 토론 결론 종합: 최근 사용자 질문부터 토론 종료까지의 발언을 대상 에이전트가 요약합니다.
   summarizeDiscussion(discussionId, agentId) {
-    if (this.discussionRequested || this.discussionActive || this.isSpecialistLocked()) {
-      return Promise.resolve({ ok: false, error: "토론이나 전문 실행이 진행 중에는 요약할 수 없습니다." });
+    if (this.discussionRequested || this.discussionActive) {
+      return Promise.resolve({ ok: false, error: "토론이 진행 중에는 요약할 수 없습니다." });
     }
     const agent = this.findAgent(agentId);
     if (!agent || !agent.available || agent.enabled === false) {
@@ -1948,11 +1350,8 @@ class ChatRoom extends EventEmitter {
     if (pool.length < 2) {
       return { ok: false, error: "토론에는 사용 가능한 에이전트가 두 명 이상 필요합니다." };
     }
-    if (this.discussionRequested || this.discussionActive || this.isSpecialistLocked()) {
+    if (this.discussionRequested || this.discussionActive) {
       return { ok: false, error: "이미 토론이 진행 중입니다." };
-    }
-    if (this.isConsultActive()) {
-      return { ok: false, error: "역할·팀 상담이 진행 중에는 토론을 시작할 수 없습니다." };
     }
 
     const requestedGeneration = this.generation;
@@ -2138,10 +1537,6 @@ class ChatRoom extends EventEmitter {
   }
 
   stopAll() {
-    if (this.specialistActive || this.specialistResume) {
-      const cancelled = this.cancelSpecialist("중지를 눌러 ");
-      if (cancelled.ok) return;
-    }
     const hadWork = this.cancels.size > 0 || this.typingCounts.size > 0
       || this.turnQueue.length > 0 || this.deferredTurnQueue.length > 0;
     this.stopAllSilently();
@@ -2149,7 +1544,6 @@ class ChatRoom extends EventEmitter {
   }
 
   clear() {
-    if (this.specialistActive || this.specialistResume) this.cancelSpecialist("세션을 비우며 ");
     this.stopAllSilently();
     this.messages = [];
     this.awaitingUsers.clear();
@@ -2205,7 +1599,3 @@ module.exports = {
   DISCUSSION_TURN_BUDGET_MAX,
   clampDiscussionTurnBudget,
 };
-
-
-installSpecialistMethods(ChatRoom);
-installDeterministicProfessionalRecorder(ChatRoom);

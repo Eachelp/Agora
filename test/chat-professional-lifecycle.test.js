@@ -58,110 +58,9 @@ function roomWith(run, spy, extra = {}) {
 
 // ---- Professional Run terminal boundary ----
 
-test("RECORDER_DONE(완료)은 run 종료를 정확히 한 번 알린다(invalid=false)", () => {
-  const spy = lifecycleSpy();
-  const room = roomWith({ professionalRunId: "pr-t1", node: "RECORDING", status: "WAITING", policy: {} }, spy);
-  const t = room.transitionProfessional({ type: "USER_RETRY_RECORDER" });
-  assert.equal(t.ok, true);
-  assert.deepEqual(spy.events, [], "RUNNING 재개는 boundary가 아니다");
-  const done = room.transitionProfessional({ type: "RECORDER_DONE" });
-  assert.equal(done.ok, true);
-  assert.deepEqual(spy.events, [
-    { kind: "professionalRunEnded", professionalRunId: "pr-t1", invalid: false },
-  ]);
-});
-
-test("INTERRUPT는 run 종료를 알리고, 반복 INTERRUPT는 재통지하지 않는다", () => {
-  const spy = lifecycleSpy();
-  const room = roomWith({ professionalRunId: "pr-t2", node: "IMPLEMENTING", status: "WAITING", policy: {} }, spy);
-  room.transitionProfessional({ type: "INTERRUPT", stopReason: "USER_INTERRUPTED" });
-  room.transitionProfessional({ type: "INTERRUPT", stopReason: "BLOCK_RESOLVED" });
-  assert.equal(spy.events.filter((e) => e.kind === "professionalRunEnded").length, 1);
-  assert.equal(spy.events[0].invalid, false);
-});
-
-test("INVALIDATE(FROZEN_TASK_CORRUPTED)는 invalid=true로 알린다", () => {
-  const spy = lifecycleSpy();
-  const room = roomWith({ professionalRunId: "pr-t3", node: "IMPLEMENTING", status: "WAITING", policy: {} }, spy);
-  room.transitionProfessional({ type: "INVALIDATE", stopReason: "FROZEN_TASK_CORRUPTED" });
-  assert.deepEqual(spy.events, [
-    { kind: "professionalRunEnded", professionalRunId: "pr-t3", invalid: true },
-  ]);
-});
-
-test("REPLAN_RESET은 기존 실행 lineage 폐기로서 run 종료를 알린다", () => {
-  const spy = lifecycleSpy();
-  const room = roomWith({ professionalRunId: "pr-t4", node: "IMPLEMENTING", status: "BLOCKED", policy: {} }, spy);
-  room.transitionProfessional({ type: "REPLAN_RESET", carriedFromRunId: "RUN-001" });
-  assert.deepEqual(spy.events, [
-    { kind: "professionalRunEnded", professionalRunId: "pr-t4", invalid: false },
-  ]);
-});
-
-test("비-terminal 전이(PLAN_READY/WAITING류)는 lifecycle을 부르지 않는다", () => {
-  const spy = lifecycleSpy();
-  const room = roomWith({ professionalRunId: "pr-t5", node: "PLANNING", status: "WAITING", policy: {} }, spy);
-  room.transitionProfessional({ type: "USER_ANSWER_PLAN" });
-  room.transitionProfessional({ type: "PLANNER_PLAN_READY", taskPath: "t.md" });
-  room.transitionProfessional({ type: "PLAN_REVIEW_UNKNOWN" });
-  assert.deepEqual(spy.events, []);
-});
-
-test("앱 재시작 rehydration(RUNNING→INTERRUPTED 정리)은 lifecycle 통지를 만들지 않는다(registry는 memory-only)", () => {
-  const spy = lifecycleSpy();
-  const persisted = [];
-  const room = roomWith(
-    { professionalRunId: "pr-t6", node: "IMPLEMENTING", status: "RUNNING", policy: {} },
-    spy,
-    { persistProfessionalRun: (run) => { persisted.push(run); return true; } }
-  );
-  assert.equal(room.professionalRun.status, "INTERRUPTED");
-  assert.deepEqual(spy.events, []);
-});
-
 // ---- checkpoint restore 소비 seam ----
 
-test("notifyWorkspaceRestoreOutcome: 성공/ambiguous 실패는 INVALIDATE, mutation-전 실패는 세션 유지", () => {
-  const spy = lifecycleSpy();
-  const room = roomWith(null, spy);
-  room.notifyWorkspaceRestoreOutcome({ ok: true });
-  assert.equal(spy.events.length, 1, "성공한 restore는 반드시 통지");
-  room.notifyWorkspaceRestoreOutcome({ ok: false, mutated: false });
-  assert.equal(spy.events.length, 1, "mutation 전 실패는 통지하지 않는다(세션 유지)");
-  room.notifyWorkspaceRestoreOutcome({ ok: false, mutated: true });
-  assert.equal(spy.events.length, 2, "partial/ambiguous 실패는 conservative 통지");
-  room.notifyWorkspaceRestoreOutcome({ ok: false });
-  assert.equal(spy.events.length, 3, "mutated fact가 없는 실패도 보수적으로 통지");
-  // hook 미주입이면 안전한 no-op이다.
-  const bare = new ChatRoom({ agents: makeAgents() });
-  bare.notifyWorkspaceRestoreOutcome({ ok: true });
-});
-
 // ---- respond → runAgent canonical Frozen provenance ----
-
-test("respond는 frozenTask(RUN-### + taskHash)를 runAgent에 전달한다(transport runId와 별개)", async () => {
-  const calls = [];
-  const room = new ChatRoom({
-    agents: makeAgents(),
-    runAgent: (args) => {
-      calls.push(args);
-      return { promise: Promise.resolve({ ok: true, text: "done" }), cancel: () => {} };
-    },
-  });
-  await room.respond(room.findAgent("claude"), {
-    specialist: {
-      stage: "implementation",
-      frozenTask: { runId: "RUN-003", taskHash: "hash-abc", taskId: "TASK-001", content: "..." },
-    },
-  });
-  assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0].frozenTask, { runId: "RUN-003", taskHash: "hash-abc" });
-  assert.match(String(calls[0].runId), /^r/, "transport runId는 여전히 별도 필드");
-
-  // 비전문/frozen 없음 → frozenTask는 null.
-  await room.respond(room.findAgent("claude"), {});
-  assert.equal(calls[1].frozenTask, null);
-});
 
 // ---- chat-ipc: workspace change / provider account seam ----
 
@@ -381,15 +280,6 @@ test("chatFeature.notifyProviderAccountChanged는 boundary seam이 없는 runtim
     () => feature.notifyProviderAccountChanged("claude"),
     /managed harness runtime seam이 없습니다/
   );
-});
-
-test("chat-ipc source: 전문 turn provenance는 canonical frozenTask + gitHead fact이며 transport runId가 아니다", () => {
-  const source = fs.readFileSync(path.join(__dirname, "..", "src", "chat", "chat-ipc.js"), "utf8");
-  assert.match(source, /require\("\.\.\/harness\/harness-session-lifecycle"\)/);
-  assert.match(source, /frozenRunId: specialistStage \? \(frozenTask\?\.runId \|\| null\) : null/);
-  assert.match(source, /taskHash: specialistStage \? \(frozenTask\?\.taskHash \|\| null\) : null/);
-  assert.match(source, /probeGitHead\(canonicalWorkspace\)/);
-  assert.doesNotMatch(source, /frozenRunId: specialistStage \? \(runId \|\| null\) : null/);
 });
 
 test("account-switching source: 모든 credential mutation 경로가 awaitable boundary 뒤에 있다", () => {

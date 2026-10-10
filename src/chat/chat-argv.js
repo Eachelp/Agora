@@ -11,17 +11,6 @@ const PERMISSION_RANK = Object.freeze({
   "workspace-read": 1,
   "workspace-write": 2,
 });
-const SPECIALIST_STAGE_CAPS = Object.freeze({
-  planner: "workspace-read",
-  plan_review: "workspace-read",
-  implementation: "workspace-write",
-  review: "workspace-read",
-  recorder: "chat",
-  // V1.5 — @기록자 Handoff/CONSULT의 실행 계약. 사람이 읽는 정리를 만드는
-  // LLM 호출이며 deterministic recorder finalizer와 다른 계약이다. 권한은
-  // recorder와 같은 chat 상한이다(파일 접근 불필요).
-  archivist: "chat",
-});
 const INLINE_TEXT_LIMIT = 16 * 1024;
 
 const SAFE_OPTION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,63}$/;
@@ -36,11 +25,6 @@ function minPermissionMode(...modes) {
   return values.reduce((lowest, mode) => (
     PERMISSION_RANK[mode] < PERMISSION_RANK[lowest] ? mode : lowest
   ), values[0]);
-}
-
-function specialistPermissionMode(stage, sessionPermission = "chat") {
-  if (!Object.prototype.hasOwnProperty.call(SPECIALIST_STAGE_CAPS, stage)) return null;
-  return minPermissionMode(sessionPermission, SPECIALIST_STAGE_CAPS[stage]);
 }
 
 function normalizeChoice(value) {
@@ -332,14 +316,12 @@ function buildAgentInvocation(input = {}) {
 module.exports = {
   PERMISSION_MODES,
   PERMISSION_RANK,
-  SPECIALIST_STAGE_CAPS,
   agyModelForEffort,
   INLINE_TEXT_LIMIT,
   buildAgentInvocation,
   assertSafeArgv,
   normalizeChoice,
   minPermissionMode,
-  specialistPermissionMode,
   agyEffortForModel,
   attachmentKind,
 };

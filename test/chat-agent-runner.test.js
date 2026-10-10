@@ -502,10 +502,11 @@ test("정상 종료인데 final 이벤트가 누락되면 중간 답변을 최�
   assert.equal(result.text, "부분1부분2");
 });
 
-test("전문 프롬프트는 final 이벤트가 누락되면 partial을 성공으로 승격하지 않는다", async () => {
+test("requireFinal이면 final 이벤트가 누락될 때 partial을 성공으로 승격하지 않는다", async () => {
   const script = "console.log(JSON.stringify({kind:'delta',text:'부분 구현'}))";
   const run = runNode(script, {
-    prompt: "=== 전문 모드: 구현 ===\n실행 계약",
+    prompt: "실행 계약",
+    requireFinal: true,
     parseLine: (line) => {
       try {
         return JSON.parse(line);
@@ -521,13 +522,14 @@ test("전문 프롬프트는 final 이벤트가 누락되면 partial을 성공�
   assert.equal(result.partialText, "부분 구현");
 });
 
-test("전문 프롬프트라도 명시적 final 이벤트가 있으면 정상 성공한다", async () => {
+test("requireFinal이라도 명시적 final 이벤트가 있으면 정상 성공한다", async () => {
   const script = [
     "console.log(JSON.stringify({kind:'delta',text:'부분'}))",
     "console.log(JSON.stringify({kind:'final',text:'완료'}))",
   ].join(";");
   const run = runNode(script, {
-    prompt: "=== 전문 모드: 검토 ===\n계약",
+    prompt: "계약",
+    requireFinal: true,
     parseLine: (line) => {
       try {
         return JSON.parse(line);

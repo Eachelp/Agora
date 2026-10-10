@@ -3,8 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { ChatRoom } = require("../src/chat/chat-room");
-const { stripControlOutput } = require("../src/agora/interaction-contract");
-const { createProfessionalRun } = require("../src/agora/professional-run");
+const { stripControlOutput } = require("../src/chat/control-output");
 
 function makeAgents() {
   return [
@@ -64,108 +63,8 @@ test("stripControlOutput: 꼬리 제어 블록만 표시 텍스트에서 제거�
   assert.equal(stripControlOutput(controlThenOpenFence), controlThenOpenFence);
 });
 
-test("전문 역할 턴의 제어 출력이 추출·기록되고 표시 텍스트에서 벗겨진다", async () => {
-  const calls = [];
-  const journal = [];
-  const room = new ChatRoom({
-    agents: makeAgents(),
-    runAgent: fakeRunner(
-      {
-        claude: [
-          {
-            ok: true,
-            text: [
-              "기획 초안입니다.",
-              "STATUS: PLAN_READY",
-              "",
-              "HANDOFF: @reviewer",
-              "PURPOSE: plan_review",
-              "REASON: 인증 경계 검증 필요",
-            ].join("\n"),
-          },
-        ],
-      },
-      calls
-    ),
-    appendProfessionalEvent: (event) => {
-      journal.push(event);
-      return true;
-    },
-  });
-  room.professionalRun = createProfessionalRun({
-    node: "PLANNING",
-    status: "RUNNING",
-    professionalRunId: "pr-test",
-  });
-
-  const outcome = await room.scheduleResponse(room.agents[0], {
-    specialist: { stage: "planner", controlOutputs: true },
-  });
-  await settle(room);
-
-  assert.equal(outcome.ok, true);
-  assert.deepEqual(outcome.controlRequest, {
-    action: "HANDOFF",
-    targetRole: "reviewer",
-    purpose: "plan_review",
-    reason: "인증 경계 검증 필요",
-    ambiguous: false,
-  });
-  // 표시 텍스트에는 제어 블록이 남지 않는다.
-  const message = room.messages.find((entry) => entry.authorType === "agent");
-  assert.ok(!/HANDOFF:/.test(message.text));
-  assert.match(message.text, /기획 초안입니다/);
-  // 기존 STATUS 마커 파싱은 그대로 동작한다.
-  assert.equal(outcome.plannerStatus, "PLAN_READY");
-  // 요청 사실이 Journal에 남는다(소비 여부와 무관 — 모델은 요청하고
-  // Runtime이 결정한다).
-  const requested = journal.find((event) => event.type === "HANDOFF_REQUESTED");
-  assert.ok(requested);
-  assert.equal(requested.role, "reviewer");
-  assert.equal(requested.purpose, "plan_review");
-  assert.equal(requested.professionalRunId, "pr-test");
-});
-
-test("소비자 없는 specialist 턴(step mode)에서는 제어를 추출·기록·strip하지 않는다", async () => {
-  const journal = [];
-  const room = new ChatRoom({
-    agents: makeAgents(),
-    runAgent: fakeRunner({
-      claude: [
-        {
-          ok: true,
-          text: ["기획 초안입니다.", "STATUS: PLAN_READY", "", "HANDOFF: @reviewer"].join("\n"),
-        },
-      ],
-    }),
-    appendProfessionalEvent: (event) => {
-      journal.push(event);
-      return true;
-    },
-  });
-  room.professionalRun = createProfessionalRun({
-    node: "PLANNING",
-    status: "RUNNING",
-    professionalRunId: "pr-step",
-  });
-
-  // controlOutputs 플래그가 없는 specialist 턴 — step mode처럼 소비자가
-  // 붙지 않은 경로다. 여기서 parse/strip하면 화면에서만 지워지고
-  // HANDOFF_REQUESTED만 남는 ghost 요청이 생긴다.
-  const outcome = await room.scheduleResponse(room.agents[0], {
-    specialist: { stage: "planner" },
-  });
-  await settle(room);
-
-  assert.equal(outcome.ok, true);
-  assert.equal(outcome.controlRequest, null);
-  const message = room.messages.find((entry) => entry.authorType === "agent");
-  assert.match(message.text, /HANDOFF: @reviewer/);
-  assert.equal(journal.some((event) => event.type === "HANDOFF_REQUESTED"), false);
-});
-
 test("parseControlOutput: 인라인 백틱 안 내용이 질문·요약·REASON 값에서 증발하지 않는다", () => {
-  const { parseControlOutput } = require("../src/agora/interaction-contract");
+  const { parseControlOutput } = require("../src/chat/control-output");
   // 제어 줄의 *범위*는 masked로 정하되 *값*은 원문에서 읽는다 — masked에서
   // 뽑으면 백틱 내용이 공백이 되고, 값 전체가 백틱이면 질문이 null이 되어
   // ASK_USER 재노출이 아예 발동하지 않았다.
@@ -189,67 +88,36 @@ test("parseControlOutput: 인라인 백틱 안 내용이 질문·요약·REASON 
   assert.equal(stripControlOutput("본문\nHANDOFF: `@reviewer`"), "본문\nHANDOFF: `@reviewer`");
 });
 
-test("모호한 제어(질문 2개)는 화면에서 strip하지 않아 질문이 사라지지 않는다", async () => {
-  const journal = [];
+test("모호한 질문(질문 2개)은 화면에서 strip하지 않아 질문이 사라지지 않는다", async () => {
   const room = new ChatRoom({
     agents: makeAgents(),
     runAgent: fakeRunner({
-      claude: [{ ok: true, text: "본문\nSTATUS: NEEDS_DECISION\n\nASK_USER: 질문1?\nASK_USER: 질문2?" }],
+      claude: [{ ok: true, text: "본문\n\nASK_USER: 질문1?\nASK_USER: 질문2?" }],
     }),
-    appendProfessionalEvent: (event) => {
-      journal.push(event);
-      return true;
-    },
   });
-  room.professionalRun = createProfessionalRun({ node: "PLANNING", status: "RUNNING", professionalRunId: "pr-amb" });
-  const outcome = await room.scheduleResponse(room.agents[0], {
-    specialist: { stage: "planner", controlOutputs: true },
-  });
+  room.sendUserMessage("@claude 알려줘");
   await settle(room);
-  assert.equal(outcome.controlRequest.ambiguous, true);
-  // 모호하면 소비 지점에서 거부되므로, strip해 버리면 두 질문이 모두 사라진다.
+  // strip해 버리면 두 질문이 모두 사라진다.
   const message = room.messages.find((entry) => entry.authorType === "agent");
   assert.match(message.text, /질문1\?/);
   assert.match(message.text, /질문2\?/);
+  // 어느 질문에 답해야 할지 모르므로 '답변 대기'로 세우지 않는다.
+  assert.equal(room.publicAgents().find((agent) => agent.id === "claude").awaitingUser, false);
 });
 
 test("일반 채팅 턴의 제어 마커는 추출되지 않는다", async () => {
   const calls = [];
-  const journal = [];
   const room = new ChatRoom({
     agents: makeAgents(),
     runAgent: fakeRunner(
       { claude: [{ ok: true, text: "답변입니다.\nHANDOFF: @reviewer" }] },
       calls
     ),
-    appendProfessionalEvent: (event) => {
-      journal.push(event);
-      return true;
-    },
   });
   room.sendUserMessage("@claude 알려줘");
   await settle(room);
 
-  // 전문 역할 턴이 아니면 제어 채널이 아니다 — 텍스트도 그대로 남는다.
+  // 일반 채팅 턴은 ASK_USER만 읽는다. HANDOFF 줄은 산문으로 그대로 남는다.
   const message = room.messages.find((entry) => entry.authorType === "agent");
   assert.match(message.text, /HANDOFF:/);
-  assert.equal(journal.some((event) => event.type === "HANDOFF_REQUESTED"), false);
-});
-
-test("professionalRun은 handoffState를 보존한다", () => {
-  const state = {
-    rootMessageId: "msg-1",
-    budget: 8,
-    used: 2,
-    consumedInvocationIds: ["inv-1", "inv-2"],
-    lastTargetRole: "reviewer",
-    activeInvocationId: null,
-  };
-  const run = createProfessionalRun({ handoffState: state });
-  assert.deepEqual(run.handoffState, state);
-  // rehydration(재생성)에서도 유지된다.
-  const rehydrated = createProfessionalRun(run);
-  assert.deepEqual(rehydrated.handoffState, state);
-  // 기본값은 null이다.
-  assert.equal(createProfessionalRun({}).handoffState, null);
 });

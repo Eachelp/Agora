@@ -24,7 +24,6 @@ const {
   settleHandoff,
   parseControlOutput,
 } = require("../src/agora/interaction-contract");
-const { SPECIALIST_STAGE_CAPS } = require("../src/chat/chat-argv");
 
 test("normalizeInteraction: metadata 없는 입력은 CONSULT/SINGLE/NONE 기본값", () => {
   assert.deepEqual(normalizeInteraction(), {
@@ -108,8 +107,6 @@ test("@recorder의 실행 계약은 deterministic finalizer가 아니라 archivi
   // 맡은 AI" 대신 finalizer가 불린다 — 계약 어휘에서부터 갈라 둔다.
   assert.equal(executionContractFor("recorder"), "archivist");
   assert.notEqual(executionContractFor("recorder"), "recorder");
-  // archivist 계약의 권한 상한은 recorder와 같은 chat이다.
-  assert.equal(SPECIALIST_STAGE_CAPS.archivist, "chat");
 });
 
 test("handoff ledger는 직렬화-복원 roundtrip으로 같은 판정을 유지한다", () => {

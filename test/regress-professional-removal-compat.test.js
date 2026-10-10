@@ -141,8 +141,8 @@ for (const [shape, legacy] of Object.entries(LEGACY_SHAPES)) {
 
     const selected = await feature.invoke("chat:sessions:select", { sessionId });
     assert.equal(selected.ok, true);
-    assert.equal(selected.session.specialist.node, null);
-    assert.equal(selected.session.specialist.active, false);
+    // 전문 실행 상태는 더 이상 화면으로 나가지 않는다 — 옛 실행이 대화를 잠그지 못한다.
+    assert.equal(selected.session.specialist, undefined);
 
     const sent = await feature.invoke("chat:send", { sessionId, text: "@claude 안녕" });
     assert.equal(sent.ok, true, sent.error);
@@ -189,7 +189,7 @@ for (const text of [
     assert.equal(calls.length, 0, "에이전트를 부르면 안 됩니다");
     const after = await feature.invoke("chat:state");
     assert.equal(after.session.messages.length, messagesBefore, "메시지도 시스템 안내도 저장하지 않는다");
-    assert.equal(after.session.specialist.active, false, "전문 실행을 시작하지 않는다");
+    assert.equal(after.session.specialist, undefined, "전문 실행 상태를 만들지 않는다");
     const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
     assert.deepEqual(meta.professionalRun, LEGACY_SHAPES.BLOCKED.professionalRun);
 

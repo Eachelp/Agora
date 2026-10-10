@@ -74,21 +74,3 @@ test("일반 프롬프트는 긴 대화를 고정 배경/압축 기록/최근 �
   assert.doesNotMatch(prompt, /\[User\] 메시지 39\n/);
   assert.match(prompt, /\[User\] 메시지 49/);
 });
-
-test("전문 실행 프롬프트에는 일반 대화 Summary Window 마커를 넣지 않는다", () => {
-  const messages = Array.from({ length: 50 }, (_, index) => ({
-    author: "user",
-    authorType: "user",
-    text: `메시지 ${index}`,
-  }));
-  const prompt = buildAgentPrompt({
-    agent: AGENTS[1],
-    agents: AGENTS,
-    messages,
-    specialist: { stage: "review", round: 1, maxRounds: 1 },
-  });
-
-  assert.doesNotMatch(prompt, /대화 고정 배경/);
-  assert.doesNotMatch(prompt, /이전 대화 압축 기록/);
-  assert.doesNotMatch(prompt, /최근 대화/);
-});

@@ -3,10 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const os = require("node:os");
-const {
-  runAgentProcess,
-  inferRequireFinalFromPrompt,
-} = require("../src/chat/chat-agent-runner");
+const { runAgentProcess } = require("../src/chat/chat-agent-runner");
 
 const NODE = process.execPath;
 
@@ -23,39 +20,22 @@ function deltaOnly(prompt, options = {}) {
   });
 }
 
-test("일반 대화 본문에 전문 모드 문자열이 있어도 strict-final로 오탐하지 않는다", async () => {
-  const prompt = [
-    "일반 채팅 헤더",
-    "=== 대화 ===",
-    "[User] 예시 문자열: === 전문 모드: 구현 ===",
-    "=== 대화 끝 ===",
-  ].join("\n");
-
-  assert.equal(inferRequireFinalFromPrompt(prompt), false);
+// 프롬프트 문구로 strict-final을 추론하지 않는다. 옛 전문 모드 표식이 들어 있어도 같다.
+test("프롬프트에 옛 전문 모드 표식이 있어도 requireFinal을 추론하지 않는다", async () => {
+  const prompt = "=== 전문 모드: 구현 ===\n실행 계약\n=== 대화 ===\n[User] 구현해 주세요";
   const result = await deltaOnly(prompt).promise;
   assert.equal(result.ok, true);
   assert.equal(result.text, "부분 응답");
 });
 
-test("Agora 전문 블록이 대화 본문보다 앞에 있으면 fallback strict-final을 유지한다", async () => {
-  const prompt = [
-    "전문 실행 헤더",
-    "=== 전문 모드: 구현 ===",
-    "실행 계약",
-    "=== 대화 ===",
-    "[User] 구현해 주세요",
-    "=== 대화 끝 ===",
-  ].join("\n");
-
-  assert.equal(inferRequireFinalFromPrompt(prompt), true);
-  const result = await deltaOnly(prompt).promise;
+test("명시적 requireFinal=true는 final이 없으면 delta를 완료로 승격하지 않는다", async () => {
+  const result = await deltaOnly("안녕", { requireFinal: true }).promise;
   assert.equal(result.ok, false);
   assert.equal(result.stopReason, "PROTOCOL_FINAL_MISSING");
 });
 
-test("명시적 requireFinal=false는 fallback 추론보다 우선한다", async () => {
-  const prompt = "=== 전문 모드: 구현 ===\n실행 계약";
-  const result = await deltaOnly(prompt, { requireFinal: false }).promise;
+test("명시적 requireFinal=false는 delta를 결과로 쓴다", async () => {
+  const result = await deltaOnly("안녕", { requireFinal: false }).promise;
   assert.equal(result.ok, true);
   assert.equal(result.text, "부분 응답");
 });

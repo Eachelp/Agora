@@ -28,7 +28,6 @@ test("IPC 실행 경계는 runner의 runMetrics를 세션 metrics 파일로 저�
       sessionId: "session-1",
       runId: "run-1",
       agent: { id: "claude", model: "claude-model", effort: "high" },
-      specialistStage: "implementation",
       result: {
         runMetrics: {
           startedAt: 100,
@@ -63,7 +62,7 @@ test("IPC 실행 경계는 runner의 runMetrics를 세션 metrics 파일로 저�
     assert.equal(metrics.provider, "claude");
     assert.equal(metrics.model, "claude-model");
     assert.equal(metrics.effort, "high");
-    assert.equal(metrics.stage, "implementation");
+    assert.equal(metrics.stage, null);
     assert.equal(metrics.durationMs, 300);
     assert.equal(metrics.commands.total, 2);
     assert.equal(metrics.tools.started, 5);
@@ -81,13 +80,4 @@ test("metrics 저장 실패는 실행 결과를 던지지 않고 false로만 보
     result: { runMetrics: { ok: true } },
   });
   assert.equal(persisted, false);
-});
-
-test("실제 IPC runner 연결은 전문 단계 여부를 strict-final 계약으로 명시 전달한다", () => {
-  const source = fs.readFileSync(
-    path.join(__dirname, "..", "src", "chat", "chat-ipc.js"),
-    "utf8"
-  );
-  assert.match(source, /requireFinal:\s*Boolean\(specialistStage\)/);
-  assert.match(source, /const metricsPersisted = persistInvocationMetrics\(/);
 });

@@ -43,22 +43,6 @@ const DEFAULT_SILENCE_WARNING_MS = 5 * 60 * 1000;
 // 위 간격보다 촘촘하게 확인해, 경고가 실제 무음 시각에서 너무 늦게 뜨지 않게 합니다.
 const SILENCE_CHECK_INTERVAL_MS = 30 * 1000;
 
-// ChatRoom이 생성하는 전문 실행 프롬프트의 고정 내부 마커입니다.
-// HarnessAdapter가 도입되기 전까지 runner가 전문 실행 strict-final 여부를 구분하는 데만 씁니다.
-const PROFESSIONAL_PROMPT_MARKER = "=== 전문 모드:";
-
-// fallback 마커 감지는 Agora가 프롬프트 헤더에 넣은 전문 블록만 인정합니다.
-// 일반 채팅에서 사용자가 같은 문자열을 입력하면 그 텍스트는 `=== 대화 ===` 뒤에
-// 놓이므로 strict-final을 켜지 않습니다. 명시적인 requireFinal 값이 있으면 이
-// 추론보다 항상 우선합니다.
-function inferRequireFinalFromPrompt(prompt) {
-  const text = String(prompt || "");
-  const markerIndex = text.indexOf(PROFESSIONAL_PROMPT_MARKER);
-  if (markerIndex < 0) return false;
-  const dialogueIndex = text.indexOf("=== 대화 ===");
-  return dialogueIndex < 0 || markerIndex < dialogueIndex;
-}
-
 // tail buffer가 유지하는 머리 부분 비율. 초반 지시/헤더와 최신 출력이 모두
 // 진단에 필요하므로 양쪽을 남기고 중간만 버립니다.
 const CAPTURE_HEAD_RATIO = 0.25;
@@ -194,7 +178,7 @@ function killTree(child, platform = process.platform) {
 // - argv는 chat-argv가 만든 검증된 배열이며, 프롬프트는 provider transport에 따라 stdin/argv로 전달합니다.
 // - parseLine이 있으면 stdout을 줄 단위로 정규화 이벤트로 바꿔 onEvent로 알립니다.
 // - 최종 답변 우선순위: outputFile(codex -o) → parser의 final → stdout 원문.
-// - 전문 실행은 명시적인 final이 없으면 delta-only 출력을 성공으로 승격하지 않습니다.
+// - requireFinal이면 명시적인 final이 없을 때 delta-only 출력을 성공으로 승격하지 않습니다.
 function runAgentProcess({
   commandPath,
   needsShell = false,
@@ -213,9 +197,9 @@ function runAgentProcess({
   silenceWarningMs = DEFAULT_SILENCE_WARNING_MS,
   requireFinal = null,
 }) {
-  const strictFinal = requireFinal == null
-    ? inferRequireFinalFromPrompt(prompt)
-    : Boolean(requireFinal);
+  // 호출자가 명시한 경우에만 구조화된 final을 요구한다. 일반 채팅은 CLI 버전
+  // 호환을 위해 중간 출력을 최종 결과로 승격하는 fallback을 쓴다.
+  const strictFinal = Boolean(requireFinal);
   const runStartedAt = Date.now();
   let child = null;
   let settled = false;
@@ -657,7 +641,7 @@ function runAgentProcess({
         return;
       }
 
-      // 전문 실행은 구조화된 final이 없으면 중간 delta를 완료 결과로 승격하지 않습니다.
+      // requireFinal이면 구조화된 final이 없을 때 중간 delta를 완료 결과로 승격하지 않습니다.
       // 일반 채팅은 CLI 버전 호환을 위해 기존 fallback 동작을 유지합니다.
       if (strictFinal && parseLine) {
         const partial = deltaText.trim();
@@ -715,11 +699,9 @@ module.exports = {
   quoteArgForShell,
   compactArgvPrompt,
   createTailBuffer,
-  inferRequireFinalFromPrompt,
   DEFAULT_TIMEOUT_MS,
   DEFAULT_CAPTURE_OUTPUT_BYTES,
   DEFAULT_HARD_OUTPUT_LIMIT_BYTES,
   DEFAULT_SILENCE_WARNING_MS,
   MAX_ARGV_PROMPT_CHARS,
-  PROFESSIONAL_PROMPT_MARKER,
 };
