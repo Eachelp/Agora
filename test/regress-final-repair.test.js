@@ -387,11 +387,11 @@ function loadRenderer({ sessions, project = {}, tasks = [] }) {
   };
   context.window.document = document;
   vm.createContext(context);
-  for (const file of ["src/chat-markdown.js", "src/usage-view.js", "src/awaiting-view.js"]) {
+  for (const file of ["src/chat-markdown.js", "src/usage-view.js", "src/awaiting-view.js", "src/question-card.js"]) {
     vm.runInContext(read(file), context, { filename: file });
   }
   Object.assign(context, {
-    chatMarkdown: context.window.chatMarkdown, usageView: context.window.usageView, awaitingView: context.window.awaitingView,
+    chatMarkdown: context.window.chatMarkdown, usageView: context.window.usageView, awaitingView: context.window.awaitingView, questionCard: context.window.questionCard,
   });
   const run = (code) => vm.runInContext(code, context, { filename: "src/chat.js" });
   run(read("src/chat.js"));

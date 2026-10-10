@@ -225,13 +225,13 @@ function loadRenderer(state, readResult) {
   };
   context.window.document = document;
   vm.createContext(context);
-  for (const file of ["src/chat-markdown.js", "src/usage-view.js", "src/awaiting-view.js"]) {
+  for (const file of ["src/chat-markdown.js", "src/usage-view.js", "src/awaiting-view.js", "src/question-card.js"]) {
     vm.runInContext(read(file), context, { filename: file });
   }
   Object.assign(context, {
     chatMarkdown: context.window.chatMarkdown,
     usageView: context.window.usageView,
-    awaitingView: context.window.awaitingView,
+    awaitingView: context.window.awaitingView, questionCard: context.window.questionCard,
   });
   vm.runInContext(read("src/chat.js"), context, { filename: "src/chat.js" });
   return { elements, calls };

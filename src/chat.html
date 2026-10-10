@@ -163,6 +163,8 @@
           <!-- 되질문으로 턴을 끝내 사용자 답을 기다리는 에이전트. 동시 실행 중에도
                누가 나를 기다리는지 여기에 모아 보여, 스크롤에 묻히지 않게 한다. -->
           <div class="awaiting-row" id="awaiting-row" hidden aria-live="polite"></div>
+          <!-- 에이전트가 일하는 도중 던진 질문 카드. 답(보내기)이나 건너뛰기를 하면 같은 작업이 이어진다. -->
+          <div class="question-row" id="question-row" hidden aria-live="polite"></div>
           <div class="attachment-row" id="attachment-row" hidden></div>
           <div class="response-mode-bar" id="response-mode-bar">
             <span class="response-mode-label" id="response-mode-label">@all 응답 방식</span>
@@ -242,6 +244,7 @@
     <script src="./chat-markdown.js"></script>
     <script src="./usage-view.js"></script>
     <script src="./awaiting-view.js"></script>
+    <script src="./question-card.js"></script>
     <script src="./chat.js"></script>
   </body>
 </html>

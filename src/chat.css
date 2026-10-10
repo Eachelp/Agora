@@ -945,6 +945,167 @@ textarea:focus-visible {
   cursor: default;
 }
 
+/* --- 실행 중 질문 카드 (에이전트가 일하다 던진 질문) --- */
+/* 카드가 여러 장이어도 입력창을 밀어내지 않도록 이 영역만 스크롤한다. */
+.question-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: min(50vh, 460px);
+  overflow-y: auto;
+  margin-bottom: 8px;
+}
+
+.question-row[hidden] {
+  display: none;
+}
+
+.question-card {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--accent);
+  background: var(--accent-soft);
+  border-radius: 12px;
+}
+
+.question-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.question-who {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--accent-strong);
+  white-space: nowrap;
+}
+
+.question-hint {
+  font-size: 11.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.question-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  min-width: 0;
+}
+
+.question-text {
+  padding: 0;
+  margin-bottom: 5px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.question-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 3px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.question-option:hover {
+  background: var(--surface);
+  border-color: var(--line);
+}
+
+.question-option input {
+  flex: none;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.question-other {
+  width: 100%;
+  box-sizing: border-box;
+  height: var(--control-h-sm);
+  padding: 0 9px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.question-other::placeholder {
+  color: var(--muted);
+}
+
+.question-other:focus-visible,
+.question-option input:focus-visible,
+.question-send:focus-visible,
+.question-skip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.question-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.question-error {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--danger-ink);
+}
+
+.question-skip {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.question-skip:hover:not(:disabled) {
+  color: var(--ink);
+}
+
+.question-send {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  border-radius: 8px;
+  padding: 4px 14px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.question-send:disabled,
+.question-skip:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 /* --- 입력창 --- */
 .composer {
   background: var(--surface);
@@ -960,6 +1121,7 @@ textarea:focus-visible {
 /* 입력창 위에 붙는 줄들(답변 대기 · 첨부 · 응답 방식 · 확인 항목)은 입력창과 같은
    폭으로 가운데 선다. 예전에는 760px·전체 폭이 섞여 왼쪽 끝선이 줄마다 달랐다. */
 .awaiting-row,
+.question-row,
 .attachment-row,
 .response-mode-bar {
   width: 100%;

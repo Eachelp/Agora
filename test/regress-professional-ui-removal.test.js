@@ -114,14 +114,14 @@ function loadRenderer({ state }) {
   };
   context.window.document = document;
   vm.createContext(context);
-  for (const file of ["src/chat-markdown.js", "src/usage-view.js", "src/awaiting-view.js"]) {
+  for (const file of ["src/chat-markdown.js", "src/usage-view.js", "src/awaiting-view.js", "src/question-card.js"]) {
     vm.runInContext(read(file), context, { filename: file });
   }
   // 브라우저에서는 window가 전역이라 이 세 모듈이 그대로 전역 이름이 된다.
   Object.assign(context, {
     chatMarkdown: context.window.chatMarkdown,
     usageView: context.window.usageView,
-    awaitingView: context.window.awaitingView,
+    awaitingView: context.window.awaitingView, questionCard: context.window.questionCard,
   });
   return { context, elements, missing, calls, subscribers, errors, run: (code) => vm.runInContext(code, context, { filename: "src/chat.js" }) };
 }

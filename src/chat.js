@@ -1,8 +1,9 @@
-/* global chatMarkdown, usageView, awaitingView */
+/* global chatMarkdown, usageView, awaitingView, questionCard */
 const chatScroll = document.getElementById("chat-scroll");
 const messageList = document.getElementById("message-list");
 const typingRow = document.getElementById("typing-row");
 const awaitingRow = document.getElementById("awaiting-row");
+const questionRow = document.getElementById("question-row");
 // 설정 '답변 대기 표시'. 끄면 대기 바와 참가자 칩의 대기 점을 그리지 않는다.
 // 대기 상태 자체는 방(main)이 계속 갖고 있어 다시 켜면 그대로 보인다.
 let showAwaiting = true;
@@ -101,6 +102,19 @@ let chatMessages = [];
 let pendingAttachments = [];
 const approvalQueue = [];
 let activeApproval = null;
+// 실행 중 질문 카드(question-card.js). 지금 보는 방의 답 기다리는 질문만 입력창 위에 뜬다.
+// 보내기·건너뛰기는 같은 실행으로 돌아가고, 처리되면 방이 알려 주는 대로 카드가 사라진다.
+const questionCards = questionCard.createQuestionCards({
+  container: questionRow,
+  document,
+  makeAgentAvatar,
+  agentById,
+  getSessionId: () => activeSessionId,
+  answer: (question, answers) => window.chatApi.questionAnswer(question.sessionId, question.questionId, answers),
+  skip: (question) => window.chatApi.questionCancel(question.sessionId, question.questionId),
+  // 답을 기다리는 질문이 생기거나 사라지면 중지·잠깐 버튼 표시를 다시 맞춘다.
+  onChange: () => renderBusyControls(),
+});
 const typingAgents = new Set();
 let roomTurnState = { current: null, running: [], queue: [], deferred: [] };
 const liveRuns = new Map(); // runId → { item, textEl, statusEl, text }
@@ -3711,7 +3725,9 @@ function roomIsBusy() {
     || (turns.queue || []).length > 0
     || (turns.deferred || []).length > 0
     || approvalQueue.some((approval) => approval.sessionId === activeSessionId)
-    || Boolean(activeApproval && activeApproval.sessionId === activeSessionId);
+    || Boolean(activeApproval && activeApproval.sessionId === activeSessionId)
+    // 질문 카드가 떠 있으면 방은 답을 기다리며 일하는 중이다. 중지·잠깐 버튼이 사라지면 안 된다.
+    || questionCards.hasPending();
 }
 
 // 중지·잠깐 버튼과 대기 중인 발언 목록(각각 ×로 그 턴만 취소).
@@ -4111,6 +4127,8 @@ function applyFullState(full) {
     pendingAttachments = full.session.pendingAttachments || [];
     // 창이 닫혀 있던 사이 온 승인 요청도 여기서 되살아난다(이미 아는 요청은 건너뛴다).
     for (const approval of full.session.pendingApprovals || []) addApproval(approval);
+    // 답을 기다리던 질문도 같은 방식으로 되살아난다(처리된 기록은 카드가 아니라 대화에 한 줄로 남아 있다).
+    questionCards.replaceAll(full.session.userQuestions || []);
     renderAllMessages(full.session.messages);
     showPendingNotices();
     scrollToBottom(true);
@@ -4167,8 +4185,14 @@ window.chatApi.onTurnState(({ sessionId, ...state }) => {
   renderHeader();
   renderBusyControls();
 });
+window.chatApi.onUserQuestion?.(({ sessionId, question }) => {
+  if (sessionId !== activeSessionId) return;
+  questionCards.apply(question);
+});
 window.chatApi.onReset(({ sessionId }) => {
   if (sessionId !== activeSessionId) return;
+  // 방을 비우면 방이 질문 기록도 지운다(알림은 reset 하나뿐이다).
+  questionCards.replaceAll([]);
   renderAllMessages([]);
   chatMessages = [];
   typingAgents.clear();
@@ -4219,6 +4243,8 @@ window.chatApi.onSessionsChanged((payload) => {
     renderHeader();
   }
   // 방이 바뀌었으면 새 방의 대기 승인을 올린다(이전 방 카드는 switchActiveSession이 내렸다).
+  // 질문 카드는 지금 방 것만 그린다(새 방의 질문은 곧 오는 상태 스냅숏이 채운다).
+  questionCards.render();
   showNextApproval();
   syncComposerLock();
 });
