@@ -63,6 +63,7 @@ class ClaudeAccountSwitcher {
   // 이 PC에서 로그아웃한다. 라이브 자격 증명(파일/Keychain)을 지우고, 저장된
   // 현재 프로필도 함께 지운다. 다른 기기의 로그인 세션은 건드리지 않는다.
   // (라이브 자격 증명은 이 PC의 로컬 복사본일 뿐이다.)
+  // 지우지 못하면 clear가 던진다. 아직 로그인 상태인데 프로필만 사라지지 않게 거기서 멈춘다.
   logout() {
     const live = typeof this.liveStore.clear === "function" ? this.liveStore.clear() : false;
     const removed = this.store.removeActive();
@@ -70,9 +71,17 @@ class ClaudeAccountSwitcher {
   }
 
   // 반납용: 라이브 자격 증명 + 이 PC의 모든 저장 프로필을 지운다.
+  // 라이브 삭제가 실패해도 프로필은 계속 지우고, 끝에서 실패를 알린다.
   wipeAll() {
-    const live = typeof this.liveStore.clear === "function" ? this.liveStore.clear() : false;
+    let live = false;
+    let failure = null;
+    try {
+      live = typeof this.liveStore.clear === "function" ? this.liveStore.clear() : false;
+    } catch (error) {
+      failure = error;
+    }
     const removed = this.store.clearAll();
+    if (failure) throw failure;
     return { live, removedProfiles: removed };
   }
 

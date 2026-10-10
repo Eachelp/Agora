@@ -48,31 +48,34 @@ class AntigravityAccountSwitcher {
 
   // 이 PC에서 로그아웃한다. OS 자격 저장소의 인증(clear)과 로컬 계정 파일을 지우고,
   // 저장된 현재 프로필도 지운다. 다른 기기 로그인은 건드리지 않는다.
+  // 저장소에 인증이 없을 때 clear는 정상 종료한다. 던졌다면 진짜 실패이므로 그대로 알리고,
+  // 아직 로그인 상태인데 프로필만 사라지지 않게 거기서 멈춘다.
   async logout() {
-    let live = false;
     try {
       await this.clear();
-      live = true;
-    } catch {
-      // 저장소에 인증이 없으면 이미 로그아웃 상태다.
+    } catch (error) {
+      throw new Error(`AGY 로그인 정보를 지우지 못했습니다: ${error?.message || error}`);
     }
     this.forgetAccountFile();
     const removed = this.store.removeActive();
-    return { live, removedProfile: Boolean(removed) };
+    return { live: true, removedProfile: Boolean(removed) };
   }
 
   // 반납용: 라이브 인증 + 계정 파일 + 이 PC의 모든 저장 프로필을 지운다.
+  // 라이브 삭제가 실패해도 나머지는 계속 지우고, 끝에서 실패를 알린다.
   async wipeAll() {
-    let live = false;
+    let failure = null;
     try {
       await this.clear();
-      live = true;
-    } catch {
-      // 없으면 이미 로그아웃 상태.
+    } catch (error) {
+      failure = error;
     }
     this.forgetAccountFile();
     const removed = this.store.clearAll();
-    return { live, removedProfiles: removed };
+    if (failure) {
+      throw new Error(`AGY 로그인 정보를 지우지 못했습니다: ${failure?.message || failure}`);
+    }
+    return { live: true, removedProfiles: removed };
   }
 
   // ~/.gemini/google_accounts.json(로컬 계정 캐시)을 지운다. 없으면 조용히 넘어간다.

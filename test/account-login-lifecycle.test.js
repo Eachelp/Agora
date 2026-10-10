@@ -973,10 +973,10 @@ test("이 PC 전체 지우기는 세 CLI 라이브 인증을 모두 지우고, p
   const { switching, notifications, completes, home } = makeInAppSwitching(t, { cliLogin: runner });
   const claudeLive = seedClaudeLive(home);
   const codexLive = seedCodexLive(home);
+  // agy clear는 실제 OS 자격 저장소를 건드리므로 막아 둔다(삭제 실패는 이제 failures로 보고된다).
+  switching.antigravityAccountSwitcher.clear = async () => {};
 
   const { failures } = await switching.wipeAllAccounts();
-  // agy는 이 테스트 환경에 OS 자격 저장소가 없어 clear가 조용히 넘어갈 수 있다 —
-  // 그래도 wipeAll 자체는 실패가 아니다.
   assert.equal(fs.existsSync(claudeLive), false, "Claude 라이브 인증이 지워졌다");
   assert.equal(fs.existsSync(codexLive), false, "Codex 라이브 인증이 지워졌다");
   assert.deepEqual(notifications, ["claude", "codex", "agy"], "provider마다 경계를 세운다");
@@ -991,6 +991,7 @@ test("이 PC 전체 지우기는 한 provider가 실패해도 나머지를 계�
   const codexLive = seedCodexLive(home);
   // Codex wipeAll이 던지게 만든다.
   switching.codexAccountSwitcher.wipeAll = () => { throw new Error("codex 정리 실패"); };
+  switching.antigravityAccountSwitcher.clear = async () => {};
 
   const { failures } = await switching.wipeAllAccounts();
   assert.equal(fs.existsSync(claudeLive), false, "실패한 provider가 있어도 Claude는 지운다");

@@ -24,14 +24,15 @@ function createClaudeFileStore(home = os.homedir()) {
     write(secret) {
       atomicWrite(file, secret);
     },
-    // 이 PC에서 로그아웃 = 라이브 자격 증명 파일을 지운다. 없으면 조용히 넘어간다.
+    // 이 PC에서 로그아웃 = 라이브 자격 증명 파일을 지운다. 없으면 조용히 넘어가고,
+    // 지우지 못하면(잠김·권한) 성공으로 보이지 않게 던진다.
     clear() {
       try {
         fs.rmSync(file, { force: true });
-        return true;
-      } catch {
-        return false;
+      } catch (error) {
+        throw new Error(`Claude 로그인 파일을 지우지 못했습니다: ${error.message}`);
       }
+      return true;
     },
   };
 }
@@ -108,7 +109,8 @@ function createClaudeKeychainStore() {
         throw new Error("Keychain에 저장된 Claude 자격 증명이 원문과 일치하지 않습니다.");
       }
     },
-    // 로그아웃 = Keychain 항목을 지운다. 항목이 없으면(status!=0) 이미 로그아웃 상태로 본다.
+    // 로그아웃 = Keychain 항목을 지운다. 항목이 없으면(status 44) 이미 로그아웃 상태로 보고,
+    // 그 밖의 실패(시간 초과·거부)는 성공으로 보이지 않게 던진다.
     clear() {
       cached = null;
       cachedAt = 0;
@@ -117,7 +119,13 @@ function createClaudeKeychainStore() {
         ["delete-generic-password", "-s", CLAUDE_KEYCHAIN_SERVICE],
         { encoding: "utf8", timeout: 10000 }
       );
-      return result.status === 0;
+      if (result.status === 0) return true;
+      if (result.status === 44) return false;
+      throw new Error(
+        `Claude 로그인 Keychain 항목을 지우지 못했습니다: ${
+          String(result.stderr || "").trim() || result.error?.message || `종료 코드 ${result.status}`
+        }`
+      );
     },
   };
 }
