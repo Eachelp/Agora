@@ -40,7 +40,7 @@ Stage D 불변식(INV-1~5, R-1~8 등)은 "전문 모드의 실행·검증·완�
 
 ## 6. 사용자 데이터
 
-이전 버전이 남긴 `~/.agora/sessions/*/checkpoints`, `professional-events.jsonl`, `<workspace>/.project-memory/`는 지우거나 다시 쓰지 않는다. 읽더라도 무시한다.
+이전 버전이 남긴 `~/.agora/sessions/*/checkpoints`, `professional-events.jsonl`, `<workspace>/.project-memory/`는 지우거나 다시 쓰지 않는다. 앱은 이 폴더를 해석하지 않으며, 예외로 `.project-memory/tasks/*.md`만 작업 카드 본문을 보여 주기 위해 읽기 전용으로 읽는다(아래 참고).
 
 세션 `meta.json`의 `professionalRun`·`pendingRecovery`는 **있는 그대로 보존하고 해석하지 않는다**. 대화를 저장할 때마다 meta.json은 통째로 다시 저장되므로 파일이 다시 쓰이지만, 이 두 필드의 값은 바뀌지 않은 채 함께 기록된다("다시 쓰지 않는다"가 아니라 "지우지도 바꾸지도 않는다").
 
