@@ -307,6 +307,7 @@ class ChatRoom extends EventEmitter {
       // 사이에 온 요청을 상태 스냅숏(pendingApprovalList)으로 다시 보여 줄 수 있다.
       this.pendingApprovals.set(approvalId, { resolve, payload });
       this.emit("approval-request", payload);
+      this.emit("approval-wait");
     });
   }
 
@@ -320,6 +321,7 @@ class ChatRoom extends EventEmitter {
     if (!entry) return false;
     this.pendingApprovals.delete(approvalId);
     entry.resolve(decision === "approve");
+    this.emit("approval-wait");
     return true;
   }
 
@@ -1439,7 +1441,10 @@ class ChatRoom extends EventEmitter {
       this.emit("approval-resolved", { approvalId });
       entry.resolve(false);
     }
-    this.pendingApprovals.clear();
+    if (this.pendingApprovals.size > 0) {
+      this.pendingApprovals.clear();
+      this.emit("approval-wait");
+    }
     for (const cancel of this.cancels) {
       try {
         cancel();

@@ -988,11 +988,16 @@ function roomMeta(meta) {
     room.on("agents", (agents) => broadcast("chat:agents", { sessionId, agents }));
     room.on("approval-request", (payload) => broadcast("chat:approval-request", { sessionId, ...payload }));
     room.on("approval-resolved", (payload) => broadcast("chat:approval-resolved", { sessionId, ...payload }));
-    room.on("busy", (busy) => {
+    // 승인 카드를 기다리는 방은 실행 중 턴이 없어도 일하는 중이다. 다른 방을 보고 있어도
+    // 사이드바에 표시가 남도록 상태를 함께 센다.
+    const syncRoomStatus = () => {
       if (shuttingDown) return;
-      store.setSessionStatus(sessionId, busy ? "running" : "idle");
+      const working = room.activeRuns > 0 || room.pendingApprovals.size > 0;
+      store.setSessionStatus(sessionId, working ? "running" : "idle");
       broadcast("chat:sessions-changed", sessionsPayload());
-    });
+    };
+    room.on("busy", syncRoomStatus);
+    room.on("approval-wait", syncRoomStatus);
 
     rooms.set(sessionId, room);
     return room;
