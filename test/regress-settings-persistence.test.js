@@ -93,7 +93,21 @@ test("F134: 같은 시각에 겹쳐 부른 조회는 한 번만 실행한다", a
 
 test("F134: 설정 저장(settings:save)은 글꼴 목록이 비었을 때 저장된 글꼴을 지우지 않는다", () => {
   const main = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf8");
-  assert.match(main, /Object\.hasOwn\(next, "fontFamily"\) && \(fonts\.length > 0 \|\| !next\.fontFamily\)/);
+  assert.match(
+    main,
+    /if \(Object\.hasOwn\(next, "fontFamily"\)\) \{\s*const fonts = await getInstalledFonts\(\);\s*if \(fonts\.length > 0 \|\| !next\.fontFamily\) \{/
+  );
+});
+
+test("F134: 설정 저장(settings:save)은 글꼴을 바꾸지 않는 저장에서는 글꼴 목록을 조회하지 않는다", () => {
+  const main = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf8");
+  const start = main.indexOf('ipcMain.handle("settings:save"');
+  const end = main.indexOf('ipcMain.handle("settings:account"');
+  assert.ok(start > 0 && end > start, "settings:save 핸들러를 찾는다");
+  const handler = main.slice(start, end);
+  // 조회는 핸들러 안에 한 번뿐이고, fontFamily가 들어 있는 분기 안에만 있다.
+  assert.equal(handler.split("getInstalledFonts()").length - 1, 1);
+  assert.ok(handler.indexOf('Object.hasOwn(next, "fontFamily")') < handler.indexOf("getInstalledFonts()"));
 });
 
 test("F133: 어떤 창이든 session-end가 오면 프록시 정리를 한다(before-quit이 없는 Windows 종료)", () => {

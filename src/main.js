@@ -294,12 +294,16 @@ function registerIpcHandlers() {
   }));
   ipcMain.handle("settings:save", async (_event, input) => {
     const next = input && typeof input === "object" ? input : {};
-    const fonts = await getInstalledFonts();
     const patch = {};
 
-    // 글꼴 목록 조회가 실패해 비었을 때는 목록으로 검증할 수 없으니 저장된 글꼴을 지우지 않는다.
-    if (Object.hasOwn(next, "fontFamily") && (fonts.length > 0 || !next.fontFamily)) {
-      patch.fontFamily = normalizeFontFamily(next.fontFamily, fonts);
+    // 글꼴 목록은 글꼴을 바꾼 저장에서만 조회한다 — 조회가 느리거나 계속 실패하는 PC에서 테마·자동 실행
+    // 저장이 그 시간만큼 기다리지 않게. 목록이 비었으면(조회 실패) 목록으로 검증할 수 없으니 저장된
+    // 글꼴을 지우지 않는다.
+    if (Object.hasOwn(next, "fontFamily")) {
+      const fonts = await getInstalledFonts();
+      if (fonts.length > 0 || !next.fontFamily) {
+        patch.fontFamily = normalizeFontFamily(next.fontFamily, fonts);
+      }
     }
     if (Object.hasOwn(next, "fontSize")) {
       patch.fontSize = normalizeFontSize(next.fontSize);
