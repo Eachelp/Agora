@@ -132,5 +132,7 @@ test("저장 실패 안내는 방마다 한 번만, 해당 방 sessionId와 함�
 
 test("렌더러는 sessionId가 붙은 시스템 안내를 그 방에서만 보여 준다", () => {
   const src = fs.readFileSync(path.join(__dirname, "..", "src", "chat.js"), "utf8");
-  assert.match(src, /onSystemNotice\(\(\{ text, sessionId \}\) => \{\s*if \(sessionId && sessionId !== activeSessionId\) return;/);
+  // 다른 방에는 그리지 않는다. 버리지 않고 pendingNotices에 두었다가 그 방이 열릴 때 보여 준다
+  // (동작은 regress-final-repair.test.js에서 확인한다).
+  assert.match(src, /onSystemNotice\(\(\{ text, sessionId \}\) => \{\s*if \(sessionId && sessionId !== activeSessionId\) \{[^}]*pendingNotices[^}]*return;\s*\}\s*appendMessage/);
 });

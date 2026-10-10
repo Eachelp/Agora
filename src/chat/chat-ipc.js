@@ -525,16 +525,19 @@ function createChatFeature(options) {
     if (typeof providerRecheckTimer.unref === "function") providerRecheckTimer.unref();
   }
 
+  // 창이 있어 실제로 보냈으면 true. 안내처럼 "받았는지"가 중요한 쪽이 이 값을 본다.
   function broadcast(channel, payload) {
     if (chatWindow && !chatWindow.isDestroyed()) {
       chatWindow.webContents.send(channel, payload);
+      return true;
     }
+    return false;
   }
 
   // Show account/proxy errors in the chat window when the pet is off.
   // sessionId가 있으면 그 방에서만 보인다(없으면 지금 열린 방).
   function showSystemNotice(text, sessionId) {
-    broadcast("chat:system-notice", sessionId ? { text, sessionId } : { text });
+    return broadcast("chat:system-notice", sessionId ? { text, sessionId } : { text });
   }
 
   // 저장 실패 안내는 방마다 한 번만 낸다. 다시 저장에 성공하면 다음 실패 때 또 알린다.
@@ -971,9 +974,10 @@ function roomMeta(meta) {
         saveFailureNoticed.delete(sessionId);
       } catch (error) {
         console.warn("[agora] 대화 기록 저장 실패:", error?.message || error);
+        // 받은 창이 없으면(닫힘·펫 모드) 알린 것으로 치지 않는다. 다음 실패 때 다시 알린다.
         if (!saveFailureNoticed.has(sessionId)) {
-          saveFailureNoticed.add(sessionId);
-          showSystemNotice(`대화 기록을 디스크에 저장하지 못했습니다. 방금 메시지는 다시 열면 보이지 않을 수 있습니다. (${error?.message || error})`, sessionId);
+          const delivered = showSystemNotice(`대화 기록을 디스크에 저장하지 못했습니다. 방금 메시지는 다시 열면 보이지 않을 수 있습니다. (${error?.message || error})`, sessionId);
+          if (delivered) saveFailureNoticed.add(sessionId);
         }
       }
       let claudeObservationChanged = false;

@@ -406,16 +406,27 @@ class ChatRoom extends EventEmitter {
     this.emit("turn-state", this.turnState());
   }
 
+  // 중지로 버려질 일반 대기 턴 수(토론 턴은 안내 대상이 아니다).
+  queuedGeneralTurnCount() {
+    return [...this.turnQueue, ...this.deferredTurnQueue].filter((item) => this.isGeneralTurn(item)).length;
+  }
+
+  droppedQuestionsNote(count) {
+    return count > 0 ? ` 대기 중이던 질문 ${count}개는 전달되지 않았으니 필요하면 다시 보내 주세요.` : "";
+  }
+
   // 사용자 개입("잠깐"): 현재 실행과 대기 턴을 모두 중지하고 발언권을
   // 사용자에게 돌려줍니다. 중지 직전에 도착한 응답이나 @멘션도 세대 가드로
   // 버리며, 다음 사용자 발화 전까지 에이전트발 호출을 만들지 않습니다.
   interject() {
     const dropped = this.turnQueue.length + this.deferredTurnQueue.length;
     const interrupted = dropped > 0 || this.currentTurn !== null || this.cancels.size > 0;
-    this.stopAllSilently();
+    const lost = this.queuedGeneralTurnCount();
+    // 대기 턴마다 따로 안내하지 않고, 아래 한 줄에 합친다.
+    this.stopAllSilently({ notifyLost: false });
     this.mentionsMuted = true;
     if (interrupted) {
-      this.appendSystem("사용자가 개입해 진행 중인 응답과 대기 턴을 중지했습니다. 다음 차례는 사용자입니다.");
+      this.appendSystem("사용자가 개입해 진행 중인 응답과 대기 턴을 중지했습니다. 다음 차례는 사용자입니다." + this.droppedQuestionsNote(lost));
     }
     this.emitTurnState();
     return { dropped, interrupted };
@@ -445,7 +456,8 @@ class ChatRoom extends EventEmitter {
       const index = queue.findIndex((item) => item.turnId === turnId);
       if (index < 0) continue;
       const [item] = queue.splice(index, 1);
-      this.retireTurn(item, undefined, { lost: true });
+      // 사용자가 일부러 지운 턴이다. "유실됐을 수 있다"는 안내를 붙이지 않는다.
+      this.retireTurn(item, undefined, { lost: false });
       this.emitTurnState();
       return true;
     }
@@ -667,7 +679,7 @@ class ChatRoom extends EventEmitter {
     const behind = this.queuedAgentsBehind(agent.id);
     const tail = behind.length > 0 ? ` 뒤에서 기다리는 턴: ${behind.map((id) => `@${id}`).join(", ")}.` : "";
     this.appendSystem(
-      `@${agent.id} 응답이 ${match[1]}분째 진전이 없습니다. 사용량 한도로 멈춰 있을 수 있습니다 — 중지(■)한 뒤 다시 보내거나 다른 담당자에게 보내 주세요.${tail}`
+      `@${agent.id} 응답이 ${match[1]}분째 진전이 없습니다. 사용량 한도로 멈춰 있을 수 있습니다 — 중지한 뒤 다시 보내거나 다른 담당자에게 보내 주세요.${tail}`
     );
   }
 
@@ -704,6 +716,12 @@ class ChatRoom extends EventEmitter {
     if (nextCount === 0) this.typingCounts.delete(agentId);
     else this.typingCounts.set(agentId, nextCount);
     this.emit("typing", { agentId, busy: nextCount > 0 });
+  }
+
+  // 화면의 실시간 초안 말풍선을 거둔다. 결과 메시지가 대신 오지 않는 끝(중지·취소·승인 재시도)에서
+  // 쓴다. 중지로 세대가 바뀐 뒤에도 가야 하므로 emitEvent의 세대 가드를 거치지 않는다.
+  discardLiveRun(runId, agent) {
+    this.emit("run-event", { runId, agentId: agent.id, kind: "run-discard" });
   }
 
   trackRunStart() {
@@ -822,7 +840,10 @@ class ChatRoom extends EventEmitter {
       try {
         if (typeof this.prepareAgent === "function") {
           await this.prepareAgent({ agent, runId });
-          if (generation !== this.generation) return;
+          if (generation !== this.generation) {
+            this.discardLiveRun(runId, agent);
+            return;
+          }
         }
         run = this.runAgent({
           agent,
@@ -848,7 +869,10 @@ class ChatRoom extends EventEmitter {
         this.setTyping(agent.id, false);
         this.trackRunEnd();
       }
-      if (generation !== this.generation || result?.cancelled) return;
+      if (generation !== this.generation || result?.cancelled) {
+        this.discardLiveRun(runId, agent);
+        return;
+      }
       emitEvent({ kind: "run-end", ok: Boolean(result?.ok) });
       if (result?.rateLimited) this.noteRateLimitedRun(runId, agent, context);
       if (!result?.approvalRequired || agent.autoApprove || approvedRetry) break;
@@ -869,6 +893,9 @@ class ChatRoom extends EventEmitter {
         };
         break;
       }
+      // 이 실행의 결과 메시지는 오지 않는다(승인 뒤 다시 실행). 승인을 기다리는 동안 점선
+      // 초안 말풍선이 응답 중으로 남지 않게 거둔다.
+      this.discardLiveRun(runId, agent);
       const approved = await this.requestApproval(agent, result.approval);
       if (generation !== this.generation) return;
       if (!approved) {
@@ -1409,8 +1436,9 @@ class ChatRoom extends EventEmitter {
     const hadWork = this.cancels.size > 0 || this.typingCounts.size > 0
       || this.runningTurns.size > 0 || this.pendingApprovals.size > 0
       || this.turnQueue.length > 0 || this.deferredTurnQueue.length > 0;
-    this.stopAllSilently();
-    if (hadWork) this.appendSystem("응답을 중지했습니다.");
+    const lost = this.queuedGeneralTurnCount();
+    this.stopAllSilently({ notifyLost: false });
+    if (hadWork) this.appendSystem("응답을 중지했습니다." + this.droppedQuestionsNote(lost));
   }
 
   clear() {
@@ -1420,7 +1448,8 @@ class ChatRoom extends EventEmitter {
     this.emit("reset");
   }
 
-  stopAllSilently() {
+  // notifyLost=false면 버려진 대기 턴마다 안내하지 않는다(부르는 쪽이 한 줄로 합쳐 알린다).
+  stopAllSilently({ notifyLost = true } = {}) {
     this.generation += 1;
     // 실행 중인 프로세스부터 끊는다. 아래 emit 리스너가 예외를 던져도 중지는 이미 걸려 있다.
     for (const cancel of this.cancels) {
@@ -1430,7 +1459,7 @@ class ChatRoom extends EventEmitter {
     }
     this.cancels.clear();
     for (const item of [...this.turnQueue, ...this.deferredTurnQueue]) {
-      this.retireTurn(item, undefined, { lost: true });
+      this.retireTurn(item, undefined, { lost: notifyLost });
     }
     this.turnQueue = [];
     this.deferredTurnQueue = [];

@@ -373,6 +373,18 @@ function switchActiveSession(nextId) {
 // 삭제한 방의 초안을 지운다.
 function forgetRoom(sessionId) {
   composerDrafts.delete(sessionId);
+  pendingNotices.delete(sessionId);
+}
+
+// 지금 열지 않은 방에 온 시스템 안내. 버리면 사용자가 그 방에 가도 영영 알 수 없으므로
+// 두었다가 그 방이 열릴 때(applyFullState) 보여 주고 비운다.
+const pendingNotices = new Map();
+
+function showPendingNotices() {
+  const texts = pendingNotices.get(activeSessionId);
+  if (!texts) return;
+  pendingNotices.delete(activeSessionId);
+  for (const text of texts) appendMessage({ authorType: "system", error: true, text, ts: Date.now() });
 }
 
 // 전송이 실패하면 보냈던 글을 그 방의 입력칸으로 되돌린다. 그사이 다른 방으로
@@ -900,8 +912,16 @@ function openProjectSettings(anchor, project) {
       option.textContent = `${agent.name} (@${agent.id})`;
       record.append(option);
     }
-    record.value = typeof project.recordAgent === "string" ? project.recordAgent : project.legacyRecorder?.agentId || "";
-    if (record.selectedIndex < 0) record.value = "";
+    const recordCurrent = typeof project.recordAgent === "string" ? project.recordAgent : project.legacyRecorder?.agentId || "";
+    // 저장된 담당이 목록에 없어도(꺼짐·설치 안 됨·옛 역할) 숨기지 않는다. 숨기면 "기록 안 함"으로
+    // 보이는데 실제로는 계속 기록하고, 저장해도 바뀌지 않는다.
+    if (recordCurrent && ![...record.children].some((option) => option.value === recordCurrent)) {
+      const stale = document.createElement("option");
+      stale.value = recordCurrent;
+      stale.textContent = `(지금 사용할 수 없음) ${agentById(recordCurrent)?.name || recordCurrent}`;
+      record.append(stale);
+    }
+    record.value = recordCurrent;
     const recordInitial = record.value;
 
     const actions = document.createElement("div");
@@ -1908,10 +1928,6 @@ const WORKFLOW_STATUS_LABELS = Object.freeze({
   blocked: "막힘",
 });
 
-function workflowRoleLabel(roleId) {
-  return workflow.roles?.find((role) => role.id === roleId)?.label || roleId || "구현";
-}
-
 function workflowAgentLabel(agentId) {
   if (!agentId) return "담당자 미지정";
   const agent = agentById(agentId);
@@ -2357,26 +2373,6 @@ function openWorkflowPopover(anchor) {
       option.textContent = decision.title || decision.content.slice(0, 35);
       taskDecision.append(option);
     }
-    const taskRole = document.createElement("select");
-    for (const role of workflow.roles || []) {
-      const option = document.createElement("option");
-      option.value = role.id;
-      option.textContent = role.label || role.id;
-      taskRole.append(option);
-    }
-    if (!taskRole.options.length) {
-      for (const role of [
-        ["planning", "기획"],
-        ["implementation", "구현"],
-        ["review", "검토"],
-      ]) {
-        const option = document.createElement("option");
-        option.value = role[0];
-        option.textContent = role[1];
-        taskRole.append(option);
-      }
-    }
-    taskRole.value = "implementation";
     const taskAgent = document.createElement("select");
     const defaultAgentOption = document.createElement("option");
     defaultAgentOption.value = "";
@@ -2403,7 +2399,6 @@ function openWorkflowPopover(anchor) {
       taskTitle.value = "";
       taskDescription.value = "";
       taskDecision.value = "";
-      taskRole.value = "implementation";
       taskAgent.value = "";
       taskCreate.textContent = "작업 만들기";
       taskCancel.hidden = true;
@@ -2420,7 +2415,6 @@ function openWorkflowPopover(anchor) {
         ? await call(window.chatApi.tasksUpdate(project.id, editingTaskId, {
             title: taskTitle.value,
             description: taskDescription.value,
-            role: taskRole.value,
             agentId: taskAgent.value,
             decisionId: taskDecision.value,
             chatId: activeSessionId,
@@ -2429,7 +2423,6 @@ function openWorkflowPopover(anchor) {
             projectId: project.id,
             title: taskTitle.value,
             description: taskDescription.value,
-            role: taskRole.value,
             agentId: taskAgent.value,
             decisionId: taskDecision.value,
             chatId: activeSessionId,
@@ -2455,7 +2448,6 @@ function openWorkflowPopover(anchor) {
       makeField("제목", taskTitle),
       makeField("설명", taskDescription),
       makeField("연결 결정", taskDecision),
-      makeField("역할", taskRole),
       makeField("담당 에이전트", taskAgent),
       taskCreate,
       taskCancel
@@ -2586,7 +2578,7 @@ function openWorkflowPopover(anchor) {
       const decisionLabel = task.decisionId
         ? workflow.decisions?.find((decision) => decision.id === task.decisionId)?.title || "연결 결정"
         : "결정 미연결";
-      meta.textContent = `${workflowRoleLabel(task.role)} · ${workflowAgentLabel(task.agentId)} · ${decisionLabel}`;
+      meta.textContent = `${workflowAgentLabel(task.agentId)} · ${decisionLabel}`;
       const controls = document.createElement("div");
       controls.className = "workflow-card-actions";
       const status = document.createElement("select");
@@ -2597,14 +2589,6 @@ function openWorkflowPopover(anchor) {
         status.append(option);
       }
       status.value = task.status;
-      const role = document.createElement("select");
-      for (const item of workflow.roles || []) {
-        const option = document.createElement("option");
-        option.value = item.id;
-        option.textContent = item.label || item.id;
-        role.append(option);
-      }
-      role.value = task.role;
       const owner = document.createElement("select");
       const projectDefault = document.createElement("option");
       projectDefault.value = "";
@@ -2627,7 +2611,6 @@ function openWorkflowPopover(anchor) {
         taskTitle.value = task.title;
         taskDescription.value = task.description || "";
         taskDecision.value = task.decisionId || "";
-        taskRole.value = task.role;
         taskAgent.value = task.agentId || "";
         taskCreate.textContent = "작업 수정";
         taskCancel.hidden = false;
@@ -2641,7 +2624,6 @@ function openWorkflowPopover(anchor) {
       save.addEventListener("click", async () => {
         const result = await call(window.chatApi.tasksUpdate(project.id, task.id, {
           status: status.value,
-          role: role.value,
           agentId: owner.value,
         }));
         if (!result) return;
@@ -2659,7 +2641,7 @@ function openWorkflowPopover(anchor) {
         applyFullState(result);
         openWorkflowPopover(anchor);
       });
-      controls.append(status, role, owner, edit, save, remove);
+      controls.append(status, owner, edit, save, remove);
       const fileView = taskFileView(task);
       card.append(cardTitle, cardText, ...(fileView ? [fileView] : []), meta, controls);
       return card;
@@ -3688,6 +3670,10 @@ function handleRunEvent(payload) {
     }
     live.statusEl.textContent = "";
     scrollToBottom();
+  } else if (kind === "run-discard") {
+    // 결과 메시지 없이 끝난 실행(중지·취소·승인 뒤 재실행)의 초안은 그냥 거둔다.
+    live.item.remove();
+    liveRuns.delete(runId);
   } else if (kind === "run-end") {
     // 정식 메시지(성공 답변 또는 실패 기록)가 곧 도착해 이 초안을 대체합니다.
     // 실패했다고 해서 여기서 지우면 중간 출력이 화면에서 사라지므로 그대로 둡니다.
@@ -4126,6 +4112,7 @@ function applyFullState(full) {
     // 창이 닫혀 있던 사이 온 승인 요청도 여기서 되살아난다(이미 아는 요청은 건너뛴다).
     for (const approval of full.session.pendingApprovals || []) addApproval(approval);
     renderAllMessages(full.session.messages);
+    showPendingNotices();
     scrollToBottom(true);
   }
 
@@ -4207,7 +4194,11 @@ window.chatApi.onReset(({ sessionId }) => {
   renderTyping();
 });
 window.chatApi.onSystemNotice(({ text, sessionId }) => {
-  if (sessionId && sessionId !== activeSessionId) return;
+  if (sessionId && sessionId !== activeSessionId) {
+    const texts = pendingNotices.get(sessionId) || [];
+    if (!texts.includes(text)) pendingNotices.set(sessionId, [...texts, text]);
+    return;
+  }
   appendMessage({ authorType: "system", error: true, text, ts: Date.now() });
 });
 window.chatApi.onRunEvent(handleRunEvent);
