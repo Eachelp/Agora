@@ -2,7 +2,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { execFile, spawn } = require("node:child_process");
-const { selectCommandPath, commandNeedsShell } = require("../command-resolution");
+const { selectCommandPath, commandNeedsShell, findWindowsPathMatches } = require("../command-resolution");
 
 // 채팅과 계정 전환이 함께 쓰는 단일 프로바이더 탐지 모듈입니다.
 // - 후보 경로 → where/which 순서로 실행 파일을 찾고,
@@ -585,7 +585,8 @@ function defaultRunCommand(file, args, { timeoutMs = PROBE_TIMEOUT_MS, shell = f
   return new Promise((resolve) => {
     try {
       execFile(
-        file,
+        // 셸(cmd.exe)로 실행하는 .cmd 경로에 공백이 있으면 첫 공백에서 잘리므로 따옴표로 감쌉니다.
+        shell ? `"${file}"` : file,
         args,
         { timeout: timeoutMs, windowsHide: true, shell, encoding: "utf8" },
         (error, stdout, stderr) => {
@@ -604,7 +605,12 @@ function defaultRunCommand(file, args, { timeoutMs = PROBE_TIMEOUT_MS, shell = f
   });
 }
 
-async function whichCommand(command, { platform, runCommand }) {
+async function whichCommand(command, { platform, runCommand, env = process.env, existsSync }) {
+  if (platform === "win32") {
+    // where.exe는 OEM 코드페이지로 출력해 한글 경로가 깨지므로 PATH를 직접 훑는 쪽을 먼저 씁니다.
+    const found = selectCommandPath(findWindowsPathMatches(command, env, existsSync).join("\n"), platform);
+    if (found) return found;
+  }
   const finder = platform === "win32" ? "where.exe" : "which";
   const result = await runCommand(finder, [command], { timeoutMs: PROBE_TIMEOUT_MS });
   if (!result.ok) return null;
@@ -650,7 +656,7 @@ function createCapabilityService(options = {}) {
     for (const candidate of cliCandidates(def.id, platform, env, home)) {
       if (candidate && existsSafe(candidate)) return candidate;
     }
-    return whichCommand(def.command, { platform, runCommand });
+    return whichCommand(def.command, { platform, runCommand, env, existsSync: existsSafe });
   }
 
   async function probeVersion(commandPath, needsShell) {

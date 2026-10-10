@@ -19,7 +19,7 @@ const {
   enableProxyInConfig,
 } = require("../codex-proxy");
 const { buildAccountSubmenu } = require("../account-submenu");
-const { commandNeedsShell, selectCommandPath } = require("../command-resolution");
+const { commandNeedsShell, findWindowsPathMatches, selectCommandPath } = require("../command-resolution");
 const { cliCandidates } = require("../providers/provider-capabilities");
 const { buildWindowsCodexLaunchScript } = require("../codex-desktop-launch");
 const { createCliLoginRunner } = require("./cli-login");
@@ -98,6 +98,11 @@ function createAccountSwitching(ui) {
   function resolveCommand(command, candidates = []) {
     for (const candidate of candidates) {
       if (candidate && fs.existsSync(candidate)) return candidate;
+    }
+    // where.exe 출력은 OEM 코드페이지라 한글 경로가 깨지므로 Windows는 PATH를 직접 훑습니다.
+    if (process.platform === "win32") {
+      const found = selectCommandPath(findWindowsPathMatches(command, process.env, fs.existsSync).join("\n"), "win32");
+      if (found) return found;
     }
     try {
       const lookup = process.platform === "win32" ? "where.exe" : "which";
@@ -283,15 +288,16 @@ Write-Output "Stopped $($processes.Count) AGY process(es)."
         reject(new Error("Claude 명령을 찾지 못했습니다."));
         return;
       }
+      const needsShell = commandNeedsShell(command, process.platform);
       execFile(
-        command,
+        needsShell ? `"${command}"` : command,
         ["auth", "status", "--json"],
         {
           encoding: "utf8",
           windowsHide: true,
           timeout: 8000,
           maxBuffer: 1024 * 1024,
-          shell: commandNeedsShell(command, process.platform),
+          shell: needsShell,
         },
         (error, stdout) => {
           if (error) {

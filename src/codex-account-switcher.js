@@ -4,6 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { defaultAgoraHome } = require("./app-paths");
+const { findWindowsPathMatches } = require("./command-resolution");
 
 // Agora 계정 전환 방식:
 //  1. 실제 Codex Desktop은 항상 기본 ~/.codex/auth.json을 사용합니다.
@@ -645,6 +646,13 @@ class CodexAccountSwitcher {
 
   resolveCodexCommandForBatch() {
     try {
+      // where.exe 출력은 OEM 코드페이지라 한글 경로가 깨지므로 Windows는 PATH를 직접 훑습니다.
+      const scanned = process.platform === "win32" ? findWindowsPathMatches("codex", process.env, fs.existsSync) : [];
+      if (scanned.length > 0) {
+        return scanned.find((candidate) => candidate.toLowerCase().endsWith(".cmd")) ||
+          scanned.find((candidate) => candidate.toLowerCase().endsWith(".exe")) ||
+          scanned[0];
+      }
       const result = spawnSync(process.platform === "win32" ? "where.exe" : "which", ["codex"], {
         encoding: "utf8",
         windowsHide: true,
