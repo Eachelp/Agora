@@ -951,7 +951,7 @@ textarea:focus-visible {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: min(50vh, 460px);
+  max-height: min(40vh, 460px);
   overflow-y: auto;
   margin-bottom: 8px;
 }
@@ -1067,6 +1067,11 @@ textarea:focus-visible {
   align-items: center;
   justify-content: flex-end;
   gap: 10px;
+  /* 질문이 길어 카드가 스크롤돼도 보내기·건너뛰기는 늘 보인다(카드 배경과 같은 불투명 면). */
+  position: sticky;
+  bottom: 0;
+  padding: 6px 0 2px;
+  background: var(--accent-soft);
 }
 
 .question-error {
