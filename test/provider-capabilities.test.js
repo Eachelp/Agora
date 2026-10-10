@@ -903,6 +903,8 @@ test("agy 모델 목록은 `agy models` 프로브로 갱신된다", async () => 
   const cached = cacheStore.value[`agy:${agyPath}`];
   assert.ok(Array.isArray(cached.models));
   assert.equal(cached.modelOptionsVersion, AGY_MODEL_OPTIONS_VERSION);
+  // 형식은 `규칙 번호:표 지문`이다. 숫자 하나로 되돌리면 표만 고친 캐시 무효화(F168)가 사라진다.
+  assert.match(AGY_MODEL_OPTIONS_VERSION, /^\d+:[0-9a-f]{10}$/);
   // CLI에 넘길 변형 id는 effortModels에 보존됩니다.
   assert.deepEqual(
     agy.modelOptions.find((option) => option.id === "gemini-3.6-flash").effortModels,
