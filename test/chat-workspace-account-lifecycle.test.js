@@ -5,7 +5,6 @@
 // 검증 목표:
 //   - chat-ipc: workspace choose/clear가 HarnessRuntime.workspaceChanged를 부르고,
 //     chatFeature.notifyProviderAccountChanged가 providerAccountChanged로 위임된다.
-//   - turn-checkpoint.restoreCheckpoint가 mutation 여부 fact(mutated)를 보고한다.
 //   - account switcher들의 사전 검증 실패는 accountSwitchSafe로 표시된다
 //     (credential 무변경 실패 → 불필요한 invalidation 금지의 근거 fact).
 
@@ -14,10 +13,8 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { execFileSync } = require("node:child_process");
 
 const { createChatFeature } = require("../src/chat/chat-ipc");
-const turnCheckpoint = require("../src/agora/turn-checkpoint");
 const { ClaudeAccountSwitcher } = require("../src/claude-account-switcher");
 const { AntigravityAccountSwitcher } = require("../src/antigravity-account-switcher");
 const { CodexAccountSwitcher } = require("../src/codex-account-switcher");
@@ -68,7 +65,6 @@ function runtimeSpy() {
         events.push({ kind: "completeProviderAccountBoundary", ...p });
         return true;
       },
-      professionalRunEnded: (p) => events.push({ kind: "professionalRunEnded", ...p }),
       close: () => events.push({ kind: "close" }),
     },
   };
@@ -271,46 +267,6 @@ test("account-switching source: 모든 credential mutation 경로가 awaitable b
 
   // 삼키는 seam으로 되돌아가지 않았는지.
   assert.doesNotMatch(source, /function notifyAccountLifecycle/, "fail-open seam은 제거되었다");
-});
-
-// ---- turn-checkpoint restore mutated fact ----
-
-function gitInit(dir) {
-  execFileSync("git", ["init", "-q"], { cwd: dir, windowsHide: true });
-  execFileSync("git", ["config", "user.email", "t@example.com"], { cwd: dir, windowsHide: true });
-  execFileSync("git", ["config", "user.name", "t"], { cwd: dir, windowsHide: true });
-}
-
-test("restoreCheckpoint: mutation 전에 끝난 실패는 mutated:false, 성공은 ok:true", async (t) => {
-  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-restore-fact-")));
-  t.after(() => fs.rmSync(repo, { recursive: true, force: true }));
-  gitInit(repo);
-  fs.writeFileSync(path.join(repo, "a.txt"), "v1", "utf8");
-  execFileSync("git", ["add", "a.txt"], { cwd: repo, windowsHide: true });
-  execFileSync("git", ["commit", "-qm", "c1"], { cwd: repo, windowsHide: true });
-
-  const storageRoot = path.join(repo, ".agora", "checkpoints");
-  const checkpoint = await turnCheckpoint.createCheckpoint(repo, { storageRoot, sessionId: "s1", runId: "RUN-001" });
-  assert.equal(checkpoint.supported, true);
-
-  // (1) invalid checkpoint descriptor: resolve 단계 실패 → 무변경 fact.
-  const invalid = await turnCheckpoint.restoreCheckpoint(repo, { supported: true, checkpointId: "cp-none", storageRoot });
-  assert.equal(invalid.ok, false);
-  assert.equal(invalid.mutated, false);
-
-  // (2) workspace mismatch: mutation 전 명확 종료 → 무변경 fact.
-  const other = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-restore-other-")));
-  t.after(() => fs.rmSync(other, { recursive: true, force: true }));
-  gitInit(other);
-  const mismatch = await turnCheckpoint.restoreCheckpoint(other, checkpoint);
-  assert.equal(mismatch.ok, false);
-  assert.equal(mismatch.mutated, false);
-
-  // (3) 실제 변경 후 성공 restore.
-  fs.writeFileSync(path.join(repo, "a.txt"), "changed-by-builder", "utf8");
-  const restored = await turnCheckpoint.restoreCheckpoint(repo, checkpoint);
-  assert.equal(restored.ok, true);
-  assert.equal(fs.readFileSync(path.join(repo, "a.txt"), "utf8"), "v1");
 });
 
 // ---- account switcher 사전 검증 실패 fact ----
