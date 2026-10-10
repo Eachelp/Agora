@@ -327,15 +327,3 @@ test("B5: 사용자 거부는 Final PASS로 이어지지 않는다", async () =>
     fs.rmSync(workspace, { recursive: true, force: true });
   }
 });
-
-// ---- B5: production 노출 경로가 실제로 존재하는가 ----
-
-test("B5: 승인 경로가 IPC에 노출된다", () => {
-  // 테스트가 room 메서드만 부르면 "API는 있는데 사용자가 못 쓰는" 상태를
-  // 통과시킨다. 실제 노출 지점을 소스에서 확인한다.
-  const ipc = fs.readFileSync(path.join(__dirname, "..", "src", "chat", "chat-ipc.js"), "utf8");
-  assert.match(ipc, /chat:specialist:pending-approvals/);
-  assert.match(ipc, /chat:specialist:resolve-approval/);
-  assert.match(ipc, /room\.resolveHumanApproval/);
-  // 화면(preload·렌더러·승인 목록)은 전문 모드와 함께 없어졌다. 백엔드 채널은 다음 단계에서 걷는다.
-});

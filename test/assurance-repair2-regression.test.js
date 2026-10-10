@@ -393,14 +393,6 @@ test("B7: frozen 입력에는 live retrieval을 기록할 수 없다", async () 
   }
 });
 
-test("B7: live 입력 기록 경로가 IPC에 노출된다", () => {
-  const ipc = fs.readFileSync(path.join(__dirname, "..", "src", "chat", "chat-ipc.js"), "utf8");
-  assert.match(ipc, /chat:specialist:record-input-retrieval/);
-  assert.match(ipc, /chat:specialist:input-usage/);
-  assert.match(ipc, /room\.recordLiveInputRetrieval/);
-  // 화면(preload)은 전문 모드와 함께 없어졌다. 백엔드 채널은 다음 단계에서 걷는다.
-});
-
 test("B5: block 모드에서 승인 후 professional Run이 실제로 COMPLETED가 된다", async () => {
   const { workspace, taskInfo } = setupWorkspace(v2Task({ plan: PLAN_WITH_HUMAN }));
   try {

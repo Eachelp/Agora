@@ -2860,7 +2860,7 @@ function renderInlineTokens(container, tokens) {
       strong.textContent = token.text;
       container.append(strong);
     } else if (token.type === "file") {
-      // 임의 경로 열기는 막혀 있습니다(chat:task:open-file은 워크스페이스 안만 허용).
+      // 임의 경로 열기는 막혀 있습니다.
       // 그래서 이동시키지 않고, 읽을 수 있는 파일 이름 + 전체 경로 툴팁 + 경로 복사만 제공합니다.
       const chip = document.createElement("button");
       chip.type = "button";

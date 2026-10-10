@@ -3880,10 +3880,6 @@ test("TASK 저장이 실패해도 전문 실행이 RUNNING으로 갇히지 않�
   // 여기서 RUNNING으로 남으면 취소도 버튼도 막혀 빠져나갈 길이 없다.
   const state = room.specialistState();
   assert.notEqual(state.status, "RUNNING", "실행이 끝났는데 RUNNING으로 남으면 안 됩니다");
-  // 그리고 실제로 빠져나갈 수 있어야 한다.
-  const { isStateAllowed } = require("../src/chat/professional-ipc-policy");
-  assert.ok(isStateAllowed({ node: state.node, status: state.status }, "cancel"));
-  assert.ok(isStateAllowed({ node: state.node, status: state.status }, "send"));
 });
 
 // 불변식을 진입점마다 붙이면 빠지는 경로가 생긴다(resumeSpecialist, replanBlocked).
@@ -4116,9 +4112,6 @@ test("전문 실행 취소 메시지는 어디서 왔는지 밝힌다", () => {
     const roomSrc = fs.readFileSync(
       path.join(__dirname, "..", "src", "chat", "chat-room.js"), "utf8");
     assert.ok(roomSrc.includes('cancelSpecialist("중지를 눌러 ")'), "중지 경로가 출처를 넘겨야 합니다");
-    const ipcSrc = fs.readFileSync(
-      path.join(__dirname, "..", "src", "chat", "chat-ipc.js"), "utf8");
-    assert.ok(ipcSrc.includes('cancelSpecialist("선택하신 대로 ")'), "선택 바 경로가 출처를 넘겨야 합니다");
   } finally {
     fs.rmSync(workspace, { recursive: true, force: true });
   }

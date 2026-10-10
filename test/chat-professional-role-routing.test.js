@@ -108,12 +108,11 @@ test("같은 AGY 담당자라도 Planner와 Plan Reviewer의 역할별 모델을
   ]);
 });
 
-test("renderer는 turn-state를 받고 IPC는 professional draft 입력을 아직 받는다", () => {
+test("renderer는 turn-state를 받고 IPC는 professional draft 입력을 받지 않는다", () => {
   const renderer = fs.readFileSync(path.join(__dirname, "..", "src", "chat.js"), "utf8");
   const ipc = fs.readFileSync(path.join(__dirname, "..", "src", "chat", "chat-ipc.js"), "utf8");
 
-  // 화면은 더 이상 professionalDraft를 보내지 않는다. 백엔드의 recordOnly 입력은
-  // 다음 단계(S3)에서 걷는다.
+  // 화면도 IPC도 professionalDraft·정책 입력을 다루지 않는다.
   assert.match(renderer, /window\.chatApi\.onTurnState/);
-  assert.match(ipc, /recordOnly: Boolean\(professionalDraft\)/);
+  assert.doesNotMatch(ipc, /professionalDraft|professionalPolicy|recordOnly/);
 });

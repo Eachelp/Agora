@@ -355,27 +355,6 @@ async function waitFor(condition, timeoutMs = 3000) {
   }
 }
 
-test("professionalDraft 메모(역할 멘션 없음)는 여전히 기록만 한다", async () => {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-consult-ipc-")));
-  const calls = [];
-  const feature = makeFeature(root, {
-    capabilities: fakeCapabilities(),
-    runAgent: fakeRunner({}, calls),
-  });
-
-  const state = await feature.invoke("chat:state");
-  const sessionId = state.activeSessionId;
-  const sent = await feature.invoke("chat:send", {
-    sessionId,
-    text: "다음 계획에서 로그인 흐름을 고려해줘",
-    professionalDraft: true,
-  });
-  assert.equal(sent.ok, true);
-  assert.equal(sent.consult, undefined);
-  await new Promise((resolve) => setTimeout(resolve, 30));
-  assert.equal(calls.length, 0, "메모는 어떤 응답도 예약하지 않아야 합니다");
-});
-
 test("agent 멘션이 함께 있으면 기존 동작이 우선한다", async () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-consult-ipc-")));
   const calls = [];

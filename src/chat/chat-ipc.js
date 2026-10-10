@@ -20,7 +20,6 @@ const { WorkspaceMutationLease } = require("../agora/workspace-mutation-lease");
 const { parseRecorderOutput } = require("../agora/recorder-output");
 const turnCheckpoint = require("../agora/turn-checkpoint");
 const { TaskManager } = require("../agora/task-manager");
-const { resolveTaskFileBoundary } = require("../agora/task-file-boundary");
 const {
   createCapabilityService,
   claudeResolvedModelLabel,
@@ -37,7 +36,6 @@ const {
 } = require("./chat-room");
 const { DISCUSSION_PRESETS, maxCycleBudget } = require("../agora/discussion-protocol");
 const { MAX_SPECIALIST_PROMPT_CHARS } = require("./chat-prompt");
-const { isStateAllowed, allowedIpcFor, isActiveProfessionalRun } = require("./professional-ipc-policy");
 const {
   buildAgentInvocation,
   PERMISSION_MODES,
@@ -67,7 +65,6 @@ const MAX_RUN_LOG_FILES = 20;
 // 앱을 켜 둔 동안 CLI 버전·로그인·모델 목록을 다시 확인하는 간격입니다.
 // (버전 확인은 가볍고, 모델 카탈로그는 캐시 TTL이 지났을 때만 다시 조회합니다.)
 const PROVIDER_RECHECK_INTERVAL_MS = 60 * 60 * 1000;
-const MAX_TASK_READ_BYTES = 5 * 1024 * 1024;
 // 옛 역할 호출(@기획자 등)을 받았을 때 chat:send가 돌려주는 안내.
 const LEGACY_ROLE_NOTICE =
   "역할 호출·팀 실행은 없어졌습니다. @claude / @gpt / @gemini로 부르거나 오케스트레이터 모드를 쓰세요.";
@@ -534,23 +531,6 @@ function createChatFeature(options) {
     } catch (error) {
       console.warn("[agora] CLI 재확인 실패:", error?.message || error);
     }
-  }
-
-  // 전문 실행의 자동 보완 정책을 IPC 경계에서 한 번 정리한다. 버튼
-  // (chat:specialist:start)과 멘션(chat:send의 `@팀 실행`)이 같은 규칙을 쓴다.
-  function clampAutoRevisions(value, fallback = 0) {
-    return Number.isInteger(value) && value >= 0 ? Math.min(value, 3) : fallback;
-  }
-
-  function specialistPolicyFrom({ planAutoRevisions, implementationAutoRevisions, maxAutoRevisions } = {}) {
-    return {
-      planAutoRevisions: clampAutoRevisions(planAutoRevisions, 0),
-      implementationAutoRevisions: clampAutoRevisions(
-        implementationAutoRevisions,
-        clampAutoRevisions(maxAutoRevisions, 0)
-      ),
-      maxAutoRevisions: Number.isInteger(maxAutoRevisions) && maxAutoRevisions >= 0 ? maxAutoRevisions : 1,
-    };
   }
 
   function startProviderRecheck() {
@@ -1052,15 +1032,6 @@ function roomMeta(meta) {
     return lines.join("\n");
   }
 
-  // V1.5 역할 멘션(CONSULT) → 프로젝트 역할·stage 매핑. 멘션 어휘는
-  // chat-mention의 ROLE_ALIASES가, 담당자 해석은 specialistStageFor가 소유한다.
-  const CONSULT_ROLE_DEFS = Object.freeze({
-    planner: Object.freeze({ projectRole: "planning", stage: "planner", label: "기획자" }),
-    builder: Object.freeze({ projectRole: "implementation", stage: "implementation", label: "구현자" }),
-    reviewer: Object.freeze({ projectRole: "review", stage: "review", label: "검토자" }),
-    recorder: Object.freeze({ projectRole: "recorder", stage: "recorder", label: "기록자" }),
-  });
-
   function specialistStageFor(project, room, roleId) {
     const roleLabel = {
       planning: "기획",
@@ -1092,28 +1063,6 @@ function roomMeta(meta) {
         : projectDefault.effort || agent.effort || "default",
     };
     return { ok: true, agent, agentConfig };
-  }
-
-  function specialistStagesFor(project, room, action = "full") {
-    const stages = {};
-    const requiredRoles = action === "record"
-      ? ["recorder"]
-      : action === "plan"
-        ? ["planning", "plan_review"]
-        : action === "implementation"
-          ? ["implementation", "review", "recorder"]
-          : ["planning", "plan_review", "implementation", "review", "recorder"];
-    for (const roleId of requiredRoles) {
-      const stage = specialistStageFor(project, room, roleId);
-      if (!stage.ok) return stage;
-      const stageKey = roleId === "planning"
-        ? "planner"
-        : roleId === "plan_review"
-          ? "planReview"
-          : roleId;
-      stages[stageKey] = stage;
-    }
-    return { ok: true, stages };
   }
 
   async function recordDiscussion(sessionId) {
@@ -1182,16 +1131,6 @@ function roomMeta(meta) {
       appendProfessionalEvent: (event) =>
         store.appendProfessionalEvent(sessionId, { ...event, sessionId }),
       readProfessionalEvents: () => store.readProfessionalEvents(sessionId),
-      // 전문 실행 재개(기획 답변·WAITING 복원·재기획) 시 기획·기획검수 담당자를
-      // 프로젝트 설정에서 다시 읽는다. 실행 시작 때 저장한 stages 스냅샷에는 사용자가
-      // 대기 중에 바꾼 담당자가 아니라 과거 담당자가 남아, 화면 표시와 실제 호출이
-      // 어긋났다(교체 전 기획자가 계속 응답하던 결함).
-      planStagesRefresher: () => {
-        const project = projectForSession(store.readMeta(sessionId));
-        if (!project) return null;
-        const planned = specialistStagesFor(project, room, "plan");
-        return planned.ok ? planned.stages : null;
-      },
       // Stage C — provider-neutral harness lifecycle seam. room은 restore/run 종료
       // fact만 전달하고, project 범위 해석과 registry/adapter 반영은 여기(control
       // plane)와 HarnessRuntime이 맡는다.
@@ -1205,133 +1144,6 @@ function roomMeta(meta) {
         },
       },
       taskManager: options.taskManager || new TaskManager(),
-      // TASK-007: Planner가 TASK.md를 만들면 workflow.json에 metadata를 등록합니다.
-      // 조기 등록 → 사용자가 승인 전에도 작업 목록에서 확인 가능 (status: todo)
-      onTaskCreated: (task) => {
-        try {
-          const workflow = ensureWorkflowStore();
-          const project = projectForSession(store.readMeta(sessionId));
-          if (!workflow || !project) return false;
-          const entry = workflow.createTask({
-            projectId: project.id,
-            title: task.title || "Planner Task",
-            description: task.description || "",
-            contentSource: task.contentSource || "file",
-            taskPath: task.taskPath || null,
-            taskHash: task.taskHash || null,
-            status: task.status || "todo",
-            role: task.role || "implementation",
-            chatId: sessionId,
-            origin: "planner",
-          });
-          if (entry) {
-            refreshWorkflowForProject(project.id);
-            broadcast("chat:workflow-changed", {
-              projectId: project.id,
-              workflow: workflowForProject(project.id),
-            });
-          }
-          return Boolean(entry);
-        } catch (error) {
-          console.warn("[agora] Planner Task workflow 등록 실패:", error?.message || error);
-          return false;
-        }
-      },
-      onTaskUpdated: ({ taskPath, taskHash, status }) => {
-        try {
-          const workflow = ensureWorkflowStore();
-          const project = projectForSession(store.readMeta(sessionId));
-          if (!workflow || !project) return false;
-          const normPath = String(taskPath || "").replace(/[\\/]+/g, path.sep);
-
-          // 1) taskPath + taskHash + syncState === "ok" 인 canonical record를 찾는다.
-          let target = workflow
-            .listTasks(project.id)
-            .find(
-              (task) =>
-                task.taskPath &&
-                task.taskPath.replace(/[\\/]+/g, path.sep) === normPath &&
-                task.taskHash === taskHash &&
-                task.syncState === "ok"
-            );
-
-          // 2) 정확한 canonical record가 없으면(새 revision 또는 missing recovery)
-          // disk state를 reconcileProjectTasks로 동기화한다.
-          // (old revision -> superseded 보존, new disk hash -> new canonical task 생성)
-          if (!target && project.workspace) {
-            workflow.reconcileProjectTasks(project.id, project.workspace);
-            target = workflow
-              .listTasks(project.id)
-              .find(
-                (task) =>
-                  task.taskPath &&
-                  task.taskPath.replace(/[\\/]+/g, path.sep) === normPath &&
-                  task.taskHash === taskHash &&
-                  task.syncState === "ok"
-              );
-          }
-
-          if (!target) return false;
-
-          // 3) canonical record에 필요한 상태(status 등)만 갱신한다. (hash/syncState overwrite 금지)
-          if (status && status !== target.status) {
-            workflow.updateTask(target.id, { status });
-          }
-
-          refreshWorkflowForProject(project.id);
-          broadcast("chat:workflow-changed", {
-            projectId: project.id,
-            workflow: workflowForProject(project.id),
-          });
-          return Boolean(target);
-        } catch (error) {
-          console.warn("[agora] Planner Task workflow 갱신 실패:", error?.message || error);
-          return false;
-        }
-      },
-      onProfessionalTaskState: ({ taskPath, taskHash, status, activeRunId = null, lastRunId = null }) => {
-        try {
-          const workflow = ensureWorkflowStore();
-          const project = projectForSession(store.readMeta(sessionId));
-          if (!workflow || !project || !taskPath) return false;
-          const normPath = taskPath.replace(/[\\/]+/g, path.sep);
-
-          // syncState === "ok" 인 활성 canonical task만 대상으로 한다.
-          // missing_file 또는 superseded 태스크는 부활시키지 않는다 (fail-closed).
-          const activeTasks = workflow
-            .listTasks(project.id)
-            .filter(
-              (entry) =>
-                entry.taskPath &&
-                entry.taskPath.replace(/[\\/]+/g, path.sep) === normPath &&
-                entry.syncState === "ok"
-            );
-
-          let task = null;
-          if (taskHash) {
-            task = activeTasks.find((entry) => entry.taskHash === taskHash) || null;
-          } else if (activeTasks.length === 1) {
-            task = activeTasks[0];
-          }
-
-          if (!task) return false;
-          const updated = workflow.updateTask(task.id, {
-            status,
-            activeRunId,
-            lastRunId,
-          });
-          if (!updated) return false;
-          refreshWorkflowForProject(project.id);
-          broadcast("chat:workflow-changed", {
-            projectId: project.id,
-            workflow: workflowForProject(project.id),
-          });
-          return true;
-        } catch (error) {
-          console.warn("[agora] 전문 실행 Workflow 갱신 실패:", error?.message || error);
-          return false;
-        }
-      },
     });
 
     room.on("message", (message) => {
@@ -1361,7 +1173,6 @@ function roomMeta(meta) {
     });
     room.on("typing", (payload) => broadcast("chat:typing", { sessionId, ...payload }));
     room.on("turn-state", (payload) => broadcast("chat:turn-state", { sessionId, ...payload }));
-    room.on("specialist-resume-state", (payload) => broadcast("chat:specialist-resume-state", { sessionId, ...payload }));
     room.on("reset", () => broadcast("chat:reset", { sessionId }));
     room.on("run-event", (payload) => broadcast("chat:run-event", { sessionId, ...payload }));
     room.on("agents", (agents) => broadcast("chat:agents", { sessionId, agents }));
@@ -1545,22 +1356,6 @@ function roomMeta(meta) {
     return sessionId;
   }
 
-  // 세션 워크스페이스 안의 작업 지시서 경로를 검증해 실제 regular file 경로로 돌려줍니다.
-  // open-file/read-file 모두 realpath containment와 같은 5MiB 상한을 공유합니다.
-  function resolveTaskFilePath(sessionId, taskPath) {
-    requireSession(sessionId);
-    const meta = store.readMeta(sessionId);
-    const workspace = canonicalWorkspaceForMeta(meta);
-    if (!workspace) {
-      const error = new Error("프로젝트 워크스페이스가 설정되어 있지 않습니다.");
-      error.code = "TASK_WORKSPACE_MISSING";
-      throw error;
-    }
-    return resolveTaskFileBoundary(workspace, taskPath, {
-      maxBytes: MAX_TASK_READ_BYTES,
-    }).target;
-  }
-
   function wrap(handler) {
     return async (_event, input) => {
       try {
@@ -1570,28 +1365,6 @@ function roomMeta(meta) {
         return { ok: false, error: error?.message || String(error) };
       }
     };
-  }
-
-  // Professional Mode 상태별 허용 IPC의 runtime authority.
-  // 판단 기준은 professional-ipc-policy의 중앙 정책 테이블 하나뿐이며,
-  // 허용 목록에 없으면 항상 거부한다(fail-closed).
-  function professionalRunStateFor(room) {
-    const state = room?.specialistState?.() || null;
-    const node = state?.node || null;
-    const status = state?.status || null;
-    if (!node && !status) return null;
-    return { node, status };
-  }
-
-  function enforceProfessionalPolicy(room, action) {
-    const runState = professionalRunStateFor(room);
-    if (!runState || !isActiveProfessionalRun(runState)) return;
-    if (isStateAllowed(runState, action)) return;
-    const allowed = allowedIpcFor(runState);
-    throw new Error(
-      `전문 실행 ${runState.node}/${runState.status} 상태에서는 이 동작을 할 수 없습니다.` +
-        (allowed.length ? ` 지금 가능한 동작: ${allowed.join(", ")}` : "")
-    );
   }
 
   function registerIpcHandlers() {
@@ -1618,18 +1391,6 @@ function roomMeta(meta) {
       })
     );
 
-    // 작업 지시서(TASK.md)를 OS 기본 편집기로 엽니다.
-    // 임의 경로 열기를 막기 위해 해당 세션 workspace 안의 regular file만 허용합니다.
-    ipcMain.handle(
-      "chat:task:open-file",
-      wrap(async ({ sessionId, taskPath }) => {
-        const target = resolveTaskFilePath(sessionId, taskPath);
-        const error = await shell.openPath(target);
-        if (error) throw new Error(error);
-        return {};
-      })
-    );
-
     // 실패한 실행의 원본 로그가 있는 폴더를 OS 파일 탐색기로 엽니다.
     // 화면에는 파일 이름만 보여 주고 경로는 내보내지 않으므로, 경로를 renderer로
     // 건네는 대신 여기서 직접 엽니다. 대상은 세션 저장소가 관리하는 로그 폴더
@@ -1646,17 +1407,6 @@ function roomMeta(meta) {
         const error = await shell.openPath(dir);
         if (error) throw new Error(error);
         return {};
-      })
-    );
-
-    // 작업 지시서(TASK.md) 내용을 읽어 채팅 화면 안에서 보여줍니다(읽기 전용).
-    // open-file과 같은 경로·realpath·regular file·크기 검증을 공유합니다.
-    ipcMain.handle(
-      "chat:task:read-file",
-      wrap(async ({ sessionId, taskPath }) => {
-        const target = resolveTaskFilePath(sessionId, taskPath);
-        const content = fs.readFileSync(target, "utf8");
-        return { content, taskPath: String(taskPath || "") };
       })
     );
 
@@ -2135,7 +1885,7 @@ function roomMeta(meta) {
 
     ipcMain.handle(
       "chat:send",
-      wrap(async ({ sessionId, text, attachmentIds, independent, professionalDraft, professionalPolicy }) => {
+      wrap(async ({ sessionId, text, attachmentIds, independent }) => {
         requireSession(sessionId);
         const room = getRoom(sessionId);
         // 옛 역할 호출(@기획자·@검토자·@구현자·@기록자·@팀, "@팀 실행" 포함)은 없어졌다.
@@ -2146,12 +1896,6 @@ function roomMeta(meta) {
           parseMentions(String(text || ""), room.agents, GROUP_ALIASES).length === 0
         ) {
           return { ok: false, error: LEGACY_ROLE_NOTICE };
-        }
-        // 전문 실행 중 사용자 입력은 정책 테이블이 단일 기준이다.
-        // 드래프트(recordOnly)로 기록만 하는 경우와 실제 전송을 구분해 판정한다.
-        enforceProfessionalPolicy(room, professionalDraft ? "recordOnly-send" : "send");
-        if (!professionalDraft && room.isSpecialistLocked()) {
-          throw new Error("전문 실행이 진행 중이거나 승인 대기 중입니다. 먼저 작업을 완료하거나 취소해 주세요.");
         }
         const pending = pendingFor(sessionId);
         const attachments = [];
@@ -2166,7 +1910,6 @@ function roomMeta(meta) {
           text,
           attachments,
           independent,
-          recordOnly: Boolean(professionalDraft),
         });
         if (!entry) throw new Error("보낼 내용이 없습니다.");
         return {};
@@ -2187,7 +1930,6 @@ function roomMeta(meta) {
       wrap(async ({ sessionId }) => {
         requireSession(sessionId);
         const room = getRoom(sessionId);
-        enforceProfessionalPolicy(room, "interject");
         return room.interject();
       })
     );
@@ -2219,7 +1961,6 @@ function roomMeta(meta) {
       wrap(async ({ sessionId, agentIds, turnBudget, presetId, cycleBudget, roleAssignments }) => {
         requireSession(sessionId);
         const room = getRoom(sessionId);
-        enforceProfessionalPolicy(room, "discussion");
         const cleanIds = Array.isArray(agentIds)
           ? agentIds.filter((id) => typeof id === "string")
           : undefined;
@@ -2281,280 +2022,13 @@ function roomMeta(meta) {
     );
 
     ipcMain.handle(
-      "chat:specialist:start",
-      wrap(async ({
-        sessionId,
-        action,
-        mode,
-        maxAutoRevisions,
-        planAutoRevisions,
-        implementationAutoRevisions,
-      }) => {
-        requireSession(sessionId);
-        const room = getRoom(sessionId);
-        if (!room.messages.some((message) => message.authorType === "user")) {
-          throw new Error("전문 실행을 시작하려면 먼저 이 대화에 작업 요청을 남겨 주세요.");
-        }
-        const meta = store.readMeta(sessionId);
-        const workspace = canonicalWorkspaceForMeta(meta);
-        if (!workspace) {
-          throw new Error(
-            "전문 모드는 워크스페이스가 필요합니다. 프로젝트 워크스페이스 폴더를 먼저 선택해 주세요."
-          );
-        }
-        const project = projectForSession(store.readMeta(sessionId));
-        const selectedAction = ["plan", "implementation", "record", "full"].includes(action)
-          ? action
-          : null;
-        const planned = specialistStagesFor(project, room, selectedAction || "full");
-        if (!planned.ok) throw new Error(planned.error);
-        // 전문 실행은 워크스페이스가 있어야 하지만, 세션 권한(meta.permissionMode)은
-        // 영구히 바꾸지 않는다. 실행 동안만 유효한 run-scoped 권한은 ChatRoom이
-        // withProfessionalAuthorization로 관리하므로 일반 대화 권한은 그대로 유지된다.
-        const started = room.startSpecialist({
-          stages: planned.stages,
-          ...(selectedAction ? { action: selectedAction } : {}),
-          mode: mode === "auto" ? "auto" : mode === "quick" ? "quick" : "step",
-          ...specialistPolicyFrom({ planAutoRevisions, implementationAutoRevisions, maxAutoRevisions }),
-        });
-        const result = await Promise.race([
-          started,
-          new Promise((resolve) => setImmediate(() => resolve({ ok: true, pending: true }))),
-        ]);
-        started
-          .then((completed) => {
-            if (completed?.ok && completed.recording) {
-              saveRecorderOutput(project.id, completed.recording, "전문 모드 실행 요약 초안", {
-                chatId: sessionId,
-                recorderAgentId: planned.stages.recorder?.agent?.id || null,
-              });
-            }
-          })
-          .catch(() => {});
-        // PLAN_READY 등 사람 판단을 기다리는 정상 STOP은 오류가 아닙니다.
-        if (result && result.ok === false && !result.needsUserDecision && !result.cancelled) {
-          throw new Error(result.error || "전문 실행을 시작하지 못했습니다.");
-        }
-        return { meta: publicMeta(store.readMeta(sessionId)), specialist: room.specialistState() };
-      })
-    );
-
-    ipcMain.handle(
-      "chat:specialist:resume",
-      wrap(async ({ sessionId, action, expectedRunId }) => {
-        requireSession(sessionId);
-        const room = getRoom(sessionId);
-        if (expectedRunId != null && expectedRunId !== room.currentRunInfo()?.runId) {
-          throw new Error("확인하던 실행이 바뀌었습니다. 현재 실행 상태를 확인해 주세요.");
-        }
-        const project = projectForSession(store.readMeta(sessionId));
-        const recorderAgentId = room.specialistResume?.stages?.recorder?.agent?.id || null;
-        const started = room.resumeSpecialist(action);
-        const result = await Promise.race([
-          started,
-          new Promise((resolve) => setImmediate(() => resolve({ ok: true, pending: true }))),
-        ]);
-        started
-          .then((completed) => {
-            if (completed?.ok && completed.recording) {
-              saveRecorderOutput(project.id, completed.recording, "전문 모드 실행 요약 초안", {
-                chatId: sessionId,
-                recorderAgentId,
-              });
-            }
-          })
-          .catch(() => {});
-        // 단계별 실행의 다음 Gate(BUILDER_DONE/REVIEW_PASS)도 정상 STOP입니다.
-        if (result && result.ok === false && !result.needsUserDecision && !result.cancelled) {
-          throw new Error(result.error || "전문 실행을 이어서 진행하지 못했습니다.");
-        }
-        return { meta: publicMeta(store.readMeta(sessionId)), specialist: room.specialistState() };
-      })
-    );
-
-    ipcMain.handle(
-      "chat:specialist:plan-answer",
-      wrap(async ({ sessionId, text }) => {
-        requireSession(sessionId);
-        const room = getRoom(sessionId);
-        const project = projectForSession(store.readMeta(sessionId));
-        const started = room.answerPlanQuestion(text);
-        const result = await Promise.race([
-          started,
-          new Promise((resolve) => setImmediate(() => resolve({ ok: true, pending: true }))),
-        ]);
-        started
-          .then((completed) => {
-            if (completed?.ok && completed.recording) {
-              const recorderAgentId = room.professionalPlan?.stages?.recorder?.agent?.id || null;
-              saveRecorderOutput(project.id, completed.recording, "전문 모드 실행 요약 초안", {
-                chatId: sessionId,
-                recorderAgentId,
-              });
-            }
-          })
-          .catch(() => {});
-        if (result && result.ok === false && !result.needsUserDecision && !result.cancelled) {
-          throw new Error(result.error || "기획 답변을 처리하지 못했습니다.");
-        }
-        return { meta: publicMeta(store.readMeta(sessionId)), specialist: room.specialistState() };
-      })
-    );
-
-    ipcMain.handle(
-      "chat:specialist:cancel",
-      wrap(async ({ sessionId }) => {
-        requireSession(sessionId);
-        const room = getRoom(sessionId);
-        const result = room.cancelSpecialist("선택하신 대로 ");
-        if (!result.ok) throw new Error(result.error);
-        return { meta: publicMeta(store.readMeta(sessionId)), specialist: room.specialistState() };
-      })
-    );
-
-    ipcMain.handle(
       "chat:message:handoff",
       wrap(async ({ sessionId, targetAgentId, messageId, intent }) => {
         requireSession(sessionId);
         const room = getRoom(sessionId);
-        // 쉽게 설명(SIMPLIFY)과 일반 Handoff는 정책상 별도 액션으로 판정한다.
-        const policyAction =
-          intent === "SIMPLIFY" || intent === "SIMPLIFY_SELF"
-            ? "simplify"
-            : "handoff";
-        enforceProfessionalPolicy(room, policyAction);
         const result = room.handoffMessage(targetAgentId, messageId, intent);
         if (result.ok === false) throw new Error(result.error);
         return { meta: publicMeta(store.readMeta(sessionId)) };
-      })
-    );
-
-    // BLOCKED 후속 처리 (keep / restore / discard).
-    // discard는 되돌린 뒤 해당 Task를 폐기(rejected) 상태로 표시합니다.
-    ipcMain.handle(
-      "chat:specialist:blocked",
-      wrap(async ({ sessionId, action }) => {
-        requireSession(sessionId);
-        const room = getRoom(sessionId);
-        const result = await room.resolveBlocked(action);
-        if (result.ok === false) throw new Error(result.error);
-        // discard: 되돌린 뒤 해당 file-backed Task를 폐기(rejected) 상태로 표시합니다.
-        if (action === "discard" && result.taskPath) {
-          const meta = store.readMeta(sessionId);
-          const projectId = meta?.projectId || getActiveProjectId();
-          const workflow = ensureWorkflowStore();
-          if (workflow && !workflow.readOnly && projectId) {
-            const target = workflow
-              .listTasks(projectId)
-              .find((task) => task.taskPath === result.taskPath);
-            if (target) {
-              workflow.updateTask(target.id, { status: "rejected" });
-              broadcast("chat:workflow-changed", {
-                projectId,
-                workflow: workflowForProject(projectId),
-              });
-              refreshWorkflowForProject(projectId);
-            }
-          }
-        }
-        return { meta: publicMeta(store.readMeta(sessionId)) };
-      })
-    );
-
-    // BLOCKED 상세 조회: renderer가 막힘 사유와 부분 변경 요약을 안전하게 읽습니다.
-    ipcMain.handle(
-      "chat:specialist:block-details",
-      wrap(async ({ sessionId }) => {
-        requireSession(sessionId);
-        const room = getRoom(sessionId);
-        return { details: room.specialistBlockDetails() };
-      })
-    );
-
-    // Stage D §20 — 사용자 승인이 필요한 확인 항목을 조회한다.
-    // Reviewer는 이 항목을 대신 해소할 수 없으므로(Charter §20), 사용자가
-    // 직접 풀 수 있는 경로가 반드시 있어야 한다.
-    ipcMain.handle(
-      "chat:specialist:pending-approvals",
-      wrap(async ({ sessionId }) => {
-        requireSession(sessionId);
-        const room = getRoom(sessionId);
-        return { runId: room.currentRunInfo()?.runId || null, pending: room.pendingHumanApprovals() };
-      })
-    );
-
-    // Stage D §3.1 — live 입력의 실제 사용 기록.
-    // Agora가 URL을 대신 가져오지는 않지만, 무엇을 썼는지 보고받으면 남긴다.
-    ipcMain.handle(
-      "chat:specialist:record-input-retrieval",
-      wrap(async ({ sessionId, inputId, version, etag, contentHash, note }) => {
-        requireSession(sessionId);
-        const room = getRoom(sessionId);
-        const result = room.recordLiveInputRetrieval({ inputId, version, etag, contentHash, note });
-        if (!result.ok) throw new Error(result.error || "입력 사용 기록을 저장하지 못했습니다.");
-        return result;
-      })
-    );
-
-    // 감사 조회: 이 Run이 쓰기로 한 입력과 실제로 쓴 입력.
-    ipcMain.handle(
-      "chat:specialist:input-usage",
-      wrap(async ({ sessionId }) => {
-        requireSession(sessionId);
-        const room = getRoom(sessionId);
-        return { usage: room.assuranceInputUsage() };
-      })
-    );
-
-    // 사용자가 승인하거나 거부한다. 승인 직후 결과물을 재확인해 이 승인이
-    // 어떤 결과물에 귀속되는지 확정한다(INV-5).
-    ipcMain.handle(
-      "chat:specialist:resolve-approval",
-      wrap(async ({ sessionId, criterionId, approved, note, expectedRunId }) => {
-        requireSession(sessionId);
-        const room = getRoom(sessionId);
-        const result = room.resolveHumanApproval({
-          criterionId,
-          approved: Boolean(approved),
-          note: note || null,
-          expectedRunId,
-        });
-        if (!result.ok) throw new Error(result.error || "승인을 처리하지 못했습니다.");
-        return {
-          ...result,
-          pending: room.pendingHumanApprovals(),
-          specialist: room.specialistState(),
-        };
-      })
-    );
-
-    // BLOCKED 재기획: 현재 변경을 유지(keep)하거나 작업 전으로 복원(restore)한 뒤
-    // 막힌 사유를 기획자에게 전달해 재기획을 시작합니다.
-    ipcMain.handle(
-      "chat:specialist:replan-blocked",
-      wrap(async ({ sessionId, workspaceAction }) => {
-        requireSession(sessionId);
-        const room = getRoom(sessionId);
-        const project = projectForSession(store.readMeta(sessionId));
-        const started = room.replanBlocked(workspaceAction);
-        const result = await Promise.race([
-          started,
-          new Promise((resolve) => setImmediate(() => resolve({ ok: true, pending: true }))),
-        ]);
-        started
-          .then((completed) => {
-            if (completed?.ok && completed.recording) {
-              saveRecorderOutput(project.id, completed.recording, "전문 모드 실행 요약 초안", {
-                chatId: sessionId,
-                recorderAgentId: room.stagesForSpecialist()?.recorder?.agent?.id || null,
-              });
-            }
-          })
-          .catch(() => {});
-        if (result && result.ok === false && !result.needsUserDecision && !result.cancelled) {
-          throw new Error(result.error || "재기획을 시작하지 못했습니다.");
-        }
-        return { meta: publicMeta(store.readMeta(sessionId)), specialist: room.specialistState() };
       })
     );
 
