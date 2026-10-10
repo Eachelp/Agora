@@ -13,6 +13,7 @@
 // 제공자별로 한 번에 하나만 돈다. 사용자가 브라우저에서 끝내지 않으면 timeoutMs
 // 뒤 프로세스를 끊는다 — 호출자가 그 동안 잡아 둔 계정 경계도 그때 풀린다.
 const { spawn: defaultSpawn } = require("node:child_process");
+const { killTree } = require("../chat/chat-agent-runner");
 
 const URL_PATTERN = /https?:\/\/[^\s"'<>()\]]+/g;
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
@@ -138,7 +139,7 @@ function createCliLoginRunner(options = {}) {
     session.timer = setTimeout(() => {
       session.timedOut = true;
       try {
-        child.kill();
+        killTree(child);
       } catch {}
     }, timeoutMs);
     if (typeof session.timer.unref === "function") session.timer.unref();
@@ -165,7 +166,7 @@ function createCliLoginRunner(options = {}) {
     if (!session) return false;
     session.cancelled = true;
     try {
-      session.child.kill();
+      killTree(session.child);
     } catch {}
     return true;
   }

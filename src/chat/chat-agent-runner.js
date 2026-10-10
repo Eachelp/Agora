@@ -156,20 +156,35 @@ function compactArgvPrompt(prompt, limit = MAX_ARGV_PROMPT_CHARS) {
   return header + notice + body.slice(0, headLength) + body.slice(-tailLength);
 }
 
+// taskkill이 끝나기 전에 같은 자식을 다시 죽이려는 호출(출력 폭주 중 반복 등)은 무시합니다.
+const treeKillStarted = new WeakSet();
+
 function killTree(child, platform = process.platform) {
-  if (!child || child.killed || child.exitCode !== null) return;
+  if (!child || child.killed || child.exitCode != null) return;
   if (platform === "win32") {
+    if (treeKillStarted.has(child)) return;
+    treeKillStarted.add(child);
+    const killSelf = () => {
+      try {
+        child.kill();
+      } catch {}
+    };
+    if (!child.pid) {
+      killSelf();
+      return;
+    }
     // shell(cmd.exe) 경유 실행 시 자식까지 함께 종료해야 합니다.
+    // taskkill이 트리를 훑기 전에 부모를 먼저 죽이면 자손이 고아로 남으므로,
+    // taskkill이 끝난 뒤(또는 실행 자체가 막혔을 때)에만 직계 프로세스를 닫습니다.
     try {
       const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
         windowsHide: true,
       });
-      killer.on("error", () => {});
-    } catch {}
-    // taskkill 자체가 보안 정책으로 막히는 경우에도 직계 프로세스는 닫습니다.
-    try {
-      child.kill();
-    } catch {}
+      killer.on("error", killSelf);
+      killer.on("close", killSelf);
+    } catch {
+      killSelf();
+    }
   } else {
     child.kill("SIGTERM");
   }
