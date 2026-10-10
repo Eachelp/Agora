@@ -24,6 +24,9 @@
   "build": {
     "appId": "app.agora.desktop",
     "productName": "Agora",
+    "asarUnpack": [
+      "src/chat/user-question-mcp.js"
+    ],
     "directories": {
       "output": "artifacts"
     },

@@ -171,6 +171,52 @@ function agyArgv({ permissionMode, workspace, model, effort, attachmentsDir, has
   return argv;
 }
 
+// 실행 중 질문 도구(MCP)를 이 실행에만 붙이는 인자. 사용자의 CLI 설정 파일은 건드리지 않는다.
+// - Claude: --allowedTools가 없으면 -p에서 도구가 거부되어 모델이 권한만 요청한다.
+//   (--strict-mcp-config는 권한 모드별 argv에 이미 들어 있다.)
+// - Codex: 기본 도구 시간 제한(60초)이면 사용자가 1분만 고민해도 질문이 취소되므로 30분으로 늘린다.
+const QUESTION_KEY_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+const QUESTION_TOOL_PATTERN = /^mcp__[A-Za-z0-9_-]{1,64}__[A-Za-z0-9_-]{1,64}$/;
+const CODEX_QUESTION_TOOL_TIMEOUT_SEC = 1800;
+
+// JSON 기본 문자열 이스케이프는 TOML 기본 문자열의 부분집합이다. TOML이 날것으로 받지 않는 DEL만 더 막는다.
+function tomlString(value) {
+  return JSON.stringify(String(value)).replace(/\x7f/g, "\\u007F");
+}
+
+function validQuestionTool(userQuestion) {
+  const server = userQuestion?.server;
+  return Boolean(
+    server && typeof server.command === "string" && server.command
+      && Array.isArray(server.args) && server.args.every((arg) => typeof arg === "string")
+      && (server.env === undefined || (server.env && typeof server.env === "object" && !Array.isArray(server.env)))
+      && QUESTION_KEY_PATTERN.test(String(userQuestion.serverKey))
+      && QUESTION_TOOL_PATTERN.test(String(userQuestion.toolName))
+  );
+}
+
+function questionToolArgs(providerId, { server, serverKey, toolName }) {
+  const env = server.env || {};
+  if (providerId === "claude") {
+    return [
+      "--mcp-config",
+      JSON.stringify({ mcpServers: { [serverKey]: { command: server.command, args: server.args, env, alwaysLoad: true } } }),
+      "--allowedTools",
+      toolName,
+    ];
+  }
+  const prefix = `mcp_servers.${serverKey}`;
+  const envEntries = Object.entries(env).map(([key, value]) => `${tomlString(key)} = ${tomlString(value)}`);
+  return [
+    "-c", `${prefix}.command=${tomlString(server.command)}`,
+    "-c", `${prefix}.args=[${server.args.map(tomlString).join(", ")}]`,
+    ...(envEntries.length > 0 ? ["-c", `${prefix}.env={ ${envEntries.join(", ")} }`] : []),
+    "-c", `${prefix}.enabled=true`,
+    "-c", `${prefix}.startup_timeout_sec=30`,
+    "-c", `${prefix}.tool_timeout_sec=${CODEX_QUESTION_TOOL_TIMEOUT_SEC}`,
+  ];
+}
+
 function buildDeliveries({ providerId, permissionMode, attachments }) {
   return attachments.map((attachment) => {
     const kind = attachmentKind(attachment);
@@ -214,6 +260,7 @@ function buildAgentInvocation(input = {}) {
     attachmentsDir = null,
     outputFile = null,
     autoApprove = false,
+    userQuestion = null, // { server: {command,args,env}, serverKey, toolName } — user-question-run.js가 만든다
   } = input;
 
   if (!provider || provider.status !== "cli") {
@@ -302,9 +349,21 @@ function buildAgentInvocation(input = {}) {
     return { ok: false, error: "지원되지 않는 Agent Harness입니다.", stopReason: "UNSUPPORTED_PROCESS_PROVIDER" };
   }
 
+  // 질문 도구는 Claude·Codex를 직접 실행할 때만 붙인다. 셸 래퍼(.cmd)로는 JSON·TOML 인자를 안전하게
+  // 넘길 수 없고 AGY에는 실행 단위 MCP 설정 수단이 없다. 이 조건에 안 맞으면 조용히 붙이지 않고,
+  // 호출자는 결과의 questionToolAttached로 알아 끝에서 던지는 질문(ASK_USER)으로 대신한다.
+  // 안전 검사는 질문 인자(경로 등)에 오탐하지 않도록 붙이기 전의 argv에만 건다.
+  const safeArgv = assertSafeArgv(argv, { autoApprove });
+  const attachQuestion = Boolean(userQuestion)
+    && (provider.id === "claude" || provider.id === "codex")
+    && !provider.needsShell
+    && validQuestionTool(userQuestion);
+  if (attachQuestion) safeArgv.push(...questionToolArgs(provider.id, userQuestion));
+
   return {
     ok: true,
-    argv: assertSafeArgv(argv, { autoApprove }),
+    argv: safeArgv,
+    questionToolAttached: attachQuestion,
     cwd,
     stdinPrompt: provider.id !== "agy",
     promptTransport: provider.id === "agy" ? "argv" : "stdin",
