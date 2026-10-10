@@ -327,6 +327,11 @@ class CodexProxy {
   streamToClient(upstreamResponse, response) {
     return new Promise((resolve, reject) => {
       response.writeHead(upstreamResponse.statusCode || 502, upstreamResponse.headers);
+      // 클라이언트가 끊기면(Codex 중지 등) upstream도 끊어 취소된 턴이 계속 생성·과금되지 않게 한다.
+      response.once("close", () => {
+        if (!upstreamResponse.complete) upstreamResponse.destroy();
+        resolve();
+      });
       upstreamResponse.pipe(response);
       upstreamResponse.once("end", resolve);
       upstreamResponse.once("error", reject);
