@@ -199,6 +199,8 @@ class CodexProxy {
 
     const server = http.createServer((request, response) => {
       this.handleRequest(request, response).catch((error) => {
+        // 클라이언트가 먼저 끊은 요청(우리가 upstream 요청을 취소한 경우 포함)은 실패로 알릴 상대가 없다.
+        if (response.destroyed) return;
         this.log(`proxy request failed: ${error.message || error}`);
         if (!response.headersSent) {
           response.writeHead(502, { "content-type": "application/json" });
@@ -287,10 +289,11 @@ class CodexProxy {
     });
   }
 
-  forwardOnce(target, method, headers, body) {
+  // signal: 클라이언트가 끊기면 abort됩니다. upstream 응답 헤더를 기다리는 중이어도 요청을 취소합니다.
+  forwardOnce(target, method, headers, body, signal) {
     const transport = target.protocol === "http:" ? http : https;
     return new Promise((resolve, reject) => {
-      const upstream = transport.request(target, { method, headers }, (upstreamResponse) => {
+      const upstream = transport.request(target, { method, headers, signal }, (upstreamResponse) => {
         resolve(upstreamResponse);
       });
       upstream.once("error", reject);
@@ -299,10 +302,10 @@ class CodexProxy {
   }
 
   // 재시도가 필요 없는 요청은 본문을 버퍼링하지 않고 클라이언트 스트림을 그대로 흘려보냅니다.
-  forwardStream(target, method, headers, requestStream) {
+  forwardStream(target, method, headers, requestStream, signal) {
     const transport = target.protocol === "http:" ? http : https;
     return new Promise((resolve, reject) => {
-      const upstream = transport.request(target, { method, headers }, (upstreamResponse) => {
+      const upstream = transport.request(target, { method, headers, signal }, (upstreamResponse) => {
         resolve(upstreamResponse);
       });
       upstream.once("error", reject);
@@ -326,6 +329,12 @@ class CodexProxy {
 
   streamToClient(upstreamResponse, response) {
     return new Promise((resolve, reject) => {
+      // 헤더를 기다리는 사이 클라이언트가 이미 끊겼으면 'close'는 다시 오지 않으므로 바로 upstream을 끊는다.
+      if (response.destroyed) {
+        upstreamResponse.destroy();
+        resolve();
+        return;
+      }
       response.writeHead(upstreamResponse.statusCode || 502, upstreamResponse.headers);
       // 클라이언트가 끊기면(Codex 중지 등) upstream도 끊어 취소된 턴이 계속 생성·과금되지 않게 한다.
       response.once("close", () => {
@@ -574,6 +583,11 @@ class CodexProxy {
       return;
     }
 
+    // 클라이언트가 끊기면(Codex 중지 등) 아직 헤더가 오지 않은 upstream 요청도 취소합니다.
+    // abort된 신호는 그대로 남으므로 끊긴 뒤에 시작하려는 재시도 요청도 바로 취소됩니다.
+    const clientGone = new AbortController();
+    response.once("close", () => clientGone.abort());
+
     const accounts = await this.candidateAccounts();
 
     // 계정이 하나도 저장돼 있지 않으면 들어온 헤더 그대로 스트리밍 통과시킵니다. (본문 버퍼링 없음)
@@ -582,7 +596,8 @@ class CodexProxy {
         target,
         request.method,
         this.filteredHeaders(request, { stripAuth: false }),
-        request
+        request,
+        clientGone.signal
       );
       await this.streamToClient(passthrough, response);
       return;
@@ -609,9 +624,9 @@ class CodexProxy {
       let upstreamResponse;
       if (body !== null) {
         headers["content-length"] = Buffer.byteLength(body);
-        upstreamResponse = await this.forwardOnce(target, request.method, headers, body);
+        upstreamResponse = await this.forwardOnce(target, request.method, headers, body, clientGone.signal);
       } else {
-        upstreamResponse = await this.forwardStream(target, request.method, headers, request);
+        upstreamResponse = await this.forwardStream(target, request.method, headers, request, clientGone.signal);
       }
       const status = upstreamResponse.statusCode || 0;
       const retryable = canRotate && (status === 429 || status === 401) && index < ordered.length - 1;
