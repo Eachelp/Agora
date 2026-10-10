@@ -74,28 +74,35 @@ foreach ($path in $paths) {
 }`;
 }
 
-let installedFontsPromise = null;
-
-let macInstalledFontsPromise = null;
-let linuxInstalledFontsPromise = null;
+// 조회 결과는 세션 동안 캐시하되, 실패(오류·시간 초과)나 빈 목록은 캐시하지 않는다.
+// 한 번의 실패가 빈 목록으로 굳으면 설정 창이 글꼴을 못 고르고 저장된 글꼴까지 지워졌다.
+// run 함수마다 따로 캐시해서(WeakMap) 주입된 가짜 run을 쓰는 테스트가 서로 섞이지 않는다.
+const fontCaches = new WeakMap();
 
 function getInstalledFonts({ run = execFile, platform = process.platform } = {}) {
+  let byPlatform = fontCaches.get(run);
+  if (!byPlatform) fontCaches.set(run, (byPlatform = new Map()));
+  if (byPlatform.has(platform)) return byPlatform.get(platform);
+  const promise = lookupInstalledFonts(run, platform).then((fonts) => {
+    if (fonts.length === 0 && byPlatform.get(platform) === promise) byPlatform.delete(platform);
+    return fonts;
+  });
+  byPlatform.set(platform, promise);
+  return promise;
+}
+
+function lookupInstalledFonts(run, platform) {
   if (platform === "darwin") {
-    // 폰트는 세션 중 사실상 바뀌지 않으므로 win32 경로처럼 결과를 캐시합니다.
-    // (설정 창을 열거나 저장할 때마다 폰트 폴더 4곳을 재스캔하지 않도록)
-    if (macInstalledFontsPromise) return macInstalledFontsPromise;
-    macInstalledFontsPromise = Promise.resolve().then(() => {
+    return Promise.resolve().then(() => {
       try {
         return getMacInstalledFonts();
       } catch {
         return [];
       }
     });
-    return macInstalledFontsPromise;
   }
   if (platform === "linux") {
-    if (run === execFile && linuxInstalledFontsPromise) return linuxInstalledFontsPromise;
-    const promise = new Promise((resolve) => {
+    return new Promise((resolve) => {
       run(
         "fc-list",
         ["--format=%{family}\\n"],
@@ -112,13 +119,9 @@ function getInstalledFonts({ run = execFile, platform = process.platform } = {})
         }
       );
     });
-    if (run === execFile) linuxInstalledFontsPromise = promise;
-    return promise;
   }
   if (platform !== "win32") return Promise.resolve([]);
-  if (run === execFile && installedFontsPromise) return installedFontsPromise;
-
-  const promise = new Promise((resolve) => {
+  return new Promise((resolve) => {
     const encoded = Buffer.from(buildFontRegistryScript(), "utf16le").toString("base64");
     run(
       "powershell.exe",
@@ -133,9 +136,6 @@ function getInstalledFonts({ run = execFile, platform = process.platform } = {})
       }
     );
   });
-
-  if (run === execFile) installedFontsPromise = promise;
-  return promise;
 }
 
 module.exports = {

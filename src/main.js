@@ -15,6 +15,8 @@ const {
 const { rateWindowLabel } = require("./codex-usage-label");
 const { createChatFeature } = require("./chat/chat-ipc");
 const { getInstalledFonts } = require("./installed-fonts");
+const { readSettingsFile, writeSettingsFile } = require("./settings-file");
+const { registerSessionEndTeardown } = require("./session-end");
 const {
   isLinuxAutoLaunchEnabled,
   setLinuxAutoLaunchEnabled,
@@ -96,23 +98,11 @@ function getSettingsPath() {
 }
 
 function readSettings() {
-  try {
-    const saved = JSON.parse(fs.readFileSync(getSettingsPath(), "utf8"));
-    return saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {};
-  } catch {
-    return {};
-  }
+  return readSettingsFile(getSettingsPath());
 }
 
 function writeSettings(patch) {
-  const current = readSettings();
-  delete current.themeSource;
-  const next = { ...current, ...patch };
-  try {
-    fs.writeFileSync(getSettingsPath(), JSON.stringify(next, null, 2));
-  } catch (error) {
-    console.warn("[agora] Failed to save settings.", error.message);
-  }
+  writeSettingsFile(getSettingsPath(), patch);
 }
 
 let settingsWindow = null;
@@ -306,7 +296,8 @@ function registerIpcHandlers() {
     const fonts = await getInstalledFonts();
     const patch = {};
 
-    if (Object.hasOwn(next, "fontFamily")) {
+    // 글꼴 목록 조회가 실패해 비었을 때는 목록으로 검증할 수 없으니 저장된 글꼴을 지우지 않는다.
+    if (Object.hasOwn(next, "fontFamily") && (fonts.length > 0 || !next.fontFamily)) {
       patch.fontFamily = normalizeFontFamily(next.fontFamily, fonts);
     }
     if (Object.hasOwn(next, "fontSize")) {
@@ -461,6 +452,9 @@ app.whenReady().then(() => {
     }
   });
 });
+
+// Windows 종료·재시작·로그오프에서는 before-quit이 오지 않는다. 같은 정리를 session-end에도 건다.
+registerSessionEndTeardown(app, teardownCodexProxyOnQuit);
 
 app.on("before-quit", () => {
   isQuitting = true;
