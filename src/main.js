@@ -376,7 +376,9 @@ function registerIpcHandlers() {
         login: { running: isProviderLoginRunning(provider) },
       };
     } catch (error) {
-      return { ok: false, error: error.message || String(error) };
+      // 자격 증명은 이미 바뀌었는데 뒤따르는 재시작만 실패한 경우, 화면이 옛 계정을 보이지 않게 목록을 함께 보낸다.
+      const data = error?.restartFailedAfterChange ? await getSettingsData().catch(() => undefined) : undefined;
+      return { ok: false, error: error.message || String(error), ...(data ? { data } : {}) };
     }
   });
 

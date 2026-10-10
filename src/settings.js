@@ -531,7 +531,15 @@ async function runAccountAction(input, sourceButton) {
   setButtonBusy(sourceButton, true, busyLabel);
   try {
     const response = await api.account(input);
-    if (!response?.ok) throw new Error(responseError(response, "계정 작업에 실패했습니다."));
+    if (!response?.ok) {
+      // 일부는 이미 적용된 실패(예: AGY 로그인 정보는 지웠지만 재시작 실패)는 최신 목록을 함께 보낸다.
+      if (response?.data) {
+        state = response.data;
+        renderAccounts();
+        renderUsage();
+      }
+      throw new Error(responseError(response, "계정 작업에 실패했습니다."));
+    }
     state = response.data;
     if (input.action === "login" && response.login?.running) {
       // 시작 직후부터 패널을 보여 준다. 주소·종료는 onAccountLogin 이벤트로 온다.
