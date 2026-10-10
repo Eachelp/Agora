@@ -136,8 +136,16 @@ class ProviderProfileStore {
   }
 
   save({ secret, email, plan, active = false }) {
-    const normalizedEmail = normalizeEmail(email);
     const secretKey = secretFingerprint(secret);
+    // 같은 자격 증명이 이미 다른 email로 저장돼 있으면 그 자격 증명의 주인은 저장된 쪽입니다.
+    // 전환 직후 CLI가 아직 옛 email을 돌려주는 경우에도 다른 계정 프로필을 덮어쓰지 않습니다.
+    const owner = secretKey && normalizeEmail(email)
+      ? this.records().find((record) =>
+          record.email &&
+          normalizeEmail(record.email) !== normalizeEmail(email) &&
+          secretFingerprint(record.secret) === secretKey)
+      : null;
+    const normalizedEmail = normalizeEmail(owner ? owner.email : email);
     const key = profileFingerprint(secret, normalizedEmail);
     if (!key) throw new Error("로그인 정보를 찾지 못했습니다.");
 
