@@ -80,7 +80,7 @@ test("실행 파일은 확장자로 거부한다", () => {
 test("확장자를 바꾼 실행 파일은 매직 바이트로 거부한다", () => {
   const { source, attachments } = makeDirs();
   const disguised = path.join(source, "totally-a-doc.txt");
-  fs.writeFileSync(disguised, Buffer.concat([Buffer.from([0x4d, 0x5a]), Buffer.from("PE junk")]));
+  fs.writeFileSync(disguised, Buffer.concat([Buffer.from([0x4d, 0x5a, 0x90, 0x00, 0x03, 0x00]), Buffer.from("PE junk")]));
   const result = importAttachment({ sourcePath: disguised, attachmentsDir: attachments });
   assert.equal(result.ok, false);
   assert.ok(result.error.includes("실행 파일"));

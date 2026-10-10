@@ -63,7 +63,9 @@ function sniffImageMime(buffer) {
 
 function isExecutableMagic(buffer) {
   return (
-    startsWith(buffer, [0x4d, 0x5a]) || // Windows PE (MZ)
+    // Windows PE (MZ). 'MZ세대' 같은 글자로 시작하는 텍스트를 막지 않도록, 실행 파일이라면
+    // 반드시 들어 있는 NUL 바이트(DOS/PE 헤더)가 앞쪽에 있을 때만 실행 파일로 봅니다.
+    (startsWith(buffer, [0x4d, 0x5a]) && buffer.subarray(0, 8000).includes(0)) ||
     startsWith(buffer, [0x7f, 0x45, 0x4c, 0x46]) || // ELF
     startsWith(buffer, [0xcf, 0xfa, 0xed, 0xfe]) || // Mach-O 64
     startsWith(buffer, [0xfe, 0xed, 0xfa, 0xce]) // Mach-O 32
