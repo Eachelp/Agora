@@ -59,7 +59,7 @@ const MAX_RUN_LOG_FILES = 20;
 const PROVIDER_RECHECK_INTERVAL_MS = 60 * 60 * 1000;
 // 옛 역할 호출(@기획자 등)을 받았을 때 chat:send가 돌려주는 안내.
 const LEGACY_ROLE_NOTICE =
-  "역할 호출·팀 실행은 없어졌습니다. @claude / @gpt / @gemini로 부르거나 오케스트레이터 모드를 쓰세요.";
+  "역할 호출·팀 실행은 없어졌습니다. @claude / @gpt / @gemini로 직접 부르거나 @모두를 쓰세요.";
 // Stage D-0 workspace mutation provenance journal의 상한(process 수명 기준).
 const MAX_WORKSPACE_MUTATION_EVENTS = 2000;
 

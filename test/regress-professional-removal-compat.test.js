@@ -10,7 +10,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { createChatFeature } = require("../src/chat/chat-ipc");
 
-const NOTICE = "역할 호출·팀 실행은 없어졌습니다. @claude / @gpt / @gemini로 부르거나 오케스트레이터 모드를 쓰세요.";
+const NOTICE = "역할 호출·팀 실행은 없어졌습니다. @claude / @gpt / @gemini로 직접 부르거나 @모두를 쓰세요.";
 
 function fakeRecord(id, name, aliases) {
   return {

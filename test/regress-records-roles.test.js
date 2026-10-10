@@ -97,7 +97,7 @@ test("구조화 토론이 끝나면 마지막 단계(종합/판정) 발언자가
   assert.equal(agent, "codex");
 });
 
-test("옛 프로젝트 JSON의 역할·자동 보완 키는 읽을 때 버려지고 저장할 때 다시 쓰이지 않는다", async () => {
+test("옛 프로젝트 JSON의 역할·자동 보완 키는 읽을 때만 걸러지고 파일에는 그대로 남는다", async () => {
   const root = makeRoot();
   const first = makeFeature(root);
   const created = await first.invoke("chat:projects:create", { name: "옛 프로젝트" });
@@ -116,7 +116,7 @@ test("옛 프로젝트 JSON의 역할·자동 보완 키는 읽을 때 버려지
   assert.equal("defaultRoles" in project, false);
   assert.equal("autoRevisions" in project, false);
 
-  // 옛 화면이 보내는 패치 키도 무시한다.
+  // 옛 화면이 보내는 패치 키는 무시하고, 디스크의 옛 값은 그대로 둔다.
   const saved = await feature.invoke("chat:projects:update", {
     projectId, patch: { name: "새 이름", defaultRoles: { review: "codex" }, autoRevisions: { plan: 1 } },
   });
@@ -124,8 +124,8 @@ test("옛 프로젝트 JSON의 역할·자동 보완 키는 읽을 때 버려지
   const onDisk = JSON.parse(fs.readFileSync(file, "utf8"));
   assert.equal(onDisk.name, "새 이름");
   assert.equal(onDisk.context, "공통 맥락");
-  assert.equal("defaultRoles" in onDisk, false);
-  assert.equal("autoRevisions" in onDisk, false);
+  assert.deepEqual(onDisk.defaultRoles, raw.defaultRoles);
+  assert.deepEqual(onDisk.autoRevisions, raw.autoRevisions);
 });
 
 test("옛 Planner 작업 카드는 목록에는 남지만 프롬프트의 진행 중 작업에는 들어가지 않는다", async () => {

@@ -72,7 +72,7 @@ function defaultPermissionMode(value, workspace) {
   return workspace && PERMISSION_MODES.has(value) ? value : "chat";
 }
 
-// 옛 프로젝트 JSON에 남은 전문 모드 키(역할·자동 보완). 읽을 때 버리고 저장할 때 다시 쓰지 않는다.
+// 옛 프로젝트 JSON에 남은 전문 모드 키(역할·자동 보완). 읽을 때만 걸러 내고 파일에는 그대로 둔다.
 function withoutLegacyKeys(project) {
   const { defaultRoles, autoRevisions, ...rest } = project;
   return rest;
@@ -214,15 +214,16 @@ class ProjectStore {
         : current.defaultPermissionMode,
       defaultAgents: Object.hasOwn(patch, "defaultAgents") ? patch.defaultAgents : current.defaultAgents,
     });
+    // 옛 defaultRoles·autoRevisions를 지우지 않도록 디스크 원본 위에 합친다(호출자에게는 걸러서 돌려준다).
     const next = {
-      ...current,
+      ...(readJsonSafe(this.projectPath(id)) || current),
       ...defaults,
       id,
       schemaVersion: PROJECT_SCHEMA_VERSION,
       updatedAt: this.now(),
     };
     writeJsonAtomic(this.projectPath(id), next);
-    return next;
+    return withoutLegacyKeys(next);
   }
 
   renameProject(id, name) {
