@@ -1074,6 +1074,7 @@ function roomMeta(meta) {
     });
     // 앱을 다시 켜기 전에 답을 기다리던 질문은 방이 '중단됨'으로 돌려놓았다. 그 줄도 기록에 남긴다.
     for (const question of room.interruptedOnLoad) persistQuestion(question);
+    room.announceInterruptedQuestions();
     // 승인 카드를 기다리는 방은 실행 중 턴이 없어도 일하는 중이다. 다른 방을 보고 있어도
     // 사이드바에 표시가 남도록 상태를 함께 센다.
     const syncRoomStatus = () => {

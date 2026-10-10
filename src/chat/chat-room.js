@@ -68,6 +68,31 @@ const QUESTION_STATUS = Object.freeze({
   expired: "cancelled",
 });
 
+// 질문이 처리됐을 때 대화에 남기는 한 줄(시스템 줄이라 AI 프롬프트에는 들어가지 않는다).
+// 답은 길어질 수 있어 한 줄에 맞게 줄인다. 대기 중이 아니던 질문(이미 보낸 답의 전달 확인 등)은 다시 쓰지 않는다.
+const QUESTION_LINE_ANSWER_CHARS = 160;
+function questionOutcomeLine(previous, record) {
+  if (!previous || previous.status !== "pending" || record.status === "pending") return null;
+  const who = `@${record.agentId}의 질문 ${record.questions.length}개`;
+  if (record.status === "submitting" || record.status === "answered") {
+    const clip = (text, max) => (text.length > max ? `${text.slice(0, max)}…` : text);
+    const parts = (record.answers || []).map((answer) => {
+      const picked = [...(answer.selected || []), ...(answer.other ? [`기타 "${clip(answer.other, 60)}"`] : [])];
+      return answer.text !== undefined ? `"${clip(answer.text, 60)}"` : picked.join(", ");
+    });
+    const body = parts.length > 1 ? parts.map((part, index) => `${index + 1}) ${part}`).join(" · ") : parts[0] || "";
+    return `${who} → 답: ${clip(body, QUESTION_LINE_ANSWER_CHARS)}`;
+  }
+  switch (record.reason) {
+    case "user-skip": return `${who}를 건너뛰었습니다. 답 없이 이어 가도록 알렸습니다.`;
+    case "timeout": return `${who}에 오래 답이 없어 닫았습니다.`;
+    case "stopped": return null; // 중지·삭제는 따로 안내가 있다.
+    case "app-quit":
+    case "app-restart": return `${who}는 앱이 꺼져 답을 받지 못했습니다. 필요하면 다시 말을 걸어 주세요.`;
+    default: return `${who}는 답을 받기 전에 작업이 끝나 닫혔습니다.`;
+  }
+}
+
 let messageSeq = 0;
 function nextMessageId() {
   messageSeq += 1;
@@ -405,6 +430,7 @@ class ChatRoom extends EventEmitter {
   }
 
   setQuestion(record) {
+    const previous = this.userQuestions.get(record.questionId);
     this.userQuestions.set(record.questionId, record);
     if (this.userQuestions.size > MAX_USER_QUESTIONS) {
       for (const [id, question] of this.userQuestions) {
@@ -414,6 +440,13 @@ class ChatRoom extends EventEmitter {
     }
     // 시간 제한을 먼저 맞춘다. 알림을 받는 쪽이 예외를 던져도 실행이 멈춘 채 남지 않게.
     this.syncQuestionWaiting(record.runId);
+    // 대화에 남기는 한 줄은 질문 알림을 막지 않는다(기록이 실패해도 답·건너뛰기는 그대로 간다).
+    try {
+      const line = questionOutcomeLine(previous, record);
+      if (line) this.appendSystem(line);
+    } catch (error) {
+      console.warn("[agora] 질문 처리 기록 실패:", error?.message || error);
+    }
     this.emit("user-question", { ...record });
   }
 
@@ -506,6 +539,14 @@ class ChatRoom extends EventEmitter {
       } catch (error) {
         console.warn("[agora] 질문 연결 정리 실패:", error?.message || error);
       }
+    }
+  }
+
+  // 다시 켠 뒤, 답을 기다리다 중단된 질문을 대화에 한 줄로 알린다(저장된 질문 상태가 '중단됨'이 되므로 한 번만 나온다).
+  announceInterruptedQuestions() {
+    for (const question of this.interruptedOnLoad) {
+      const line = questionOutcomeLine({ status: "pending" }, question);
+      if (line) this.appendSystem(line);
     }
   }
 

@@ -234,10 +234,14 @@ test("다시 켜면 답을 기다리던 질문은 '중단됨'이라 기록에만
 
   const kinds = () => new ChatStore({ root }).init().readTranscript(sessionId).map((e) => e.kind).filter((k) => /^user_/.test(k));
   assert.deepEqual(kinds(), ["user_question_requested", "user_question_interrupted"]);
+  // 대화에도 한 줄(시스템 줄)로 남는다. 카드가 아니라 기록이다.
+  const interruptedLines = (session) => session.messages.filter((m) => m.authorType === "system" && /앱이 꺼져 답을 받지 못했습니다/.test(m.text));
+  assert.equal(interruptedLines(selected).length, 1);
   // 방을 다시 만들어도(두 번째 시작) 중단 기록이 또 쌓이지 않는다.
   const env2 = await setup(t, { storeRoot: root, runner: scriptedRunner(async () => "x", {}) });
-  await env2.invoke("chat:sessions:select", { sessionId });
+  const reopened = (await env2.invoke("chat:sessions:select", { sessionId })).session;
   assert.deepEqual(kinds(), ["user_question_requested", "user_question_interrupted"]);
+  assert.equal(interruptedLines(reopened).length, 1, "다시 켜도 안내는 한 번만 남는다");
 });
 
 test("창이 닫혀 있던 사이에 온 질문도 창이 다시 붙으면 스냅숏으로 되살아나 답할 수 있다", async (t) => {
