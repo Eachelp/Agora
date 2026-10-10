@@ -4,6 +4,7 @@ const path = require("node:path");
 const winPath = path.win32;
 
 const {
+  AGY_MODEL_OPTIONS_VERSION,
   MODEL_CATALOG_TTL_MS,
   cliCandidates,
   collapseEffortVariants,
@@ -901,7 +902,7 @@ test("agy 모델 목록은 `agy models` 프로브로 갱신된다", async () => 
   // 캐시에도 모델 목록이 함께 저장된다.
   const cached = cacheStore.value[`agy:${agyPath}`];
   assert.ok(Array.isArray(cached.models));
-  assert.equal(cached.modelOptionsVersion, 6);
+  assert.equal(cached.modelOptionsVersion, AGY_MODEL_OPTIONS_VERSION);
   // CLI에 넘길 변형 id는 effortModels에 보존됩니다.
   assert.deepEqual(
     agy.modelOptions.find((option) => option.id === "gemini-3.6-flash").effortModels,

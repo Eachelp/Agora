@@ -20,6 +20,12 @@ const {
   setLinuxAutoLaunchEnabled,
 } = require("./linux-auto-launch");
 
+const { withCommonCliPaths } = require("./providers/provider-capabilities");
+
+// Finder·Dock으로 띄운 macOS 앱은 PATH가 짧아 npm 설치 CLI(`#!/usr/bin/env node`)가 node를 못 찾는다.
+// 탐지뿐 아니라 실행(spawn)도 이 env를 물려받으므로 시작할 때 한 번 보강한다.
+if (process.platform !== "win32") process.env.PATH = withCommonCliPaths(process.env).PATH;
+
 const APP_NAME = "Agora";
 const APP_ID = "app.agora.desktop";
 app.setName(APP_NAME);

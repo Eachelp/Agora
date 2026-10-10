@@ -1,3 +1,4 @@
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -24,6 +25,20 @@ const CATALOG_RETRY_BACKOFF_MS = 5 * 60 * 1000;
 // 버전이 다르면 캐시가 없는 것으로 보고 지금 다시 조회한다.
 const CATALOG_SCHEMA_VERSION = 3;
 
+// Finder·Dock으로 띄운 macOS 앱의 PATH는 /usr/bin:/bin:/usr/sbin:/sbin뿐이라, npm 전역 설치물의
+// `#!/usr/bin/env node`가 node를 찾지 못한다. CLI를 실행해 보는 자식 프로세스에는 흔한 설치 위치를 덧붙여 준다.
+function withCommonCliPaths(env, { platform = process.platform, home = os.homedir() } = {}) {
+  if (platform !== "darwin" && platform !== "linux") return env;
+  const extra = [
+    path.posix.join(home, ".local", "bin"),
+    "/opt/homebrew/bin",
+    "/opt/homebrew/sbin",
+    "/usr/local/bin",
+  ];
+  const have = String(env?.PATH || "").split(":").filter(Boolean);
+  return { ...env, PATH: [...have, ...extra.filter((entry) => !have.includes(entry))].join(":") };
+}
+
 function probeCodexModelCatalog(commandPath, needsShell, timeoutMs = 8000, deps = {}) {
   return new Promise((resolve) => {
     let child;
@@ -41,6 +56,7 @@ function probeCodexModelCatalog(commandPath, needsShell, timeoutMs = 8000, deps 
     const spawnFn = deps.spawnFn || spawn;
     try {
       child = spawnFn(needsShell ? `"${commandPath}"` : commandPath, ["app-server", "--stdio"], {
+        env: deps.env,
         shell: Boolean(needsShell),
         windowsHide: true,
         stdio: ["pipe", "pipe", "ignore"],
@@ -88,7 +104,7 @@ function probeCodexModelCatalog(commandPath, needsShell, timeoutMs = 8000, deps 
   });
 }
 
-function probeAgyModelCatalog(commandPath, needsShell, timeoutMs = MODEL_PROBE_TIMEOUT_MS) {
+function probeAgyModelCatalog(commandPath, needsShell, timeoutMs = MODEL_PROBE_TIMEOUT_MS, deps = {}) {
   return new Promise((resolve) => {
     let child;
     let settled = false;
@@ -114,7 +130,8 @@ function probeAgyModelCatalog(commandPath, needsShell, timeoutMs = MODEL_PROBE_T
     const hardTimer = setTimeout(finish, timeoutMs);
     if (typeof hardTimer.unref === "function") hardTimer.unref();
     try {
-      child = spawn(needsShell ? `"${commandPath}"` : commandPath, ["models"], {
+      child = (deps.spawnFn || spawn)(needsShell ? `"${commandPath}"` : commandPath, ["models"], {
+        env: deps.env,
         shell: Boolean(needsShell),
         windowsHide: true,
         stdio: ["ignore", "pipe", "ignore"],
@@ -163,9 +180,17 @@ const AGY_MODEL_OPTIONS = Object.freeze([
   Object.freeze({ id: "claude-opus-4-6-thinking", label: "Claude Opus 4.6 (Thinking)", efforts: Object.freeze([]) }),
   Object.freeze({ id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (중간)", efforts: Object.freeze([]) }),
 ]);
-// 노력 변형을 접는 규칙이 바뀌면 올려서 저장된 capability 캐시를 무효화합니다.
+// 노력 변형을 접는 규칙(코드)이 바뀌면 이 번호를 올려서 저장된 capability 캐시를 무효화합니다.
 // v5: 자동 발견한 노력 변형(efforts 표기 없음)도 접미사로 접는다.
-const AGY_MODEL_OPTIONS_VERSION = 6;
+const AGY_COLLAPSE_RULES_VERSION = 6;
+// 위 표(AGY_MODEL_OPTIONS)의 내용 지문도 버전에 넣는다. 표에 모델이나 표시명을 더하고
+// 번호 올리는 것을 잊어도(예전에 Claude 5.5 표시명을 더하고 6에 그대로 둔 일) 옛 캐시가
+// 자동으로 무효화된다.
+const AGY_MODEL_OPTIONS_VERSION = `${AGY_COLLAPSE_RULES_VERSION}:${crypto
+  .createHash("sha1")
+  .update(JSON.stringify(AGY_MODEL_OPTIONS))
+  .digest("hex")
+  .slice(0, 10)}`;
 
 const EFFORT_VARIANT_ID = /^(.+)-(low|medium|high)$/;
 const EFFORT_ORDER = Object.freeze(["low", "medium", "high"]);
@@ -581,14 +606,14 @@ function guiEvidencePaths(providerId, platform, env) {
   ].filter((candidate) => candidate && !candidate.startsWith(path.sep));
 }
 
-function defaultRunCommand(file, args, { timeoutMs = PROBE_TIMEOUT_MS, shell = false } = {}) {
+function defaultRunCommand(file, args, { timeoutMs = PROBE_TIMEOUT_MS, shell = false, env } = {}) {
   return new Promise((resolve) => {
     try {
       execFile(
         // 셸(cmd.exe)로 실행하는 .cmd 경로에 공백이 있으면 첫 공백에서 잘리므로 따옴표로 감쌉니다.
         shell ? `"${file}"` : file,
         args,
-        { timeout: timeoutMs, windowsHide: true, shell, encoding: "utf8" },
+        { timeout: timeoutMs, windowsHide: true, shell, encoding: "utf8", env },
         (error, stdout, stderr) => {
           resolve({
             ok: !error,
@@ -622,7 +647,10 @@ function createCapabilityService(options = {}) {
   const env = options.env || process.env;
   const home = options.home || os.homedir();
   const fsApi = options.fs || fs;
-  const runCommand = options.runCommand || defaultRunCommand;
+  // 탐지용 자식 프로세스(--version·모델 조회)가 받는 환경. 호출자가 runCommand를 주입해도 같은 env를 받는다.
+  const probeEnv = withCommonCliPaths(env, { platform, home });
+  const baseRunCommand = options.runCommand || defaultRunCommand;
+  const runCommand = (file, args, runOptions = {}) => baseRunCommand(file, args, { ...runOptions, env: probeEnv });
   const codexModelProbe = options.codexModelProbe ||
     (options.runCommand ? null : probeCodexModelCatalog);
   const agyModelProbe = options.agyModelProbe ||
@@ -860,7 +888,7 @@ function createCapabilityService(options = {}) {
   async function probeCatalog(def, commandPath, needsShell) {
     if (def.modelCatalogProbe === "codex-app-server") {
       if (!codexModelProbe) return null;
-      const catalog = await codexModelProbe(commandPath, needsShell);
+      const catalog = await codexModelProbe(commandPath, needsShell, undefined, { env: probeEnv });
       if (!catalog?.length) return null;
       const defaultCatalogModel = catalog.find((option) => option.isDefault);
       const modelOptions = [
@@ -876,7 +904,7 @@ function createCapabilityService(options = {}) {
       return { models: modelOptions.map((option) => option.id), modelOptions };
     }
     const probedModels = def.id === "agy" && agyModelProbe
-      ? await agyModelProbe(commandPath, needsShell)
+      ? await agyModelProbe(commandPath, needsShell, undefined, { env: probeEnv })
       : await probeModels(def, commandPath, needsShell);
     if (!probedModels) return null;
     const modelOptions = modelOptionsFor(def, probedModels);
@@ -1171,6 +1199,8 @@ module.exports = {
   claudeObservationContext,
   probeCodexModelCatalog,
   probeAgyModelCatalog,
+  AGY_MODEL_OPTIONS_VERSION,
+  withCommonCliPaths,
   cliCandidates,
   guiEvidencePaths,
   createCapabilityService,
