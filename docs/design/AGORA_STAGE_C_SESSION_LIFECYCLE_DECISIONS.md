@@ -1,5 +1,7 @@
 # Agora Stage C — Session Lifecycle Decision Log
 
+> **대체됨(superseded) 2026-10-11 — 전문 모드 제거로 더는 구현되지 않음; 기록 보존용.** 사용자 결정("전문모드 그냥 제거하고, 오케스트레이터로 전환")에 따라 이 문서가 다루는 내용은 현행 제품에 없거나 제거 예정이다. 현행 범위는 [문서 안내](../README.md), 결정 기록은 [개정 기록](AGORA_REVISION_2026-10-11_REMOVE_PROFESSIONAL_MODE.md)을 따른다. 아래 본문은 당시 기록 그대로 보존한다.
+
 > 후속 상태 안내(2026-09-06): 아래 `FINAL REVIEW PENDING`과 §11은 `27d9de5` 기준 당시 기록으로 보존한다. 이후 독립 검수의 FINAL PASS는 [Stage C 최종 검수](AGORA_STAGE_C_FINAL_REVIEW.md)에 기록되어 있다. 현재 제품 안내는 [문서 안내](../README.md)를 따른다.
 
 > 상태: **FINAL REVIEW PENDING**

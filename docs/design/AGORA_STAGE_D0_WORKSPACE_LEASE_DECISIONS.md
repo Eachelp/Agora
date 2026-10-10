@@ -1,5 +1,7 @@
 # Agora Stage D-0 — Workspace Mutation Lease Decision Log
 
+> **대체됨(superseded) 2026-10-11 — 전문 모드 제거로 더는 구현되지 않음; 기록 보존용.** 사용자 결정("전문모드 그냥 제거하고, 오케스트레이터로 전환")에 따라 이 문서가 다루는 내용은 현행 제품에 없거나 제거 예정이다. 현행 범위는 [문서 안내](../README.md), 결정 기록은 [개정 기록](AGORA_REVISION_2026-10-11_REMOVE_PROFESSIONAL_MODE.md)을 따른다. 아래 본문은 당시 기록 그대로 보존한다.
+
 > 문서 안내(2026-09-06): D-0 결정 시점의 계약과 검수 이력을 보존한다. 아래 완료·테스트 판정은 명시된 baseline에 한정한다. 현재 복원 버튼은 Git 여부만이 아니라 backend의 `canRestore`에 따르며, 사용법과 후속 검증은 [문서 안내](../README.md)에서 확인한다.
 
 > 상태: **D-0 COMPLETE · 독립 검수 PASS @ 05636ca**

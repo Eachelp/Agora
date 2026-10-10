@@ -1,5 +1,7 @@
 # Ἀγορά (Agora) — V1 Multi-Agent & Professional Execution Design
 
+> **전문 모드 부분 안내(2026-10-11):** 이 문서의 전문 모드·역할 상담·`@팀`·팀 실행·체크포인트에 관한 서술은 전문 모드 제거 결정으로 **대체됨(superseded)** 이며 기록 보존용이다. 일반 대화·토론·전달·첨부·프로젝트 기록에 관한 서술은 유지된다. 자세한 내용은 [개정 기록](AGORA_REVISION_2026-10-11_REMOVE_PROFESSIONAL_MODE.md)을 따른다.
+
 > 상태: **확정안 (v1 기준)**
 > 기준: `main`의 PLAN ⇄ ACT 전문 실행 및 신뢰성 FSM 구현
 > 작성일: 2026-08-10

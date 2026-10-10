@@ -1,5 +1,7 @@
 # Agora — Managed Harness Runtime 개발일지 및 확장 기준
 
+> **대체됨(superseded) 2026-10-11 — 전문 모드 제거로 더는 구현되지 않음; 기록 보존용.** 사용자 결정("전문모드 그냥 제거하고, 오케스트레이터로 전환")에 따라 이 문서가 다루는 내용은 현행 제품에 없거나 제거 예정이다. 현행 범위는 [문서 안내](../README.md), 결정 기록은 [개정 기록](AGORA_REVISION_2026-10-11_REMOVE_PROFESSIONAL_MODE.md)을 따른다. 아래 본문은 당시 기록 그대로 보존한다.
+
 > 문서 안내(2026-09-06): Stage A~D의 개발·검증 이력을 보존한 문서다. 각 절의 ‘현재’, ‘다음 단계’, 테스트 수와 baseline은 그 절의 기록 시점을 뜻한다. V1.5와 이후 승인·복구 UI를 포함한 현행 범위는 [문서 안내](../README.md), 현재 실행 확인은 [로컬 체크리스트](AGORA_V1_5_LOCAL_SMOKE_CHECKLIST.md)를 따른다.
 
 > 상태: **Stage A/B 완료 · Professional 안정화 Stage 1~5 COMPLETE · Stage C Managed Harness Runtime COMPLETE (Session Invalidation / Lifecycle 포함 · FINAL PASS — AGORA_STAGE_C_FINAL_REVIEW.md) · Stage D Assurance & Governance COMPLETE (D-0 · D-A0 · D-A1 · D-A2 · D-B · D-C — AGORA_STAGE_D_ASSURANCE_DECISIONS.md) · 다음: M-track (M2 derived Memory Bank · M3 AGENTS.md/CLAUDE.md export)**

@@ -1,5 +1,7 @@
 # Agora — Stage D Assurance & Governance Charter
 
+> **대체됨(superseded) 2026-10-11 — 전문 모드 제거로 더는 구현되지 않음; 기록 보존용.** 사용자 결정("전문모드 그냥 제거하고, 오케스트레이터로 전환")에 따라 이 문서가 다루는 내용은 현행 제품에 없거나 제거 예정이다. 현행 범위는 [문서 안내](../README.md), 결정 기록은 [개정 기록](AGORA_REVISION_2026-10-11_REMOVE_PROFESSIONAL_MODE.md)을 따른다. 아래 본문은 당시 기록 그대로 보존한다.
+
 > 문서 안내(2026-09-06): 승인된 v0.5 의미 계약을 유지한다. 이번 문서 정리는 안내 링크만 추가하며 불변식·권한·검증 보증을 바꾸지 않는다. 후속 구현 기록은 [Stage D 결정 기록](AGORA_STAGE_D_ASSURANCE_DECISIONS.md), 현재 사용자 표면과 검증 안내는 [문서 안내](../README.md)를 참조한다.
 
 > 상태: **확정 기준 문서 — v0.5 (2026-08-22 사용자 승인)**
@@ -547,6 +549,7 @@ NO cross-process workspace governance     (v1 보증 경계 밖)
 
 ## 초안 이력
 
+- 2026-10-11 · 개정(§8, 사용자 결정 "전문모드 그냥 제거하고, 오케스트레이터로 전환"): 전문 모드와 워크스페이스 lease 제거로 Stage D 전체가 **대체됨(superseded)**. 불변식은 적용 대상 소멸로 폐기하며 막던 실패 모드와 대체 통제는 [개정 기록](AGORA_REVISION_2026-10-11_REMOVE_PROFESSIONAL_MODE.md) §4에 둔다. 본문은 기록 보존용으로 고치지 않는다.
 - 2026-09-06 · 문서 안내 링크 추가. v0.5 의미 계약과 본문은 변경하지 않음.
 - 2026-08-20 · v0.1 최초 초안.
 - 2026-08-20 · v0.2 사용자 검토 반영: INV-5(Assurance Subject) 신설 · outcome/disposition 축 분리(R-7) · Verification Runner Contract 추가 · Final disposition 집계 규칙 추가 · Input binding(frozen/live) 구분 · M1을 D-A1에 포함/선행으로 재배치 · typed lineage edge(D-C) · provenance graph DB 금지.
