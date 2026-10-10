@@ -135,7 +135,13 @@ function parseTeamRunDirective(text) {
   return false;
 }
 
+// 옛 역할 호출(@기획자·@검토자·@구현자·@기록자·@팀) 안내용 감지. 별칭 표를 그대로 쓴다.
+function hasLegacyRoleMention(text) {
+  return parseRoleMentions(text).length > 0;
+}
+
 module.exports = {
+  hasLegacyRoleMention,
   parseMentions,
   tokenMatchesAlias,
   maskNonCallingText,
