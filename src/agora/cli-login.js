@@ -49,6 +49,7 @@ function createCliLoginRunner(options = {}) {
     const session = {
       provider,
       urls: [],
+      prompt: false,
       lines: [],
       child: null,
       timer: null,
@@ -95,7 +96,9 @@ function createCliLoginRunner(options = {}) {
         emit({ type: "url", url });
       }
       // 줄바꿈 없이 끝나는 출력은 입력을 기다리는 프롬프트다(Claude의 "Paste code here").
-      emit({ type: "output", text, prompt: !/\r?\n\s*$/.test(text) });
+      const prompt = !/\r?\n\s*$/.test(text);
+      if (prompt) session.prompt = true;
+      emit({ type: "output", text, prompt });
     };
     if (child.stdout) {
       if (typeof child.stdout.setEncoding === "function") child.stdout.setEncoding("utf8");
@@ -181,7 +184,13 @@ function createCliLoginRunner(options = {}) {
     return Boolean(session && session.urls.includes(String(url || "")));
   }
 
-  return { start, input, cancel, isRunning, knowsUrl };
+  // 설정 창을 닫았다 다시 열 때 진행 중인 로그인의 패널(주소·코드 입력칸)을 되살리는 데 쓴다.
+  function snapshot(provider) {
+    const session = sessions.get(provider);
+    return session ? { running: true, urls: [...session.urls], prompt: session.prompt } : null;
+  }
+
+  return { start, input, cancel, isRunning, knowsUrl, snapshot };
 }
 
 module.exports = { createCliLoginRunner, needsShell, extractUrls, DEFAULT_TIMEOUT_MS };

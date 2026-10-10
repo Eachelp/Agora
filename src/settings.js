@@ -14,6 +14,8 @@ const loginStates = new Map();
 let installedFonts = [];
 let selectedFont = "";
 let selectedFontSize = 12;
+// 화면을 서버 값으로 마지막에 채운 시점의 설정값. 저장은 여기서 바뀐 항목만 보낸다(아래 changedSettings).
+let loadedSettings = null;
 let toastTimer = null;
 
 const UI_THEME_FIELDS = Object.freeze([
@@ -217,6 +219,25 @@ function renderGeneral({ resetAppearance = false } = {}) {
   $("#show-awaiting").checked = state.appearance?.showAwaiting !== false;
 
   renderFonts();
+  loadedSettings = currentSettings();
+}
+
+function currentSettings() {
+  return {
+    fontFamily: selectedFont || null,
+    fontSize: selectedFontSize,
+    autoStart: $("#autostart").checked,
+    uiTheme: readUiTheme(),
+    showAwaiting: $("#show-awaiting").checked,
+  };
+}
+
+// 화면 값 전체를 보내면 아직 불러오지 못한 기본값(글꼴 없음·체크 꺼짐)이나 트레이에서 바뀌기 전 값이
+// 실제 설정을 덮어쓴다. 사용자가 바꾼 항목만 보낸다.
+function changedSettings(current, loaded) {
+  return Object.fromEntries(
+    Object.entries(current).filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(loaded[key]))
+  );
 }
 
 function renderUiTheme(theme = {}) {
@@ -246,6 +267,22 @@ function createEmptyState(title) {
 
 function setLoginState(providerId, patch) {
   loginStates.set(providerId, { ...(loginStates.get(providerId) || {}), ...patch });
+}
+
+function startedLoginState() {
+  return {
+    running: true, urls: [], tail: [], prompt: false, ok: null, draft: "", sent: false,
+    cancelled: false, timedOut: false, error: "",
+  };
+}
+
+// 설정 창을 닫았다 다시 열어도 진행 중인 로그인은 계속 돈다. main이 알려 주는 진행 중 로그인으로
+// 패널(주소 열기·코드 입력·취소)을 되살린다. 이미 화면이 아는 로그인은 건드리지 않는다.
+function adoptRunningLogins(data) {
+  for (const [providerId, login] of Object.entries(data?.logins || {})) {
+    if (loginStates.get(providerId)?.running) continue;
+    setLoginState(providerId, { ...startedLoginState(), urls: login.urls || [], prompt: Boolean(login.prompt) });
+  }
 }
 
 // 로그인 진행 조작(주소 열기·코드 보내기·취소). 실패는 토스트로만 알리고 패널은 그대로 둔다.
@@ -541,12 +578,10 @@ async function runAccountAction(input, sourceButton) {
       throw new Error(responseError(response, "계정 작업에 실패했습니다."));
     }
     state = response.data;
-    if (input.action === "login" && response.login?.running) {
-      // 시작 직후부터 패널을 보여 준다. 주소·종료는 onAccountLogin 이벤트로 온다.
-      setLoginState(input.provider, {
-        running: true, urls: [], tail: [], prompt: false, ok: null, draft: "", sent: false,
-        cancelled: false, timedOut: false, error: "",
-      });
+    // 시작 직후부터 패널을 보여 준다. 주소·종료는 onAccountLogin 이벤트로 온다. 이 응답은 main이
+    // 계정 목록을 읽느라 늦게 도착할 수 있어, 그 사이 이벤트로 이미 받은 주소를 지우면 안 된다.
+    if (input.action === "login" && response.login?.running && !loginStates.get(input.provider)?.running) {
+      setLoginState(input.provider, startedLoginState());
     }
     renderAccounts();
     renderUsage();
@@ -633,10 +668,7 @@ function registerNavigation() {
     if (!event?.provider) return;
     const current = loginStates.get(event.provider) || {};
     if (event.type === "started") {
-      setLoginState(event.provider, {
-        running: true, urls: [], tail: [], prompt: false, ok: null, draft: "", sent: false,
-        cancelled: false, timedOut: false, error: "",
-      });
+      setLoginState(event.provider, startedLoginState());
     } else if (event.type === "url") {
       setLoginState(event.provider, { running: true, urls: [...(current.urls || []), event.url] });
     } else if (event.type === "output") {
@@ -675,15 +707,18 @@ function registerAppearanceControls() {
   });
   $("#save").addEventListener("click", async (event) => {
     const button = event.currentTarget;
+    if (!loadedSettings) {
+      showError("설정을 아직 불러오는 중이에요. 잠시 뒤에 다시 눌러 주세요.");
+      return;
+    }
+    const changes = changedSettings(currentSettings(), loadedSettings);
+    if (Object.keys(changes).length === 0) {
+      showError("바뀐 설정이 없어요.");
+      return;
+    }
     setButtonBusy(button, true, "적용 중…");
     try {
-      const response = await api.save({
-        fontFamily: selectedFont || null,
-        fontSize: selectedFontSize,
-        autoStart: $("#autostart").checked,
-        uiTheme: readUiTheme(),
-        showAwaiting: $("#show-awaiting").checked,
-      });
+      const response = await api.save(changes);
       if (!response?.ok) throw new Error(responseError(response, "설정을 적용하지 못했습니다."));
       state = response.data;
       renderAll({ resetAppearance: true });
@@ -704,6 +739,7 @@ function registerProviderControls() {
       const response = await api.get();
       if (!response?.ok) throw new Error(responseError(response, "계정을 확인하지 못했습니다."));
       state = response.data;
+      adoptRunningLogins(state);
       renderAccounts();
       renderUsage();
     } catch (error) {
@@ -720,6 +756,7 @@ function registerProviderControls() {
       const response = await api.usage();
       if (!response?.ok) throw new Error(responseError(response, "사용량을 확인하지 못했습니다."));
       state = response.data;
+      adoptRunningLogins(state);
       renderAccounts();
       renderUsage();
     } catch (error) {
@@ -849,6 +886,7 @@ async function initialize() {
       throw new Error(responseError(settingsResponse, "설정을 불러오지 못했습니다."));
     }
     state = settingsResponse.data;
+    adoptRunningLogins(state);
     selectedFont = resolveInstalledFontFamily(state.appearance.fontFamily);
     selectedFontSize = Number(state.appearance.fontSize) || 12;
     renderAll({ resetAppearance: true });

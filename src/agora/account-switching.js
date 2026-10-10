@@ -384,6 +384,16 @@ Write-Output "Stopped $($processes.Count) AGY process(es)."
     return cliLogin.isRunning(provider);
   }
 
+  // 진행 중인 로그인만 { 제공자: { running, urls, prompt } }로 돌려준다(설정 창이 다시 열릴 때 패널 복원용).
+  function getProviderLoginSnapshots() {
+    const logins = {};
+    for (const provider of ["claude", "codex", "agy"]) {
+      const snapshot = cliLogin.snapshot?.(provider);
+      if (snapshot) logins[provider] = snapshot;
+    }
+    return logins;
+  }
+
   async function openProviderLoginUrl(provider, url) {
     // 화면이 열어 달라는 주소는 이 로그인이 실제로 출력한 것이어야 한다.
     if (!cliLogin.knowsUrl(provider, url)) throw new Error("이 로그인이 연 주소가 아닙니다.");
@@ -1186,6 +1196,7 @@ ${error.message}`;
     cancelProviderLogin,
     openProviderLoginUrl,
     isProviderLoginRunning,
+    getProviderLoginSnapshots,
     switchCodexAccount,
     buildProviderAccountSubmenu,
     switchProviderAccount,

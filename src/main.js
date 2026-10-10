@@ -165,6 +165,7 @@ const {
   cancelProviderLogin,
   openProviderLoginUrl,
   isProviderLoginRunning,
+  getProviderLoginSnapshots,
   switchCodexAccount,
   buildProviderAccountSubmenu,
   switchProviderAccount,
@@ -653,6 +654,8 @@ async function getSettingsData({ forceUsage = false } = {}) {
       showAwaiting: settings.showAwaiting !== false,
     },
     autoStart: isAutoLaunchEnabled(),
+    // 진행 중인 앱 안 로그인. 설정 창을 닫았다 다시 열어도 패널(취소·코드 입력)을 되살린다.
+    logins: getProviderLoginSnapshots(),
     // 순서는 provider-capabilities/레일과 같은 Claude → Codex → AGY로 고정합니다.
     providers: [
       { id: "claude", label: "Claude", accounts: claude.accounts },
