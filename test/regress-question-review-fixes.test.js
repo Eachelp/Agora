@@ -91,3 +91,30 @@ test("대화 전용 방에서는 셸 래퍼(.cmd) 안내가 나오지 않는다(
   assert.equal(room.messages.filter((m) => m.authorType === "system").length, 0);
   assert.ok(log.calls.every((c) => !("userQuestion" in c)));
 });
+
+// 문서가 코드와 어긋나지 않게: 붙는 조건, 시간 제한, 창 닫기, 토큰 위치.
+test("문서가 붙는 조건(파일 작업 권한만)·30분 대기·35분 CLI 제한·창 닫기·토큰 위치를 코드대로 말한다", () => {
+  const guide = read("사용-안내.md");
+  assert.match(guide, /대화 전용 모드에서는 답변 끝에서 선택지로 묻습니다/);
+  assert.match(guide, /카드에 답하는 시간은 \*\*30분까지\*\*/);
+  assert.doesNotMatch(guide, /시간 제한은 없지만/, "'시간 제한 없음'과 '30분'이 서로 어긋나면 안 된다");
+  assert.match(guide, /같은 AI에게 입력창으로 보낸 메시지는 카드의 답이 되지 않습니다/);
+  assert.match(guide, /질문 대기/);
+  assert.match(guide, /답변 대기 중/);
+  assert.match(read("README.md"), /대화 전용 모드[^\n]*답변 끝에서 선택지로 묻습니다/);
+  assert.match(read("docs", "README.md"), /대화 전용·AGY·토론에는 없음/);
+
+  const record = read("docs", "design", "AGORA_REVISION_2026-10-11_QUESTION_UI.md");
+  assert.match(record, /MCP_TOOL_TIMEOUT=2100000/);
+  assert.match(record, /tool_timeout_sec=2100/);
+  assert.doesNotMatch(record, /MCP_TOOL_TIMEOUT=1800000|tool_timeout_sec=1800/);
+  assert.match(record, /창 닫기는 질문을 풀지 않는다/);
+  assert.doesNotMatch(record, /앱 종료·창 닫기·실행 종료/);
+  assert.match(record, /CLI 명령줄에는 들어간다/);
+  assert.doesNotMatch(record, /환경 변수로만 전달/);
+});
+
+test("개발자 용어(MCP·중계소·셸 래퍼·argv)가 사용자 문서(사용-안내·README)에 나오지 않는다", () => {
+  const section = read("사용-안내.md").split("### AI가 일하다 묻는 질문 카드")[1].split("### AI가 응답을 끝내며")[0];
+  assert.doesNotMatch(section, /MCP|중계소|셸 래퍼|argv|broker/);
+});
