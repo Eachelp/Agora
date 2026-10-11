@@ -112,8 +112,13 @@ const questionCards = questionCard.createQuestionCards({
   getSessionId: () => activeSessionId,
   answer: (question, answers) => window.chatApi.questionAnswer(question.sessionId, question.questionId, answers),
   skip: (question) => window.chatApi.questionCancel(question.sessionId, question.questionId),
-  // 답을 기다리는 질문이 생기거나 사라지면 중지·잠깐 버튼 표시를 다시 맞춘다.
-  onChange: () => renderBusyControls(),
+  // 카드가 사라지면 키보드 초점을 입력창으로 돌려준다(눌렀던 버튼이 사라져 초점이 떨어지는 것을 막는다).
+  focusComposer: () => composerInput.focus(),
+  // 답을 기다리는 질문이 생기거나 사라지면 중지·잠깐 버튼과 '입력 중 / 답변 대기' 표시를 다시 맞춘다.
+  onChange: () => {
+    renderBusyControls();
+    syncQuestionWaiting();
+  },
 });
 const typingAgents = new Set();
 let roomTurnState = { current: null, running: [], queue: [], deferred: [] };
@@ -1129,7 +1134,14 @@ function buildSessionItem(entry) {
 
     const titleLine = document.createElement("span");
     titleLine.className = "session-title-line";
-    if (entry.status === "running") {
+    if (entry.waitingQuestion) {
+      // 사용자의 답을 기다리는 질문 카드가 있다. 다른 방을 보고 있어도 알 수 있게 '실행 중'과 다르게 보인다.
+      const dot = document.createElement("i");
+      dot.className = "session-status is-waiting";
+      dot.title = "질문에 답을 기다리는 중";
+      titleLine.append(dot);
+      main.title = "이 대화에서 질문에 답을 기다리고 있습니다. 대화를 열어 답해 주세요.";
+    } else if (entry.status === "running") {
       const dot = document.createElement("i");
       dot.className = "session-status is-running";
       dot.title = "실행 중";
@@ -1145,6 +1157,12 @@ function buildSessionItem(entry) {
     titleText.dataset.sessionName = entry.id;
     titleText.textContent = entry.title;
     titleLine.append(titleText);
+    if (entry.waitingQuestion) {
+      const badge = document.createElement("span");
+      badge.className = "session-wait";
+      badge.textContent = "질문 대기";
+      titleLine.append(badge);
+    }
 
     // 시각도 제목과 같은 줄에 흐리게 붙입니다. 부모(프로젝트)가 한 줄인데
     // 자식이 두 줄이면 위계가 뒤집혀 보입니다.
@@ -3644,8 +3662,8 @@ function handleRunEvent(payload) {
     const liveMeta = [agent?.name || agentId, `@${agentId}`];
     liveMeta.push(payload.model || agent?.model || "모델 확인 중");
     liveMeta.push(effortLabel(payload.effort || agent?.effort || "추론 강도 확인 중"));
-    liveMeta.push("응답 중");
-    nameEl.textContent = liveMeta.join(" · ");
+    const liveMetaText = liveMeta.join(" · ");
+    nameEl.textContent = `${liveMetaText} · 응답 중`;
     meta.append(nameEl);
     const bubble = document.createElement("div");
     bubble.className = "bubble is-live-bubble";
@@ -3661,7 +3679,9 @@ function handleRunEvent(payload) {
     body.append(meta, bubble);
     item.append(avatar, body);
     messageList.append(item);
-    liveRuns.set(runId, { item, statusEl, textEl, noticeEl, text: "", displayTrimmed: false });
+    const live = { item, statusEl, textEl, noticeEl, nameEl, agentId, metaText: liveMetaText, text: "", displayTrimmed: false, waiting: false, savedStatus: "" };
+    liveRuns.set(runId, live);
+    syncLiveWaiting(live);
     scrollToBottom();
     return;
   }
@@ -3669,7 +3689,7 @@ function handleRunEvent(payload) {
   const live = liveRuns.get(runId);
   if (!live) return;
   if (kind === "status") {
-    live.statusEl.textContent = payload.label || "";
+    setLiveStatus(live, payload.label || "");
   } else if (kind === "delta") {
     live.text += payload.text || "";
     // 표시량이 너무 커지면 앞부분을 접습니다. 실행은 중단하지 않습니다.
@@ -3682,7 +3702,7 @@ function handleRunEvent(payload) {
       live.noticeEl.hidden = false;
       live.noticeEl.textContent = "출력이 길어 일부 내용을 접었습니다. 실행은 계속 진행됩니다.";
     }
-    live.statusEl.textContent = "";
+    setLiveStatus(live, "");
     scrollToBottom();
   } else if (kind === "run-discard") {
     // 결과 메시지 없이 끝난 실행(중지·취소·승인 뒤 재실행)의 초안은 그냥 거둔다.
@@ -3691,8 +3711,32 @@ function handleRunEvent(payload) {
   } else if (kind === "run-end") {
     // 정식 메시지(성공 답변 또는 실패 기록)가 곧 도착해 이 초안을 대체합니다.
     // 실패했다고 해서 여기서 지우면 중간 출력이 화면에서 사라지므로 그대로 둡니다.
-    live.statusEl.textContent = payload.ok ? "" : "실행이 끝났습니다. 결과를 정리합니다…";
+    setLiveStatus(live, payload.ok ? "" : "실행이 끝났습니다. 결과를 정리합니다…");
   }
+}
+
+// 질문 카드가 답을 기다리는 동안은 에이전트가 쓰는 중이 아니라 사용자를 기다리는 중이다. 그동안 진행 글을 멈추고
+// 사실대로 알린 뒤, 카드가 처리되면 원래 표시로 돌린다(기다리는 사이 온 상태 글은 돌아올 때 보여 준다).
+const QUESTION_WAIT_STATUS = "질문에 답하면 이어서 합니다";
+function setLiveStatus(live, text) {
+  if (live.waiting) live.savedStatus = text;
+  else live.statusEl.textContent = text;
+}
+function syncLiveWaiting(live) {
+  const waiting = questionCards.isWaiting(live.agentId);
+  if (waiting === live.waiting) return;
+  live.waiting = waiting;
+  if (waiting) {
+    live.savedStatus = live.statusEl.textContent;
+    live.statusEl.textContent = QUESTION_WAIT_STATUS;
+  } else {
+    live.statusEl.textContent = live.savedStatus;
+  }
+  live.nameEl.textContent = `${live.metaText} · ${waiting ? "답변 대기 중" : "응답 중"}`;
+}
+function syncQuestionWaiting() {
+  for (const live of liveRuns.values()) syncLiveWaiting(live);
+  renderTyping();
 }
 
 // --- 타이핑 표시 ---
@@ -3705,10 +3749,17 @@ function renderTyping() {
     const pill = document.createElement("span");
     pill.className = "typing-pill";
     pill.style.setProperty("--agent-color", agent.color);
-    const dots = document.createElement("span");
-    dots.className = "dots";
-    dots.append(document.createElement("i"), document.createElement("i"), document.createElement("i"));
-    pill.append(dots, document.createTextNode(`${agent.name} 입력 중`));
+    if (questionCards.isWaiting(agent.id)) {
+      // 질문 카드에 답을 기다리는 중이면 움직이는 점 없이 사실대로 적는다.
+      pill.classList.add("is-waiting");
+      pill.title = "질문 카드에 답하면 이어서 합니다";
+      pill.append(document.createTextNode(`${agent.name} 답변 대기 중`));
+    } else {
+      const dots = document.createElement("span");
+      dots.className = "dots";
+      dots.append(document.createElement("i"), document.createElement("i"), document.createElement("i"));
+      pill.append(dots, document.createTextNode(`${agent.name} 입력 중`));
+    }
     typingRow.append(pill);
   }
   renderAgents();

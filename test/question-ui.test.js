@@ -36,6 +36,12 @@ function loadUi() {
     approvalQueue: [],
     activeApproval: null,
     roomTurnState: { current: null, running: [], queue: [], deferred: [] },
+    composerInput: { focus() { context.composerFocused += 1; } },
+    composerFocused: 0,
+    messageList: new FakeNode("ul"),
+    typingRow: new FakeNode("div"),
+    liveRuns: new Map(),
+    effortLabel: (value) => String(value),
     stopButton: new FakeNode("button"),
     interjectButton: new FakeNode("button"),
     queueRow: new FakeNode("div"),
@@ -57,14 +63,17 @@ function loadUi() {
     },
     switchActiveSession(id) { context.activeSessionId = id; },
     renderAllMessages() {}, showPendingNotices() {}, scrollToBottom() {}, renderProjects() {}, renderHeader() {},
-    renderAgents() {}, renderTyping() {}, renderPendingAttachments() {}, showNextApproval() {}, syncComposerLock() {},
+    renderAgents() {}, renderPendingAttachments() {}, showNextApproval() {}, syncComposerLock() {},
     addApproval() {}, call: async (promise) => promise,
     agentById(id) { return context.agents.find((agent) => agent.id === id) || null; },
   };
   vm.createContext(context);
   vm.runInContext([
     section("const questionCards = questionCard.createQuestionCards({", "const typingAgents"),
+    section("const LIVE_DISPLAY_LIMIT_CHARS", "function handleRunEvent("),
+    section("function handleRunEvent(", "// 방이 바쁜지."),
     section("function roomIsBusy(", "// --- 첨부 (작성 중) ---"),
+    section("function buildSessionItem(", "function sessionMoreAnchor("),
     section("function applyFullState(", "// --- 이벤트 구독 ---"),
     section("window.chatApi.onUserQuestion?.(", "window.chatApi.onReset("),
   ].join("\n"), context);
@@ -162,4 +171,96 @@ test("연결 지점: 방을 비우는 reset과 방 전환 알림도 카드를 �
   assert.match(preload, /questionAnswer: /);
   assert.match(preload, /questionCancel: /);
   assert.match(preload, /onUserQuestion: /);
+});
+
+// ---- 답을 기다리는 동안의 표시, 키보드 초점, 사이드바 표시 ----
+const runStart = (extra = {}) => ({ sessionId: "room-a", runId: "r1", agentId: "claude", kind: "run-start", model: "m", effort: "low", ...extra });
+
+test("질문 카드가 답을 기다리는 동안 입력 중 표시는 점 없는 '답변 대기 중'이 되고, 처리되면 원래대로 돌아온다", () => {
+  const { ui, handlers } = loadUi();
+  ui.agents.push({ id: "codex", name: "Codex", color: "#111" });
+  ui.typingAgents.add("claude");
+  ui.typingAgents.add("codex");
+  ui.renderTyping();
+  const pills = () => ui.typingRow.children;
+  assert.deepEqual(pills().map((pill) => pill.textContent), ["Claude 입력 중", "Codex 입력 중"]);
+  assert.equal(pills()[0].byClass("dots").length, 1);
+
+  handlers.userQuestion({ sessionId: "room-a", question: pendingQuestion() });
+  assert.deepEqual(pills().map((pill) => pill.textContent), ["Claude 답변 대기 중", "Codex 입력 중"], "질문한 쪽만 바뀐다");
+  assert.equal(pills()[0].byClass("dots").length, 0, "움직이는 점이 없다");
+  assert.ok(pills()[0].classList.contains("is-waiting"));
+  assert.equal(pills()[1].byClass("dots").length, 1);
+
+  handlers.userQuestion({ sessionId: "room-a", question: pendingQuestion({ status: "cancelled", reason: "user-skip" }) });
+  assert.deepEqual(pills().map((pill) => pill.textContent), ["Claude 입력 중", "Codex 입력 중"]);
+  assert.equal(pills()[0].byClass("dots").length, 1);
+});
+
+test("진행 중 응답 말풍선도 답을 기다리는 동안은 '응답 중' 대신 사실대로 알리고, 처리되면 되돌린다", () => {
+  const { ui, handlers } = loadUi();
+  ui.handleRunEvent(runStart());
+  const live = ui.liveRuns.get("r1");
+  assert.match(live.nameEl.textContent, /· 응답 중$/);
+  assert.equal(live.statusEl.textContent, "…");
+
+  ui.handleRunEvent({ sessionId: "room-a", runId: "r1", agentId: "claude", kind: "status", label: "생각하는 중" });
+  assert.equal(live.statusEl.textContent, "생각하는 중");
+
+  handlers.userQuestion({ sessionId: "room-a", question: pendingQuestion() });
+  assert.match(live.nameEl.textContent, /· 답변 대기 중$/);
+  assert.equal(live.statusEl.textContent, "질문에 답하면 이어서 합니다");
+  // 기다리는 사이 도착한 상태 글이 이 안내를 덮지 않는다.
+  ui.handleRunEvent({ sessionId: "room-a", runId: "r1", agentId: "claude", kind: "status", label: "도구 호출 중" });
+  assert.equal(live.statusEl.textContent, "질문에 답하면 이어서 합니다");
+
+  handlers.userQuestion({ sessionId: "room-a", question: pendingQuestion({ status: "submitting" }) });
+  assert.match(live.nameEl.textContent, /· 응답 중$/);
+  assert.equal(live.statusEl.textContent, "도구 호출 중", "기다리는 동안 온 마지막 상태 글로 돌아온다");
+
+  // 다른 에이전트의 말풍선은 건드리지 않는다.
+  ui.handleRunEvent(runStart({ runId: "r2", agentId: "codex" }));
+  handlers.userQuestion({ sessionId: "room-a", question: pendingQuestion({ questionId: "q2" }) });
+  assert.match(ui.liveRuns.get("r2").nameEl.textContent, /· 응답 중$/);
+});
+
+test("보내기·건너뛰기로 카드가 사라지면 키보드 초점은 입력창으로 가고, 실패해서 카드가 남으면 옮기지 않는다", async () => {
+  const { ui, handlers, questionRow } = loadUi();
+  handlers.userQuestion({ sessionId: "room-a", question: pendingQuestion() });
+  questionRow.find((node) => node.type === "radio" && node.value === "가").click();
+  questionRow.byClass("question-send")[0].click();
+  await settle();
+  assert.equal(questionRow.children.length, 0);
+  assert.equal(ui.composerFocused, 1);
+
+  handlers.userQuestion({ sessionId: "room-a", question: pendingQuestion({ questionId: "q2" }) });
+  questionRow.byClass("question-skip")[0].click();
+  await settle();
+  assert.equal(ui.composerFocused, 2);
+
+  // 서버가 거절하면 카드가 남고 초점도 그대로다.
+  ui.window.chatApi.questionCancel = async () => ({ ok: false, error: "이미 처리되었습니다" });
+  handlers.userQuestion({ sessionId: "room-a", question: pendingQuestion({ questionId: "q3" }) });
+  questionRow.byClass("question-skip")[0].click();
+  await settle();
+  assert.equal(questionRow.children.length, 1);
+  assert.equal(ui.composerFocused, 2);
+});
+
+test("다른 방에서 답을 기다리는 질문은 사이드바에서 '질문 대기'로 보이고, 평소 방과 구분된다", () => {
+  const { ui } = loadUi();
+  ui.formatRelativeTime = () => "방금";
+  ui.selectSession = () => {};
+  ui.startSessionRename = () => {};
+  ui.openSessionMenu = () => {};
+  ui.pointRect = () => ({});
+  const row = (extra) => ui.buildSessionItem({ id: "room-b", title: "다른 방", updatedAt: 1, status: "running", ...extra });
+  const waiting = row({ waitingQuestion: true });
+  assert.equal(waiting.byClass("session-wait")[0].textContent, "질문 대기");
+  assert.equal(waiting.byClass("is-waiting").length, 1);
+  assert.equal(waiting.byClass("is-running").length, 0, "'실행 중' 점과 겹치지 않는다");
+  assert.match(waiting.children[0].title, /질문에 답을 기다리고 있습니다/, "목록 항목의 툴팁");
+  const plain = row({});
+  assert.equal(plain.byClass("session-wait").length, 0);
+  assert.equal(plain.byClass("is-running").length, 1);
 });

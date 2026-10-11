@@ -25,6 +25,14 @@ class FakeNode {
     this.moves = 0; // 이 요소가 부모 안에서 다시 끼워진 횟수(출렁임 시험용)
   }
 
+  // 화면 코드가 쓰는 만큼만: 클래스 추가·확인.
+  get classList() {
+    return {
+      add: (...names) => { for (const name of names) if (!this.className.split(/\s+/).includes(name)) this.className = `${this.className} ${name}`.trim(); },
+      contains: (name) => this.className.split(/\s+/).includes(name),
+    };
+  }
+
   get textContent() {
     return this.own + this.children.map((child) => child.textContent).join("");
   }
@@ -117,6 +125,7 @@ class FakeNode {
 function makeDocument() {
   return {
     createElement: (tag) => new FakeNode(tag),
+    createTextNode: (text) => { const node = new FakeNode("#text"); node.own = String(text); return node; },
     // 카드는 문서에 이벤트를 걸지 않는다. 걸면 시험이 실패한다(남는 리스너가 없어야 한다).
     addEventListener() { throw new Error("카드가 document에 리스너를 걸면 안 됩니다"); },
   };

@@ -7,7 +7,8 @@
 (function attachQuestionCard(global) {
   const MAX_TEXT = 8000; // user-question-broker.js의 MAX_ANSWER_CHARS와 같다.
 
-  function createQuestionCards({ container, document, makeAgentAvatar, agentById, getSessionId, answer, skip, onChange }) {
+  // focusComposer: 카드가 사라진 뒤 키보드 초점을 입력창으로 돌려주는 함수(없으면 아무것도 하지 않는다).
+  function createQuestionCards({ container, document, makeAgentAvatar, agentById, getSessionId, answer, skip, onChange, focusComposer }) {
     const records = new Map(); // questionId → 질문 기록(지금 보는 방 것만)
     const views = new Map(); // questionId → 그려 둔 카드 { el }
     // 쓰던 답. 방을 옮겼다 돌아와도, 다른 이벤트로 다시 그려져도 고르던 것이 풀리지 않게 질문 단위로 둔다.
@@ -40,13 +41,17 @@
       return drafts.get(record.questionId);
     }
 
-    // 모든 질문에 답이 있는가. 보기가 있으면 하나 이상 골랐거나 기타를 썼고, 직접 입력 질문이면 글이 있다.
-    function isComplete(record, draft) {
-      return record.questions.every((question, index) => {
+    // 아직 답하지 않은 질문의 번호(1부터). 보기가 있으면 하나 이상 골랐거나 기타를 써야 하고, 직접 입력 질문이면 글이 있어야 한다.
+    function unanswered(record, draft) {
+      const missing = [];
+      record.questions.forEach((question, index) => {
         const typed = draft.other[index].trim().length > 0;
-        return question.options.length > 0 ? draft.picks[index].size + (typed ? 1 : 0) >= 1 : typed;
+        const answered = question.options.length > 0 ? draft.picks[index].size + (typed ? 1 : 0) >= 1 : typed;
+        if (!answered) missing.push(index + 1);
       });
+      return missing;
     }
+    const isComplete = (record, draft) => unanswered(record, draft).length === 0;
 
     // 단일 선택은 기타를 쓰면 고른 보기를 대신하므로 selected를 비운다. 복수 선택은 보기에 기타를 더한다.
     function buildAnswers(record, draft) {
@@ -130,19 +135,29 @@
       const actions = make("div", "question-actions");
       const error = make("span", "question-error");
       error.setAttribute("role", "alert");
+      // 보내기가 잠겨 있는 이유(아직 답하지 않은 질문)를 버튼 옆에 적는다.
+      const missingHint = make("span", "question-missing");
+      missingHint.id = `question-missing-${record.questionId}`;
       const skipButton = make("button", "question-skip", "건너뛰기");
       skipButton.type = "button";
       skipButton.title = "답하지 않고 넘어갑니다. 에이전트가 알아서 판단해 이어 갑니다.";
       const sendButton = make("button", "question-send", "보내기");
       sendButton.type = "button";
-      actions.append(error, skipButton, sendButton);
+      sendButton.setAttribute("aria-describedby", missingHint.id);
+      actions.append(error, missingHint, skipButton, sendButton);
       el.append(actions);
 
       function sync() {
         error.textContent = draft.error;
         error.hidden = !draft.error;
         sendButton.textContent = draft.busy ? "보내는 중…" : "보내기";
-        sendButton.disabled = draft.busy || !isComplete(record, draft);
+        const missing = unanswered(record, draft);
+        missingHint.textContent = draft.busy || missing.length === 0
+          ? ""
+          : record.questions.length > 1 ? `아직 답하지 않은 질문: ${missing.join(", ")}번` : "답을 고르거나 직접 적으면 보낼 수 있어요";
+        missingHint.hidden = missingHint.textContent === "";
+        sendButton.title = missingHint.textContent;
+        sendButton.disabled = draft.busy || missing.length > 0;
         skipButton.disabled = draft.busy;
         el.setAttribute("aria-busy", draft.busy ? "true" : "false");
       }
@@ -170,7 +185,13 @@
         const current = records.get(record.questionId);
         if (current && isPending(current)) records.set(record.questionId, { ...current, status: optimisticStatus });
         drafts.delete(record.questionId);
+        const active = document.activeElement;
+        const hadFocus = !active || active === document.body || (typeof el.contains === "function" && el.contains(active));
         render();
+        // 눌렀던 버튼이 사라지면 초점이 문서 맨 위로 떨어진다. 키보드로 쓰던 사람이 자리를 잃지 않게 입력창으로 옮긴다.
+        if (hadFocus && typeof focusComposer === "function") {
+          try { focusComposer(); } catch { /* 초점을 못 옮겨도 답은 이미 갔다 */ }
+        }
       }
       function submit() {
         if (!isComplete(record, draft)) return Promise.resolve();
@@ -231,7 +252,12 @@
       render();
     }
 
-    return { replaceAll, apply, render, hasPending: () => pendingList().length > 0 };
+    return {
+      replaceAll, apply, render,
+      hasPending: () => pendingList().length > 0,
+      // 이 에이전트의 질문이 지금 방에서 사용자의 답을 기다리는가(입력 중 표시를 '답변 대기'로 바꾸는 데 쓴다).
+      isWaiting: (agentId) => pendingList().some((record) => record.agentId === agentId),
+    };
   }
 
   const api = { createQuestionCards };

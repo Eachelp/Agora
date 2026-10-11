@@ -678,13 +678,19 @@ function createChatFeature(options) {
   }
 
   // 프로젝트 트리 사이드바용: 모든 세션을 프로젝트별로 묶어 내려줍니다.
+  // 사용자의 답을 기다리는 질문 카드가 있는 방에는 표시를 단다(다른 방을 보고 있어도 사이드바에서 알 수 있게).
+  // 이미 방이 들고 있는 상태에서 계산하므로 따로 조회하거나 주기적으로 확인하지 않는다.
+  function withQuestionWaiting(entry) {
+    return rooms.get(entry.id)?.hasPendingQuestion() ? { ...entry, waitingQuestion: true } : entry;
+  }
+
   function sessionsByProjectPayload() {
     if (!ensureStore()) return {};
     const grouped = {};
     for (const entry of store.listSessions()) {
       const projectId = projectIdForMeta(entry);
       if (!grouped[projectId]) grouped[projectId] = [];
-      grouped[projectId].push(entry);
+      grouped[projectId].push(withQuestionWaiting(entry));
     }
     return grouped;
   }
@@ -696,7 +702,7 @@ function createChatFeature(options) {
       projects: ensureProjectStore()?.listProjects() || [],
       workflow: workflowForProject(activeProjectId),
       activeProjectId,
-      sessions: list,
+      sessions: list.map(withQuestionWaiting),
       sessionsByProject: sessionsByProjectPayload(),
       activeSessionId: getActiveSessionId(activeProjectId),
       readOnly: Boolean(store?.readOnly || storeError || projectStoreError || workflowStoreError || memoryStoreError),
@@ -1106,6 +1112,8 @@ function roomMeta(meta) {
     };
     on("busy", syncRoomStatus);
     on("approval-wait", syncRoomStatus);
+    // 질문이 생기거나 처리되면 사이드바의 '질문 대기' 표시도 맞춘다(승인 대기와 같은 방식).
+    on("user-question", syncRoomStatus);
 
     rooms.set(sessionId, room);
     return room;

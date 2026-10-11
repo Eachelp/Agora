@@ -1074,6 +1074,13 @@ textarea:focus-visible {
   background: var(--accent-soft);
 }
 
+.question-missing {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
 .question-error {
   flex: 1;
   min-width: 0;
@@ -1689,6 +1696,19 @@ textarea:focus-visible {
 
 .session-status.is-interrupted {
   background: #d97706;
+}
+
+/* 사용자의 답을 기다리는 질문이 있는 방. 움직이지 않는 호박색 점과 작은 글씨로 '실행 중'과 구분한다. */
+.session-status.is-waiting {
+  background: #d97706;
+}
+
+.session-wait {
+  flex: none;
+  color: #b45309;
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 /* ⋯은 늘 자리를 차지해 제목을 가리지 않고, hover 전에도 조준할 수 있다. */

@@ -472,3 +472,23 @@ test("대화 전용 방의 실행에는 질문 도구도, 셸 래퍼 안내도, 
   const session = (await env.invoke("chat:sessions:select", { sessionId: env.sessionId })).session;
   assert.equal(session.messages.some((m) => m.authorType === "system" && /셸 래퍼|\.cmd|질문 도구/.test(m.text)), false, "대화 전용 방에서는 설치 방식 안내가 나오지 않는다");
 });
+
+// 지금 보지 않는 방에서 답을 기다리는 질문은 사이드바 항목에 '질문 대기' 표시용 값이 실려 간다(따로 조회·주기 확인 없이).
+test("답을 기다리는 질문이 있는 방은 방 목록에 waitingQuestion이 실리고, 처리되면 사라진다", async (t) => {
+  const log = {};
+  const env = await setup(t, { runner: scriptedRunner(askAndEcho(), log) });
+  const rowOf = (sessionId) => {
+    const last = env.sent.filter((entry) => entry.channel === "chat:sessions-changed").pop();
+    return Object.values(last.payload.sessionsByProject || {}).flat().find((row) => row.id === sessionId);
+  };
+  const a = env.sessionId;
+  await env.invoke("chat:send", { sessionId: a, text: "@claude 진행" });
+  await waitFor(() => rowOf(a)?.waitingQuestion === true, 3000, "질문 대기 표시");
+  assert.equal(rowOf(a).status, "running");
+  const fromState = await env.invoke("chat:state");
+  assert.equal(fromState.sessionsByProject[Object.keys(fromState.sessionsByProject)[0]].find((row) => row.id === a).waitingQuestion, true, "상태 조회에도 같은 값이 실린다");
+
+  const [pending] = await env.pending(a);
+  await env.invoke("chat:question:answer", { sessionId: a, questionId: pending.questionId, answers: [{ selected: ["가"] }, { text: "응" }] });
+  await waitFor(() => rowOf(a) && !("waitingQuestion" in rowOf(a)), 3000, "표시 해제");
+});

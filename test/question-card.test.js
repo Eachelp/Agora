@@ -24,14 +24,15 @@ function record(extra = {}) {
   };
 }
 
-function setup({ answer, skip } = {}) {
+function setup({ answer, skip, focusComposer, doc = makeDocument() } = {}) {
   const container = new FakeNode("div");
   container.hidden = true;
   const state = { session: "room-a", answers: [], skips: [], changes: 0 };
   const agents = { claude: { id: "claude", name: "Claude", color: "#d97706" }, codex: { id: "codex", name: "Codex", color: "#10a37f" } };
   const cards = createQuestionCards({
     container,
-    document: makeDocument(),
+    document: doc,
+    focusComposer,
     makeAgentAvatar: (agent, className) => { const node = new FakeNode("span"); node.className = className; node.own = agent.id; return node; },
     agentById: (id) => agents[id] || null,
     getSessionId: () => state.session,
@@ -351,4 +352,79 @@ test("카드는 문서 전역에 리스너를 걸지 않는다", () => {
     ui.cards.replaceAll([record(), record(), record()]);
     ui.cards.replaceAll([]);
   });
+});
+
+test("보내기가 잠겨 있으면 아직 답하지 않은 질문을 버튼 옆에 적고, 버튼 설명(title·aria-describedby)으로도 건다", async () => {
+  const ui = setup();
+  ui.cards.replaceAll([record({
+    questions: [
+      { question: "하나", options: ["가", "나"], multiSelect: false },
+      { question: "둘", options: ["x", "y"], multiSelect: true },
+      { question: "셋", options: [], multiSelect: false },
+    ],
+  })]);
+  const hint = () => ui.card().byClass("question-missing")[0];
+  assert.equal(hint().textContent, "아직 답하지 않은 질문: 1, 2, 3번");
+  assert.equal(hint().hidden, false);
+  assert.equal(ui.send().title, hint().textContent);
+  assert.equal(ui.send().getAttribute("aria-describedby"), hint().id);
+  assert.ok(hint().id.length > 0);
+
+  ui.inputs()[0].click();
+  assert.equal(hint().textContent, "아직 답하지 않은 질문: 2, 3번");
+  ui.inputs()[3].click();
+  ui.other(0, 2).type_("글");
+  assert.equal(hint().textContent, "", "다 답하면 안내가 사라진다");
+  assert.equal(hint().hidden, true);
+  assert.equal(ui.send().title, "");
+  assert.equal(ui.send().disabled, false);
+});
+
+test("질문이 하나뿐이면 번호 없이 무엇을 하면 되는지 알려 준다", () => {
+  const ui = setup();
+  ui.cards.replaceAll([record()]);
+  assert.equal(ui.card().byClass("question-missing")[0].textContent, "답을 고르거나 직접 적으면 보낼 수 있어요");
+  ui.inputs()[1].click();
+  assert.equal(ui.card().byClass("question-missing")[0].hidden, true);
+});
+
+test("isWaiting: 지금 방에서 답을 기다리는 질문이 있는 에이전트만 true다", () => {
+  const ui = setup();
+  ui.cards.replaceAll([record({ agentId: "claude" }), record({ agentId: "codex", status: "answered" })]);
+  assert.equal(ui.cards.isWaiting("claude"), true);
+  assert.equal(ui.cards.isWaiting("codex"), false);
+  ui.state.session = "room-b";
+  assert.equal(ui.cards.isWaiting("claude"), false, "다른 방의 질문은 세지 않는다");
+});
+
+test("처리돼 카드가 사라질 때 초점이 떨어졌거나 카드 안에 있었다면 입력창으로 옮기고, 사용자가 다른 곳에 두었다면 건드리지 않는다", async () => {
+  const doc = makeDocument();
+  let focused = 0;
+  const ui = setup({ doc, focusComposer: () => { focused += 1; } });
+  ui.cards.replaceAll([record()]);
+  ui.inputs()[0].click();
+  ui.send().click();
+  await settle();
+  assert.equal(focused, 1, "초점이 문서 맨 위로 떨어진 경우");
+
+  const elsewhere = new FakeNode("input");
+  doc.activeElement = elsewhere; // 사용자가 다른 입력 칸에서 쓰는 중
+  ui.cards.replaceAll([record()]);
+  ui.skipLink().click();
+  await settle();
+  assert.equal(focused, 1, "다른 곳에 있던 초점은 그대로");
+
+  doc.activeElement = null;
+  ui.cards.replaceAll([record()]);
+  ui.skipLink().click();
+  await settle();
+  assert.equal(focused, 2);
+
+  // 초점을 옮기다 예외가 나도 답은 이미 갔고 카드도 거두어졌다.
+  const failing = setup({ focusComposer: () => { throw new Error("초점 실패"); } });
+  failing.cards.replaceAll([record()]);
+  failing.inputs()[0].click();
+  failing.send().click();
+  await settle();
+  assert.equal(failing.container.children.length, 0);
 });
