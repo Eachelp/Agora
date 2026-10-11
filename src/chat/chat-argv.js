@@ -34,10 +34,15 @@ function normalizeChoice(value) {
   return text;
 }
 
+// 검사 대상은 플래그 이름뿐이다. 값 인자(작업 폴더·출력 파일·이미지 경로)에는 'bypass' 같은 낱말이
+// 얼마든지 들어 있을 수 있으므로(D:\work\cors-bypass) 글자 내용으로 거르지 않는다.
+const FLAG_NAME_PATTERN = /^--?[A-Za-z][\w-]*/;
+
 function assertSafeArgv(argv, { autoApprove = false } = {}) {
   for (const arg of argv) {
     const text = String(arg);
-    if (/dangerously|bypass/i.test(text) && !(autoApprove && AUTO_APPROVE_FLAGS.has(text))) {
+    const flag = text.match(FLAG_NAME_PATTERN)?.[0] || "";
+    if (/dangerously|bypass/i.test(flag) && !(autoApprove && AUTO_APPROVE_FLAGS.has(text))) {
       throw new Error(`금지된 실행 플래그가 생성되었습니다: ${arg}`);
     }
   }
