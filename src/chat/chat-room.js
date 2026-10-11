@@ -1105,16 +1105,31 @@ class ChatRoom extends EventEmitter {
     // 이때 lostTurnNotified를 소비하면 안 된다. 그 집합은 "이 턴의 유실을 이미
     // 알렸다"는 표시이고, notifyLostTurn이 그걸 보고 건너뛴다. 대기 안내로
     // 태워 버리면 나중에 이 턴이 중지로 실제 버려질 때 아무 안내도 남지 않는다.
-    if (this.runningTurns.size > 0) {
-      const running = [...this.runningTurns].map((entry) => `@${entry.agent.id}`).join(", ");
+    const blockers = this.stallBlockers(item);
+    if (blockers) {
+      const running = blockers.map((id) => `@${id}`).join(", ");
       this.appendSystem(
-        "@" + item.agent.id + " 응답은 아직 차례를 기다리고 있습니다 (" + running + " 실행 중). 그대로 기다리면 이어서 실행됩니다."
-        + (this.hasPendingQuestion() ? " 실행 중인 응답이 사용자의 답을 기다리는 질문이 있습니다. 그 질문에 답하면 이어집니다." : "")
+        "@" + item.agent.id + " 응답은 아직 차례를 기다리고 있습니다" + (running ? ` (${running} 실행 중)` : "") + ". 그대로 기다리면 이어서 실행됩니다."
+        + (this.pendingUserQuestionList().some((question) => blockers.includes(question.agentId)) ? " 실행 중인 응답이 사용자의 답을 기다리는 질문이 있습니다. 그 질문에 답하면 이어집니다." : "")
       );
       return;
     }
     this.lostTurnNotified.add(turnId);
     this.appendSystem("@" + item.agent.id + " 응답이 " + LOST_TURN_STALL_SECONDS + "초 넘게 시작되지 않고 있습니다. 응답이 유실됐을 수 있으니 기다리지 말고 다시 보내 주세요.");
+  }
+
+  // 대기 중인 항목이 지금 시작하지 못하는 까닭이 정말 있는지. 있으면 막고 있는 담당자들(비어 있을 수 있다),
+  // 없으면 null(= 시작할 수 있는데 못 시작한 상태). 빠른 항목은 자기 단위의 담당자가 돌 때만 막힌 것이고,
+  // 다른 담당자가 돌고 있다는 사실은 그 항목을 막지 않는다.
+  stallBlockers(item) {
+    const running = [...new Set([...this.runningTurns].map((entry) => entry.agent.id))];
+    const deferred = this.deferredTurnQueue.includes(item);
+    if (item.lane === "fast" && !deferred) {
+      const own = [...new Set(this.unitOfQueued(item).map((member) => member.agent.id))].filter((id) => this.agentIsRunning(id));
+      return own.length > 0 ? own : null;
+    }
+    if (deferred && (this.discussionActive || this.discussionRequested)) return running;
+    return this.activeUnits.size > 0 || running.length > 0 ? running : null;
   }
 
   isFreeChatContext(context = {}) {
