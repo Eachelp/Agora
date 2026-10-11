@@ -788,6 +788,9 @@ class ChatRoom extends EventEmitter {
       agentId: item.agent.id,
       discussion: Boolean(item.context.discussion),
       fast: item.lane === "fast",
+      // ×가 이 항목만이 아니라 오케스트레이션 전체를 끝낸다는 것(설계 §(8))을 화면이
+      // 다른 툴팁으로 알릴 수 있게 한다. claim 전(orchestrationStart만 있는 턴)은 false다.
+      orchestration: Boolean(item.context.orchestration),
     });
     const live = this.liveTurns();
     return {

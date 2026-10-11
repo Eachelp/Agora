@@ -129,6 +129,12 @@
             <div class="agent-chips" id="agent-chips" aria-label="참여 에이전트"></div>
             <div class="room-controls-actions">
               <button class="chip-button workflow-button" id="btn-workflow" type="button" title="이 프로젝트의 메모리·결정·작업 기록">프로젝트 기록</button>
+              <button
+                class="chip-button orchestrator-chip"
+                id="btn-orchestrator"
+                type="button"
+                title="AI 한 명(지휘 AI)이 다른 AI에게 일을 나눠 맡기고 결과를 모아 답합니다"
+              >오케스트레이터</button>
               <button class="chip-button discussion-button" id="btn-discussion" type="button" title="에이전트 토론 시작">토론 시작</button>
             </div>
           </div>
@@ -154,6 +160,7 @@
 
         <main class="chat-scroll" id="chat-scroll">
           <ol class="message-list" id="message-list" aria-live="polite"></ol>
+          <div class="orchestration-status-row" id="orchestration-status-row" hidden aria-live="polite"></div>
           <div class="typing-row" id="typing-row" hidden></div>
           <div class="typing-row" id="queue-row" hidden aria-live="polite"></div>
         </main>
@@ -173,6 +180,16 @@
               <button class="mode-chip is-active" id="btn-mode-sequential" type="button" title="이어 발언: 앞선 AI의 답변을 순차적으로 전달하여 참고합니다">이어 발언</button>
               <button class="mode-chip" id="btn-mode-independent" type="button" title="독립 발언: 같은 턴의 다른 AI 답변을 서로 전달하지 않고 독립 응답을 받습니다">독립 발언</button>
             </span>
+            <!-- 꺼짐 밝기는 오케스트레이터가 켜져 있어도 그대로 둔다 — 지휘 AI·작업자 호출에는
+                 적용되지 않지만, @로 직접 부른 곁가지 대화의 멘션 연쇄에는 그대로 적용되기 때문이다. -->
+            <label
+              class="keep-calling-toggle"
+              id="keep-calling-toggle"
+              title="꺼짐: 에이전트가 @로 다른 에이전트를 부르는 호출이 한 메시지당 2번까지만 이어집니다. 켜짐: 상한 없이 이어지다 안전선에서 멈춥니다(AI끼리 대화가 길어지면 사용량이 늘 수 있습니다). 오케스트레이터의 지휘 AI·작업자 호출에는 적용되지 않고, @로 직접 부른 곁가지 대화의 멘션 연쇄에만 적용됩니다."
+            >
+              <input type="checkbox" id="chk-keep-calling" />
+              <span>AI끼리 계속 부르기</span>
+            </label>
           </div>
           <div class="composer-box" id="composer-box">
             <button class="icon-button" id="btn-attach" type="button" title="파일 첨부 (이미지·문서, 최대 20MiB)" aria-label="파일 첨부">

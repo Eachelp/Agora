@@ -37,6 +37,14 @@ if (btnModeSequential) {
 if (btnModeIndependent) {
   btnModeIndependent.addEventListener("click", () => setResponseMode(true));
 }
+
+// 입력창 기본 안내문. 오케스트레이터가 켜지면 바뀌고, 꺼지면 이 글로 되돌아간다.
+const DEFAULT_COMPOSER_PLACEHOLDER = composerInput.placeholder;
+
+// 방마다 도는 오케스트레이션(휘발성 실행 상태, 방 설정이 아니다). null이면 지금 돌고 있는
+// 오케스트레이션이 없다 — room.orchestrationSnapshot()과 같은 모양: {active, round, executions, leadId}.
+let orchestration = null;
+
 const projectListEl = document.getElementById("project-list");
 const newProjectButton = document.getElementById("btn-new-project");
 const refreshProvidersButton = document.getElementById("btn-refresh-providers");
@@ -48,6 +56,9 @@ const permissionSelect = document.getElementById("permission-select");
 const enforcementHint = document.getElementById("enforcement-hint");
 const discussionButton = document.getElementById("btn-discussion");
 const workflowButton = document.getElementById("btn-workflow");
+const orchestratorChip = document.getElementById("btn-orchestrator");
+const chkKeepCalling = document.getElementById("chk-keep-calling");
+const orchestrationStatusRow = document.getElementById("orchestration-status-row");
 const usageButton = document.getElementById("btn-usage");
 const usageFoldToggle = document.getElementById("btn-usage-fold");
 const usageStripItems = document.getElementById("usage-strip-items");
@@ -1398,6 +1409,109 @@ function renderHeader() {
     : "토론에는 사용 가능한 에이전트가 두 명 이상 필요합니다";
   // discussable = 사용 가능하고 참여 중인 에이전트가 둘 이상.
   responseModeBar.hidden = !discussable;
+
+  const orchestrator = sessionMeta?.orchestrator || { enabled: false, leadId: null };
+  orchestratorChip.classList.toggle("is-active", Boolean(orchestrator.enabled));
+  orchestratorChip.textContent = orchestrator.enabled
+    ? `오케스트레이터 · @${orchestrator.leadId}`
+    : "오케스트레이터";
+  composerInput.placeholder = orchestrator.enabled
+    ? `메시지는 지휘 AI(@${orchestrator.leadId})에게 갑니다 · @로 부르면 그 AI에게 바로 갑니다 · 이름만 쓰면 지휘 AI가 맡깁니다(예: "codex에게 시켜")`
+    : DEFAULT_COMPOSER_PLACEHOLDER;
+  if (chkKeepCalling) chkKeepCalling.checked = Boolean(sessionMeta?.keepCalling);
+}
+
+function orchestratorLeadCandidates() {
+  return agents.filter((agent) => agent.available && agent.enabled !== false);
+}
+
+// 방 머리줄의 [오케스트레이터] 칩. 켜기/끄기와 지휘 AI 선택을 한 팝오버에서 한다.
+function openOrchestratorPopover(anchor) {
+  const candidates = orchestratorLeadCandidates();
+  const current = sessionMeta?.orchestrator || { enabled: false, leadId: null };
+
+  openPopover(anchor, (root) => {
+    root.classList.add("is-orchestrator");
+    const head = document.createElement("div");
+    head.className = "popover-head";
+    const title = document.createElement("strong");
+    title.textContent = "오케스트레이터";
+    head.append(title);
+    root.append(head);
+
+    const desc = document.createElement("p");
+    desc.className = "popover-status";
+    desc.textContent = "AI 한 명(지휘 AI)이 다른 AI에게 일을 나눠 맡기고 결과를 모아 답합니다.";
+    root.append(desc);
+
+    if (candidates.length === 0) {
+      const warn = document.createElement("p");
+      warn.className = "popover-status is-warning";
+      warn.textContent = "지휘 AI로 쓸 수 있는 에이전트가 없습니다(사용 가능하고 참여 중인 에이전트가 필요합니다).";
+      root.append(warn);
+      return;
+    }
+
+    const leadSelect = document.createElement("select");
+    for (const agent of candidates) {
+      const option = document.createElement("option");
+      option.value = agent.id;
+      option.textContent = `${agent.name} (@${agent.id})`;
+      leadSelect.append(option);
+    }
+    const initialLead = candidates.some((agent) => agent.id === current.leadId)
+      ? current.leadId
+      : candidates[0].id;
+    leadSelect.value = initialLead;
+    root.append(makeField("지휘 AI", leadSelect));
+
+    const enableToggle = document.createElement("input");
+    enableToggle.type = "checkbox";
+    enableToggle.checked = Boolean(current.enabled);
+    root.append(makeField("오케스트레이터 사용", enableToggle));
+
+    async function apply() {
+      const result = await requestSessionMeta((sessionId) =>
+        window.chatApi.orchestratorSet(sessionId, enableToggle.checked, leadSelect.value));
+      // 거절된 경우(예: 쓸 수 없는 지휘 AI) 되돌린다 — requestSessionMeta가 실패를 알려 주지 않으므로
+      // 저장된 설정과 다시 맞춰 본다.
+      if (!result) enableToggle.checked = Boolean(sessionMeta?.orchestrator?.enabled);
+    }
+    enableToggle.addEventListener("change", apply);
+    leadSelect.addEventListener("change", () => {
+      if (enableToggle.checked) apply();
+    });
+  });
+}
+
+orchestratorChip.addEventListener("click", () => openOrchestratorPopover(orchestratorChip));
+
+if (chkKeepCalling) {
+  chkKeepCalling.addEventListener("change", () => {
+    void requestSessionMeta((sessionId) => window.chatApi.keepCallingSet(sessionId, chkKeepCalling.checked));
+  });
+}
+
+// 라운드·실행 횟수 한 줄. room.orchestrationSnapshot()이 null이면 아무 오케스트레이션도
+// 돌고 있지 않다는 뜻이라 줄을 숨긴다. 승인·질문 대기는 기존 스냅숏에서 그대로 읽는다(§9).
+function renderOrchestrationStatus() {
+  if (!orchestrationStatusRow) return;
+  if (!orchestration) {
+    orchestrationStatusRow.hidden = true;
+    orchestrationStatusRow.textContent = "";
+    orchestrationStatusRow.classList.remove("is-paused");
+    return;
+  }
+  const lead = agentById(orchestration.leadId);
+  const leadLabel = lead ? `@${lead.id}` : `@${orchestration.leadId}`;
+  const waitingApproval = approvalQueue.some((approval) => approval.sessionId === activeSessionId)
+    || Boolean(activeApproval && activeApproval.sessionId === activeSessionId);
+  const waitingQuestion = !waitingApproval && questionCards.hasPending();
+  const pause = waitingApproval ? " · 일시 정지(승인 대기)" : waitingQuestion ? " · 일시 정지(질문 대기)" : "";
+  orchestrationStatusRow.textContent =
+    `오케스트레이터 · ${leadLabel} · 라운드 ${orchestration.round} · 실행 ${orchestration.executions}회${pause}`;
+  orchestrationStatusRow.classList.toggle("is-paused", Boolean(pause));
+  orchestrationStatusRow.hidden = false;
 }
 
 // 참가자 칩 툴팁. 칩 본문은 @id라 이름이 드러나지 않으므로, 세로 레일이 들고
@@ -1489,7 +1603,7 @@ function answerAwaitingAgent(agentId, option = "") {
   autoresize();
 }
 
-const POPOVER_VARIANTS = ["is-project-settings", "is-new-project", "is-workflow", "is-menu", "is-usage", "is-agent"];
+const POPOVER_VARIANTS = ["is-project-settings", "is-new-project", "is-workflow", "is-menu", "is-usage", "is-agent", "is-orchestrator"];
 
 function closePopover() {
   popover.hidden = true;
@@ -3893,12 +4007,18 @@ function renderBusyControls() {
     cancel.type = "button";
     cancel.className = "queue-cancel";
     cancel.textContent = "×";
-    cancel.title = `${name}의 대기 중인 발언 취소`;
+    // claim된 지휘 AI 회신 턴·작업자 묶음 항목은 이 ×가 그 하나만이 아니라 오케스트레이션
+    // 전체를 끝낸다(설계 §(8)). 눌렀을 때 뭐가 벌어지는지 다른 문구로 미리 알린다.
+    cancel.title = turn.orchestration
+      ? "오케스트레이션을 여기서 끝냅니다"
+      : `${name}의 대기 중인 발언 취소`;
     cancel.setAttribute("aria-label", cancel.title);
     cancel.addEventListener("click", () => call(window.chatApi.turnCancel(activeSessionId, turn.turnId)));
     pill.append(cancel);
     queueRow.append(pill);
   }
+  // 승인·질문 대기 상태가 바뀌는 길목이 모두 여기를 지나므로, 일시 정지 표시도 여기서 함께 맞춘다.
+  renderOrchestrationStatus();
   scrollToBottom(stick);
 }
 
@@ -4270,6 +4390,10 @@ function applyFullState(full) {
   if (full.sessionsByProject) sessionsByProject = full.sessionsByProject;
   if (Object.hasOwn(full, "activeSessionId")) switchActiveSession(full.activeSessionId);
 
+  // 세션을 안 옮겨도(새로고침, 처음 열 때) 그 방의 오케스트레이션 스냅숏으로 맞춘다. 다른
+  // 방의 상태가 잠깐이라도 비치면 안 되므로 full.session이 없으면(방이 없음) 바로 비운다.
+  orchestration = full.session?.orchestration || null;
+
   if (full.session) {
     sessionMeta = full.session.meta;
     agents = full.session.agents || [];
@@ -4328,6 +4452,13 @@ window.chatApi.onTurnState(({ sessionId, ...state }) => {
   renderHeader();
   renderBusyControls();
 });
+// 라운드·실행 횟수와 지휘 AI. 큐·타이핑과 같은 전환 지점마다 함께 나오지만(§(5)), 바로
+// 반영되게 따로도 구독한다.
+window.chatApi.onOrchestration(({ sessionId, orchestration: next }) => {
+  if (sessionId !== activeSessionId) return;
+  orchestration = next || null;
+  renderOrchestrationStatus();
+});
 window.chatApi.onUserQuestion?.(({ sessionId, question }) => {
   if (sessionId !== activeSessionId) return;
   // 카드가 뜨면 입력 영역이 커져 대화 영역이 줄어든다. 스크롤 위치는 그대로라 가장 새 줄이 아래로 밀려나므로,
@@ -4364,6 +4495,10 @@ window.chatApi.onReset(({ sessionId }) => {
   showNextApproval();
   syncComposerLock();
   renderTyping();
+  // 방 비우기는 room 쪽에서도 오케스트레이션을 끝내지만(stopAllSilently), 그 안내가 이 reset보다
+  // 늦게 와도 화면에 죽은 라운드·실행 횟수가 남지 않게 여기서도 바로 지운다.
+  orchestration = null;
+  renderOrchestrationStatus();
 });
 window.chatApi.onSystemNotice(({ text, sessionId }) => {
   if (sessionId && sessionId !== activeSessionId) {

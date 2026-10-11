@@ -49,6 +49,8 @@ const INVOKE = Object.freeze({
   WORKSPACE_CLEAR: "chat:workspace:clear",
   PERMISSION_SET: "chat:permission:set",
   AGENT_CONFIGURE: "chat:agent:configure",
+  ORCHESTRATOR_SET: "chat:orchestrator:set",
+  KEEP_CALLING_SET: "chat:keep-calling:set",
   ATTACH_ADD: "chat:attachments:add",
   ATTACH_ADD_DROPPED: "chat:attachments:add-dropped",
   ATTACH_REMOVE: "chat:attachments:remove",
@@ -143,6 +145,10 @@ contextBridge.exposeInMainWorld("chatApi", {
     ipcRenderer.invoke(INVOKE.PERMISSION_SET, { sessionId, mode }),
   agentConfigure: (sessionId, agentId, patch) =>
     ipcRenderer.invoke(INVOKE.AGENT_CONFIGURE, { sessionId, agentId, patch }),
+  orchestratorSet: (sessionId, enabled, leadId) =>
+    ipcRenderer.invoke(INVOKE.ORCHESTRATOR_SET, { sessionId, enabled, leadId }),
+  keepCallingSet: (sessionId, enabled) =>
+    ipcRenderer.invoke(INVOKE.KEEP_CALLING_SET, { sessionId, enabled }),
 
   attachmentsAdd: (sessionId) => ipcRenderer.invoke(INVOKE.ATTACH_ADD, { sessionId }),
   attachmentsAddDropped: (sessionId, paths) =>
@@ -174,6 +180,7 @@ contextBridge.exposeInMainWorld("chatApi", {
   onApprovalResolved: (handler) => subscribe("chat:approval-resolved", handler),
   onUserQuestion: (handler) => subscribe("chat:user-question", handler),
   onSystemNotice: (handler) => subscribe("chat:system-notice", handler),
+  onOrchestration: (handler) => subscribe("chat:orchestration", handler),
   onAppearance: (handler) => subscribe("appearance:update", handler),
   onMaximizedState: (handler) => subscribe("chat:maximized-state", handler),
 
