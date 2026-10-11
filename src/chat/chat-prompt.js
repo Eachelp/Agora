@@ -62,6 +62,10 @@ function buildAgentPrompt({
   // 이번 실행에 질문 도구(ask_user)가 실제로 붙었는가. 붙지 않았으면 도구 안내 줄을 더하지 않는다
   // (끝 ASK_USER 줄의 MULTI 안내 한 문장은 도구와 상관없이 일반 대화 프롬프트에 늘 들어 있다).
   userQuestionTool = false,
+  // 바로 답하기: 같은 단위가 아니면서 지금 함께 돌고 있는 다른 턴의 담당자 id들(없으면 빈 배열).
+  concurrentWork = [],
+  // 시작 시점 기록을 쓰는 턴(빠른 턴, 독립 발언 턴)이 답할 사용자 메시지 본문. 없으면 예전 문구 그대로다.
+  replyTarget = null,
   extraLines = [],
 }) {
   const isDiscussionSummary = Boolean(discussionSummary);
@@ -141,7 +145,12 @@ function buildAgentPrompt({
     lines.push(`참가자: ${roster.join(", ")}`);
     lines.push("");
     lines.push("규칙:");
-    lines.push("- 아래 대화의 마지막 메시지에 이어 자연스럽게 답하세요.");
+    // 시작 시점 기록을 쓰는 턴은 답할 메시지가 기록의 마지막이 아닐 수 있다(그 사이에 다른 참가자의 답이 끝나 들어와 있다).
+    lines.push(
+      replyTarget
+        ? `- 이번에 답할 메시지는 사용자의 "${replyTarget}"입니다. 아래 대화의 마지막 메시지가 아닐 수 있고, 그 뒤에 다른 참가자의 답이 이어져 있을 수 있습니다. 그 사용자 메시지에 답하세요.`
+        : "- 아래 대화의 마지막 메시지에 이어 자연스럽게 답하세요."
+    );
     lines.push(
       `- 출력 전체가 채팅 메시지 하나로 그대로 전송됩니다. "[@${agent.id}]" 같은 접두어나 서명을 붙이지 마세요.`
     );
@@ -149,7 +158,8 @@ function buildAgentPrompt({
       lines.push(
         `- 다른 참가자를 호출하려면 @이름(${others.map((entry) => `@${entry.id}`).join(", ")})을 쓰세요. 그러면 그 참가자가 이어서 답합니다. 호출 없이 언급만 할 때는 @ 없이 이름만 쓰세요. 호출은 꼭 필요할 때만 하세요.`
       );
-      lines.push("- 한 번에 한 명만 발언합니다. 답을 마치면 사용자에게 결정을 넘기거나, 추가 의견이 꼭 필요할 때만 다른 참가자를 @로 호출해 다음 턴을 넘기세요.");
+      // 턴이 겹쳐 도는 방(replyTarget이 있는 턴)에서 "한 번에 한 명만"은 거짓이다.
+      lines.push(`- ${replyTarget ? "" : "한 번에 한 명만 발언합니다. "}답을 마치면 사용자에게 결정을 넘기거나, 추가 의견이 꼭 필요할 때만 다른 참가자를 @로 호출해 다음 턴을 넘기세요.`);
     } else if (others.length > 0) {
       lines.push("- 이번 턴에는 다른 참가자를 추가 호출할 수 없습니다. 다른 참가자를 언급하려면 @ 없이 이름만 쓰세요.");
     }
@@ -238,6 +248,20 @@ ${memoryFull.slice(-budget)}`
     lines.push(
       "  · git·패키지 설치·빌드처럼 작업 폴더 전체에 영향을 주는 명령은 실행하지 마세요. 다른 참가자의 작업과 섞입니다."
     );
+  }
+  // 같은 단위가 아닌 다른 턴이 지금 돌고 있는 자유 대화 턴: 그 답이 아직 대화에 없다는 것을 알린다(권한과 무관).
+  // 쓰기 권한이면 같은 작업 폴더에서 동시에 일하는 계약도 더한다(강제가 아니라 프롬프트 계약이다).
+  if (concurrentWork.length > 0 && !discussion && !isDiscussionSummary && !isSimplify) {
+    const names = concurrentWork.map((id) => `@${id}`).join(", ");
+    lines.push(
+      `- 지금 ${names}가 답하는 중이라 위 대화에는 그 답이 아직 없습니다. 기다리지 말고 지금 있는 대화로 답하되, 그 답이 있어야 판단되는 부분은 그렇다고 밝히세요.`
+    );
+    if (permissionMode === "workspace-write") {
+      lines.push(`- 지금 다른 AI(${names})가 같은 작업 폴더에서 동시에 일하고 있습니다. 서로의 작업이 섞이지 않게 다음을 지키세요.`);
+      lines.push("  · 그 AI가 만들거나 고치는 파일은 건드리지 마세요(읽기는 자유입니다). 어떤 파일을 쓰는지 알 수 없으면 새 파일로 만들거나 먼저 사용자에게 물어보세요.");
+      lines.push("  · git·패키지 설치·빌드처럼 작업 폴더 전체에 영향을 주는 명령은 실행하지 마세요.");
+      lines.push("  · 서로 겹칠 것 같으면 직접 하지 말고 사용자에게 질문하세요.");
+    }
   }
   if (discussion) {
     if (discussion.role) {

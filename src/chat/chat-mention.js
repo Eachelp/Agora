@@ -52,6 +52,17 @@ function parseMentions(text, agents, groupAliases = []) {
   return mentioned;
 }
 
+// 그룹 별칭(@all·@모두 …)이 호출로 들어 있는가. parseMentions가 같은 마스킹·별칭 규칙으로 읽는다.
+function hasGroupMention(text, groupAliases = []) {
+  const source = maskNonCallingText(text);
+  for (const match of source.matchAll(MENTION_PATTERN)) {
+    const previous = match.index > 0 ? source[match.index - 1] : "";
+    if (previous && /[p{L}p{N}_@-]/u.test(previous)) continue;
+    if (groupAliases.some((alias) => tokenMatchesAlias(match[1], alias))) return true;
+  }
+  return false;
+}
+
 // 옛 역할 호출(@기획자·@검토자·@구현자·@기록자·@팀)을 알아보는 안내용 감지.
 // 호출은 지원하지 않으므로 어느 역할인지는 필요 없고 있었는지만 본다.
 // "팀"은 @팀장·@팀원 같은 흔한 단어를 삼키지 않게 정확 일치만 인정한다.
@@ -74,6 +85,7 @@ function hasLegacyRoleMention(text) {
 }
 
 module.exports = {
+  hasGroupMention,
   hasLegacyRoleMention,
   parseMentions,
   tokenMatchesAlias,

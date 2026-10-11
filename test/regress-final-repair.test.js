@@ -132,7 +132,9 @@ test("5. IPC: 사용자가 × 로 지운 대기 턴은 '전달되지 않았을 �
   const env = makeFeature({ gate });
   const { sessionId } = await newProject(env);
   assert.equal((await env.invoke("chat:send", { sessionId, text: "@claude 하나" })).ok, true);
-  assert.equal((await env.invoke("chat:send", { sessionId, text: "@codex 둘" })).ok, true);
+  // 바로 답하기 도입 뒤: 다른 담당자(@codex)에게 보낸 직접 답장은 바로 시작해 대기 턴이 없다.
+  // 같은 담당자의 직접 답장(@claude)이 그 실행이 끝나길 기다리는 빠른 대기 항목이 된다.
+  assert.equal((await env.invoke("chat:send", { sessionId, text: "@claude 둘" })).ok, true);
   await settle();
   const before = (await env.invoke("chat:state", { sessionId })).session;
   assert.equal(before.turnState.queue.length, 1);

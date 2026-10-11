@@ -1,7 +1,7 @@
 const { EventEmitter } = require("node:events");
 const path = require("node:path");
 const { GROUP_ALIASES } = require("./chat-agents");
-const { parseMentions } = require("./chat-mention");
+const { parseMentions, hasGroupMention } = require("./chat-mention");
 const { filesModifiedSince } = require("../agora/workspace-scan");
 const { buildAgentPrompt } = require("./chat-prompt");
 const {
@@ -142,8 +142,13 @@ class ChatRoom extends EventEmitter {
     this.lostTurnNotified = new Set();
     this.progressStallNotified = new Set();
     this.turnStartedAt = new Map();
-    this.turnActive = false;
-    // 지금 실행 중인 턴들. 독립 발언 묶음에서는 여러 개가 동시에 들어간다.
+    // 시작해서 아직 끝나지 않은 단위(한 번에 같이 시작하는 묶음). 일반 줄은 이게 비어야 시작하고, 유휴 판정도 이걸 본다.
+    this.activeUnits = new Set();
+    // 펌프 패스의 재진입 방지. 패스 도중 다시 불리면 pumpAgain만 켜고 패스가 끝나기 직전에 한 번 더 돈다.
+    this.pumping = false;
+    this.pumpAgain = false;
+    // 지금 실행 중인 턴들. 일반·빠른 턴과 독립 발언 묶음이 섞여 여러 개가 동시에 들어간다.
+    // 중지는 비우지 않는다: 취소한 프로세스가 실제로 끝나야 빠진다(같은 담당자의 프로세스가 겹치지 않게).
     this.runningTurns = new Set();
     // 팬아웃 중에는 펌프를 미룬다(0이면 평소처럼 즉시 실행).
     this.pumpSuspended = 0;
@@ -318,14 +323,75 @@ class ChatRoom extends EventEmitter {
       respondents.push(agent);
     }
 
-    // 질문 카드를 기다리는 동안 보낸 메시지는 카드의 답이 아니라 새 차례로 줄을 선다. 방은 턴을 한 줄로 돌리므로 받는 쪽이
-    // 카드를 가진 에이전트든 다른 에이전트든 카드를 기다리는 실행 뒤에서 기다린다. 질문마다, 받는 에이전트마다 한 번 알린다.
-    // 여러 에이전트에게 한꺼번에 보낸 메시지에서 받는 쪽이 달라도 같은 줄이 겹치면 한 번만 낸다.
+    if (respondents.length > 0) {
+      const order = respondents.length > 1 ? this.shuffle(respondents) : respondents;
+      // 독립 발언은 서로의 답을 보지 않는다 = 앞 사람을 기다릴 이유가 없다.
+      // 한 그룹으로 묶어 동시에 실행한다(이어 발언은 앞 답을 입력으로 쓰므로 순차).
+      const parallelGroupId = independent && order.length > 1 ? `pg-${entry.id}` : null;
+      const fastEligible = this.isFastEligible(trimmed, order, independent);
+      // 걷어낼 대기 턴을 먼저 모두 모은다(걷어내기 전에). 줄과 자리는 메시지 단위로 정한다.
+      const victimsOf = order.map((agent) => this.collectSupersedable(agent.id));
+      const victims = victimsOf.flat();
+      // 하나라도 일반 줄 항목이면 메시지 전체가 일반 줄이다(그 항목의 자리를 지키기 위해서).
+      const lane = fastEligible && victims.every((item) => item.lane === "fast") ? "fast" : "main";
+      // 새 턴들은 결정된 줄에서 걷어낸 가장 앞선 항목의 자리에 붙여서 들어간다(빠른 자격이 없으면 지금처럼 맨 뒤).
+      let insertAt = null;
+      if (fastEligible) {
+        const anchor = this.turnQueue.find((item) => victims.includes(item) && (item.lane === "fast") === (lane === "fast"));
+        if (anchor) {
+          const anchorIndex = this.turnQueue.indexOf(anchor);
+          insertAt = anchorIndex - this.turnQueue.slice(0, anchorIndex).filter((item) => victims.includes(item)).length;
+        }
+      }
+      const newItems = [];
+      // 전원을 큐에 올린 뒤에 한 번만 펌프를 돌린다(묶음이 쪼개지지 않게).
+      this.pumpSuspended += 1;
+      try {
+        // 아직 시작하지 않은 이 담당자의 턴은 방금 온 메시지를 보지 못하므로 걷어내고 새로 잡는다.
+        // 새 턴은 걷어낸 턴이 답하려던 메시지의 첨부를 함께 받고, 걷어낸 턴의 중복 방지 키도 물려받는다.
+        for (const item of victims) this.removeQueued(item);
+        order.forEach((agent, index) => {
+          const mine = victimsOf[index];
+          for (const item of mine) this.retireTurn(item, undefined, { keepKeys: true });
+          const roots = [...new Set(mine.map((item) => item.context.turnRootId))];
+          const newItem = this.scheduleTurn(agent, {
+            attachments: roots.length > 0
+              ? this.attachmentsOfMessages([...roots, entry.id])
+              : attachments,
+            turnRootId: entry.id,
+            independent,
+            ...(parallelGroupId ? { parallelGroupId, parallelTotal: order.length } : {}),
+            ...(order.length > 1 && !independent
+              ? { broadcast: { position: index + 1, total: order.length } }
+              : {}),
+          }, {
+            lane,
+            insertAt: insertAt === null ? null : insertAt + index,
+            inheritKeys: mine.flatMap((item) => item.dedupeKeys),
+          });
+          newItems.push(newItem);
+        });
+      } finally {
+        this.pumpSuspended -= 1;
+        this.pumpTurnQueue();
+      }
+      this.announceQuestionWait(newItems);
+    }
+    return entry;
+  }
+
+  // 질문 카드를 기다리는 동안 보낸 메시지는 카드의 답이 아니라 새 차례로 줄을 선다. 그 턴이 실제로 카드를 쥔 실행 뒤에서
+  // 기다릴 때만 알린다(바로 시작한 턴은 알리지 않는다). 질문마다, 받는 에이전트마다 한 번이고,
+  // 여러 에이전트에게 한꺼번에 보낸 메시지에서 같은 줄이 겹치면 한 번만 낸다.
+  // 빠른 턴은 자기 담당자가 카드를 쥔 때만 기다리므로 그 카드(own)만 알리고, 다른 담당자의 카드는 알리지 않는다.
+  announceQuestionWait(items) {
     const told = new Set();
-    for (const agent of respondents) {
+    for (const item of items) {
+      if (!this.turnQueue.includes(item) && !this.deferredTurnQueue.includes(item)) continue;
+      const agent = item.agent;
       const fresh = this.pendingUserQuestionList().filter((question) => !this.questionHinted.has(`${question.questionId}:${agent.id}`));
       const own = fresh.find((question) => question.agentId === agent.id);
-      const others = fresh.filter((question) => question.agentId !== agent.id);
+      const others = item.lane === "fast" ? [] : fresh.filter((question) => question.agentId !== agent.id);
       for (const question of own ? [own, ...others] : others) this.questionHinted.add(`${question.questionId}:${agent.id}`);
       if (own) this.appendSystem(`@${agent.id}가 질문 카드에 답을 기다리는 중입니다. 이 메시지는 카드에 답하거나 건너뛴 뒤 전달됩니다.`);
       if (others.length > 0) {
@@ -335,38 +401,23 @@ class ChatRoom extends EventEmitter {
         told.add(line);
       }
     }
+  }
 
-    if (respondents.length > 0) {
-      const order = respondents.length > 1 ? this.shuffle(respondents) : respondents;
-      // 독립 발언은 서로의 답을 보지 않는다 = 앞 사람을 기다릴 이유가 없다.
-      // 한 그룹으로 묶어 동시에 실행한다(이어 발언은 앞 답을 입력으로 쓰므로 순차).
-      const parallelGroupId = independent && order.length > 1 ? `pg-${entry.id}` : null;
-      // 전원을 큐에 올린 뒤에 한 번만 펌프를 돌린다(묶음이 쪼개지지 않게).
-      this.pumpSuspended += 1;
-      try {
-        order.forEach((agent, index) => {
-          // 아직 시작하지 않은 이 담당자의 턴은 방금 온 메시지를 보지 못하므로
-          // 걷어내고 새로 잡는다. 새 턴은 걷어낸 턴이 답하려던 메시지의 첨부까지
-          // 함께 받는다.
-          const superseded = this.supersedeQueuedTurns(agent.id);
-          this.scheduleResponse(agent, {
-            attachments: superseded.length > 0
-              ? this.attachmentsOfMessages([...superseded, entry.id])
-              : attachments,
-            turnRootId: entry.id,
-            independent,
-            ...(parallelGroupId ? { parallelGroupId, parallelTotal: order.length } : {}),
-            ...(order.length > 1 && !independent
-              ? { broadcast: { position: index + 1, total: order.length } }
-              : {}),
-          });
-        });
-      } finally {
-        this.pumpSuspended -= 1;
-      }
-      this.pumpTurnQueue();
-    }
-    return entry;
+  // 바로 답하기(빠른 줄) 자격: 이 사용자 메시지의 턴을 빠른 줄에 세워도 되는가. 설계 §2.2의 조건 2~6이다
+  // (1은 사용자 메시지만 이 함수를 부른다는 뜻이다).
+  isFastEligible(text, order, independent) {
+    // 2·3. 이름으로 부른 에이전트가 있고 그룹 별칭이 없다.
+    if (parseMentions(text, this.agents).length === 0 || hasGroupMention(text, GROUP_ALIASES)) return false;
+    // 4. 답할 사람이 정확히 한 명이거나 독립 발언이다(이어 발언 둘 이상은 뒷사람이 앞 답을 읽어야 한다).
+    if (order.length !== 1 && !independent) return false;
+    // 5. 토론 중·토론 시작을 기다리는 중이 아니다.
+    if (this.discussionActive || this.discussionRequested) return false;
+    // 6. 끼어 있는 일반 턴이 없다: 결론 종합·기록관 턴이 대기·실행 중이거나, 답할 담당자에게 갈아끼울 수 없는 대기 턴이 있으면
+    //    이 메시지가 그 앞을 질러 시작하면 안 된다.
+    const queued = [...this.turnQueue, ...this.deferredTurnQueue];
+    if ([...queued, ...this.liveTurns()].some((item) => item.context.discussionSummary)) return false;
+    const agentIds = new Set(order.map((agent) => agent.id));
+    return !queued.some((item) => agentIds.has(item.agent.id) && !(item.context.turnRootId && this.isFreeChatContext(item.context)));
   }
 
   shuffle(list) {
@@ -588,9 +639,15 @@ class ChatRoom extends EventEmitter {
     }
   }
 
-  // 방 전체 단일 턴 큐. 일반 응답과 멘션 호출은 대기 중인 같은 에이전트의
+  // 방 전체 턴 큐. 일반 응답과 멘션 호출은 대기 중인 같은 에이전트의
   // 턴을 공유해, 한 릴레이에서 같은 발언권이 중복 예약되지 않게 합니다.
   scheduleResponse(agent, context = {}) {
+    return this.scheduleTurn(agent, context).promise;
+  }
+
+  // scheduleResponse의 본체. 큐에 선 항목(이미 같은 키의 대기·실행 턴이 있으면 그 항목)을 돌려준다.
+  // placement: { lane: "fast"|"main", insertAt: 큐 위치(없으면 맨 뒤), inheritKeys: 갈아끼운 항목에게 물려받는 중복 방지 키 }.
+  scheduleTurn(agent, context = {}, placement = {}) {
     const generation = this.generation;
     // 담당 에이전트까지 키에 넣는다. 빼면 같은 토론·메시지를 다른 AI에게 한 두 번째
     // 요청이 첫 턴의 promise를 받고 조용히 사라진다.
@@ -601,7 +658,7 @@ class ChatRoom extends EventEmitter {
         : (context.discussion || !context.turnRootId ? null : `${context.turnRootId}:${agent.id}`);
     if (dedupeKey) {
       if (this.pendingTurns.has(dedupeKey)) {
-        return this.pendingTurns.get(dedupeKey).promise;
+        return this.pendingTurns.get(dedupeKey);
       }
       // 실행 중인 턴 전체를 본다. 병렬 묶음에서는 currentTurn 하나만 보면
       // 같은 사용자 메시지가 같은 대상에게 두 번 배정될 수 있다.
@@ -611,9 +668,10 @@ class ChatRoom extends EventEmitter {
       // — 동시 실행에서만 열리는 창이고(순차 실행에서는 멘션 대상이 실행 중일
       // 수 없다), 사용자에겐 "불렀는데 아무도 대답하지 않는" 것으로 보인다.
       // 그래서 최초 배정(mentionDepth 0)만 접고, 멘션 호출은 새 턴으로 잡는다.
+      // 중지로 취소 중인 턴(세대가 지난 것)은 새 요청을 대신 받지 않는다.
       if (!context.mentionDepth) {
-        for (const running of this.runningTurns) {
-          if (running.dedupeKey === dedupeKey) return running.promise;
+        for (const running of this.liveTurns()) {
+          if (running.dedupeKey === dedupeKey) return running;
         }
       }
     }
@@ -623,30 +681,45 @@ class ChatRoom extends EventEmitter {
       resolveTurn = resolve;
     });
     this.turnSeq += 1;
+    // 갈아끼운 항목의 키를 물려받는다: 옛 뿌리로 오는 @멘션 호출이 이 대기 턴에 접힌다(그 턴이 이미 그 멘션을 본다).
+    const dedupeKeys = [...new Set([dedupeKey, ...(placement.inheritKeys || [])].filter(Boolean))];
+    // 토론이 진행 중이면 일반 턴은 끼어들지 못하게 뒤로 미룬다.
+    const deferGeneral = this.discussionActive && !context.discussion;
     const item = {
       turnId: `t${this.turnSeq}`,
       agent,
       context,
       generation,
       dedupeKey,
+      dedupeKeys,
+      // 빠른 줄은 토론·토론 요청 중에는 만들 수 없다(그 사이에 상태가 바뀌었으면 일반 줄이다).
+      lane: placement.lane === "fast" && !deferGeneral && !context.discussion && !this.discussionRequested ? "fast" : "main",
       promise,
       resolve: resolveTurn,
       promptLimit: this.messages.length,
     };
-    if (dedupeKey) this.pendingTurns.set(dedupeKey, item);
+    for (const key of dedupeKeys) this.pendingTurns.set(key, item);
     this.trackTurnWait(item);
-    // 토론이 진행 중이면 일반 턴은 끼어들지 못하게 뒤로 미룬다.
-    const deferGeneral = this.discussionActive && !context.discussion;
     const queue = deferGeneral
       ? this.deferredTurnQueue
       : this.turnQueue;
-    queue.push(item);
+    if (Number.isInteger(placement.insertAt) && placement.insertAt >= 0 && placement.insertAt <= queue.length) {
+      queue.splice(placement.insertAt, 0, item);
+    } else {
+      queue.push(item);
+    }
     this.emitTurnState();
     // 한 발화가 여러 명에게 팬아웃되는 동안에는 펌프를 미룬다. 첫 턴을 넣자마자
     // 돌리면 나머지가 큐에 들어오기 전에 실행이 시작돼, 같이 돌아야 할 독립
     // 발언 묶음이 한 명씩으로 쪼개진다.
     if (this.pumpSuspended === 0) this.pumpTurnQueue();
-    return promise;
+    return item;
+  }
+
+  // 시작해서 아직 끝나지 않았고 현재 세대인 턴. 중지로 취소했지만 프로세스가 아직 끝나지 않은 턴은 runningTurns에는
+  // 남아 있어도(같은 담당자가 겹쳐 시작하지 않게) 화면·개입·중지 판정에서는 이미 없는 턴이다.
+  liveTurns() {
+    return [...this.runningTurns].filter((item) => item.generation === this.generation);
   }
 
   // 발언 큐 UI가 구독하는 방 전체 턴 상태 스냅숏.
@@ -655,11 +728,13 @@ class ChatRoom extends EventEmitter {
       turnId: item.turnId,
       agentId: item.agent.id,
       discussion: Boolean(item.context.discussion),
+      fast: item.lane === "fast",
     });
+    const live = this.liveTurns();
     return {
-      current: this.currentTurn ? this.currentTurn.agent.id : null,
-      // 동시에 도는 턴이 여럿일 수 있다(독립 발언). current는 그중 첫 번째다.
-      running: [...this.runningTurns].map((item) => item.agent.id),
+      current: live.length > 0 ? live[0].agent.id : null,
+      // 동시에 도는 턴이 여럿일 수 있다(독립 발언, 바로 답하기). current는 그중 첫 번째다.
+      running: live.map((item) => item.agent.id),
       queue: this.turnQueue.map(view),
       deferred: this.deferredTurnQueue.map(view),
     };
@@ -667,6 +742,15 @@ class ChatRoom extends EventEmitter {
 
   emitTurnState() {
     this.emit("turn-state", this.turnState());
+  }
+
+  // 스케줄러가 직접 내는 turn-state. 리스너가 던져도 방은 그대로 간다(경고만 남긴다).
+  emitTurnStateSafe() {
+    try {
+      this.emitTurnState();
+    } catch (error) {
+      console.warn("[agora] turn-state 리스너 실패:", error?.message || error);
+    }
   }
 
   // 중지로 버려질 일반 대기 턴 수(토론 턴은 안내 대상이 아니다).
@@ -683,7 +767,7 @@ class ChatRoom extends EventEmitter {
   // 버리며, 다음 사용자 발화 전까지 에이전트발 호출을 만들지 않습니다.
   interject() {
     const dropped = this.turnQueue.length + this.deferredTurnQueue.length;
-    const interrupted = dropped > 0 || this.currentTurn !== null || this.cancels.size > 0;
+    const interrupted = dropped > 0 || this.liveTurns().length > 0 || this.cancels.size > 0;
     const lost = this.queuedGeneralTurnCount();
     // 대기 턴마다 따로 안내하지 않고, 아래 한 줄에 합친다.
     this.stopAllSilently({ notifyLost: false });
@@ -697,57 +781,60 @@ class ChatRoom extends EventEmitter {
 
   // 큐를 떠나는 턴의 장부 정리. 실행되든 버려지든 반드시 거친다 — dedupe 키가
   // 남으면 같은 요청을 다시 보낼 수 없고, 대기 타이머가 남으면 이미 끝난 턴에
-  // "유실됐을 수 있다" 안내가 뜬다.
-  releaseQueuedTurn(item) {
-    if (item.dedupeKey && this.pendingTurns.get(item.dedupeKey) === item) {
-      this.pendingTurns.delete(item.dedupeKey);
+  // "유실됐을 수 있다" 안내가 뜬다. keepKeys는 갈아끼우기용이다: 키를 새 항목이 이미 물려받았다.
+  releaseQueuedTurn(item, { keepKeys = false } = {}) {
+    if (!keepKeys) {
+      for (const key of item.dedupeKeys || (item.dedupeKey ? [item.dedupeKey] : [])) {
+        if (this.pendingTurns.get(key) === item) this.pendingTurns.delete(key);
+      }
     }
     this.turnStartedAt.delete(item.turnId);
   }
 
   // 실행 없이 끝나는 턴. lost면 사용자에게 다시 보내라고 안내한다(중지·취소).
   // 갈아끼우기처럼 질문이 새 턴으로 그대로 전달되는 경우는 안내하지 않는다.
-  retireTurn(item, outcome, { lost = false } = {}) {
-    this.releaseQueuedTurn(item);
+  retireTurn(item, outcome, { lost = false, keepKeys = false } = {}) {
+    this.releaseQueuedTurn(item, { keepKeys });
     item.resolve(outcome);
     if (lost) this.notifyLostTurn(item);
   }
 
-  // 발언 큐 UI에서 대기 중인 턴 하나를 콕 집어 취소합니다.
-  cancelTurn(turnId) {
+  // 큐(대기·미룸)에서 항목 하나를 뺀다. 빠졌으면 true.
+  removeQueued(item) {
     for (const queue of [this.turnQueue, this.deferredTurnQueue]) {
-      const index = queue.findIndex((item) => item.turnId === turnId);
-      if (index < 0) continue;
-      const [item] = queue.splice(index, 1);
-      // 사용자가 일부러 지운 턴이다. "유실됐을 수 있다"는 안내를 붙이지 않는다.
-      this.retireTurn(item, undefined, { lost: false });
-      this.emitTurnState();
-      return true;
+      const index = queue.indexOf(item);
+      if (index >= 0) {
+        queue.splice(index, 1);
+        return true;
+      }
     }
     return false;
   }
 
-  // 사용자 메시지에 뿌리를 둔 이 담당자의 대기 턴을 걷어내고, 걷어낸 턴들이
-  // 답하려던 사용자 메시지 id를 돌려준다.
+  // 발언 큐 UI에서 대기 중인 턴 하나를 콕 집어 취소합니다.
+  cancelTurn(turnId) {
+    const item = [...this.turnQueue, ...this.deferredTurnQueue].find((entry) => entry.turnId === turnId);
+    if (!item) return false;
+    this.removeQueued(item);
+    // 사용자가 일부러 지운 턴이다. "유실됐을 수 있다"는 안내를 붙이지 않는다.
+    this.retireTurn(item, undefined, { lost: false });
+    this.emitTurnState();
+    // 이 항목이 막고 있던 뒤 항목이 풀릴 수 있다.
+    this.pumpTurnQueue();
+    return true;
+  }
+
+  // 사용자 메시지에 뿌리를 둔 이 담당자의 대기 턴(걷어낼 수 있는 것)을 모은다. 걷어내지는 않는다.
   //
   // 대기 턴은 예약 시점의 히스토리(promptLimit)를 붙들고 있어, 사용자가 생각을
   // 나눠 보내면 앞 조각만 보고 답하고 조각마다 턴이 하나씩 생겨 같은 담당자가
   // 여러 번 답했다. 새 메시지로 다시 잡으면 전체를 보고 한 번만 답한다. 실행
   // 중인 턴은 이미 프롬프트가 들어갔으므로 건드리지 않고, 유실 안내도 내지
   // 않는다 — 질문은 새 턴이 그대로 전달한다.
-  supersedeQueuedTurns(agentId) {
-    const roots = [];
-    for (const queue of [this.turnQueue, this.deferredTurnQueue]) {
-      for (let index = queue.length - 1; index >= 0; index -= 1) {
-        const item = queue[index];
-        if (item.agent.id !== agentId) continue;
-        if (!item.context.turnRootId || !this.isFreeChatContext(item.context)) continue;
-        queue.splice(index, 1);
-        if (!roots.includes(item.context.turnRootId)) roots.push(item.context.turnRootId);
-        this.retireTurn(item);
-      }
-    }
-    return roots;
+  collectSupersedable(agentId) {
+    return [...this.turnQueue, ...this.deferredTurnQueue].filter(
+      (item) => item.agent.id === agentId && item.context.turnRootId && this.isFreeChatContext(item.context)
+    );
   }
 
   // 이 사용자 메시지들에 딸린 첨부를 대화 순서대로 모은다. 첨부는 턴 context로
@@ -760,77 +847,184 @@ class ChatRoom extends EventEmitter {
       .flatMap((message) => message.attachments);
   }
 
-  async pumpTurnQueue() {
-    if (this.turnActive) return;
-    this.turnActive = true;
-    try {
-      while (this.turnQueue.length > 0) {
-        // 같은 독립 발언 그룹은 한 묶음으로 동시에 돌린다. 그 외에는 예전처럼
-        // 한 번에 하나씩 — 이어 발언은 앞 사람의 답이 다음 사람의 입력이다.
-        const groupId = this.turnQueue[0].context?.parallelGroupId || null;
-        if (!groupId) {
-          await this.runQueuedTurn(this.turnQueue.shift());
-          continue;
-        }
-        const batch = [];
-        while (this.turnQueue.length > 0 && this.turnQueue[0].context?.parallelGroupId === groupId) {
-          batch.push(this.turnQueue.shift());
-        }
-        await this.runParallelTurns(batch);
-      }
-    } finally {
-      this.turnActive = false;
-      this.resolveIdleWaiters();
-      // finally 직전에 새 턴이 들어온 극히 짧은 경합도 놓치지 않습니다.
-      if (this.turnQueue.length > 0) this.pumpTurnQueue();
+  // 시작할 수 있는 단위를 모두 시작하는 재진입 펌프(한 번의 동기 패스). 멱등이라 할 일이 없으면 아무것도 하지 않는다.
+  // 시작한 단위들의 약속을 모아 돌려준다. 패스가 도는 중에 다시 불리면 끝나기 직전에 한 번 더 돈다.
+  //
+  // 규칙: 낡은 세대 항목은 치운다. 빠른 줄은 단위의 담당자가 모두 비어 있으면(runningTurns에 없으면) 시작한다.
+  // 일반 줄은 돌고 있는 단위가 하나도 없을 때만 맨 앞 단위를 시작한다(엄격한 FIFO).
+  pumpTurnQueue() {
+    if (this.pumpSuspended > 0) return Promise.resolve();
+    if (this.pumping) {
+      this.pumpAgain = true;
+      return Promise.resolve();
     }
+    this.pumping = true;
+    const started = [];
+    try {
+      do {
+        this.pumpAgain = false;
+        started.push(...this.pumpPass());
+      } while (this.pumpAgain);
+    } finally {
+      this.pumping = false;
+    }
+    return Promise.all(started);
+  }
+
+  // 같은 단위(같은 parallelGroupId의 큐 항목 전부, 없으면 항목 하나)로 같이 시작하는 항목들.
+  unitOfQueued(item) {
+    const groupId = item.context?.parallelGroupId;
+    return groupId ? this.turnQueue.filter((entry) => entry.context?.parallelGroupId === groupId) : [item];
+  }
+
+  agentIsRunning(agentId) {
+    for (const running of this.runningTurns) {
+      if (running.agent.id === agentId) return true;
+    }
+    return false;
+  }
+
+  pumpPass() {
+    // 0. 낡은 세대 항목은 시작하지 않고 치운다(시험이 직접 넣은 항목 등).
+    const stale = this.turnQueue.filter((item) => item.generation !== this.generation);
+    if (stale.length > 0) {
+      for (const item of stale) {
+        this.removeQueued(item);
+        try {
+          this.retireTurn(item, undefined, { lost: true });
+        } catch (error) {
+          console.warn("[agora] 낡은 턴 정리 중 실패:", error?.message || error);
+        }
+      }
+      this.emitTurnStateSafe();
+    }
+
+    // 시작할 단위를 모두 고르고 한꺼번에 "돌고 있음"으로 등록한 뒤에 실행을 띄운다. 같은 패스에서 시작하는 턴이
+    // 서로를 동시에 도는 턴으로 보게 하려는 것이다.
+    const units = [];
+    const seen = new Set();
+    for (const item of [...this.turnQueue]) {
+      if (item.lane !== "fast" || seen.has(item)) continue;
+      const members = this.unitOfQueued(item);
+      for (const member of members) seen.add(member);
+      if (members.some((member) => this.agentIsRunning(member.agent.id))) continue;
+      units.push(this.claimUnit(members));
+    }
+    if (this.activeUnits.size === 0) {
+      const head = this.turnQueue.find((item) => item.lane !== "fast");
+      if (head) {
+        const members = this.unitOfQueued(head);
+        // 돌고 있는 단위가 없으면 runningTurns도 비어 있지만 방어로 한 번 더 본다.
+        if (!members.some((member) => this.agentIsRunning(member.agent.id))) units.push(this.claimUnit(members));
+      }
+    }
+    if (units.length === 0) return [];
+
+    // 같은 단위가 아닌, 지금 돌고 있는 다른 턴의 담당자. 모든 단위를 등록한 뒤에 정해야 같은 패스의 턴끼리도 서로 보인다.
+    for (const unit of units) {
+      for (const item of unit.items) {
+        item.concurrentAgents = [...new Set(
+          this.liveTurns().filter((running) => !unit.items.includes(running)).map((running) => running.agent.id)
+        )];
+      }
+    }
+    this.syncCurrentTurn();
+    this.emitTurnStateSafe();
+    return units.map((unit) => this.runUnit(unit));
+  }
+
+  // 단위를 큐에서 빼 "돌고 있음"으로 등록한다. 던질 수 있는 일은 하지 않는다.
+  claimUnit(members) {
+    const unit = { items: members };
+    for (const item of members) {
+      this.removeQueued(item);
+      this.releaseQueuedTurn(item);
+      this.runningTurns.add(item);
+      // 단위의 실제 크기는 지금 센다: 구성원이 갈아끼워져 줄었으면 "참가자 N명" 계약도 그 크기를 쓴다.
+      item.parallelTotal = members.length;
+      // 빠른 턴과 독립 발언 턴은 시작 시점에 끝난 답까지 본다. 일반(이어 발언) 턴은 예약 시점의 기록을 그대로 쓴다.
+      if (item.lane === "fast" || item.context.independent) {
+        item.promptLimit = this.messages.length;
+        const rootMessage = item.context.turnRootId
+          ? this.messages.find((message) => message.id === item.context.turnRootId)
+          : null;
+        const target = String(rootMessage?.text || "").replace(/\s+/g, " ").trim().slice(0, 400);
+        item.replyTarget = target || null;
+      }
+    }
+    this.activeUnits.add(unit);
+    return unit;
   }
 
   // 지금 실행 중인 턴들. 순차 실행에서는 언제나 0개 또는 1개다.
   syncCurrentTurn() {
-    this.currentTurn = this.runningTurns.size > 0 ? [...this.runningTurns][0] : null;
+    this.currentTurn = this.liveTurns()[0] || null;
   }
 
-  async runQueuedTurn(item) {
-    if (item.generation !== this.generation) {
-      this.retireTurn(item, undefined, { lost: true });
-      this.emitTurnState();
-      return;
+  // 단위를 실행한다: 항목들을 동시에 돌리고, 쓰기 방의 독립 발언 단위면 폴더 계약을 본 뒤, 단위를 끝낸다.
+  //
+  // 같은 파일을 두 담당자가 함께 고치면 나중 쓰기가 이깁니다 — 사용자가 각자
+  // 따로 만들라고 지시한 경우를 위한 실행 방식이며, 파일 단위 충돌은 막지 않습니다.
+  async runUnit(unit) {
+    const members = unit.items;
+    // 담당자별 폴더 계약이 지켜졌는지는 실행이 끝난 뒤에 본다. 시작 시각만
+    // 기억해 두면 되므로 실행이 늦어지지 않는다. 쓰기 권한 방에서만 본다.
+    const startedAt = members.length > 1 && members[0].context.parallelGroupId && this.meta.permissionMode === "workspace-write"
+      ? Date.now()
+      : null;
+    const generation = this.generation;
+    try {
+      await Promise.all(members.map((item) => this.runQueuedTurn(item)));
+      // 중지·초기화로 세대가 바뀌었으면 알리지 않는다. 비워진 대화에 뒤늦은
+      // 안내만 남는다.
+      if (startedAt !== null && generation === this.generation) {
+        await this.reportFolderContractBreaches(members, startedAt);
+      }
+    } catch (error) {
+      console.warn("[agora] 턴 단위 실행 중 실패:", error?.message || error);
+    } finally {
+      // 단위가 끝나야 일반 줄이 시작할 수 있다. 유휴 대기자를 깨운 뒤 펌프한다.
+      this.activeUnits.delete(unit);
+      this.resolveIdleWaiters();
+      this.pumpAfterTurn();
     }
-    this.releaseQueuedTurn(item);
-    this.runningTurns.add(item);
-    this.syncCurrentTurn();
-    this.emitTurnState();
+  }
+
+  // 펌프 호출이 던져도 약속이 이미 풀린 항목·단위의 정리를 막지 않는다.
+  pumpAfterTurn() {
+    try {
+      this.pumpTurnQueue();
+    } catch (error) {
+      console.warn("[agora] 턴 펌프 실패:", error?.message || error);
+    }
+  }
+
+  // 이미 등록(claim)된 항목 하나의 실행. 어떤 예외 뒤에도 장부를 되돌리고 약속을 정확히 한 번 푼다.
+  async runQueuedTurn(item) {
     let outcome;
     try {
       outcome = await this.respond(
         item.agent,
-        { ...item.context, promptLimit: item.promptLimit, turnId: item.turnId },
+        {
+          ...item.context,
+          promptLimit: item.promptLimit,
+          turnId: item.turnId,
+          ...(item.parallelTotal !== undefined ? { parallelTotal: item.parallelTotal } : {}),
+          ...(item.replyTarget ? { replyTarget: item.replyTarget } : {}),
+          ...(item.concurrentAgents?.length > 0 ? { concurrentWork: item.concurrentAgents } : {}),
+        },
         item.generation
       );
     } catch {
       outcome = undefined;
-    }
-    this.runningTurns.delete(item);
-    this.syncCurrentTurn();
-    this.emitTurnState();
-    item.resolve(outcome);
-  }
-
-  // 독립 발언 묶음을 동시에 실행한다.
-  //
-  // 같은 파일을 두 담당자가 함께 고치면 나중 쓰기가 이깁니다 — 사용자가 각자
-  // 따로 만들라고 지시한 경우를 위한 실행 방식이며, 파일 단위 충돌은 막지 않습니다.
-  async runParallelTurns(batch) {
-    // 담당자별 폴더 계약이 지켜졌는지는 실행이 끝난 뒤에 본다. 시작 시각만
-    // 기억해 두면 되므로 실행이 늦어지지 않는다. 쓰기 권한 방에서만 본다.
-    const startedAt = this.meta.permissionMode === "workspace-write" ? Date.now() : null;
-    const generation = this.generation;
-    await Promise.all(batch.map((item) => this.runQueuedTurn(item)));
-    // 중지·초기화로 세대가 바뀌었으면 알리지 않는다. 비워진 대화에 뒤늦은
-    // 안내만 남는다.
-    if (startedAt !== null && generation === this.generation) {
-      await this.reportFolderContractBreaches(batch, startedAt);
+    } finally {
+      this.runningTurns.delete(item);
+      this.syncCurrentTurn();
+      this.emitTurnStateSafe();
+      item.resolve(outcome);
+      // 담당자 게이트는 이 항목이 runningTurns에서 빠지는 순간 풀린다. 단위가 아직 안 끝났어도
+      // 풀린 담당자의 빠른 항목은 지금 시작해야 한다.
+      this.pumpAfterTurn();
     }
   }
 
@@ -867,8 +1061,14 @@ class ChatRoom extends EventEmitter {
     );
   }
 
+  // 유휴: 돌고 있는 단위(승인·질문 카드를 기다리는 턴, 폴더 감시 중인 단위, 중지했지만 프로세스가 아직 안 끝난 단위 포함)도
+  // 기다리는 턴도 없다.
+  isIdle() {
+    return this.activeUnits.size === 0 && this.turnQueue.length === 0 && this.deferredTurnQueue.length === 0;
+  }
+
   waitForIdle() {
-    if (!this.turnActive && this.turnQueue.length === 0 && this.deferredTurnQueue.length === 0) {
+    if (this.isIdle()) {
       return Promise.resolve();
     }
     return new Promise((resolve) => this.idleWaiters.push(resolve));
@@ -921,13 +1121,16 @@ class ChatRoom extends EventEmitter {
     return !context.discussion && !context.discussionSummary && !context.simplifyMeta;
   }
 
-  // 실행 중인 일반 턴 뒤에서 기다리는 다른 에이전트들(이어 발언은 단일 큐라 함께 막힌다).
+  // 이 실행 때문에 막힌 대기 턴의 담당자들: 일반 줄의 대기 턴은 전부(일반 줄은 도는 턴이 모두 끝나야 시작한다),
+  // 빠른 줄은 이 담당자의 대기 턴만(다른 담당자의 빠른 턴은 이 실행과 상관없이 시작한다).
+  // 같은 담당자가 이어 보낸 메시지도 이 실행 뒤에서 기다리므로 "다른 에이전트만" 거르지 않는다.
   queuedAgentsBehind(agentId) {
     const ids = [];
     for (const item of [...this.turnQueue, ...this.deferredTurnQueue]) {
       if (!this.isGeneralTurn(item)) continue;
       const id = item.agent && item.agent.id;
-      if (id && id !== agentId && !ids.includes(id)) ids.push(id);
+      if (item.lane === "fast" && id !== agentId) continue;
+      if (id && !ids.includes(id)) ids.push(id);
     }
     return ids;
   }
@@ -969,7 +1172,7 @@ class ChatRoom extends EventEmitter {
   }
 
   resolveIdleWaiters() {
-    if (this.turnActive || this.turnQueue.length > 0 || this.deferredTurnQueue.length > 0) return;
+    if (!this.isIdle()) return;
     const waiters = this.idleWaiters.splice(0);
     for (const resolve of waiters) resolve();
   }
@@ -988,19 +1191,24 @@ class ChatRoom extends EventEmitter {
     this.emit("run-event", { runId, agentId: agent.id, kind: "run-discard" });
   }
 
-  trackRunStart() {
-    this.activeRuns += 1;
+  // 실행은 시작한 세대를 기억한다: 중지는 activeRuns를 즉시 0으로 되돌리므로, 취소한 옛 프로세스의 종료가 그 뒤 새로 시작한
+  // 실행의 activeRuns를 깎거나 busy:false를 내보내지 않게 세대가 같을 때만 activeRuns를 센다. liveRuns는 세대와 무관하다.
+  trackRunStart(generation = this.generation) {
     this.liveRuns += 1;
+    if (generation !== this.generation) return generation;
+    this.activeRuns += 1;
     if (this.activeRuns === 1) this.emit("busy", true);
+    return generation;
   }
 
-  trackRunEnd() {
-    this.activeRuns = Math.max(0, this.activeRuns - 1);
+  trackRunEnd(generation = this.generation) {
     this.liveRuns = Math.max(0, this.liveRuns - 1);
+    if (generation !== this.generation) return;
+    this.activeRuns = Math.max(0, this.activeRuns - 1);
     if (this.activeRuns === 0) this.emit("busy", false);
   }
 
-  promptMessages(promptLimit = null, independent = false) {
+  promptMessages(promptLimit = null, independent = false, turnRootId = null) {
     const messages = this.messages;
     if (!Number.isInteger(promptLimit) || promptLimit < 0) {
       return messages.filter((message) => message.authorType !== "system" && !message.error);
@@ -1008,7 +1216,9 @@ class ChatRoom extends EventEmitter {
     const cap = Math.min(promptLimit, messages.length);
     const base = messages.slice(0, cap);
     if (independent) {
-      return base.filter((message) => message.authorType !== "system" && !message.error);
+      // 독립 발언은 같은 뿌리의 형제 답만 뺀다. 그 밖의 시작 전에 끝난 답(앞 질문의 답 포함)은 본다.
+      return base.filter((message) => message.authorType !== "system" && !message.error
+        && !(turnRootId && message.turnRootId === turnRootId && message.authorType === "agent"));
     }
     const roots = new Set(base.map((message) => message.turnRootId).filter(Boolean));
     const extra = messages.slice(cap).filter(
@@ -1068,7 +1278,7 @@ class ChatRoom extends EventEmitter {
       buildPrompt = (userQuestionTool) => buildAgentPrompt({
         agent,
         agents: this.enabledAgents(),
-        messages: context.discussionSummaryMessages || this.promptMessages(context.promptLimit, context.independent),
+        messages: context.discussionSummaryMessages || this.promptMessages(context.promptLimit, context.independent, context.turnRootId),
         maxMessages: this.maxPromptMessages,
         permissionMode,
         projectContext: this.meta.projectContext,
@@ -1081,9 +1291,14 @@ class ChatRoom extends EventEmitter {
         broadcast: context.broadcast || null,
         // 독립 발언 묶음으로 동시에 도는 턴이면, 각자 자기 폴더에서만 쓰도록
         // 계약을 준다(폴더 이름은 담당자 id — 누가 만들었는지 그대로 남는다).
-        parallel: context.parallelGroupId
+        // 단위의 실제 크기가 1이면(구성원이 갈아끼워지거나 취소됐으면) 함께 도는 참가자가 없으므로 계약도 없다.
+        parallel: context.parallelGroupId && context.parallelTotal !== 1
           ? { folder: agent.id, total: context.parallelTotal || 0 }
           : null,
+        // 같은 단위가 아닌, 지금 돌고 있는 다른 턴(쓰기 방의 동시 작업 계약과 "아직 대화에 없는 답" 안내).
+        concurrentWork: context.concurrentWork || [],
+        // 시작 시점 기록을 쓰는 턴(빠른 턴, 독립 발언 턴)이 답할 사용자 메시지.
+        replyTarget: context.replyTarget || null,
         handoff: context.handoff || null,
         // 토론·결론 종합·쉽게 설명에서는 @멘션 호출을 끈다. 연쇄 깊이 상한도 여기서 막는다.
         mentionsEnabled: !context.discussion && !context.discussionSummary && !context.simplifyMeta && mentionDepth < this.mentionChainLimit,
@@ -1114,7 +1329,7 @@ class ChatRoom extends EventEmitter {
         });
       };
       this.setTyping(agent.id, true);
-      this.trackRunStart();
+      this.trackRunStart(generation);
       emitEvent({ kind: "run-start" });
       let run;
       let runPrompt = prompt;
@@ -1163,7 +1378,7 @@ class ChatRoom extends EventEmitter {
         // 질문 도구가 붙었던 실행이면 남은 질문을 정리하고 중계소 등록을 푼다(중지로 이미 정리됐어도 안전하다).
         this.closeQuestionRun(runId, { submitting: result?.ok ? "answered" : "interrupted" });
         this.setTyping(agent.id, false);
-        this.trackRunEnd();
+        this.trackRunEnd(generation);
       }
       if (generation !== this.generation || result?.cancelled) {
         this.discardLiveRun(runId, agent);
@@ -1514,12 +1729,19 @@ class ChatRoom extends EventEmitter {
 
     const requestedGeneration = this.generation;
     this.discussionRequested = true;
-    await this.waitForIdle();
-    if (requestedGeneration !== this.generation) {
-      this.discussionRequested = false;
-      return { ok: false, cancelled: true };
+    // 풀림과 아래 줄 사이에 새 턴이 끼면 토론 첫 턴과 그 턴이 동시에 돈다. 풀린 뒤 유휴를 다시 확인하고,
+    // 같은 동기 구간에서 discussionActive를 켠다. 어느 길로 빠져나가도 요청 표시는 푼다.
+    let ready = false;
+    try {
+      do {
+        await this.waitForIdle();
+        if (requestedGeneration !== this.generation) return { ok: false, cancelled: true };
+      } while (!this.isIdle());
+      this.discussionActive = true;
+      ready = true;
+    } finally {
+      if (!ready) this.discussionRequested = false;
     }
-    this.discussionActive = true;
 
     // 이번 토론을 촉발한 직전 사용자 질문을 시작 메시지로 특정합니다.
     let startMessageId = null;
@@ -1736,14 +1958,14 @@ class ChatRoom extends EventEmitter {
     this.discussionRequested = false;
     this.discussionInterrupted = false;
     this.turnQueue.push(...this.deferredTurnQueue.splice(0));
-    this.emitTurnState();
+    this.emitTurnStateSafe();
     this.pumpTurnQueue();
   }
 
   stopAll() {
     // 승인 카드를 기다리는 턴은 실행도 입력 중 표시도 없어 따로 센다.
     const hadWork = this.cancels.size > 0 || this.typingCounts.size > 0
-      || this.runningTurns.size > 0 || this.pendingApprovals.size > 0
+      || this.liveTurns().length > 0 || this.pendingApprovals.size > 0
       || this.turnQueue.length > 0 || this.deferredTurnQueue.length > 0;
     const lost = this.queuedGeneralTurnCount();
     this.stopAllSilently({ notifyLost: false });
@@ -1781,9 +2003,8 @@ class ChatRoom extends EventEmitter {
     this.deferredTurnQueue = [];
     this.pendingTurns.clear();
     this.turnStartedAt.clear();
-    // 실행 중이던 턴도 방금 취소했다. 여기서 비우지 않으면 바로 아래
-    // emitTurnState가 이미 중지된 턴을 "실행 중"으로 계속 알린다.
-    this.runningTurns.clear();
+    // 실행 중이던 턴도 방금 취소했다. runningTurns는 비우지 않는다: 취소한 프로세스가 실제로 끝나야 빠지고,
+    // 그때까지 같은 담당자의 새 턴이 겹쳐 시작하지 않는다. 화면(turnState)은 세대가 지난 항목을 이미 없는 턴으로 센다.
     this.syncCurrentTurn();
     this.mentionsMuted = false;
     this.emitTurnState();

@@ -2052,20 +2052,23 @@ async function untilTrue(pred, ms = 2000) {
 test("실행 중 턴이 10분째 진전이 없으면 한도 가능성과 뒤에 막힌 턴을 한 번만 안내한다", async () => {
   let captured = null;
   let resolveRun = null;
+  let claudeCalls = 0;
   const room = new ChatRoom({
     agents: makeAgents(),
     runAgent: ({ agent, emitEvent }) => {
-      if (agent.id === "claude") {
+      // 바로 답하기 도입 뒤: @codex 직접 답장은 바로 시작해 막히지 않으므로, 막힌 턴은 멘션 없는 메시지(일반 줄)로 만든다.
+      // 그 메시지가 큐에 세우는 claude의 두 번째 호출은 즉시 끝난다.
+      if (agent.id === "claude" && (claudeCalls += 1) === 1) {
         captured = emitEvent;
         return { promise: new Promise((resolve) => { resolveRun = resolve; }), cancel: () => {} };
       }
-      return { promise: Promise.resolve({ ok: true, text: "codex 답" }), cancel: () => {} };
+      return { promise: Promise.resolve({ ok: true, text: `${agent.id} 답` }), cancel: () => {} };
     },
   });
   room.sendUserMessage("@claude 검토해줘");
   await untilTrue(() => captured);
-  // claude가 도는 동안 codex 턴을 보내 큐에 세운다(이어 발언 = 단일 큐라 함께 막힌다).
-  room.sendUserMessage("@codex 이것도");
+  // claude가 도는 동안 멘션 없는 메시지를 보내 일반 줄에 세운다(일반 줄은 도는 턴이 끝나야 시작한다).
+  room.sendUserMessage("이것도");
   await new Promise((resolve) => setImmediate(resolve));
   captured({ kind: "status", label: "5분째 응답 없음" });
   captured({ kind: "status", label: "10분째 응답 없음" });
@@ -2082,15 +2085,17 @@ test("실행 중 턴이 10분째 진전이 없으면 한도 가능성과 뒤에 
 
 test("한도로 끝난 실행 뒤에 기다리던 턴이 있으면 이어서 실행됨을 알린다", async () => {
   let resolveRun = null;
+  let claudeCalls = 0;
   const room = new ChatRoom({
     agents: makeAgents(),
-    runAgent: ({ agent }) => agent.id === "claude"
+    // 바로 답하기 도입 뒤: 멘션 없는 메시지(일반 줄)만 도는 턴 뒤에서 기다린다. 두 번째 claude 호출은 즉시 끝난다.
+    runAgent: ({ agent }) => agent.id === "claude" && (claudeCalls += 1) === 1
       ? { promise: new Promise((resolve) => { resolveRun = resolve; }), cancel: () => {} }
-      : { promise: Promise.resolve({ ok: true, text: "codex 답" }), cancel: () => {} },
+      : { promise: Promise.resolve({ ok: true, text: `${agent.id} 답` }), cancel: () => {} },
   });
   room.sendUserMessage("@claude 검토");
   await untilTrue(() => resolveRun);
-  room.sendUserMessage("@codex 이것도");
+  room.sendUserMessage("이것도");
   await new Promise((resolve) => setImmediate(resolve));
   resolveRun({ ok: false, rateLimited: true, stopReason: "PROVIDER_RATE_LIMITED", error: "사용 한도에 도달했습니다." });
   await settle(room);

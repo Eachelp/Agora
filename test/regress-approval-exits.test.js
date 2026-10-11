@@ -196,8 +196,9 @@ test("끼어들기(chat:turn:interject)는 승인 대기와 대기 턴을 모두
 
 test("chat:turn:cancel은 대기 중인 턴 하나만 취소하고, 이미 시작된 턴·없는 턴은 거절한다", async () => {
   const env = await pendingApproval();
-  await env.invoke("chat:send", { sessionId: env.sessionId, text: "@claude 둘째" });
-  await env.invoke("chat:send", { sessionId: env.sessionId, text: "@codex 셋째" });
+  // 바로 답하기 도입 뒤: @codex 직접 답장은 승인을 기다리는 중에도 바로 시작해 대기 턴이 아니다.
+  // 대기 턴 둘이 필요하므로 멘션 없는 메시지 하나(claude·codex의 일반 줄 대기 턴 둘)를 보낸다.
+  await env.invoke("chat:send", { sessionId: env.sessionId, text: "둘째 셋째" });
   await settle();
   const before = await sessionOf(env);
   assert.equal(before.turnState.queue.length, 2);

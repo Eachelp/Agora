@@ -407,9 +407,10 @@ test("질문을 기다리는 동안 뒤 차례의 안내 문구는 사용자의 
   const { room } = setup(t, { runner: scriptedRunner(async ({ ask }) => { await ask(ASK_ONE); return "x"; }, log) });
   room.sendUserMessage("@claude 시작");
   await waitFor(() => pending(room).length === 1);
-  room.sendUserMessage("@codex 이어서");
+  // 바로 답하기 도입 뒤: 다른 담당자(@codex)에게 보낸 메시지는 바로 시작한다. 카드를 쥔 담당자에게 보낸 메시지가 기다린다.
+  room.sendUserMessage("@claude 이어서");
   const queuedTurn = room.turnQueue[0];
-  assert.equal(queuedTurn.agent.id, "codex");
+  assert.equal(queuedTurn.agent.id, "claude");
   // 대기 시작 시각을 직접 과거로 돌려 안내가 나오게 한다.
   room.turnStartedAt.set(queuedTurn.turnId, Date.now() - 200 * 1000);
   room.checkTurnStall(queuedTurn.turnId);
