@@ -172,7 +172,7 @@ class ChatRoom extends EventEmitter {
     // runId → { handle, agentId, turnId, run } : 질문 도구가 붙은 실행.
     this.questionRuns = new Map();
     this.questionShellNoticed = new Set();
-    // 질문 카드가 기다리는 동안 그 에이전트에게 보낸 메시지가 있어 안내를 한 번 낸 질문 id.
+    // 질문 카드가 기다리는 동안 보낸 메시지에 안내를 이미 낸 "질문 id:받는 에이전트 id" 짝.
     this.questionHinted = new Set();
     // questionId → 질문 기록. 다시 켠 뒤에는 답을 기다리던 질문이 '중단됨'으로 돌아온다(답할 수 없다).
     this.userQuestions = new Map();
@@ -318,12 +318,22 @@ class ChatRoom extends EventEmitter {
       respondents.push(agent);
     }
 
-    // 질문 카드를 기다리는 에이전트에게 보낸 메시지는 카드의 답이 아니라 새 차례로 줄을 선다. 질문마다 한 번 알린다.
+    // 질문 카드를 기다리는 동안 보낸 메시지는 카드의 답이 아니라 새 차례로 줄을 선다. 방은 턴을 한 줄로 돌리므로 받는 쪽이
+    // 카드를 가진 에이전트든 다른 에이전트든 카드를 기다리는 실행 뒤에서 기다린다. 질문마다, 받는 에이전트마다 한 번 알린다.
+    // 여러 에이전트에게 한꺼번에 보낸 메시지에서 받는 쪽이 달라도 같은 줄이 겹치면 한 번만 낸다.
+    const told = new Set();
     for (const agent of respondents) {
-      const waiting = this.pendingUserQuestionList().find((question) => question.agentId === agent.id && !this.questionHinted.has(question.questionId));
-      if (!waiting) continue;
-      this.questionHinted.add(waiting.questionId);
-      this.appendSystem(`@${agent.id}가 질문 카드에 답을 기다리는 중입니다. 이 메시지는 카드에 답하거나 건너뛴 뒤 전달됩니다.`);
+      const fresh = this.pendingUserQuestionList().filter((question) => !this.questionHinted.has(`${question.questionId}:${agent.id}`));
+      const own = fresh.find((question) => question.agentId === agent.id);
+      const others = fresh.filter((question) => question.agentId !== agent.id);
+      for (const question of own ? [own, ...others] : others) this.questionHinted.add(`${question.questionId}:${agent.id}`);
+      if (own) this.appendSystem(`@${agent.id}가 질문 카드에 답을 기다리는 중입니다. 이 메시지는 카드에 답하거나 건너뛴 뒤 전달됩니다.`);
+      if (others.length > 0) {
+        const names = [...new Set(others.map((question) => `@${question.agentId}`))].join(", ");
+        const line = `지금 ${names}가 질문 카드의 답을 기다리는 중이라, 이 메시지는 카드에 답하거나 건너뛴 뒤 전달됩니다.`;
+        if (!told.has(line)) this.appendSystem(line);
+        told.add(line);
+      }
     }
 
     if (respondents.length > 0) {

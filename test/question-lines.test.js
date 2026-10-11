@@ -173,7 +173,7 @@ test("질문 카드를 기다리는 에이전트에게 메시지를 보내면 �
   room.sendUserMessage("@codex 이건 다른 사람에게");
   room.sendUserMessage("@claude 다른 이야기");
   room.sendUserMessage("@claude 또 다른 이야기");
-  assert.deepEqual(hints(), ["@claude가 질문 카드에 답을 기다리는 중입니다. 이 메시지는 카드에 답하거나 건너뛴 뒤 전달됩니다."], "질문 하나에 한 번, 다른 에이전트에게 간 메시지에는 없다");
+  assert.deepEqual(hints(), ["@claude가 질문 카드에 답을 기다리는 중입니다. 이 메시지는 카드에 답하거나 건너뛴 뒤 전달됩니다."], "질문 하나에 한 번, 카드를 가진 에이전트에게 보낸 메시지에만 이 안내가 나온다(다른 에이전트에게 간 메시지에는 아래 따로 안내가 나온다)");
   assert.equal(pending(room).length, 1, "메시지는 카드에 답하지 않는다");
   assert.equal(log.calls.filter((call) => call.agent.id === "claude").length, 1, "새 차례는 기다리는 실행 뒤에 줄을 선다");
 
@@ -181,4 +181,117 @@ test("질문 카드를 기다리는 에이전트에게 메시지를 보내면 �
   await room.waitForIdle();
   assert.equal(log.calls.filter((call) => call.agent.id === "claude").length, 2, "카드를 처리한 뒤 전달된다");
   assert.equal(hints().length, 1);
+});
+
+// ---- 다른 에이전트에게 보낸 메시지도 카드를 기다리는 실행 뒤에 줄을 선다 ----
+// 방은 턴을 한 줄로 돌린다. 카드를 가진 에이전트가 아닌 쪽에게 보낸 메시지도 카드를 처리할 때까지 말없이 기다리지 않게 알린다.
+const THREE_AGENTS = () => [...AGENTS(), { id: "agy", name: "Antigravity", aliases: ["agy"], available: true, enabled: true }];
+const blockingLines = (room) => systemLines(room).filter((text) => text.includes("질문 카드의 답을 기다리는 중이라"));
+const ownLines = (room) => systemLines(room).filter((text) => text.includes("질문 카드에 답을 기다리는 중입니다"));
+const BLOCKED_BY_CLAUDE = "지금 @claude가 질문 카드의 답을 기다리는 중이라, 이 메시지는 카드에 답하거나 건너뛴 뒤 전달됩니다.";
+
+test("카드를 기다리는 동안 다른 에이전트에게 보낸 메시지에는 누구의 카드가 막고 있는지, 질문마다·받는 에이전트마다 한 번 알린다", async (t) => {
+  let claudeTurns = 0;
+  const runner = scriptedRunner(async ({ ask, args }) => {
+    if (args.agent.id !== "claude") return "다른 답";
+    claudeTurns += 1;
+    if (claudeTurns === 2) return "그냥 답"; // 줄 서 있던 메시지
+    await ask([{ question: "하나?", options: ["가", "나"] }]);
+    return "첫 답";
+  });
+  const { room } = setup(t, runner, { agents: THREE_AGENTS() });
+  const other = setup(t, scriptedRunner(async () => "다른 방 답"), { agents: THREE_AGENTS() }).room;
+
+  // 카드가 없으면 아무 안내도 없다.
+  room.sendUserMessage("@codex 안녕");
+  await room.waitForIdle();
+  assert.deepEqual(systemLines(room), []);
+
+  room.sendUserMessage("@claude 시작");
+  await waitFor(() => pending(room).length === 1);
+  const firstId = pending(room)[0].questionId;
+
+  room.sendUserMessage("@codex 이건 다른 사람에게");
+  assert.deepEqual(blockingLines(room), [BLOCKED_BY_CLAUDE]);
+  assert.deepEqual(ownLines(room), [], "카드를 가진 쪽이 아니므로 '카드에 답을 기다리는 중입니다' 안내는 아니다");
+
+  // 같은 질문, 같은 받는 쪽에는 다시 알리지 않는다.
+  room.sendUserMessage("@codex 한 번 더");
+  assert.equal(blockingLines(room).length, 1);
+
+  // 다른 에이전트에게 보내면 그쪽에도 한 번 알린다(메시지 바로 뒤에 붙는다).
+  room.sendUserMessage("@agy 너는?");
+  assert.deepEqual(blockingLines(room), [BLOCKED_BY_CLAUDE, BLOCKED_BY_CLAUDE]);
+  const agyAt = room.messages.findIndex((message) => message.authorType === "user" && message.text === "@agy 너는?");
+  assert.equal(room.messages[agyAt + 1].text, BLOCKED_BY_CLAUDE);
+
+  // 다른 방에는 새지 않는다: 그 방에는 카드가 없으므로 같은 시각에 보낸 메시지에도 안내가 없다.
+  other.sendUserMessage("@codex 안녕");
+  await other.waitForIdle();
+  assert.deepEqual(systemLines(other), []);
+  assert.equal(blockingLines(room).length, 2, "다른 방의 메시지가 이 방의 안내를 늘리지 않는다");
+
+  // 카드를 가진 쪽에게 보낸 메시지에는 기존 안내만 나온다(자기 카드 말고 막는 카드가 없다).
+  room.sendUserMessage("@claude 그냥 답");
+  assert.equal(ownLines(room).length, 1);
+  assert.equal(blockingLines(room).length, 2);
+  assert.equal(pending(room).length, 1, "메시지는 카드에 답하지 않는다");
+
+  // 카드를 처리하면 줄 서 있던 메시지가 전달된다.
+  room.cancelUserQuestion({ questionId: firstId });
+  await room.waitForIdle();
+
+  // 새 질문은 새 묶음이라 다시 알린다.
+  room.sendUserMessage("@claude 또 시작");
+  await waitFor(() => pending(room).length === 1 && pending(room)[0].questionId !== firstId);
+  room.sendUserMessage("@codex 새 카드 뒤에");
+  assert.equal(blockingLines(room).length, 3);
+  room.cancelUserQuestion({ questionId: pending(room)[0].questionId });
+  await room.waitForIdle();
+});
+
+test("카드가 둘이면 막고 있는 에이전트를 모두 알리고, 카드를 가진 쪽에게는 자기 안내에 더해 상대 카드 안내가 나온다", async (t) => {
+  const asked = new Set(); // 에이전트마다 첫 턴에만 묻는다(줄 서 있던 메시지의 턴은 그냥 답한다)
+  const runner = scriptedRunner(async ({ ask, args }) => {
+    if (args.agent.id === "agy" || asked.has(args.agent.id)) return "네";
+    asked.add(args.agent.id);
+    await ask([{ question: args.agent.id + "의 질문?", options: ["가", "나"] }]);
+    return "끝";
+  });
+  const { room } = setup(t, runner, { agents: THREE_AGENTS() });
+  room.sendUserMessage({ text: "@claude @codex 시작", independent: true });
+  await waitFor(() => pending(room).length === 2);
+
+  room.sendUserMessage("@agy 안녕");
+  assert.equal(blockingLines(room).length, 1);
+  assert.match(blockingLines(room)[0], /^지금 @(claude, @codex|codex, @claude)가 질문 카드의 답을 기다리는 중이라, 이 메시지는 카드에 답하거나 건너뛴 뒤 전달됩니다\.$/);
+
+  room.sendUserMessage("@claude 한 마디");
+  assert.deepEqual(ownLines(room), ["@claude가 질문 카드에 답을 기다리는 중입니다. 이 메시지는 카드에 답하거나 건너뛴 뒤 전달됩니다."]);
+  assert.deepEqual(blockingLines(room).slice(1), ["지금 @codex가 질문 카드의 답을 기다리는 중이라, 이 메시지는 카드에 답하거나 건너뛴 뒤 전달됩니다."]);
+
+  for (const question of pending(room)) room.cancelUserQuestion({ questionId: question.questionId });
+  await room.waitForIdle();
+});
+
+test("여러 에이전트에게 한꺼번에 보낸 메시지에는 같은 안내가 한 줄만 나오고, 받은 쪽은 이미 안내받은 것으로 센다", async (t) => {
+  const asked = new Set();
+  const runner = scriptedRunner(async ({ ask, args }) => {
+    if (args.agent.id !== "claude" || asked.has("claude")) return "다른 답";
+    asked.add("claude");
+    await ask([{ question: "하나?", options: ["가", "나"] }]);
+    return "첫 답";
+  });
+  const { room } = setup(t, runner, { agents: THREE_AGENTS() });
+  room.sendUserMessage("@claude 시작");
+  await waitFor(() => pending(room).length === 1);
+
+  room.sendUserMessage("@codex @agy 둘이 같이 봐 줘");
+  assert.deepEqual(blockingLines(room), [BLOCKED_BY_CLAUDE], "받는 쪽이 둘이어도 같은 줄은 한 번");
+  room.sendUserMessage("@agy 다시");
+  room.sendUserMessage("@codex 다시");
+  assert.equal(blockingLines(room).length, 1, "둘 다 이미 안내받았다");
+
+  room.cancelUserQuestion({ questionId: pending(room)[0].questionId });
+  await room.waitForIdle();
 });
