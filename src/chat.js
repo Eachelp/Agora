@@ -2021,12 +2021,16 @@ function makeDeliveryBadge(kind) {
 // 결정·작업 탭의 동작은 목록을 새로 그리려고 팝오버를 다시 만든다. 그때 보던 탭과 아직 저장하지 않은 입력을 이어 주고,
 // 응답을 기다리는 사이 사용자가 팝오버를 닫았다면 다시 열지 않는다.
 let workflowView = null;
+let workflowResume = null;
 function refreshWorkflowPopover(anchor) {
   if (!workflowView || popover.hidden || !popover.classList.contains("is-workflow")) return;
-  openWorkflowPopover(anchor, workflowView.capture());
+  workflowResume = workflowView.capture();
+  openWorkflowPopover(anchor);
 }
 
-function openWorkflowPopover(anchor, resume = null) {
+function openWorkflowPopover(anchor) {
+  const resume = workflowResume;
+  workflowResume = null;
   const project = activeProjectEntry();
   if (!project) return;
 
