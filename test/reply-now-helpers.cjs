@@ -24,6 +24,7 @@ function makeRunner() {
       prompt: args.prompt,
       runId: args.runId,
       permissionMode: args.permissionMode,
+      attachments: args.attachments,
       cancelled: false,
       done: false,
       index: calls.length,

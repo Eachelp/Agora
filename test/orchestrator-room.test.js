@@ -148,6 +148,38 @@ test("O8·O9 지휘 AI에게 가는 메시지는 보류되고, 여러 번 보내
   assert.equal(room.orchestration.heldMessages.length, 0, "다음 회신 턴에 실리면 비운다");
 });
 
+test("O8·O9 보류 메시지의 첨부: 텍스트+첨부는 표시가 붙고, 첨부만 보낸 메시지는 빈 인용부호를 안 남긴다", async () => {
+  const { room, calls } = withLead();
+  room.sendUserMessage("claude에게 맡겨줘");
+  await settle();
+  calls[0].finish("@agy 맡아줘");
+  await settle();
+  const file = { id: "a", name: "spec.pdf", kind: "text" };
+  room.sendUserMessage({ text: "이 파일도 참고해", attachments: [file] });
+  room.sendUserMessage({ text: "", attachments: [{ id: "b", name: "shot.png", kind: "image" }] });
+  await settle();
+  calls[1].finish("agy 완료");
+  await settle();
+  assert.match(calls[2].prompt, /"이 파일도 참고해" \[첨부 1개\]/, "텍스트+첨부는 인용부호 뒤에 첨부 표시");
+  assert.doesNotMatch(calls[2].prompt, /""/, "첨부만 보낸 메시지가 빈 인용부호를 남기면 안 된다");
+  assert.match(calls[2].prompt, /\(첨부만\) \[첨부 1개\]/, "첨부만 보낸 메시지는 (첨부만)으로 표시된다");
+});
+
+test("오케스트레이터: 원 요청의 첨부가 지휘 AI의 라운드 2 이상 회신 턴에도 다시 실린다", async () => {
+  const { room, calls } = withLead();
+  const file = { id: "a", name: "spec.pdf", kind: "text" };
+  room.sendUserMessage({ text: "claude에게 맡겨줘", attachments: [file] });
+  await settle();
+  assert.deepEqual(calls[0].attachments, [file], "라운드 1 지휘 AI 턴에는 당연히 실린다");
+  calls[0].finish("@codex 맡아줘");
+  await settle();
+  assert.deepEqual(calls[1].attachments, [file], "작업자 턴에는 이미 실렸다(기존 동작)");
+  calls[1].finish("codex 완료");
+  await settle();
+  assert.equal(room.orchestration.round, 2);
+  assert.deepEqual(calls[2].attachments, [file], "라운드 2 지휘 AI의 회신 턴에도 원 요청의 첨부가 실려야 한다");
+});
+
 test("O10 잠깐: 오케스트레이션을 끝내고, 늦게 끝나는 작업자 결과는 조용히 버린다", async () => {
   const { room, calls, systems } = withLead();
   room.sendUserMessage("claude에게 맡겨줘");

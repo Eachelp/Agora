@@ -97,7 +97,7 @@ function makeWorld(seed, overrides = {}) {
     const before = room.orchestration?.heldMessages.length ?? -1;
     const entry = originalSendUserMessage(tagged);
     if (before >= 0 && room.orchestration && room.orchestration.heldMessages.length > before) {
-      heldTexts.push(room.orchestration.heldMessages.at(-1));
+      heldTexts.push(room.orchestration.heldMessages.at(-1).text);
     }
     return entry;
   };

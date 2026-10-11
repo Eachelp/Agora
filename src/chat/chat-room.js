@@ -355,7 +355,8 @@ class ChatRoom extends EventEmitter {
       && (specificIds.length === 0 || (specificIds.length === 1 && specificIds[0] === leadId));
     if (routeToLead && this.orchestration) {
       // 보류: 턴을 만들지 않는다. 메시지는 대화에 그대로 남고 heldMessages에 쌓인다(설계 §(3)·§(8)).
-      this.orchestration.heldMessages.push(trimmed);
+      // 첨부도 함께 쌓아 둔다 — claimUnit의 heldBlock이 비어서 조용히 사라지지 않게(9b 감사).
+      this.orchestration.heldMessages.push({ text: trimmed, attachments });
       const leadWaiting = this.awaitingUsers.has(leadId)
         || this.pendingUserQuestionList().some((question) => question.agentId === leadId);
       this.appendSystem(leadWaiting
@@ -1061,7 +1062,11 @@ class ChatRoom extends EventEmitter {
         && this.orchestration.id === item.context.orchestration.id && this.orchestration.heldMessages.length > 0) {
         const heldBlock = [
           "=== 사용자가 그 사이 보낸 메시지 ===",
-          ...this.orchestration.heldMessages.map((text) => `"${text}"`),
+          // 텍스트 없이 첨부만 보낸 메시지는 빈 인용부호 대신 첨부 표시만 남긴다(9b 감사).
+          ...this.orchestration.heldMessages.map((held) => {
+            const attachNote = held.attachments?.length > 0 ? ` [첨부 ${held.attachments.length}개]` : "";
+            return held.text ? `"${held.text}"${attachNote}` : `(첨부만)${attachNote}`;
+          }),
           "=== 사용자가 그 사이 보낸 메시지 끝 ===",
         ].join("\n");
         item.context.extraLines = [...(item.context.extraLines || []), heldBlock];
@@ -1274,6 +1279,8 @@ class ChatRoom extends EventEmitter {
       orchestration: { id: orch.id, role: "lead", round: nextRound },
       turnRootId: orch.rootMessageId,
       extraLines,
+      // 원 요청의 첨부를 2라운드 이상에서도 다시 싣는다(scheduleWorkerUnit과 같은 패턴, 9b 감사).
+      attachments: this.attachmentsOfMessages([orch.rootMessageId]),
     }, { lane: "fast" });
   }
 
