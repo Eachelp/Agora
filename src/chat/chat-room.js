@@ -2388,6 +2388,9 @@ class ChatRoom extends EventEmitter {
     // 그때까지 같은 담당자의 새 턴이 겹쳐 시작하지 않는다. 화면(turnState)은 세대가 지난 항목을 이미 없는 턴으로 센다.
     this.syncCurrentTurn();
     this.mentionsMuted = false;
+    // interject()처럼 오케스트레이션을 끝낸 스냅숏으로 emit해야 화면이 멈춘 라운드를 안 든다 —
+    // 취소한 작업자 프로세스가 실제로 끝나는 건 한참 뒤일 수 있다(Windows taskkill 지연 등).
+    this.orchestration = null;
     this.emitTurnStateSafe();
     // Stop/interject/reset로 turn을 중지하면 화면에 보이는 모든 승인 카드는 stale하다.
     // resolver를 부르기 전에 provider-neutral approval-resolved를 내보내 renderer가 카드를
@@ -2407,9 +2410,8 @@ class ChatRoom extends EventEmitter {
       this.activeRuns = 0;
       this.emit("busy", false);
     }
-    // 반드시 resolveIdleWaiters()보다 앞(§2.4(b)) — 그래야 토론이 기다리고 있었으면 깬다. 늦게
-    // 끝나는 지휘 AI·작업자 프로세스의 결과는 runUnit의 공용 문(§(4))에서 id 불일치로 폐기된다.
-    this.orchestration = null;
+    // orchestration=null은 위(emit 전)에서 이미 끝냈다 — resolveIdleWaiters()보다는 여전히 앞(§2.4(b)).
+    // 늦게 끝나는 지휘 AI·작업자 프로세스의 결과는 runUnit의 공용 문(§(4))에서 id 불일치로 폐기된다.
     this.mentionCallCounts.clear();
     this.keepCallingCeilingNoticed.clear();
     this.resolveIdleWaiters();

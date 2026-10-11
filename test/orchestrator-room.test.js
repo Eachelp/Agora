@@ -302,3 +302,21 @@ test("불변식: 방에 오케스트레이션은 한 번에 하나뿐이다(지�
   await settle();
   assert.equal(room.orchestration, null);
 });
+
+test("O28 중지(stopAll)가 오케스트레이션을 끝낼 때, 화면이 받는 마지막 orchestration 이벤트도 null이다(취소한 작업자 프로세스가 아직 안 끝나도)", async () => {
+  const { room, calls } = withLead();
+  const orchestrationEvents = [];
+  room.on("orchestration", (snapshot) => orchestrationEvents.push(snapshot));
+  room.sendUserMessage("claude에게 맡겨줘");
+  await settle();
+  calls[0].finish("@codex 맡아줘");
+  await settle();
+  const workerCall = calls.find((c) => c.agentId === "codex");
+  workerCall.holdCancel = true; // 취소해도(Windows taskkill 지연 등) 바로 끝나지 않는 프로세스를 흉내
+  room.stopAll();
+  await settle();
+  assert.equal(room.orchestration, null, "내부 상태는 즉시 null");
+  assert.equal(orchestrationEvents.at(-1), null, "화면이 받은 마지막 스냅숏도 null이어야 한다 — interject()는 이미 그렇다");
+  workerCall.endCancelled();
+  await settle();
+});
