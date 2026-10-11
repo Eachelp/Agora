@@ -157,3 +157,28 @@ test("다시 켠 뒤 답을 기다리다 중단된 질문은 대화에 한 줄�
   room.announceInterruptedQuestions();
   assert.deepEqual(systemLines(room), ["@codex의 질문 1개는 앱이 꺼져 답을 받지 못했습니다. 필요하면 다시 말을 걸어 주세요."]);
 });
+
+test("질문 카드를 기다리는 에이전트에게 메시지를 보내면 카드의 답이 아니라고 질문마다 한 번 알리고, 그 메시지는 카드를 처리한 뒤 전달된다", async (t) => {
+  const log = {};
+  const runner = scriptedRunner(async ({ ask, args }) => {
+    if (args.agent.id === "codex" || args.prompt.includes("다른 이야기")) return "다른 답";
+    await ask([{ question: "하나?", options: ["가", "나"] }]);
+    return "첫 답";
+  }, log);
+  const { room } = setup(t, runner);
+  const hints = () => systemLines(room).filter((text) => text.includes("질문 카드에 답을 기다리는 중"));
+  room.sendUserMessage("@claude 시작");
+  await waitFor(() => pending(room).length === 1);
+
+  room.sendUserMessage("@codex 이건 다른 사람에게");
+  room.sendUserMessage("@claude 다른 이야기");
+  room.sendUserMessage("@claude 또 다른 이야기");
+  assert.deepEqual(hints(), ["@claude가 질문 카드에 답을 기다리는 중입니다. 이 메시지는 카드에 답하거나 건너뛴 뒤 전달됩니다."], "질문 하나에 한 번, 다른 에이전트에게 간 메시지에는 없다");
+  assert.equal(pending(room).length, 1, "메시지는 카드에 답하지 않는다");
+  assert.equal(log.calls.filter((call) => call.agent.id === "claude").length, 1, "새 차례는 기다리는 실행 뒤에 줄을 선다");
+
+  room.cancelUserQuestion({ questionId: pending(room)[0].questionId });
+  await room.waitForIdle();
+  assert.equal(log.calls.filter((call) => call.agent.id === "claude").length, 2, "카드를 처리한 뒤 전달된다");
+  assert.equal(hints().length, 1);
+});

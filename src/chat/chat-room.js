@@ -172,6 +172,8 @@ class ChatRoom extends EventEmitter {
     // runId → { handle, agentId, turnId, run } : 질문 도구가 붙은 실행.
     this.questionRuns = new Map();
     this.questionShellNoticed = new Set();
+    // 질문 카드가 기다리는 동안 그 에이전트에게 보낸 메시지가 있어 안내를 한 번 낸 질문 id.
+    this.questionHinted = new Set();
     // questionId → 질문 기록. 다시 켠 뒤에는 답을 기다리던 질문이 '중단됨'으로 돌아온다(답할 수 없다).
     this.userQuestions = new Map();
     this.interruptedOnLoad = [];
@@ -314,6 +316,14 @@ class ChatRoom extends EventEmitter {
         continue;
       }
       respondents.push(agent);
+    }
+
+    // 질문 카드를 기다리는 에이전트에게 보낸 메시지는 카드의 답이 아니라 새 차례로 줄을 선다. 질문마다 한 번 알린다.
+    for (const agent of respondents) {
+      const waiting = this.pendingUserQuestionList().find((question) => question.agentId === agent.id && !this.questionHinted.has(question.questionId));
+      if (!waiting) continue;
+      this.questionHinted.add(waiting.questionId);
+      this.appendSystem(`@${agent.id}가 질문 카드에 답을 기다리는 중입니다. 이 메시지는 카드에 답하거나 건너뛴 뒤 전달됩니다.`);
     }
 
     if (respondents.length > 0) {
