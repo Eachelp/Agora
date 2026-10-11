@@ -50,10 +50,11 @@ test("작업자 역할 문단: 다른 참가자를 못 부르고, 지휘 AI에�
   assert.doesNotMatch(prompt, /사용자의 결정이 꼭 필요할 때만/, "보통 문구는 작업자에게 안 남는다");
   assert.doesNotMatch(prompt, /'답변 대기' 표시와 선택 버튼으로 바뀝니다/, "보통 문구는 작업자에게 안 남는다");
   assert.doesNotMatch(prompt, /코딩/);
-});
-
-test("작업자는 mentionsEnabled=false라 '이번 턴에는 다른 참가자를 추가 호출할 수 없습니다' 문구가 그대로 붙는다", () => {
-  const prompt = basePrompt({ role: "worker", leadId: "claude" });
+  // review-behaviour 발견: 이 문구만 따로 떼어 "mentionsEnabled=false"로 재확인하던 시험은
+  // basePrompt가 이미 worker 역할마다 mentionsEnabled=false로 두므로 이 시험과 똑같은 입력이었고,
+  // 문구 자체는 orchestration과 무관한 기존 분기(chat-prompt.js의 "다른 참가자가 있지만 멘션은
+  // 못 쓸 때")라 main에도 이미 있다 — 따로 두면 "orchestration 전용"이라는 잘못된 인상만 준다.
+  // 작업자 역할의 한 속성으로 여기 접어 둔다(커버리지는 그대로 유지).
   assert.match(prompt, /이번 턴에는 다른 참가자를 추가 호출할 수 없습니다/);
 });
 

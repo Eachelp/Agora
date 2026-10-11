@@ -195,7 +195,17 @@ test("O13·O14 자기 자신과 그룹 별칭은 작업자 후보에서 빠진�
   await settle();
   calls[0].finish("@claude @all @codex 부탁해");
   await settle();
+  // 검증 발견(review-correctness): ids(calls)만 보면 main의 "방송+멘션 연쇄 dedupe"로도 같은
+  // 결과(['claude','codex'])가 나와, 이 시험이 실제로 새 작업자 선별 로직을 거쳤는지 구분하지
+  // 못했다. room.orchestration과 작업자 전용 프롬프트 문단을 함께 확인해 그 경로를 쓴다는 것을
+  // 증명한다(둘 다 orchestrator 코드가 없으면 생길 수 없다).
   assert.deepEqual(ids(calls), ["claude", "codex"], "@claude(자기 자신)과 @all(그룹 별칭)은 작업자가 아니다");
+  assert.equal(room.orchestration.executions, 2, "지휘 AI 1 + 작업자 codex 1만 claim됐다(agy는 없다)");
+  assert.match(
+    calls[1].prompt,
+    /지휘 AI @claude가 이번 라운드에 맡긴 일 하나를 처리합니다/,
+    "codex가 작업자 역할 프롬프트로 claim됐다(보통 멘션 연쇄가 아니다)"
+  );
 });
 
 test("O15 비활성 id만 불렀으면 맡기지 못했다는 안내로 끝난다", async () => {
