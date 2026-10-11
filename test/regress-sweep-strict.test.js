@@ -93,3 +93,25 @@ test("F187 후속: 대화 기록에 깨진 줄이 있으면 보낸 첨부를 지
   await app.invoke("chat:state");
   assert.deepEqual(fs.readdirSync(attachDir(root, sessionId)), [name]);
 });
+
+test("isAttachmentCopyInUse: 보낸 첨부 자신을 가리키는 줄이 찢겨도 같은 내용의 보류 첨부를 취소하면 파일을 지우지 않는다", async (t) => {
+  const { root, sessionId, name, transcript } = await sendWithAttachment(t);
+  // 보낸 메시지(첨부 참조)가 들어 있는 그 줄 자체를 찢는다(관계없는 다른 줄이 아니라).
+  const lines = fs.readFileSync(transcript, "utf8").split("\n");
+  const targetIndex = lines.findIndex((line) => line.includes(name));
+  assert.ok(targetIndex >= 0, "그 메시지 줄을 transcript에서 찾아야 한다");
+  lines[targetIndex] = lines[targetIndex].slice(0, Math.floor(lines[targetIndex].length / 2));
+  fs.writeFileSync(transcript, lines.join("\n"));
+
+  // 같은 내용(같은 해시 → 같은 파일명)의 보류 첨부를 추가했다가 취소한다.
+  const keep = path.join(root, "keep.txt");
+  const app = startApp(root, [keep]);
+  t.after(() => app.quit());
+  await app.invoke("chat:state"); // 세션을 다시 열면 room.messages는 관대한 읽기로 채워져 그 메시지를 놓친다
+  const pendingId = (await app.invoke("chat:attachments:add", { sessionId })).attachments[0].id;
+  await app.invoke("chat:attachments:remove", { sessionId, attachmentId: pendingId });
+  assert.ok(
+    fs.existsSync(path.join(attachDir(root, sessionId), name)),
+    "줄이 찢겨 room.messages가 못 본 '보낸 첨부'를 취소 경로가 지우면 안 된다"
+  );
+});

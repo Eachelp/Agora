@@ -737,6 +737,25 @@ function createChatFeature(options) {
     return pendingAttachments.get(sessionId);
   }
 
+  // transcript를 엄격하게 읽어 메시지 배열로 돌려줍니다. 저장소의 관대한 읽기(store.readMessages)는
+  // 못 읽거나 깨진 줄을 조용히 건너뛰어 그 줄이 가리키던 첨부까지 '쓰지 않는 사본'으로 보이게 합니다 —
+  // 여기서는 깨진 줄이 하나라도 있으면 그대로 던져, 부르는 쪽이 "모른다"를 "지운다"로 바꾸지 않게 합니다.
+  function readTranscriptMessagesStrict(sessionId) {
+    let raw = "";
+    try {
+      raw = fs.readFileSync(store.transcriptPath(sessionId), "utf8");
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    const messages = [];
+    for (const line of raw.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      const event = JSON.parse(line);
+      if (event?.kind === "message" && event.message) messages.push(event.message);
+    }
+    return messages;
+  }
+
   // 보낸 메시지가 쓰지 않는 사본(보내지 않은 보류 첨부, 복사 도중 끊긴 .tmp)만 지웁니다.
   // 대화 기록을 읽지 못하면 보낸 첨부를 지울 수 있으니 아무것도 지우지 않습니다.
   function sweepOrphanAttachments(sessionId) {
@@ -746,20 +765,7 @@ function createChatFeature(options) {
       if (!fs.existsSync(dir)) return;
       const room = rooms.get(sessionId);
       const used = new Set();
-      // 저장소의 관대한 읽기는 못 읽거나 깨진 줄을 조용히 건너뛰어 보낸 첨부까지 '쓰지 않는 사본'으로 보이게 합니다.
-      // 여기서는 엄격히 읽어, 못 읽거나 깨진 줄이 하나라도 있으면 아무것도 지우지 않습니다(없는 파일은 보낸 메시지가 없다는 뜻).
-      let raw = "";
-      try {
-        raw = fs.readFileSync(store.transcriptPath(sessionId), "utf8");
-      } catch (error) {
-        if (error?.code !== "ENOENT") throw error;
-      }
-      const messages = [...(room ? room.messages : [])];
-      for (const line of raw.split(/\r?\n/)) {
-        if (!line.trim()) continue;
-        const event = JSON.parse(line);
-        if (event?.kind === "message" && event.message) messages.push(event.message);
-      }
+      const messages = [...(room ? room.messages : []), ...readTranscriptMessagesStrict(sessionId)];
       for (const message of messages) {
         for (const attachment of message.attachments || []) used.add(attachment.fileName);
       }
@@ -793,11 +799,19 @@ function createChatFeature(options) {
   // 이미 보낸 메시지(대기 중인 턴 포함)가 같은 사본 파일을 쓰는지 확인합니다.
   // 사본 이름이 내용 해시라 같은 파일을 다시 붙이면 보낸 첨부와 같은 파일을 가리킵니다.
   function isAttachmentCopyInUse(sessionId, fileName) {
+    const usesFile = (list) => list.some((message) =>
+      (message.attachments || []).some((attachment) => attachment.fileName === fileName));
     const room = rooms.get(sessionId);
-    const messages = room ? room.messages : ensureStore() ? store.readMessages(sessionId) : [];
-    return messages.some((message) =>
-      (message.attachments || []).some((attachment) => attachment.fileName === fileName)
-    );
+    if (room && usesFile(room.messages)) return true;
+    if (!ensureStore()) return false;
+    try {
+      // room.messages는 세션을 열 때 store.readMessages(관대한 읽기)로 채워져 깨진 줄의 첨부를
+      // 놓칠 수 있습니다 — transcript를 직접 엄격히 다시 봅니다.
+      return usesFile(readTranscriptMessagesStrict(sessionId));
+    } catch {
+      // 못 읽거나 깨진 줄이 있으면 '쓰는 중'으로 보고 지우지 않습니다(fail-safe).
+      return true;
+    }
   }
 
   function makeRunAgent(sessionId) {
