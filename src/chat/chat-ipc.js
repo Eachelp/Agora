@@ -575,9 +575,16 @@ function createChatFeature(options) {
     return UNCATEGORIZED_PROJECT_ID;
   }
 
+  // 읽기 전용 저장소는 설정 파일을 못 쓰므로, 둘러보는 중인 대화는 메모리에만 둔다.
+  // (그러지 않으면 화면은 고른 대화를 그리는데 활성 대화는 옛것으로 남아 전송·이벤트가 엉뚱한 방으로 간다)
+  let browsingReadOnly = null;
+
   function getActiveProjectId() {
     const projects = ensureProjectStore();
     if (!ensureStore() || !projects) return null;
+    if (store.readOnly && browsingReadOnly && projects.hasProject(browsingReadOnly.projectId)) {
+      return browsingReadOnly.projectId;
+    }
     const configured = store.getConfig().activeProjectId;
     if (configured && projects.hasProject(configured)) return configured;
     const activeSessionId = store.getConfig().activeSessionId;
@@ -631,6 +638,9 @@ function createChatFeature(options) {
 
   function getActiveSessionId(projectId = getActiveProjectId()) {
     if (!ensureStore() || !projectId) return null;
+    if (store.readOnly && browsingReadOnly?.projectId === projectId && store.hasSession(browsingReadOnly.sessionId)) {
+      return browsingReadOnly.sessionId;
+    }
     const config = store.getConfig();
     const configured = config.activeSessionIdsByProject?.[projectId];
     if (configured && store.hasSession(configured) && projectIdForMeta(store.readMeta(configured)) === projectId) {
@@ -645,10 +655,14 @@ function createChatFeature(options) {
   }
 
   function setActiveSessionId(sessionId) {
-    if (!ensureStore() || store.readOnly || !sessionId) return;
+    if (!ensureStore() || !sessionId) return;
     const meta = store.readMeta(sessionId);
     if (!meta) return;
     const projectId = projectIdForMeta(meta);
+    if (store.readOnly) {
+      browsingReadOnly = { projectId, sessionId };
+      return;
+    }
     const activeSessionIdsByProject = {
       ...(store.getConfig().activeSessionIdsByProject || {}),
       [projectId]: sessionId,
