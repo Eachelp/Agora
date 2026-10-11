@@ -30,6 +30,10 @@ const MAX_ARGV_PROMPT_CHARS = 24 * 1024;
 // 한도를 넘으면 앞부분을 버리고 최근 구간만 유지합니다. 이벤트 JSON은 한 줄
 // 기준으로 이 길이보다 훨씬 짧으므로 최근 구간만 있어도 복구할 수 있습니다.
 const MAX_LINE_BUFFER_CHARS = 256 * 1024;
+// 다만 '{'로 시작하는 줄은 이벤트 한 줄일 가능성이 높다. Claude가 이미지를 Read하면 tool_result 한 줄이
+// 수백 KB(실제 관찰 최대 800KB)라서, 위 한도로 앞부분을 버리면 줄이 통째로 파싱 불가능해져 이벤트를
+// 잃는다. 이런 줄은 캡처 버퍼 크기(8MB)까지는 그대로 모은다.
+const MAX_EVENT_LINE_CHARS = 8 * 1024 * 1024;
 
 // 화면에 실시간으로 보이던 중간 답변(deltaText)도 무한정 쌓이지 않도록 상한을 둡니다.
 // 초과 시 앞부분은 버리고 최근 구간만 유지해, 오류 진단과 부분 출력 보존에 씁니다.
@@ -107,9 +111,64 @@ function quoteArgForShell(arg) {
   if (/[\s&|<>^()"]/.test(text)) return `"${text.replace(/"/g, "")}"`;
   return text;
 }
+// Windows 명령줄 한도(32767자)는 libuv가 인용한 뒤의 길이에 걸린다. 인용하면 "는 \"가 되고,
+// 따옴표(또는 끝) 앞의 역슬래시는 두 배가 되므로 이스케이프된 JSON·로그는 글자 수가 거의 두 배로 는다.
+// 여기서는 그 늘어나는 만큼(인자를 감싸는 따옴표 2자는 제외 — 24K 아래 여유 8K가 흡수한다)을 센다.
+function argvEscapeOverhead(text) {
+  let extra = 0;
+  let backslashes = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    if (code === 92) {
+      backslashes += 1;
+      continue;
+    }
+    if (code === 34) extra += backslashes + 1;
+    backslashes = 0;
+  }
+  return extra + backslashes;
+}
+
+// 인용한 뒤의 길이가 limit 이내가 되도록 줄인다. 이스케이프가 많은 글은 한 번에 맞지 않으므로
+// 비율로 줄여 가며 다시 자른다(대부분의 글은 첫 시도에서 끝난다).
 function compactArgvPrompt(prompt, limit = MAX_ARGV_PROMPT_CHARS) {
   const text = String(prompt || "");
-  if (text.length <= limit) return text;
+  let budget = limit;
+  let out = compactToLength(text, budget);
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const size = out.length + argvEscapeOverhead(out);
+    if (size <= limit || budget <= 0) break;
+    budget = Math.min(budget - 1, Math.floor((budget * limit) / size));
+    out = compactToLength(text, budget);
+  }
+  return out;
+}
+
+// 줄 앞쪽에 쓰레기 텍스트가 붙은 이벤트 줄에서 이벤트를 찾는다. 앞쪽 '{'부터 시도하므로 중첩된
+// 이벤트도 가장 바깥 객체로 읽힌다.
+// 시도 횟수는 상한을 둔다(쓰레기 텍스트 안의 '{'가 아주 많아도 한 줄에 드는 비용을 제한).
+const MAX_RECOVERY_ATTEMPTS = 256;
+function recoverEmbeddedEvent(line, parseLine) {
+  let from = 1; // 0번 위치는 줄 전체 파싱에서 이미 시도했다
+  for (let attempt = 0; attempt < MAX_RECOVERY_ATTEMPTS; attempt += 1) {
+    const jsonStart = line.indexOf("{", from);
+    if (jsonStart < 0) return null;
+    const candidate = line.slice(jsonStart);
+    try {
+      JSON.parse(candidate);
+    } catch {
+      from = jsonStart + 1;
+      continue;
+    }
+    // JSON으로 읽히는 첫 위치가 이벤트의 시작이다. 파서가 관심 없는 이벤트로 보더라도(null)
+    // 그 안쪽 객체를 다시 이벤트로 읽지 않는다.
+    return parseLine(candidate);
+  }
+  return null;
+}
+
+function compactToLength(text, limit) {
+  if (text.length + argvEscapeOverhead(text) <= limit) return text;
 
   // 규칙·프로젝트 맥락·결정·작업·최근 기록은 우선순위가 높아 보존한다.
   // 자를 부분은 오직 대화 본문 구간뿐이다. 대화 마커 이전은 그대로 둔다.
@@ -472,18 +531,18 @@ function runAgentProcess({
       for (const line of lines) {
         emit(parseLine(line));
         // 대량 텍스트 뒤에 이벤트 JSON이 같은 줄로 이어붙는 경우가 있습니다.
-        // 줄 전체로는 파싱되지 않으므로 마지막 '{'부터 한 번 더 시도합니다.
-        if (trimmedForThisBatch || line.length > 8192) {
-          const jsonStart = line.lastIndexOf("{");
-          if (jsonStart > 0) emit(parseLine(line.slice(jsonStart)));
-        }
+        // 줄 전체로는 파싱되지 않으므로 '{' 위치를 앞에서부터 하나씩 시도해, 처음으로 읽히는
+        // 위치(= 가장 바깥 이벤트)부터 파싱합니다. 마지막 '{'만 보면 중첩 이벤트의 안쪽 객체만
+        // 잡혀 늘 실패합니다.
+        if (trimmedForThisBatch || line.length > 8192) emit(recoverEmbeddedEvent(line, parseLine));
       }
       if (flush && lines.length === 0 && chunk) emit(parseLine(chunk));
 
       // 줄바꿈 없이 계속 커지는 미완성 줄은 앞부분을 버리고 최근 구간만 유지합니다.
       // 프로세스는 그대로 두고, 이후에 도착하는 이벤트 JSON을 계속 인식합니다.
-      if (pending.length > MAX_LINE_BUFFER_CHARS) {
-        lineBuffer = pending.slice(pending.length - MAX_LINE_BUFFER_CHARS);
+      const lineLimit = !trimmedForThisBatch && pending.startsWith("{") ? MAX_EVENT_LINE_CHARS : MAX_LINE_BUFFER_CHARS;
+      if (pending.length > lineLimit) {
+        lineBuffer = pending.slice(pending.length - lineLimit);
         lineBufferTrimmed = true;
         return;
       }
