@@ -1167,10 +1167,13 @@ function buildSessionItem(entry) {
     // 시각도 제목과 같은 줄에 흐리게 붙입니다. 부모(프로젝트)가 한 줄인데
     // 자식이 두 줄이면 위계가 뒤집혀 보입니다.
     // 워크스페이스는 프로젝트 단위 설정이라 채팅마다 다시 알리지 않습니다.
-    const time = document.createElement("span");
-    time.className = "session-meta";
-    time.textContent = formatRelativeTime(entry.updatedAt);
-    titleLine.append(time);
+    // 다만 '질문 대기' 표시가 붙은 방은 시각을 뺍니다. 점·표시·시각·⋯이 한 줄에 다 있으면 제목이 대여섯 글자만 남습니다.
+    if (!entry.waitingQuestion) {
+      const time = document.createElement("span");
+      time.className = "session-meta";
+      time.textContent = formatRelativeTime(entry.updatedAt);
+      titleLine.append(time);
+    }
     main.append(titleLine);
     main.addEventListener("click", () => selectSession(entry.id));
     main.addEventListener("dblclick", () => startSessionRename(entry.id));

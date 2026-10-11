@@ -282,6 +282,23 @@ test("다른 방에서 답을 기다리는 질문은 사이드바에서 '질문 
   assert.equal(plain.byClass("is-running").length, 1);
 });
 
+test("'질문 대기' 표시가 붙은 방은 상대 시각을 줄에서 뺀다(점·표시·시각·⋯이 다 있으면 제목이 대여섯 글자로 줄어든다)", () => {
+  const { ui } = loadUi();
+  ui.formatRelativeTime = () => "방금";
+  ui.selectSession = () => {};
+  ui.startSessionRename = () => {};
+  ui.openSessionMenu = () => {};
+  ui.pointRect = () => ({});
+  const row = (extra) => ui.buildSessionItem({ id: "room-b", title: "다른 방", updatedAt: 1, status: "running", ...extra });
+  const waiting = row({ waitingQuestion: true });
+  assert.equal(waiting.byClass("session-wait").length, 1);
+  assert.equal(waiting.byClass("session-meta").length, 0, "시각이 제목 자리를 먹지 않는다");
+  assert.equal(waiting.byClass("session-name")[0].textContent, "다른 방", "제목은 그대로다");
+  const plain = row({});
+  assert.equal(plain.byClass("session-meta").length, 1, "평소 방은 시각이 그대로 붙는다");
+  assert.equal(plain.byClass("session-meta")[0].textContent, "방금");
+});
+
 // ---- 카드가 대화 영역을 줄여도 가장 새 줄이 보인다 ----
 // 카드가 뜨면 입력 영역이 커져 대화 영역이 줄어든다. 스크롤 위치는 그대로라서 바닥을 보던 사람의 화면에서 가장 새 줄
 // ('답변 대기 중' 표시, 방금 보낸 메시지의 '대기 ×')이 아래로 밀려나 보이지 않던 것을 막는다.
