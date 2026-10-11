@@ -388,3 +388,50 @@ test("모든 약속은 정확히 한 번 풀리고, 방은 다 끝나면 유휴�
   assert.deepEqual(room.turnState(), { current: null, running: [], queue: [], deferred: [] });
   assert.equal(room.pendingTurns.size, 0);
 });
+
+test("inv 9 모든 약속은 정확히 한 번 풀린다: 끝난 항목, 갈아끼운 항목, ×로 지운 항목, 중지로 버려진 항목", async () => {
+  const { room, calls } = makeRoom({ ids: ["claude", "codex", "agy"] });
+  const resolved = new Map();
+  const original = room.scheduleTurn.bind(room);
+  room.scheduleTurn = (...args) => {
+    const item = original(...args);
+    if (!resolved.has(item)) {
+      resolved.set(item, 0);
+      const resolve = item.resolve;
+      item.resolve = (value) => { resolved.set(item, resolved.get(item) + 1); resolve(value); };
+    }
+    return item;
+  };
+  room.sendUserMessage("@claude 하나");
+  room.sendUserMessage("@claude 둘");
+  room.sendUserMessage("@claude 셋");
+  room.sendUserMessage("@codex 넷");
+  room.sendUserMessage("모두에게");
+  await settle();
+  const [toCancel] = room.turnQueue;
+  room.cancelTurn(toCancel.turnId);
+  calls[0].finish();
+  await settle();
+  room.stopAll();
+  await settle();
+  for (const call of calls.filter((entry) => !entry.done && !entry.cancelled)) call.finish();
+  await settle();
+  assert.ok(resolved.size >= 6);
+  for (const [item, count] of resolved) assert.equal(count, 1, `${item.turnId} ${item.agent.id}`);
+  assert.equal(room.isIdle(), true);
+});
+
+test("10분째 진전이 없다는 안내는 이 실행 때문에 막힌 턴(일반 줄 전부와 같은 담당자의 빠른 대기)만 적는다", async () => {
+  const { room, calls } = makeRoom({ ids: ["claude", "codex", "agy"] });
+  room.sendUserMessage("@claude 오래 걸리는 일");
+  await settle();
+  room.sendUserMessage("@claude 이어서");
+  room.sendUserMessage("@codex 이건 바로");
+  room.sendUserMessage("@agy 이것도 바로");
+  await settle();
+  assert.deepEqual(room.queuedAgentsBehind("claude"), ["claude"], "다른 담당자의 빠른 턴은 이 실행과 상관없이 시작했다");
+  room.sendUserMessage("멘션 없이");
+  assert.deepEqual(room.queuedAgentsBehind("claude").sort(), ["agy", "claude", "codex"]);
+  calls[0].finish();
+  await settle();
+});

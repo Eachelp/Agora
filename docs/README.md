@@ -11,6 +11,7 @@
 | 기능 | 현재 동작 |
 |---|---|
 | 일반 대화 | `@claude`·`@gpt`·`@gemini`, `@모두` 이어 발언·독립 발언 |
+| 바로 답하기 | 여러 AI가 답하는 중에 한 AI를 이름으로 불러 답장하면 다른 AI를 기다리지 않고 바로 답함(그 AI가 아직 앞선 답을 하는 중이면 끝나자마자). 이어 발언·`@모두`·토론은 순서대로 ([설계·개정 기록](design/AGORA_REVISION_2026-10-11_REPLY_NOW.md)) |
 | 토론 | 발언 수를 정하는 자유토론, Preset과 사이클에 따른 구조화 토론 |
 | 실행 중 질문 카드 | Claude·Codex가 일하다 던지는 질문(1~4개, 하나 고르기·여러 개 고르기·직접 입력)에 카드로 답하면 같은 작업이 이어짐. 건너뛰기·중지로 닫을 수 있음. 파일 작업(읽기·쓰기) 권한의 일반 대화에서만 붙고, 대화 전용·AGY·토론에는 없음(대화 전용은 답변 끝에서 선택지로 묻는다) ([개정 기록](design/AGORA_REVISION_2026-10-11_QUESTION_UI.md)) |
 | 답변 대기·승인 | AI가 응답을 끝내며 되묻는 질문에 답하면 이어 진행, 권한 밖 작업은 "도구 실행 권한 요청" 창의 **[이 턴 승인 후 다시 실행]**·**[거부]**로 확인. 요청은 대화별로 보이고 창을 다시 열어도 남음 |
@@ -45,6 +46,7 @@
 | [Stage C 결정 기록](design/AGORA_STAGE_C_SESSION_LIFECYCLE_DECISIONS.md) | (대체됨·역사 기록) 검수 대기 시점의 결정과 후속 최종 검수 링크 |
 | [개정 기록 2026-10-11](design/AGORA_REVISION_2026-10-11_REMOVE_PROFESSIONAL_MODE.md) | 전문 모드·역할 상담 제거 결정과 아래 Stage C·D 문서의 대체됨 표시 근거 |
 | [개정 기록 2026-10-11 질문 카드](design/AGORA_REVISION_2026-10-11_QUESTION_UI.md) | 실행 중 질문(ask_user) 결정·실제 CLI 시험의 함정·한계·저장 내용 |
+| [개정 기록 2026-10-11 바로 답하기](design/AGORA_REVISION_2026-10-11_REPLY_NOW.md) | 턴 스케줄러(빠른 줄·일반 줄·담당자 게이트) 설계, F24·F27, 불변식·시나리오·구현 결과 |
 | [D-0 결정 기록](design/AGORA_STAGE_D0_WORKSPACE_LEASE_DECISIONS.md) | (제거됨·역사 기록) 워크스페이스 변경 소유권의 결정·검수 이력. 2026-10-11 stage 4에서 lease 제거 — 개정 기록 §4a |
 | [D-A0 결정 기록](design/AGORA_STAGE_DA0_VERIFICATION_BOUNDARY_DECISIONS.md) | (제거됨·역사 기록) 검증 안전 경계의 결정·검수 이력 |
 | [Stage D Charter](design/AGORA_STAGE_D_ASSURANCE_CHARTER.md) | (대체됨·역사 기록) 전문 모드 제거로 적용 대상이 없어진 v0.5 의미 계약. 폐기 사유는 개정 기록 §4 |

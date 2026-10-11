@@ -57,7 +57,7 @@ function hasGroupMention(text, groupAliases = []) {
   const source = maskNonCallingText(text);
   for (const match of source.matchAll(MENTION_PATTERN)) {
     const previous = match.index > 0 ? source[match.index - 1] : "";
-    if (previous && /[p{L}p{N}_@-]/u.test(previous)) continue;
+    if (previous && /[\p{L}\p{N}_@-]/u.test(previous)) continue;
     if (groupAliases.some((alias) => tokenMatchesAlias(match[1], alias))) return true;
   }
   return false;

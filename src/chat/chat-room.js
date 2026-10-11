@@ -708,7 +708,7 @@ class ChatRoom extends EventEmitter {
     } else {
       queue.push(item);
     }
-    this.emitTurnState();
+    this.emitTurnStateSafe();
     // 한 발화가 여러 명에게 팬아웃되는 동안에는 펌프를 미룬다. 첫 턴을 넣자마자
     // 돌리면 나머지가 큐에 들어오기 전에 실행이 시작돼, 같이 돌아야 할 독립
     // 발언 묶음이 한 명씩으로 쪼개진다.
@@ -775,7 +775,7 @@ class ChatRoom extends EventEmitter {
     if (interrupted) {
       this.appendSystem("사용자가 개입해 진행 중인 응답과 대기 턴을 중지했습니다. 다음 차례는 사용자입니다." + this.droppedQuestionsNote(lost));
     }
-    this.emitTurnState();
+    this.emitTurnStateSafe();
     return { dropped, interrupted };
   }
 
@@ -818,7 +818,7 @@ class ChatRoom extends EventEmitter {
     this.removeQueued(item);
     // 사용자가 일부러 지운 턴이다. "유실됐을 수 있다"는 안내를 붙이지 않는다.
     this.retireTurn(item, undefined, { lost: false });
-    this.emitTurnState();
+    this.emitTurnStateSafe();
     // 이 항목이 막고 있던 뒤 항목이 풀릴 수 있다.
     this.pumpTurnQueue();
     return true;
@@ -2007,7 +2007,7 @@ class ChatRoom extends EventEmitter {
     // 그때까지 같은 담당자의 새 턴이 겹쳐 시작하지 않는다. 화면(turnState)은 세대가 지난 항목을 이미 없는 턴으로 센다.
     this.syncCurrentTurn();
     this.mentionsMuted = false;
-    this.emitTurnState();
+    this.emitTurnStateSafe();
     // Stop/interject/reset로 turn을 중지하면 화면에 보이는 모든 승인 카드는 stale하다.
     // resolver를 부르기 전에 provider-neutral approval-resolved를 내보내 renderer가 카드를
     // dismiss하게 한다(same-turn action 승인 · legacy whole-turn 승인 공통). 이후 adapter가

@@ -1,6 +1,6 @@
 # Agora — 개정 기록 2026-10-11: 바로 답하기(reply-now) 설계
 
-> 상태: **설계 (구현 전, 2026-10-11, 브랜치 `feat/reply-now`)** — 이 문서가 확정되기 전에는 `src/`를 바꾸지 않는다.
+> 상태: **구현됨 (2026-10-11, 브랜치 `feat/reply-now`)** — 이 문서가 확정된 뒤 구현했다. 구현하면서 설계와 달라진 곳은 §10에 적었다.
 > 근거: 계획 v4 §1(5단계), 버그 보고 F24·F27, 현재 `src/chat/chat-room.js`(v1.3.1 = main `3b84839`)의 스케줄러.
 > 개정 2(같은 날): 독립 설계 검토 2건의 지적 7개를 코드와 대조해 확인하고 모두 반영했다(받아들이지 않은 부분과 그 이유는 §7). 바뀐 곳은 §0 D6·D7·D8, §2.1~§2.8, §3, §4.1, §5, §6, §7, §8, §9다.
 
@@ -347,3 +347,14 @@
 | `src/chat/chat-prompt.js` | `concurrentWork` 입력(쓰기 계약 + 모든 권한의 "아직 대화에 없는 답" 줄), `replyTarget` 입력("마지막 메시지에 이어"·"한 번에 한 명만" 교체). 두 입력이 없으면 출력은 지금과 같다. |
 | `src/chat.js` | 대기 항목 `fast` 툴팁(선택). |
 | `test/reply-now-*.test.js` | 새 시험(진입점 우선): `reply-now-scheduler`(S1~S9·S17·S18·S21~S23, S5는 "한 명만 끝내고 둘째 호출을 센다"까지), `reply-now-property`(§5, 시드 고정 무작위 사건열, S24; 묶음 구성원 갈아끼우기·취소와 한 명씩 먼저 끝나는 러너 포함), `reply-now-prompt`(S12~S16·S26 기록·계약·`replyTarget`), `reply-now-ipc`(S11·S19·S25). |
+
+## 10. 구현 결과와 설계에서 달라진 곳
+
+설계를 그대로 구현했다. 코드는 `src/chat/chat-room.js`(스케줄러), `src/chat/chat-prompt.js`(`replyTarget`·`concurrentWork`), `src/chat/chat-mention.js`(`hasGroupMention`), `src/chat.js`(대기 항목 툴팁)이고, 새 시험은 `test/reply-now-scheduler.test.js`(S1~S9·S17·S18·S21~S25), `reply-now-prompt.test.js`(S12~S16·S26), `reply-now-ipc.test.js`(S11·S19·S25), `reply-now-property.test.js`(§5, 시드 고정 무작위 사건열 8개와 예외 주입), `reply-now-mention.test.js`다. 달라지거나 설계가 정하지 않은 곳은 아래뿐이다.
+
+- **turn-state 알림은 방 안의 모든 길에서 던져도 삼킨다.** 설계 §4.1은 "스케줄러가 직접 내는" 알림만 삼키라고 했는데, 예약(`scheduleTurn`)·`cancelTurn`·`stopAllSilently`·`endDiscussionState`도 같은 이유(리스너 예외가 큐에 항목을 넣은 채 호출자를 떠나게 하거나 중지 정리를 중간에 끊는다)로 같은 안전 알림(`emitTurnStateSafe`)을 쓴다. `stopAllSilently`에서 마지막에 올라오는 `approval-wait` 리스너 예외라는 기존 특례는 그대로다.
+- **내부 구조**: 큐에 넣는 본체를 `scheduleTurn`(항목을 돌려줌)으로 나누고 `scheduleResponse`는 그 약속을 돌려주는 얇은 껍데기로 남겼다(`sendUserMessage`가 줄·자리·키 물려주기를 정하려면 항목이 필요하다). `activeUnits`의 원소는 `{ items }` 단위 객체다. 걷어낼 항목은 `collectSupersedable`(모으기)과 `removeQueued`(빼기)로 나뉘었고, `supersedeQueuedTurns`는 없어졌다(다른 곳에서 부르지 않았다). 걷어내는 항목은 `retireTurn(…, { keepKeys: true })`로 키를 지우지 않고 새 항목이 물려받는다.
+- **`trackRunStart(generation)`**: 설계는 "세대가 같을 때만 `activeRuns`를 센다"까지만 말했는데, 시작하는 세대가 이미 지난 호출이면(실제로는 생기지 않지만 방어로) `liveRuns`만 올리고 `activeRuns`는 올리지 않아 끝날 때 짝이 맞는다.
+- **`replyTarget`**은 줄바꿈·연속 공백을 한 칸으로 줄인 뒤 400자로 자른다(따옴표 안에 한 줄로 들어가게).
+- **`hasGroupMention` 정규식**: 앞 글자가 문자·숫자·`_`·`@`·`-`이면 이메일·식별자로 보고 건너뛰는 규칙은 `parseMentions`와 같다(시험이 `a@all.com`·`@allergy`·`@모두X`로 고정한다).
+- **시험 쪽**: §8의 표에서 예상한 시험이 실제로 깨졌다(10분째 진전·한도·질문 안내 세 건·`chat:turn:cancel`·× 취소 안내). 예상과 달리 `question-lines.test.js`의 "여러 에이전트에게 한꺼번에 보낸 메시지에는 …"와 "질문 카드를 기다리는 에이전트에게 메시지를 …"는 고치지 않아도 통과했다(앞의 것은 `@agy 다시`가 대기 중인 일반 항목을 갈아끼워 일반 줄이라 이미 안내받은 것으로 센다). 뒤의 것은 설명 문구와 "다른 담당자는 바로 시작한다" 확인만 더했다.

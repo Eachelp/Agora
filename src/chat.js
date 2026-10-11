@@ -3886,6 +3886,8 @@ function renderBusyControls() {
     const pill = document.createElement("span");
     pill.className = "typing-pill";
     if (agent) pill.style.setProperty("--agent-color", agent.color);
+    // 바로 답하기 대기: 앞선 하던 답변이 끝나면 일반 줄을 건너뛰고 바로 이어서 답한다.
+    if (turn.fast) pill.title = `${name}의 하던 답변이 끝나면 바로 이어서 답합니다`;
     pill.append(document.createTextNode(`${name} 대기${turn.discussion ? " · 토론" : ""}`));
     const cancel = document.createElement("button");
     cancel.type = "button";
