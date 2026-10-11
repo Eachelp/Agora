@@ -41,6 +41,16 @@ test("electron-builder 설정이 유지된다 (portable/dmg/AppImage)", () => {
   assert.ok(packageJson.build.files.includes("src/**/*"));
 });
 
+test("패키징은 node_modules/electron(개발·CLI용 전체 배포본)을 중복 포함하지 않는다", () => {
+  // optionalDependencies.electron은 npm 전역 설치 CLI(bin/agora.js)가 쓰므로 그대로 둔다 —
+  // 패키징 쪽(electron-builder)만 실제 실행 바이너리(Agora.exe)와 중복되는 사본을 뺀다.
+  // 실측: 이 제외가 없으면 artifacts/win-unpacked가 705MB, 있으면 353MB(node_modules/electron
+  // dist 345MB가 app.asar.unpacked에 그대로 들어간 탓).
+  assert.ok(packageJson.optionalDependencies.electron);
+  assert.ok(packageJson.build.files.includes("!node_modules/electron/**/*"));
+  assert.ok(packageJson.build.files.includes("!node_modules/@electron-internal/**/*"));
+});
+
 test("README가 .agora 저장소·권한·첨부·AGY 구분을 문서화한다", () => {
   const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
   assert.match(readme, /\.agora/);
