@@ -33,6 +33,13 @@ test("질문 카드가 스크롤돼도 보내기·건너뛰기 줄은 카드 아
   assert.ok(vh > 0 && vh < 50, `카드 영역 높이 상한이 ${vh}vh`);
 });
 
+test("카드가 여러 장이면 첫 장만 보내기·건너뛰기 줄이 붙고, 뒤 카드의 줄은 제자리에 있어 그 카드의 머리글을 가리지 않는다", () => {
+  const css = read("src", "chat.css");
+  // 뒤 카드의 줄까지 붙이면 그 카드가 아래에서 막 들어올 때 줄이 카드 머리글 위로 떠 글자가 겹친다(실제 창에서 확인).
+  // 앞 카드를 처리하면 다음 카드가 첫 장이 되어 줄이 붙는다.
+  assert.match(rule(css, ".question-card ~ .question-card .question-actions"), /position:\s*static/);
+});
+
 function shellRoom(t, meta = { permissionMode: "workspace-read" }) {
   const broker = createUserQuestionBroker({ onCallbackError: () => {} });
   t.after(() => broker.stop());

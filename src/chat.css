@@ -1074,6 +1074,12 @@ textarea:focus-visible {
   background: var(--accent-soft);
 }
 
+/* 카드가 여러 장이면 첫 장만 줄을 붙인다. 뒤 카드의 줄까지 붙이면 그 카드가 아래에서 막 들어올 때 줄이 카드 머리글 위로
+   떠 글자가 겹친다. 앞 카드를 처리하면 다음 카드가 첫 장이 되어 줄이 붙는다. */
+.question-card ~ .question-card .question-actions {
+  position: static;
+}
+
 .question-missing {
   flex: 1;
   min-width: 0;
