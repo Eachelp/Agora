@@ -4733,6 +4733,26 @@ window.addEventListener("focus", () => {
 
 
 
+// 창을 줄이거나 질문 카드 영역이 커져 대화 영역이 작아지면 스크롤 위치는 그대로라 가장 새 줄(입력 중 표시,
+// 대기 중인 메시지 표시)이 보이는 부분 아래로 밀려난다. 바닥을 보던 사람은 크기가 바뀔 때 바닥에 다시 붙이고,
+// 위로 올려 읽던 사람은 건드리지 않는다. 바닥이었는지는 사용자 자신의 스크롤로만 기억한다.
+let pinnedToBottom = true;
+let pinnedClientHeight = chatScroll.clientHeight;
+chatScroll.addEventListener("scroll", () => {
+  // 대화 영역 높이가 바뀌며 생긴 스크롤은 사용자가 한 것이 아니다.
+  if (chatScroll.clientHeight !== pinnedClientHeight) {
+    pinnedClientHeight = chatScroll.clientHeight;
+    return;
+  }
+  pinnedToBottom = isNearBottom();
+});
+if (typeof ResizeObserver === "function") {
+  new ResizeObserver(() => {
+    pinnedClientHeight = chatScroll.clientHeight;
+    if (pinnedToBottom) chatScroll.scrollTop = chatScroll.scrollHeight;
+  }).observe(chatScroll);
+}
+
 // --- 초기화 ---
 (async () => {
   if (usageOpen) void loadUsage();
