@@ -280,6 +280,22 @@ test("새로고침·방 재선택: applyFullState가 그 방의 오케스트레�
   );
 });
 
+// chat:sessions-changed처럼 applyFullState 없이 switchActiveSession만 부르는 경로에서도
+// 이전 방의 라운드·실행 횟수가 새지 않아야 한다(room-isolation-ui.test.js와 같은 방식).
+test("방을 옮기면(스냅숏 없이도) 이전 방의 라운드·실행 횟수가 새 방에 새지 않는다", () => {
+  const context = {
+    activeSessionId: "room-a",
+    orchestration: { active: true, round: 3, executions: 7, leadId: "claude" },
+    composerDrafts: new Map(),
+    composerInput: { value: "" },
+    closePopover() {}, closeMentionPopup() {}, settleConfirm() {}, parkApproval() {}, autoresize() {},
+  };
+  vm.createContext(context);
+  vm.runInContext(section("function switchActiveSession(", "function syncComposerLock("), context);
+  context.switchActiveSession("room-b");
+  assert.equal(context.orchestration, null, "이전 방(room-a)의 스냅숏이 room-b로 넘어가면 안 된다");
+});
+
 test("오케스트레이터 켜짐: 입력창 위 'AI끼리 계속 부르기' 체크는 흐려지지 않는다(지휘 AI·작업자 호출에는 적용되지 않지만, 곁가지 대화 멘션 연쇄에는 그대로 적용되므로)", () => {
   const html = read("src/chat.html");
   assert.match(html, /id="chk-keep-calling"/);

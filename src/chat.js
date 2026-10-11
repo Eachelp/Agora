@@ -395,6 +395,10 @@ function switchActiveSession(nextId) {
   settleConfirm(false);
   // 떠 있던 승인 카드는 그 방 것이다. 새 방에 남기지 않고 큐로 되돌린다.
   parkApproval();
+  // 라운드·실행 횟수도 그 방 것이다. applyFullState가 뒤이어 새 방의 스냅숏으로
+  // 채우는 경우(세션 선택·새로고침)는 덮어써 무해하지만, chat:sessions-changed처럼
+  // 스냅숏 없이 방만 바뀌는 경로도 있어 여기서 먼저 비워야 이전 방 것이 잠깐이라도 새지 않는다.
+  orchestration = null;
   activeSessionId = nextId;
   composerInput.value = (nextId && composerDrafts.get(nextId)) || "";
   autoresize();
