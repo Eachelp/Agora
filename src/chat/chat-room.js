@@ -1587,8 +1587,9 @@ class ChatRoom extends EventEmitter {
                 step: speaker.step,
                 stepCount: protocol.stepCount,
                 finalStep: isFinalStep(protocol, turn),
+                topicMessageId: startMessageId,
               }
-            : { turn, maxTurns: budget },
+            : { turn, maxTurns: budget, topicMessageId: startMessageId },
         });
         completed += 1;
         if (outcome?.ok) successfulSteps += 1;

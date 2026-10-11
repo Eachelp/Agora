@@ -18,7 +18,10 @@ const RECORDER_OUTPUT_LINES = [
 function speakerLabel(message, agentsById) {
   if (message.authorType === "user") return message.authorName || "User";
   const agent = agentsById.get(message.author);
-  return `@${agent ? agent.id : message.author}`;
+  // 구조화 토론의 발언에는 그때 맡은 단계 역할을 붙인다. 한 에이전트가 여러 slot을 맡으면
+  // '[@claude]' 줄만으로는 어느 것이 발안·비평·수정인지 구분할 수 없기 때문이다.
+  const role = message.discussionTurnMeta?.roleName;
+  return `@${agent ? agent.id : message.author}${role ? ` · ${role}` : ""}`;
 }
 
 function attachmentSuffix(message) {
@@ -85,6 +88,11 @@ function buildAgentPrompt({
       ? conversationWindow.omitted
       : messages.length - recent.length;
   const pinned = conversationWindow?.compacted ? conversationWindow.pinned : [];
+  // 토론 턴은 요약 창을 쓰지 않아 최근 N개 밖으로 밀린 토론 주제(사용자 질문)가 요약도 없이 사라진다.
+  // 긴 토론(40개 넘는 발언)의 후반 발언자도 주제와 제약을 볼 수 있게 주제 메시지는 늘 남긴다.
+  const topicMessage = discussion?.topicMessageId && !recent.some((message) => message.id === discussion.topicMessageId)
+    ? messages.find((message) => message.id === discussion.topicMessageId) || null
+    : null;
   const compressedHistory = conversationWindow?.compacted ? conversationWindow.summary : [];
 
   const lines = [];
@@ -286,7 +294,12 @@ ${memoryFull.slice(-budget)}`
   if (!isSimplify) {
     lines.push("");
     lines.push("=== 대화 ===");
-    if (omitted > 0) lines.push(`(이전 메시지 ${omitted}개 생략)`);
+    if (omitted - (topicMessage ? 1 : 0) > 0) lines.push(`(이전 메시지 ${omitted - (topicMessage ? 1 : 0)}개 생략)`);
+    if (topicMessage) {
+      lines.push("=== 토론 주제 (고정) ===");
+      lines.push(`[${speakerLabel(topicMessage, agentsById)}] ${String(topicMessage.text || "")}${attachmentSuffix(topicMessage)}`);
+      lines.push("=== 토론 주제 끝 ===");
+    }
     if (conversationWindow?.compacted) {
       if (pinned.length > 0) {
         lines.push("=== 대화 고정 배경 ===");
