@@ -1484,10 +1484,15 @@ function roomMeta(meta) {
       wrap(async ({ projectId }) => {
         // 읽기 전용 저장소에서도 프로젝트 둘러보기는 됩니다(저장은 setActiveProjectId가 건너뜁니다).
         const project = requireProject(projectId, { forRead: Boolean(ensureStore() && store.readOnly) });
-        setActiveProjectId(project.id);
         let sessionId = getActiveSessionId(project.id);
-        if (!sessionId && !store.readOnly) sessionId = createSessionForProject(project.id).id;
-        if (sessionId) setActiveSessionId(sessionId);
+        // 읽기 전용 저장소는 새 대화를 만들 수 없고, 둘러보는 프로젝트는 고른 대화를 통해서만 메모리에 기억됩니다.
+        // 대화가 없는 프로젝트를 그냥 받으면 응답이 옛 프로젝트·빈 대화로 돌아가 사이드바 선택이 말없이 되돌아갑니다.
+        if (!sessionId && store.readOnly) {
+          throw new Error("이 저장소는 더 새로운 버전의 Agora가 만든 것이라 읽기 전용입니다. 대화가 없는 프로젝트는 새 대화를 만들 수 없어 열 수 없습니다. 최신 버전의 Agora를 사용해 주세요.");
+        }
+        setActiveProjectId(project.id);
+        if (!sessionId) sessionId = createSessionForProject(project.id).id;
+        setActiveSessionId(sessionId);
         await ensureCapabilityService().discover();
         return { ...sessionsPayload(), session: sessionId ? sessionState(sessionId) : null };
       })
