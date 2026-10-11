@@ -558,9 +558,17 @@ function makeAgentAvatar(agent, className = "avatar") {
   return avatar;
 }
 
+// 저장소 경고(읽기 전용·손상)는 자동으로 숨지 않는다. 문구를 dataset에 따로 두어, 알림이 겹쳐도 원래 문구로 돌아간다.
+function showPersistentWarning(text) {
+  storeWarning.dataset.persistent = text;
+  storeWarning.textContent = text;
+  storeWarning.classList.add("is-error");
+  storeWarning.hidden = false;
+  clearTimeout(noticeTimer);
+}
+
 function flashNotice(text, isError = true) {
   const persistent = storeWarning.dataset.persistent;
-  const previousText = storeWarning.textContent;
   storeWarning.textContent = text;
   storeWarning.classList.toggle("is-error", isError);
   storeWarning.hidden = false;
@@ -568,7 +576,7 @@ function flashNotice(text, isError = true) {
   noticeTimer = setTimeout(() => {
     if (persistent) {
       // 저장소 경고(읽기 전용·손상)는 원래 내용으로 복원하고 자동으로 숨기지 않는다.
-      storeWarning.textContent = previousText;
+      storeWarning.textContent = persistent;
       storeWarning.classList.add("is-error");
     } else {
       storeWarning.hidden = true;
@@ -836,16 +844,14 @@ function openProjectSettings(anchor, project) {
       const result = await call(window.chatApi.projectsWorkspaceChoose(project.id));
       if (result && !result.canceled) {
         syncWorkspaceField(result.project);
-        if (result.projects) projects = result.projects;
-        renderProjects();
+        applyWorkspaceChange(result);
       }
     });
     clear.addEventListener("click", async () => {
       const result = await call(window.chatApi.projectsWorkspaceClear(project.id));
       if (result) {
         syncWorkspaceField(result.project);
-        if (result.projects) projects = result.projects;
-        renderProjects();
+        applyWorkspaceChange(result);
       }
     });
     workspaceField.append(workspace, choose, clear);
@@ -1081,7 +1087,25 @@ function openNewProjectPopover(anchor) {
   });
 }
 
+// 폴더를 고르거나 해제하면 백엔드가 이 프로젝트 대화의 권한도 함께 바꾼다(해제하면 chat으로 내린다).
+// 사이드바뿐 아니라 헤더와 보고 있는 대화의 meta도 같이 맞춰야 워크스페이스·권한 표시가 실제와 같다.
+function applyWorkspaceChange(result) {
+  if (result.projects) projects = result.projects;
+  if (result.activeMeta && result.activeMeta.id === activeSessionId) sessionMeta = result.activeMeta;
+  renderProjects();
+  renderHeader();
+}
+
+// 대화가 실제로 속한 프로젝트. 트리에는 모든 프로젝트의 대화가 보이므로 활성 프로젝트와 같다고 볼 수 없다.
+function sessionOwnerProjectId(session) {
+  for (const [projectId, entries] of Object.entries(sessionsByProject)) {
+    if (entries.some((entry) => entry.id === session.id)) return projectId;
+  }
+  return session.projectId || null;
+}
+
 function openSessionMovePopover(anchor, session) {
+  const ownerProjectId = sessionOwnerProjectId(session);
   openPopover(anchor, (target) => {
     const title = document.createElement("strong");
     title.className = "project-popover-title";
@@ -1095,10 +1119,10 @@ function openSessionMovePopover(anchor, session) {
       const option = document.createElement("button");
       option.type = "button";
       option.className = "project-move-option";
-      option.textContent = project.id === activeProjectId
+      option.textContent = project.id === ownerProjectId
         ? `${project.name} (현재)`
         : project.name;
-      option.disabled = project.id === activeProjectId;
+      option.disabled = project.id === ownerProjectId;
       row.append(option);
 
       option.addEventListener("click", async () => {
@@ -1994,7 +2018,15 @@ function makeDeliveryBadge(kind) {
   return badge;
 }
 
-function openWorkflowPopover(anchor) {
+// 결정·작업 탭의 동작은 목록을 새로 그리려고 팝오버를 다시 만든다. 그때 보던 탭과 아직 저장하지 않은 입력을 이어 주고,
+// 응답을 기다리는 사이 사용자가 팝오버를 닫았다면 다시 열지 않는다.
+let workflowView = null;
+function refreshWorkflowPopover(anchor) {
+  if (!workflowView || popover.hidden || !popover.classList.contains("is-workflow")) return;
+  openWorkflowPopover(anchor, workflowView.capture());
+}
+
+function openWorkflowPopover(anchor, resume = null) {
   const project = activeProjectEntry();
   if (!project) return;
 
@@ -2026,7 +2058,9 @@ function openWorkflowPopover(anchor) {
       panel.className = "workflow-tab-panel";
       tabPanels[id] = panel;
     }
+    let currentTab = "memory";
     function selectTab(id) {
+      currentTab = id;
       for (const key of Object.keys(tabButtons)) {
         tabButtons[key].classList.toggle("is-active", key === id);
         tabPanels[key].classList.toggle("is-active", key === id);
@@ -2098,7 +2132,8 @@ function openWorkflowPopover(anchor) {
     rulesActions.append(rulesSave, historyToggle);
     rulesSection.append(rulesTitle, rulesHint, rulesInput, rulesCount, rulesActions, historyBox);
     call(window.chatApi.rulesRead(project.id)).then((result) => {
-      if (result) {
+      // 불러오는 사이 이미 고쳐 쓴 글은 덮지 않는다.
+      if (result && !rulesInput.dataset.dirty) {
         rulesInput.value = result.rules || "";
         updateRulesCount();
       }
@@ -2240,8 +2275,9 @@ function openWorkflowPopover(anchor) {
             messageIds,
           }));
       if (!result) return;
+      clearDraft(decisionTitle, decisionContent);
       applyFullState(result);
-      openWorkflowPopover(anchor);
+      refreshWorkflowPopover(anchor);
     });
 
     const allDecisions = workflow.decisions || [];
@@ -2277,7 +2313,7 @@ function openWorkflowPopover(anchor) {
       approve.textContent = "승인";
       approve.addEventListener("click", async () => {
         const result = await call(window.chatApi.decisionsResolve(project.id, [decision.id], "approve"));
-        if (result) { applyFullState(result); openWorkflowPopover(anchor); }
+        if (result) { applyFullState(result); refreshWorkflowPopover(anchor); }
       });
       const reject = document.createElement("button");
       reject.type = "button";
@@ -2285,7 +2321,7 @@ function openWorkflowPopover(anchor) {
       reject.textContent = "제외";
       reject.addEventListener("click", async () => {
         const result = await call(window.chatApi.decisionsResolve(project.id, [decision.id], "reject"));
-        if (result) { applyFullState(result); openWorkflowPopover(anchor); }
+        if (result) { applyFullState(result); refreshWorkflowPopover(anchor); }
       });
       actions.append(approve, reject);
       card.append(cardTitle, cardText, actions);
@@ -2342,7 +2378,7 @@ function openWorkflowPopover(anchor) {
         const result = await call(window.chatApi.decisionsDelete(project.id, decision.id));
         if (!result) return;
         applyFullState(result);
-        openWorkflowPopover(anchor);
+        refreshWorkflowPopover(anchor);
       });
       cardActions.append(edit, remove);
       card.append(cardTitle, cardText, meta, cardActions);
@@ -2382,7 +2418,7 @@ function openWorkflowPopover(anchor) {
         const result = await call(window.chatApi.decisionsResolve(project.id, [decision.id], "restore"));
         if (!result) return;
         applyFullState(result);
-        openWorkflowPopover(anchor);
+        refreshWorkflowPopover(anchor);
       });
       cardActions.append(restore);
       card.append(cardTitle, cardText, meta, cardActions);
@@ -2463,8 +2499,9 @@ function openWorkflowPopover(anchor) {
             chatId: activeSessionId,
           }));
       if (!result) return;
+      clearDraft(taskTitle, taskDescription);
       applyFullState(result);
-      openWorkflowPopover(anchor);
+      refreshWorkflowPopover(anchor);
     });
     const taskForm = document.createElement("section");
     taskForm.className = "workflow-section is-collapsed";
@@ -2516,7 +2553,7 @@ function openWorkflowPopover(anchor) {
         approve.textContent = "승인";
         approve.addEventListener("click", async () => {
           const result = await call(window.chatApi.tasksResolve(project.id, [task.id], "approve"));
-          if (result) { applyFullState(result); openWorkflowPopover(anchor); }
+          if (result) { applyFullState(result); refreshWorkflowPopover(anchor); }
         });
         const reject = document.createElement("button");
         reject.type = "button";
@@ -2524,7 +2561,7 @@ function openWorkflowPopover(anchor) {
         reject.textContent = "제외";
         reject.addEventListener("click", async () => {
           const result = await call(window.chatApi.tasksResolve(project.id, [task.id], "reject"));
-          if (result) { applyFullState(result); openWorkflowPopover(anchor); }
+          if (result) { applyFullState(result); refreshWorkflowPopover(anchor); }
         });
         actions.append(approve, reject);
         card.append(cardTitle, cardText, actions);
@@ -2663,7 +2700,7 @@ function openWorkflowPopover(anchor) {
         }));
         if (!result) return;
         applyFullState(result);
-        openWorkflowPopover(anchor);
+        refreshWorkflowPopover(anchor);
       });
       const remove = document.createElement("button");
       remove.type = "button";
@@ -2674,7 +2711,7 @@ function openWorkflowPopover(anchor) {
         const result = await call(window.chatApi.tasksDelete(project.id, task.id));
         if (!result) return;
         applyFullState(result);
-        openWorkflowPopover(anchor);
+        refreshWorkflowPopover(anchor);
       });
       controls.append(status, owner, edit, save, remove);
       const fileView = taskFileView(task);
@@ -2684,7 +2721,38 @@ function openWorkflowPopover(anchor) {
 
     tabPanels.tasks.append(taskProposalsSection, taskFormToggle, taskForm, tasksSection, doneToggle, doneSection);
 
-    selectTab("memory");
+    // 저장하지 않은 입력을 기억해 두었다가 다시 만들 때 되돌린다.
+    const draftFields = { rules: rulesInput, memory: memoryInput, decisionTitle, decisionContent, taskTitle, taskDescription };
+    const clearDraft = (...fields) => {
+      for (const field of fields) {
+        field.value = "";
+        delete field.dataset.dirty;
+      }
+    };
+    for (const field of Object.values(draftFields)) {
+      field.addEventListener("input", () => { field.dataset.dirty = "1"; });
+    }
+    for (const [key, value] of Object.entries(resume?.drafts || {})) {
+      draftFields[key].value = value;
+      draftFields[key].dataset.dirty = "1";
+    }
+    updateRulesCount();
+    if (resume?.drafts.decisionTitle !== undefined || resume?.drafts.decisionContent !== undefined) decisionForm.hidden = false;
+    if (resume?.drafts.taskTitle !== undefined || resume?.drafts.taskDescription !== undefined) taskForm.hidden = false;
+    workflowView = {
+      capture: () => ({
+        tab: currentTab,
+        drafts: Object.fromEntries(
+          Object.entries(draftFields)
+            // 기존 항목을 고치는 중이면 그 내용은 저장된 값에서 다시 불러오므로 새 입력 초안으로 옮기지 않는다.
+            .filter(([key, field]) => field.dataset.dirty
+              && !(editingDecisionId && key.startsWith("decision"))
+              && !(editingTaskId && key.startsWith("task")))
+            .map(([key, field]) => [key, field.value])
+        ),
+      }),
+    };
+    selectTab(resume?.tab || "memory");
   });
 }
 
@@ -3489,18 +3557,26 @@ function trailingSystemRun() {
   return run;
 }
 
+// 알림 묶음이 끝나도(뒤에 다른 메시지가 붙어도) 그 묶음의 토글은 남는다. 그래서 모든 토글의 글자를 함께 맞춘다.
 function updateSystemToggleLabel() {
-  if (!systemToggle) return;
   const expanded = messageList.classList.contains("show-system-history");
-  systemToggle.querySelector(".system-toggle-button").textContent = expanded
-    ? "이전 알림 접기"
-    : `이전 알림 ${systemToggle.dataset.hiddenCount}개 보기`;
+  for (const toggle of messageList.querySelectorAll(".system-toggle")) {
+    toggle.querySelector(".system-toggle-button").textContent = expanded
+      ? "이전 알림 접기"
+      : `이전 알림 ${toggle.dataset.hiddenCount}개 보기`;
+  }
 }
 
 function syncSystemRun() {
   if (systemToggle && !systemToggle.isConnected) systemToggle = null;
 
   const run = trailingSystemRun();
+  // 끝이 알림이 아니면 앞 묶음은 이미 끝났다. 접힌 알림은 그 묶음의 토글로 계속 펼칠 수 있어야 하므로
+  // 토글과 접힘은 그대로 두고, 다음 묶음이 새 토글을 만들도록 놓아 준다.
+  if (run.length === 0) {
+    systemToggle = null;
+    return;
+  }
   const hiddenCount = Math.max(0, run.length - SYSTEM_RUN_VISIBLE);
   run.forEach((item, index) => item.classList.toggle("is-collapsed", index < hiddenCount));
 
@@ -4192,18 +4268,9 @@ function applyFullState(full) {
   }
 
   if (full.error) {
-    storeWarning.dataset.persistent = "1";
-    storeWarning.textContent = `저장소 문제: ${full.error} — 대화가 저장되지 않을 수 있습니다.`;
-    storeWarning.classList.add("is-error");
-    storeWarning.hidden = false;
-    clearTimeout(noticeTimer);
+    showPersistentWarning(`저장소 문제: ${full.error} — 대화가 저장되지 않을 수 있습니다.`);
   } else if (full.readOnly) {
-    storeWarning.dataset.persistent = "1";
-    storeWarning.textContent =
-      "이 .agora 저장소는 더 새로운 버전이 만든 것이라 읽기 전용으로 열렸습니다.";
-    storeWarning.classList.add("is-error");
-    storeWarning.hidden = false;
-    clearTimeout(noticeTimer);
+    showPersistentWarning("이 .agora 저장소는 더 새로운 버전이 만든 것이라 읽기 전용으로 열렸습니다.");
   } else {
     delete storeWarning.dataset.persistent;
   }

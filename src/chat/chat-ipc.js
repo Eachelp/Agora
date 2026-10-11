@@ -1420,7 +1420,9 @@ function roomMeta(meta) {
         syncProjectWorkspaceToSessions(projectId, workspace);
         const payload = sessionsPayload();
         broadcast("chat:sessions-changed", payload);
-        return { ...payload, project };
+        // 폴더를 바꾸면 이 프로젝트 대화의 권한도 함께 바뀐다. 보고 있는 대화의 meta를 같이 돌려줘 헤더가 맞게 한다.
+        const activeMeta = payload.activeSessionId ? publicMeta(store.readMeta(payload.activeSessionId)) : null;
+        return { ...payload, project, activeMeta };
       })
     );
 
@@ -1432,7 +1434,9 @@ function roomMeta(meta) {
         syncProjectWorkspaceToSessions(projectId, null);
         const payload = sessionsPayload();
         broadcast("chat:sessions-changed", payload);
-        return { ...payload, project };
+        // 폴더를 바꾸면 이 프로젝트 대화의 권한도 함께 바뀐다. 보고 있는 대화의 meta를 같이 돌려줘 헤더가 맞게 한다.
+        const activeMeta = payload.activeSessionId ? publicMeta(store.readMeta(payload.activeSessionId)) : null;
+        return { ...payload, project, activeMeta };
       })
     );
 
