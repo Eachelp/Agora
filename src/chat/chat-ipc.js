@@ -1164,6 +1164,9 @@ function roomMeta(meta) {
     on("reset", () => broadcast("chat:reset", { sessionId }));
     on("run-event", (payload) => broadcast("chat:run-event", { sessionId, ...payload }));
     on("agents", (agents) => broadcast("chat:agents", { sessionId, agents }));
+    // room.setMeta가 요청자 없이(예: refreshRoomAgents의 지휘 AI 자동 꺼짐) 불려도 화면이 머리줄
+    // 칩·안내문을 다시 그릴 수 있게 최신 meta를 밀어 준다(store가 이미 갱신된 뒤라 다시 읽기만 한다).
+    on("meta", () => broadcast("chat:meta", { sessionId, meta: publicMeta(store.readMeta(sessionId)) }));
     on("approval-request", (payload) => broadcast("chat:approval-request", { sessionId, ...payload }));
     on("approval-resolved", (payload) => broadcast("chat:approval-resolved", { sessionId, ...payload }));
     // 질문 기록은 저장이 실패해도 화면에는 그대로 알린다. 저장 실패는 방(실행·답)으로 올리지 않고 알림으로만 알린다.

@@ -117,6 +117,7 @@ function loadOrchestratorBlock(agents, initialMeta) {
       return result;
     },
     orchestratorRejectLeadId: null,
+    renderHeader() {}, // 이 블록은 전체 renderHeader를 안 들여온다 — onMeta가 부르는 자리만 비워 둔다.
     window: {
       chatApi: {
         orchestratorSet: async (sessionId, enabled, leadId) => {
@@ -133,6 +134,7 @@ function loadOrchestratorBlock(agents, initialMeta) {
           return { ok: true, meta: sessionMeta };
         },
         onOrchestration: (handler) => { handlers.orchestration = handler; },
+        onMeta: (handler) => { handlers.meta = handler; },
       },
     },
   };
@@ -287,6 +289,20 @@ test("실시간 구독: 지금 방 것만 받고, 다른 방 알림은 무시한
   handlers.orchestration({ sessionId: "room-a", orchestration: null });
   assert.equal(ui.orchestration, null, "끝나면 다시 숨는다");
   assert.equal(ui.orchestrationStatusRow.hidden, true);
+});
+
+test("meta 구독: 요청자 없이 meta가 바뀌어도(지휘 AI 자동 꺼짐 등) 지금 방이면 sessionMeta를 새로 받는다", () => {
+  // review-behaviour 발견(major): refreshRoomAgents가 meta를 되돌려도 chat:agents emit만 나가 머리줄
+  // 칩이 낡은 "오케스트레이터 켜짐"에 멈춰 있었다. onMeta 구독이 생겼는지 확인한다.
+  const { ui, handlers } = loadOrchestratorBlock(
+    [{ id: "claude", name: "Claude", available: true, enabled: true }],
+    { orchestrator: { enabled: true, leadId: "claude" } }
+  );
+  handlers.meta({ sessionId: "room-b", meta: { orchestrator: { enabled: false, leadId: null } } });
+  assert.deepEqual(ui.sessionMeta.orchestrator, { enabled: true, leadId: "claude" }, "다른 방 meta는 반영하지 않는다");
+
+  handlers.meta({ sessionId: "room-a", meta: { orchestrator: { enabled: false, leadId: null } } });
+  assert.deepEqual(ui.sessionMeta.orchestrator, { enabled: false, leadId: null }, "지금 방 meta는 바로 반영한다");
 });
 
 // 방을 새로고침·재선택해도 room.orchestrationSnapshot()이 그대로 다시 오므로(설계 §(5)),

@@ -130,4 +130,11 @@ test("지휘 AI가 비활성화되면(원칙: 일반 모드로 돌아가는 길�
   const session = await env.session();
   assert.equal(session.meta.orchestrator.enabled, false, "모드가 스스로 꺼진다");
   assert.ok(env.systems().some((text) => /지휘 AI @claude를 쓸 수 없어 오케스트레이터 모드를 껐습니다/.test(text)));
+  // review-behaviour 발견(major): refreshRoomAgents가 meta를 바꿔도 아무 broadcast가 없어, 이
+  // chat:agent:configure 호출의 응답(호출자)과 무관한 다른 창(또는 백그라운드 provider 재확인이
+  // 트리거한 경우)은 머리줄 칩이 "오케스트레이터 켜짐"에 멈춰 있었다. room.setMeta가 'meta'를
+  // emit하고 chat-ipc가 그걸 chat:meta로 밀어 주는지 직접 확인한다.
+  const metaBroadcasts = env.sent.filter((e) => e.channel === "chat:meta");
+  assert.ok(metaBroadcasts.length > 0, "meta가 바뀌면 chat:meta를 밀어 준다");
+  assert.equal(metaBroadcasts.at(-1).payload.meta.orchestrator.enabled, false);
 });

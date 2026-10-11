@@ -224,6 +224,9 @@ class ChatRoom extends EventEmitter {
 
   setMeta(patch) {
     this.meta = { ...this.meta, ...patch };
+    // meta는 chat:permission:set 같은 요청·응답으로 바뀔 때는 호출자가 받는 값으로 화면이 갱신되지만,
+    // refreshRoomAgents의 지휘 AI 자동 꺼짐처럼 요청자 없이 바뀔 때는 이 emit이 유일한 통지 경로다.
+    this.emit("meta");
   }
 
   enabledAgents() {

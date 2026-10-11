@@ -181,6 +181,7 @@ contextBridge.exposeInMainWorld("chatApi", {
   onUserQuestion: (handler) => subscribe("chat:user-question", handler),
   onSystemNotice: (handler) => subscribe("chat:system-notice", handler),
   onOrchestration: (handler) => subscribe("chat:orchestration", handler),
+  onMeta: (handler) => subscribe("chat:meta", handler),
   onAppearance: (handler) => subscribe("appearance:update", handler),
   onMaximizedState: (handler) => subscribe("chat:maximized-state", handler),
 

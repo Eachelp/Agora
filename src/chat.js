@@ -4471,6 +4471,13 @@ window.chatApi.onOrchestration(({ sessionId, orchestration: next }) => {
   orchestration = next || null;
   renderOrchestrationStatus();
 });
+// room이 요청자 없이 meta를 바꿀 때(예: 지휘 AI를 못 쓰게 돼 오케스트레이터 모드가 스스로 꺼질 때)
+// 머리줄 칩·입력창 안내문이 낡은 상태로 멈춰 있지 않게 최신 meta로 다시 그린다.
+window.chatApi.onMeta?.(({ sessionId, meta }) => {
+  if (sessionId !== activeSessionId || !meta) return;
+  sessionMeta = meta;
+  renderHeader();
+});
 window.chatApi.onUserQuestion?.(({ sessionId, question }) => {
   if (sessionId !== activeSessionId) return;
   // 카드가 뜨면 입력 영역이 커져 대화 영역이 줄어든다. 스크롤 위치는 그대로라 가장 새 줄이 아래로 밀려나므로,
