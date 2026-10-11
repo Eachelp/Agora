@@ -1927,15 +1927,21 @@ class ChatRoom extends EventEmitter {
         }
         return;
       }
+      // scheduleResponse 대신 scheduleTurn + 묶음 announceQuestionWait를 쓴다(sendUserMessage와 같은 패턴).
+      // 멘션마다 scheduleResponse를 따로 부르면 각자 새 told Set으로 announceQuestionWait를 실행해,
+      // 같은 질문 카드를 쥔 제3의 에이전트 안내가 멘션 대상 수만큼 중복으로 남는다.
+      const items = [];
       for (const agentId of mentionedIds) {
         const target = this.findAgent(agentId);
         if (!target || !target.available || target.enabled === false) continue;
-        this.scheduleResponse(target, { mentionDepth: depth + 1, attachments, turnRootId });
+        items.push(this.scheduleTurn(target, { mentionDepth: depth + 1, attachments, turnRootId }));
       }
+      this.announceQuestionWait(items);
       return;
     }
     // 켜짐: 깊이 상한을 보지 않는다. 대신 이 메시지(turnRootId)에서 이어진 자동 호출의 합계를
     // 50에서 막는다 — 갈래가 퍼져도 합계로 막는다. 안내는 루트마다 한 번이다.
+    const items = [];
     for (const agentId of mentionedIds) {
       const target = this.findAgent(agentId);
       if (!target || !target.available || target.enabled === false) continue;
@@ -1948,8 +1954,9 @@ class ChatRoom extends EventEmitter {
         break;
       }
       this.mentionCallCounts.set(turnRootId, count + 1);
-      this.scheduleResponse(target, { mentionDepth: depth + 1, attachments, turnRootId });
+      items.push(this.scheduleTurn(target, { mentionDepth: depth + 1, attachments, turnRootId }));
     }
+    this.announceQuestionWait(items);
   }
 
   // 다른 AI가 보낸 특정 메시지를 선택한 에이전트에게 전달해 이어서 답하게 합니다.
