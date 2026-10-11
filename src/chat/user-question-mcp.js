@@ -108,6 +108,9 @@ function createMcpServer({ url = "", token = "", write, onWarn = () => {} } = {}
           Connection: "close",
         },
         signal,
+        // 새 연결 설정을 쓴다. 기본 설정은 NODE_USE_ENV_PROXY·HTTP_PROXY 환경에서 이 루프백 요청(실행 토큰·질문 글)까지
+        // 프록시로 보낸다. 요청마다 하나뿐이고 `Connection: close`라 재사용할 연결도 없다.
+        agent: new http.Agent(),
       }, (response) => {
         const chunks = [];
         response.on("data", (chunk) => chunks.push(chunk));

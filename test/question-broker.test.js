@@ -450,3 +450,51 @@ test("서버는 루프백에만 묶이고 URL의 실행 ID는 안전하게 인�
   ctx.broker.cancel({ runId: "r 1/é?#", setId: set.setId });
   await pending;
 });
+
+// 서버가 시작된 뒤에 난 오류(열 수 있는 파일 수 초과 등)가 처리기 없이 올라가면 메인 프로세스의 처리되지 않은 예외다.
+function captureServer(t) {
+  const original = http.createServer;
+  const created = [];
+  http.createServer = (...args) => { const server = original.apply(http, args); created.push(server); return server; };
+  t.after(() => { http.createServer = original; });
+  return created;
+}
+
+test("시작한 뒤 서버에 오류가 나도 앱이 죽지 않고, 한 번만 알리며, 계속 듣고 있으면 질문은 그대로 이어진다", async (t) => {
+  const created = captureServer(t);
+  const ctx = setup(t);
+  const run = await ctx.broker.registerRun({ runId: "r1" });
+  const asking = await askAndWait(ctx, run);
+  assert.equal(created.length, 1);
+  const server = created[0];
+  assert.ok(server.listenerCount("error") >= 1, "오류 처리기가 남아 있다");
+
+  const emfile = Object.assign(new Error("accept EMFILE"), { code: "EMFILE" });
+  assert.doesNotThrow(() => server.emit("error", emfile));
+  assert.doesNotThrow(() => server.emit("error", emfile));
+  assert.deepEqual(ctx.events.filter((event) => event.name === "callback-error"), [{ name: "callback-error", hook: "server", message: "accept EMFILE" }], "한 번만 알린다");
+  assert.equal(ctx.broker.getPending("r1")?.setId, asking.set.setId, "서버가 계속 듣고 있으면 대기 중인 질문은 그대로다");
+
+  assert.equal(ctx.broker.answer({ runId: "r1", setId: asking.set.setId, answers: [{ selected: ["왼쪽"] }] }).ok, true);
+  assert.equal((await asking.pending).body.status, "answered");
+});
+
+test("서버가 더는 듣고 있지 않으면 기다리던 질문을 닫고, 다음 등록이 새 서버를 띄운다", async (t) => {
+  const created = captureServer(t);
+  const ctx = setup(t);
+  const run = await ctx.broker.registerRun({ runId: "r1" });
+  const asking = await askAndWait(ctx, run);
+  created[0].close(); // 듣기를 멈춘 서버(질문을 기다리는 연결 하나는 아직 열려 있다)
+  assert.doesNotThrow(() => created[0].emit("error", new Error("서버 오류")));
+  const cancelled = ctx.events.filter((event) => event.name === "cancelled");
+  assert.equal(cancelled.length, 1);
+  assert.equal(cancelled[0].reason, "server-error");
+  assert.equal(ctx.broker.getPending("r1"), null);
+  assert.equal((await asking.pending).status, 410);
+
+  const next = await ctx.broker.registerRun({ runId: "r2" });
+  assert.equal(created.length, 2, "새 서버로 다시 시작한다");
+  const again = await askAndWait(ctx, next);
+  assert.equal(ctx.broker.cancel({ runId: "r2", setId: again.set.setId }).ok, true);
+  assert.equal((await again.pending).body.status, "skipped");
+});

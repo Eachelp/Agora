@@ -23,7 +23,7 @@ const waitFor = async (condition, label) => {
 };
 
 // 실제 스크립트를 자식 프로세스로 띄워 JSON-RPC 줄을 주고받는다. 중계소도 실제 인스턴스다.
-async function startBridge(t, { brokerOptions = {}, env = null, timers = null } = {}) {
+async function startBridge(t, { brokerOptions = {}, env = null, timers = null, extraEnv = {} } = {}) {
   const events = [];
   const broker = createUserQuestionBroker({
     ...(timers || {}),
@@ -37,7 +37,7 @@ async function startBridge(t, { brokerOptions = {}, env = null, timers = null } 
   t.after(() => broker.stop());
   const run = await broker.registerRun({ runId: "run-1" });
   const child = spawn(process.execPath, [SCRIPT], {
-    env: { ...process.env, ...(env || { AGORA_QUESTION_URL: run.url, AGORA_QUESTION_TOKEN: run.token }) },
+    env: { ...process.env, ...extraEnv, ...(env || { AGORA_QUESTION_URL: run.url, AGORA_QUESTION_TOKEN: run.token }) },
     windowsHide: true,
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -275,4 +275,26 @@ test("연결 도구는 node 내장 모듈만 쓰고(의존성 없음) 패키지�
   const required = [...source.matchAll(/require\("([^"]+)"\)/g)].map((match) => match[1]);
   assert.deepEqual(required.sort(), ["node:http", "node:readline"]);
   assert.equal(resolveMcpScript(path.dirname(SCRIPT)), SCRIPT);
+});
+
+// 사용자 환경에 NODE_USE_ENV_PROXY=1과 HTTP_PROXY가 있으면 node의 기본 연결 설정이 127.0.0.1 요청까지 프록시로 보낸다.
+// 그러면 질문이 늘 실패하고, 실행 토큰과 질문 글이 컴퓨터 밖의 프록시에 닿는다.
+test("환경에 프록시가 설정돼 있어도 루프백 요청은 프록시를 거치지 않고 중계소에 직접 닿는다", async (t) => {
+  const http = require("node:http");
+  // 프록시 자리에 실제로 연결을 받는 서버를 둔다. 여기에 요청이 오면 질문이 새어 나간 것이다.
+  let proxyHits = 0;
+  const proxy = http.createServer((req, res) => { proxyHits += 1; res.writeHead(502); res.end(); });
+  await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  t.after(() => proxy.close());
+  const proxyUrl = `http://127.0.0.1:${proxy.address().port}`;
+  const bridge = await startBridge(t, {
+    extraEnv: { NODE_USE_ENV_PROXY: "1", HTTP_PROXY: proxyUrl, http_proxy: proxyUrl, NO_PROXY: "", no_proxy: "" },
+  });
+  bridge.call(61, ask());
+  await waitFor(() => bridge.lastRequested(), "중계소의 질문 수신");
+  assert.equal(bridge.broker.answer({ runId: "run-1", setId: bridge.lastRequested().setId, answers: [{ selected: ["왼쪽"] }] }).ok, true);
+  const reply = await bridge.reply(61);
+  assert.equal(reply.result.isError, undefined, JSON.stringify(reply.result));
+  assert.match(reply.result.content[0].text, /A: 왼쪽/);
+  assert.equal(proxyHits, 0, "프록시에는 아무 요청도 가지 않는다");
 });

@@ -297,10 +297,26 @@ function createUserQuestionBroker({
       sockets.add(socket);
       socket.once("close", () => sockets.delete(socket));
     });
+    const current = server;
     startPromise = new Promise((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", () => {
-        server.removeListener("error", reject);
+      current.once("error", reject);
+      current.listen(0, "127.0.0.1", () => {
+        current.removeListener("error", reject);
+        // 시작한 뒤에도 오류 처리기를 남긴다. 없으면 나중에 난 오류(열 수 있는 파일 수 초과 등)가 메인 프로세스의
+        // 처리되지 않은 예외가 되어 선택 기능 하나 때문에 앱이 꺼진다. 한 번만 알리고, 서버가 더는 듣고 있지 않으면
+        // 기다리던 질문을 닫아 다음 등록이 새 서버를 띄우게 한다(듣고 있으면 그대로 둔다).
+        let errorReported = false;
+        current.on("error", (error) => {
+          if (!errorReported) {
+            errorReported = true;
+            try { onCallbackError(error, "server"); } catch { /* 보고 수단까지 실패해도 앱으로 번지지 않는다 */ }
+          }
+          if (current.listening || server !== current) return;
+          server = null;
+          startPromise = null;
+          for (const runId of [...runs.keys()]) finishRun(runId, "server-error");
+        });
+
         const { port } = server.address();
         if (stopped) server.close();
         resolve({ port, url: `http://127.0.0.1:${port}` });

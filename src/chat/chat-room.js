@@ -93,6 +93,7 @@ function questionOutcomeLine(previous, record) {
     case "user-skip": return `${who}를 건너뛰었습니다. 답 없이 이어 가도록 알렸습니다.`;
     case "timeout": return `${who}에 오래 답이 없어 닫았습니다.`;
     case "stopped": return `${who}: 중지로 닫혔습니다.`; // 중지·삭제·잠깐. 무엇을 물었는지 남긴다.
+    case "server-error":
     case "connection-lost": return `${who}: 연결이 끊겨 닫혔습니다. 작업은 질문 없이 이어질 수 있습니다.`;
     case "app-quit":
     case "app-restart": return `${who}는 앱이 꺼져 답을 받지 못했습니다. 필요하면 다시 말을 걸어 주세요.`;
