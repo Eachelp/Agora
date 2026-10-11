@@ -30,3 +30,20 @@
 
 - 이 화면 시험은 `chat.js` 구간을 격리된 컨텍스트에서 실제로 돌린다(`test/regress-ui-dom.cjs`는 질문 카드 시험용 가짜 DOM에 classList·형제 탐색을 덧붙인 것). 새로고침 바닥 고정 코드는 `chat.js` 전체를 올리는 기존 시험이 `ResizeObserver`를 `undefined`로 두므로 `typeof ResizeObserver === "function"`일 때만 붙인다.
 - 채팅 창의 `setWindowOpenHandler`는 기존 시험의 가짜 창에 없으므로 `?.`로 부른다(실제 Electron에는 항상 있다).
+
+## 묶음 B5 — 저장소·읽기 전용 저장소·첨부·채팅 IPC(src/chat/chat-ipc.js)
+
+여섯 건 모두 지금 코드에 남아 있었다. 시험은 `test/regress-stores-b5.test.js`(진입점 `createChatFeature` + 가짜 ipcMain)이고 고치기 전에는 모두 실패한다.
+
+| ID | 원인 | 고친 방법 |
+| --- | --- | --- |
+| F187 | '보낼 예정' 첨부 목록은 메모리에만 있는데 사본은 디스크에 복사된다. 보내지 않고 앱이 끝나면 사본만 남아 그 대화의 첨부 한도(200MiB)를 계속 차지하고, 같은 파일을 다시 붙여도 거부됐다. | `pendingFor`가 이 실행에서 한 대화의 목록을 처음 만들 때 `sweepOrphanAttachments`가 보낸 메시지가 쓰지 않는 사본(보류분, 복사 도중 끊긴 `.tmp`)만 지운다. 대화 기록을 읽지 못하면 아무것도 지우지 않고, 못 지운 파일은 로그에 남긴다. 목록을 처음 만드는 곳이 첨부 추가보다 먼저라 한도 계산 전에 정리가 끝난다. 읽기 전용 저장소에서는 건드리지 않는다. |
+| F188 | 대화 IPC는 `requireSession`만 확인해서, 읽기 전용 저장소(더 새 버전이 만든 데이터)에서도 보내기·실행이 되고 기록은 저장되지 않아 재시작하면 대화가 사라졌다. 첨부는 읽기 전용 저장소에 파일을 복사했다. | `requireWritableSession`을 추가해 보내기·끼어들기·토론 시작·토론 요약·넘기기·첨부 추가(대화상자·드롭)에 적용했다. 읽기 전용이면 "더 새로운 버전의 Agora가 만든 것이라 읽기 전용입니다…"로 시작 전에 거절하고, 화면에는 기존 `call` 경로로 알림이 뜬다. |
+| F61 | 기록관 자동 저장(`saveRecorderOutput`)이 읽기 전용을 확인하지 않고 Memory Bank와 작업 기록에 썼다. | F188로 읽기 전용에서는 토론이 시작되지 않으므로 도달하지 않지만, 쓰기 지점에도 같은 검사를 한 줄 두어 이중으로 막는다. |
+| F67 | 읽기 IPC(`chat:memory:read`, `chat:memory:rules:read`)가 쓰기용 `requireProject`를 거쳐 읽기 전용에서 "변경할 수 없습니다"로 거절됐다. | `requireProject(projectId, { forRead })`를 두어 읽기 IPC와, 읽기 전용 저장소에서의 `chat:projects:select`(둘러보기)만 읽기 전용 검사를 건너뛴다. 쓰기 IPC는 기본값 그대로 막힌다. |
+| F69 | `chat:decisions:delete`가 연결된 작업을 `listTasks` 기본 목록(파일이 없거나 새 버전으로 바뀐 작업 제외)으로 확인하고 `deleteDecision`이 false를 돌려줘도 무시해, 성공으로 답하고는 아무것도 지우지 않았다. | 숨겨진 작업까지(`includeAll`) 확인하고, 그래도 `deleteDecision`이 false면 같은 안내를 던진다. 안내에 파일이 없어졌거나 새 버전으로 바뀐 작업이 연결됐을 수 있다는 이유를 덧붙였다. |
+| F68 | `chat:attachments:add-dropped`가 `importPaths`에 넘기기 전에 `.slice(0, 10)`으로 잘라, 거기서 만드는 "(N개 제외)" 안내가 드롭에서는 나올 수 없었다. | 드롭 쪽 `slice`를 없애고 열 개 제한을 `importPaths` 한 곳에서만 건다. 렌더러는 기존대로 `errors`를 알림으로 보인다. |
+
+### 메모
+
+- F187은 앱 종료 때 지우는 대신 다음에 대화를 만질 때 지운다. 강제 종료·충돌·전원 끊김도 같은 길로 정리되고, 종료 시점에 별도 코드가 필요 없다.

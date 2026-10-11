@@ -724,8 +724,38 @@ function createChatFeature(options) {
   }
 
   function pendingFor(sessionId) {
-    if (!pendingAttachments.has(sessionId)) pendingAttachments.set(sessionId, new Map());
+    if (!pendingAttachments.has(sessionId)) {
+      // 이 프로세스에서 이 대화의 보류 목록이 처음 만들어지는 순간입니다. 목록은 메모리에만 있어
+      // 이전 실행이 보내지 않고 끝났다면 그때의 사본이 고아 파일로 남아 있으므로 지워 한도를 돌려줍니다.
+      sweepOrphanAttachments(sessionId);
+      pendingAttachments.set(sessionId, new Map());
+    }
     return pendingAttachments.get(sessionId);
+  }
+
+  // 보낸 메시지가 쓰지 않는 사본(보내지 않은 보류 첨부, 복사 도중 끊긴 .tmp)만 지웁니다.
+  // 대화 기록을 읽지 못하면 보낸 첨부를 지울 수 있으니 아무것도 지우지 않습니다.
+  function sweepOrphanAttachments(sessionId) {
+    if (!ensureStore() || store.readOnly) return;
+    try {
+      const dir = store.attachmentsDir(sessionId);
+      if (!fs.existsSync(dir)) return;
+      const room = rooms.get(sessionId);
+      const used = new Set();
+      for (const message of room ? room.messages : store.readMessages(sessionId)) {
+        for (const attachment of message.attachments || []) used.add(attachment.fileName);
+      }
+      for (const name of fs.readdirSync(dir)) {
+        if (used.has(name)) continue;
+        try {
+          fs.unlinkSync(path.join(dir, name));
+        } catch (error) {
+          console.error("[Agora] 보내지 않은 첨부 사본을 지우지 못했습니다:", name, error && (error.message || error));
+        }
+      }
+    } catch (error) {
+      console.error("[Agora] 보내지 않은 첨부 사본을 정리하지 못했습니다:", error && (error.message || error));
+    }
   }
 
   // 세션 대화에 이미 저장된 첨부에서 id로 내부 레코드를 찾습니다(미리보기용).
@@ -1179,6 +1209,8 @@ function roomMeta(meta) {
   }
 
   function saveRecorderOutput(projectId, content, title, options = {}) {
+    // 읽기 전용 저장소에서는 기록관 자동 저장도 Memory Bank·작업 기록에 쓰지 않습니다.
+    if (store && store.readOnly) return null;
     const memory = ensureMemoryStore();
     if (!memory || !content) return null;
     const { chatId = null, recorderAgentId = null, runId = null } = options;
@@ -1283,17 +1315,28 @@ function roomMeta(meta) {
     if (!sessionId || !store.hasSession(sessionId)) throw new Error("세션을 찾을 수 없습니다.");
   }
 
-  function requireProject(projectId) {
+  // forRead: 읽기만 하는 IPC(Memory Bank·규칙 읽기, 프로젝트 둘러보기)는 읽기 전용 저장소·프로젝트에서도
+  // 통과시킵니다. 쓰기 IPC는 기본값(forRead=false)으로 그대로 막힙니다.
+  function requireProject(projectId, { forRead = false } = {}) {
     const projects = ensureProjectStore();
     if (!projects) throw new Error(projectStoreError || "프로젝트 저장소를 사용할 수 없습니다.");
     // 채팅 저장소가 읽기 전용(더 새 버전이 만든 데이터)이면 프로젝트·메모리·
     // 결정·작업 쓰기 IPC도 함께 막습니다. 화면에는 읽기 전용으로 표시되므로
     // 실제 쓰기가 조용히 성공해 데이터가 어긋나는 일을 막습니다.
-    if (store && store.readOnly) throw new Error("이 .agora 저장소는 읽기 전용 상태라 변경할 수 없습니다.");
+    if (!forRead && store && store.readOnly) throw new Error("이 .agora 저장소는 읽기 전용 상태라 변경할 수 없습니다.");
     const project = projects.getProject(projectId);
     if (!project) throw new Error("프로젝트를 찾을 수 없습니다.");
-    if (project.readOnly) throw new Error("이 프로젝트는 더 새로운 버전에서 만들어져 읽기 전용입니다.");
+    if (!forRead && project.readOnly) throw new Error("이 프로젝트는 더 새로운 버전에서 만들어져 읽기 전용입니다.");
     return project;
+  }
+
+  // 보내기·에이전트 실행·첨부 복사처럼 저장소에 기록이 남아야 하는 대화 IPC용입니다.
+  // 읽기 전용 저장소는 대화를 저장하지 못하므로(화면에는 보이지만 재시작하면 사라짐) 시작 전에 막습니다.
+  function requireWritableSession(sessionId) {
+    requireSession(sessionId);
+    if (store.readOnly) {
+      throw new Error("이 저장소는 더 새로운 버전의 Agora가 만든 것이라 읽기 전용입니다. 대화를 보내거나 에이전트를 실행할 수 없습니다. 최신 버전의 Agora를 사용해 주세요.");
+    }
   }
 
   function requireSessionForProject(sessionId, projectId) {
@@ -1379,7 +1422,8 @@ function roomMeta(meta) {
     ipcMain.handle(
       "chat:projects:select",
       wrap(async ({ projectId }) => {
-        const project = requireProject(projectId);
+        // 읽기 전용 저장소에서도 프로젝트 둘러보기는 됩니다(저장은 setActiveProjectId가 건너뜁니다).
+        const project = requireProject(projectId, { forRead: Boolean(ensureStore() && store.readOnly) });
         setActiveProjectId(project.id);
         let sessionId = getActiveSessionId(project.id);
         if (!sessionId && !store.readOnly) sessionId = createSessionForProject(project.id).id;
@@ -1447,7 +1491,7 @@ function roomMeta(meta) {
     ipcMain.handle(
       "chat:memory:read",
       wrap(async ({ projectId }) => {
-        const project = requireProject(projectId || getActiveProjectId());
+        const project = requireProject(projectId || getActiveProjectId(), { forRead: true });
         const memory = ensureMemoryStore();
         if (!memory) throw new Error(memoryStoreError || "Memory Bank를 사용할 수 없습니다.");
         return { projectId: project.id, content: memory.read(project.id) };
@@ -1472,7 +1516,7 @@ function roomMeta(meta) {
     ipcMain.handle(
       "chat:memory:rules:read",
       wrap(async ({ projectId }) => {
-        const project = requireProject(projectId || getActiveProjectId());
+        const project = requireProject(projectId || getActiveProjectId(), { forRead: true });
         const memory = ensureMemoryStore();
         if (!memory) throw new Error(memoryStoreError || "Memory Bank를 사용할 수 없습니다.");
         return { rules: memory.readRules(project.id), history: memory.readRulesHistory(project.id) };
@@ -1587,10 +1631,12 @@ function roomMeta(meta) {
         const workflow = ensureWorkflowStore();
         const current = workflow.getDecision(decisionId);
         if (!current || current.projectId !== project.id) throw new Error("결정을 찾을 수 없습니다.");
-        if (workflow.listTasks(project.id).some((task) => task.decisionId === decisionId)) {
-          throw new Error("연결된 작업이 있어 결정을 삭제할 수 없습니다.");
+        // 파일이 없어졌거나 새 버전으로 바뀐 '숨겨진' 작업도 이 결정을 가리킬 수 있으므로 모두 확인합니다.
+        const linkedMessage = "연결된 작업이 있어 결정을 삭제할 수 없습니다. 파일이 없어지거나 새 버전으로 바뀐 작업이 이 결정에 연결되어 있을 수 있습니다.";
+        if (workflow.listTasks(project.id, { includeAll: true }).some((task) => task.decisionId === decisionId)) {
+          throw new Error(linkedMessage);
         }
-        workflow.deleteDecision(decisionId);
+        if (!workflow.deleteDecision(decisionId)) throw new Error(linkedMessage);
         const payload = sessionsPayload();
         broadcast("chat:sessions-changed", payload);
         broadcast("chat:workflow-changed", { projectId: project.id, workflow: workflowForProject(project.id) });
@@ -1838,7 +1884,7 @@ function roomMeta(meta) {
     ipcMain.handle(
       "chat:send",
       wrap(async ({ sessionId, text, attachmentIds, independent }) => {
-        requireSession(sessionId);
+        requireWritableSession(sessionId);
         const room = getRoom(sessionId);
         // 옛 역할 호출(@기획자·@검토자·@구현자·@기록자·@팀, "@팀 실행" 포함)은 없어졌다.
         // 첨부를 꺼내거나 메시지를 저장하기 전에 거절해 입력칸의 글이 그대로 남게 한다.
@@ -1880,7 +1926,7 @@ function roomMeta(meta) {
     ipcMain.handle(
       "chat:turn:interject",
       wrap(async ({ sessionId }) => {
-        requireSession(sessionId);
+        requireWritableSession(sessionId);
         const room = getRoom(sessionId);
         return room.interject();
       })
@@ -1911,7 +1957,7 @@ function roomMeta(meta) {
     ipcMain.handle(
       "chat:discussion:start",
       wrap(async ({ sessionId, agentIds, turnBudget, presetId, cycleBudget, roleAssignments }) => {
-        requireSession(sessionId);
+        requireWritableSession(sessionId);
         const room = getRoom(sessionId);
         const cleanIds = Array.isArray(agentIds)
           ? agentIds.filter((id) => typeof id === "string")
@@ -1965,7 +2011,7 @@ function roomMeta(meta) {
     ipcMain.handle(
       "chat:discussion:summarize",
       wrap(async ({ sessionId, discussionId, agentId }) => {
-        requireSession(sessionId);
+        requireWritableSession(sessionId);
         const room = getRoom(sessionId);
         const result = await room.summarizeDiscussion(discussionId, agentId);
         if (result && result.ok === false) throw new Error(result.error);
@@ -1976,7 +2022,7 @@ function roomMeta(meta) {
     ipcMain.handle(
       "chat:message:handoff",
       wrap(async ({ sessionId, targetAgentId, messageId, intent }) => {
-        requireSession(sessionId);
+        requireWritableSession(sessionId);
         const room = getRoom(sessionId);
         const result = room.handoffMessage(targetAgentId, messageId, intent);
         if (result.ok === false) throw new Error(result.error);
@@ -2099,7 +2145,7 @@ function roomMeta(meta) {
     ipcMain.handle(
       "chat:attachments:add",
       wrap(async ({ sessionId }) => {
-        requireSession(sessionId);
+        requireWritableSession(sessionId);
         const result = await dialog.showOpenDialog(chatWindow || undefined, {
           properties: ["openFile", "multiSelections"],
           title: "첨부할 파일 선택",
@@ -2112,10 +2158,11 @@ function roomMeta(meta) {
     ipcMain.handle(
       "chat:attachments:add-dropped",
       wrap(async ({ sessionId, paths }) => {
-        requireSession(sessionId);
-        const cleanPaths = (Array.isArray(paths) ? paths : [])
-          .filter((entry) => typeof entry === "string" && entry.trim())
-          .slice(0, 10);
+        requireWritableSession(sessionId);
+        // 10개 제한은 importPaths 한 곳에서 걸러 '몇 개 제외' 안내가 드롭에서도 나온다.
+        const cleanPaths = (Array.isArray(paths) ? paths : []).filter(
+          (entry) => typeof entry === "string" && entry.trim()
+        );
         return importPaths(sessionId, cleanPaths);
       })
     );
