@@ -1226,15 +1226,10 @@ class ChatRoom extends EventEmitter {
     });
     lines.push("=== 작업자 결과 끝 ===");
     const extraLines = [lines.join("\n")];
-    if (orch.heldMessages.length > 0) {
-      extraLines.push([
-        "=== 사용자가 그 사이 보낸 메시지 ===",
-        ...orch.heldMessages.map((text) => `"${text}"`),
-        "=== 사용자가 그 사이 보낸 메시지 끝 ===",
-      ].join("\n"));
-      orch.heldMessages = [];
-    }
     const nextRound = round + 1;
+    // heldMessages를 비우는 것은 다음 지휘 AI 턴이 실제로 설 때만 해야 한다(§(8)·§(13) 불변식 10) —
+    // 안전선·지휘 AI 불가용으로 여기서 끝나면 endOrchestration이 "전달되지 않았습니다" 안내를 붙이려고
+    // orch.heldMessages를 그대로 봐야 하므로, 아래 두 조건을 지난 뒤에만 extraLines에 싣고 비운다.
     if (nextRound > this.roundCeiling) {
       this.endOrchestration(`라운드 안전선(${this.roundCeiling})에 닿아 멈췄습니다. 메시지를 보내면 이어 갑니다.`);
       return;
@@ -1243,6 +1238,14 @@ class ChatRoom extends EventEmitter {
     if (!leadAgent || !leadAgent.available || leadAgent.enabled === false) {
       this.endOrchestration(`@${orch.leadId}를 더 쓸 수 없어 오케스트레이션을 끝냅니다. 지금까지의 결과는 위에 있습니다.`);
       return;
+    }
+    if (orch.heldMessages.length > 0) {
+      extraLines.push([
+        "=== 사용자가 그 사이 보낸 메시지 ===",
+        ...orch.heldMessages.map((text) => `"${text}"`),
+        "=== 사용자가 그 사이 보낸 메시지 끝 ===",
+      ].join("\n"));
+      orch.heldMessages = [];
     }
     this.scheduleTurn(leadAgent, {
       orchestration: { id: orch.id, role: "lead", round: nextRound },
