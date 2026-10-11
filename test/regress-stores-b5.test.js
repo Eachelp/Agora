@@ -26,7 +26,7 @@ function rec(id) {
   };
 }
 
-function startApp(root, dialogPaths = []) {
+function startApp(root, dialogPaths = [], respond = () => "네.") {
   const handlers = new Map();
   const runs = [];
   const records = [rec("claude"), rec("codex")];
@@ -45,7 +45,7 @@ function startApp(root, dialogPaths = []) {
     harnessAdapter: {
       runTurn: ({ invocation }) => {
         runs.push({ prompt: invocation.prompt });
-        return { promise: Promise.resolve({ ok: true, text: "네." }), cancel: () => {} };
+        return { promise: Promise.resolve({ ok: true, text: respond(invocation.prompt) }), cancel: () => {} };
       },
     },
   });
@@ -55,8 +55,16 @@ function startApp(root, dialogPaths = []) {
 
 function mkRoot(t) {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-b5-")));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
   return dir;
+}
+
+async function waitFor(condition, timeoutMs = 4000) {
+  const start = Date.now();
+  while (!(await condition())) {
+    if (Date.now() - start > timeoutMs) throw new Error("조건 대기 시간 초과");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }
 
 function makeReadOnly(root) {
@@ -187,6 +195,49 @@ test("F61: 읽기 전용 저장소에서는 토론도 시작되지 않아 Memory
   await new Promise((r) => setTimeout(r, 50));
   assert.deepEqual(snapshot(), before);
   assert.equal(app.runs.length, 0);
+});
+
+// 위 시험은 F188이 토론을 막는 첫 번째 방어선만 본다. 읽기 전용에서는 기록 턴이 돌 수 없어서 기록관 저장(saveRecorderOutput)의
+// 자기 검사에는 이 길로 닿지 않는다. 그래서 기록 턴이 도는 사이 저장소가 읽기 전용이 된 상황을 만들어 그 검사만 따로 본다
+// (진짜 ChatStore 인스턴스를 붙잡아 readOnly만 뒤집는다. 제품 코드에는 시험용 장치가 없다).
+test("F61: 기록 턴이 도는 사이 저장소가 읽기 전용이 돼도 기록관 저장은 Memory Bank와 작업 기록에 쓰지 않는다", async (t) => {
+  const { ChatStore } = require("../src/chat/chat-store");
+  const originalInit = ChatStore.prototype.init;
+  let live = null;
+  ChatStore.prototype.init = function capture(...args) {
+    live = this;
+    return originalInit.apply(this, args);
+  };
+  t.after(() => { ChatStore.prototype.init = originalInit; });
+
+  const recorded = JSON.stringify({
+    summary: "자동기록본문ZZZ",
+    decisions: [{ title: "후보결정", content: "결정내용" }],
+    nextActions: [{ title: "후보작업" }],
+  });
+  const app = startApp(mkRoot(t), [], (prompt) => {
+    if (!prompt.includes("토론 기록자")) return "의견 [[CODEPET_DISCUSSION:CONCLUDE]]";
+    live.readOnly = true;
+    return recorded;
+  });
+  t.after(() => app.quit());
+  const created = await app.invoke("chat:projects:create", { name: "기록 시험" });
+  const projectId = created.activeProjectId;
+  await app.invoke("chat:projects:update", { projectId, patch: { recordAgent: "claude" } });
+  const sessionId = (await app.invoke("chat:state")).activeSessionId;
+  await app.invoke("chat:send", { sessionId, text: "@claude 기록주제EEE" });
+  await waitFor(() => app.runs.length >= 1);
+  await new Promise((r) => setTimeout(r, 50));
+  const started = await app.invoke("chat:discussion:start", { sessionId, agentIds: ["claude", "codex"], turnBudget: 3 });
+  assert.equal(started.ok, true, started.error);
+
+  const failureNote = (message) => /토론 자동 기록을 만들지 못했습니다/.test(message.text || "");
+  const wrote = async () => ((await app.invoke("chat:memory:read", { projectId })).content || "").includes("자동기록본문ZZZ");
+  await waitFor(async () => (await app.invoke("chat:state")).session.messages.some(failureNote) || wrote());
+  assert.equal(live.readOnly, true, "기록 턴 도중 저장소가 읽기 전용이 돼 있어야 한다");
+  assert.equal(await wrote(), false, "읽기 전용이 된 저장소의 Memory Bank에 기록관 요약이 쓰이면 안 된다");
+  const { workflow } = await app.invoke("chat:state");
+  assert.deepEqual([workflow.decisions.length, workflow.tasks.length], [0, 0], "결정·작업 후보도 등록되면 안 된다");
 });
 
 // ---------------- F69 ----------------
