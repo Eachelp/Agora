@@ -190,9 +190,15 @@ test("질문 카드를 기다리는 에이전트에게 메시지를 보내면 �
 // 한 담당자를 이름으로 부른 직접 답장(바로 답하기)은 다르다: 카드를 가진 담당자가 아니면 바로 시작하므로 안내가 없고,
 // 카드를 가진 담당자에게 보낸 것은 그 카드(자기 안내)만 알린다.
 const THREE_AGENTS = () => [...AGENTS(), { id: "agy", name: "Antigravity", aliases: ["agy"], available: true, enabled: true }];
+const FOUR_AGENTS = () => [
+  ...AGENTS(),
+  { id: "foo", name: "Foo", aliases: ["foo"], available: true, enabled: true },
+  { id: "bar", name: "Bar", aliases: ["bar"], available: true, enabled: true },
+];
 const blockingLines = (room) => systemLines(room).filter((text) => text.includes("질문 카드의 답을 기다리는 중이라"));
 const ownLines = (room) => systemLines(room).filter((text) => text.includes("질문 카드에 답을 기다리는 중입니다"));
 const BLOCKED_BY_CLAUDE = "지금 @claude가 질문 카드의 답을 기다리는 중이라, 이 메시지는 카드에 답하거나 건너뛴 뒤 전달됩니다.";
+const BLOCKED_BY_CODEX = "지금 @codex가 질문 카드의 답을 기다리는 중이라, 이 메시지는 카드에 답하거나 건너뛴 뒤 전달됩니다.";
 
 test("카드를 기다리는 동안 줄을 서는 메시지에는 누구의 카드가 막고 있는지, 질문마다·받는 에이전트마다 한 번 알린다(직접 답장은 바로 시작해 안내가 없다)", async (t) => {
   let claudeTurns = 0;
@@ -330,6 +336,33 @@ test("여러 에이전트에게 한꺼번에 보낸 메시지에는 같은 안�
   room.sendUserMessage("@agy 다시");
   room.sendUserMessage("@codex 다시");
   assert.equal(blockingLines(room).length, 1, "둘 다 이미 안내받았다");
+
+  room.cancelUserQuestion({ questionId: pending(room)[0].questionId });
+  await room.waitForIdle();
+});
+
+test("멘션 연쇄(scheduleMentionReplies)로 claude가 foo·bar를 한꺼번에 부르면, 제3자 codex의 질문 카드 안내는 한 번만 남는다(회귀: 256dbde)", async (t) => {
+  const runner = scriptedRunner(async ({ ask, args }) => {
+    if (args.agent.id === "codex") {
+      await ask([{ question: "하나?", options: ["가", "나"] }]);
+      return "codex 답";
+    }
+    if (args.agent.id === "claude") return "@foo @bar 확인해주세요";
+    return "ok";
+  });
+  const { room } = setup(t, runner, { agents: FOUR_AGENTS() });
+  room.sendUserMessage("@codex 시작");
+  await waitFor(() => pending(room).length === 1);
+  room.sendUserMessage("@claude 가라");
+  // 안내는 멘션 호출을 큐에 올리는 시점(schedule)에 바로 나온다 — foo·bar가 실제로 실행되기를
+  // 기다릴 필요는 없다(그 둘은 main 줄이라 codex의 카드가 열려 있는 동안은 실행되지 않는다).
+  await waitFor(() => room.messages.some((m) => m.author === "claude" && m.text === "@foo @bar 확인해주세요"));
+
+  assert.deepEqual(
+    blockingLines(room),
+    [BLOCKED_BY_CODEX],
+    "claude의 답이 scheduleMentionReplies로 foo·bar를 동시에 불러도, codex 카드 안내는 멘션 대상 수만큼 중복되지 않고 한 번만 남아야 한다"
+  );
 
   room.cancelUserQuestion({ questionId: pending(room)[0].questionId });
   await room.waitForIdle();
