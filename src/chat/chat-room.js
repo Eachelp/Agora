@@ -1037,6 +1037,20 @@ class ChatRoom extends EventEmitter {
         this.orchestration.executions += 1;
         if (item.context.orchestration.role === "lead") this.orchestration.round = item.context.orchestration.round;
       }
+      // 보류 메시지는 "예약 시점"이 아니라 지휘 AI 턴이 실제로 claim되는 이 순간에 확정한다(설계 §(7) —
+      // "지휘 AI 턴이 실제로 claim될 때(예약 때가 아니라)"). 예약된 뒤 claim되기 전까지 더 들어온 보류
+      // 메시지도 여기서 함께 싣고, 이 턴이 claim되지 못한 채 버려지면(§(8) endOrchestration의 형제
+      // 치우기, ×취소 등) heldMessages가 비어 있지 않은 그대로 남아 "전달되지 않았습니다" 안내가 나간다.
+      if (item.context.orchestration?.role === "lead" && this.orchestration
+        && this.orchestration.id === item.context.orchestration.id && this.orchestration.heldMessages.length > 0) {
+        const heldBlock = [
+          "=== 사용자가 그 사이 보낸 메시지 ===",
+          ...this.orchestration.heldMessages.map((text) => `"${text}"`),
+          "=== 사용자가 그 사이 보낸 메시지 끝 ===",
+        ].join("\n");
+        item.context.extraLines = [...(item.context.extraLines || []), heldBlock];
+        this.orchestration.heldMessages = [];
+      }
       // 단위의 실제 크기는 지금 센다: 구성원이 갈아끼워져 줄었으면 "참가자 N명" 계약도 그 크기를 쓴다.
       item.parallelTotal = members.length;
       // 빠른 턴과 독립 발언 턴은 시작 시점에 끝난 답까지 본다. 일반(이어 발언) 턴은 예약 시점의 기록을 그대로 쓴다.
@@ -1227,9 +1241,6 @@ class ChatRoom extends EventEmitter {
     lines.push("=== 작업자 결과 끝 ===");
     const extraLines = [lines.join("\n")];
     const nextRound = round + 1;
-    // heldMessages를 비우는 것은 다음 지휘 AI 턴이 실제로 설 때만 해야 한다(§(8)·§(13) 불변식 10) —
-    // 안전선·지휘 AI 불가용으로 여기서 끝나면 endOrchestration이 "전달되지 않았습니다" 안내를 붙이려고
-    // orch.heldMessages를 그대로 봐야 하므로, 아래 두 조건을 지난 뒤에만 extraLines에 싣고 비운다.
     if (nextRound > this.roundCeiling) {
       this.endOrchestration(`라운드 안전선(${this.roundCeiling})에 닿아 멈췄습니다. 메시지를 보내면 이어 갑니다.`);
       return;
@@ -1239,14 +1250,10 @@ class ChatRoom extends EventEmitter {
       this.endOrchestration(`@${orch.leadId}를 더 쓸 수 없어 오케스트레이션을 끝냅니다. 지금까지의 결과는 위에 있습니다.`);
       return;
     }
-    if (orch.heldMessages.length > 0) {
-      extraLines.push([
-        "=== 사용자가 그 사이 보낸 메시지 ===",
-        ...orch.heldMessages.map((text) => `"${text}"`),
-        "=== 사용자가 그 사이 보낸 메시지 끝 ===",
-      ].join("\n"));
-      orch.heldMessages = [];
-    }
+    // 보류 메시지는 여기서 싣지 않는다 — claimUnit이 이 턴이 "실제로 claim되는" 순간에 싣고 비운다
+    // (§(7)·claimUnit 참고). 예약(여기)과 claim 사이에 또 보류 메시지가 들어올 수 있고, 예약된 뒤
+    // claim되지 못한 채 버려지면(안전선이 다시 걸리거나 ×로 지워지는 등) heldMessages가 그대로
+    // 남아 있어야 endOrchestration의 "전달되지 않았습니다" 안내가 정확히 나간다(§(13) 불변식 10).
     this.scheduleTurn(leadAgent, {
       orchestration: { id: orch.id, role: "lead", round: nextRound },
       turnRootId: orch.rootMessageId,

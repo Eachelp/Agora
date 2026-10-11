@@ -135,6 +135,18 @@ function checkInvariants(world, label) {
   for (const [key, count] of leadRoundCounts) {
     assert.ok(count <= 1, `${label}: 오케스트레이션/라운드 ${key}에 지휘 AI 턴이 ${count}번 claim됐다(한 번의 회신이어야 한다)`);
   }
+  // 불변식 8(순서): 라운드 R>1의 지휘 AI 턴이 claim됐다면, 같은 오케스트레이션의 라운드 R-1 작업자는
+  // 전부 이미 끝나 있어야 한다(묶음이 모두 끝나야만 다음 회신이 선다).
+  for (const call of calls) {
+    const orch = call.context?.orchestration;
+    if (!orch || orch.role !== "lead" || orch.round <= 1) continue;
+    for (const worker of calls) {
+      const workerOrch = worker.context?.orchestration;
+      if (workerOrch?.id === orch.id && workerOrch.role === "worker" && workerOrch.round === orch.round - 1) {
+        assert.ok(worker.ended, `${label}: 라운드 ${orch.round} 지휘 AI 턴이 라운드 ${orch.round - 1} 작업자(${worker.agentId})가 끝나기 전에 claim됐다`);
+      }
+    }
+  }
 
   // 불변식 2: round·executions는 오케스트레이션이 사는 동안 내려가지 않는다.
   if (room.orchestration) {
@@ -500,4 +512,30 @@ test("불변식 4·10: 보류 메시지가 쌓인 채 라운드 안전선에 걸
   assert.ok(systems.some((text) => /라운드 안전선\(1\)에 닿아 멈췄습니다/.test(text) && /전달되지 않았습니다/.test(text)),
     "안전선 안내에 보류 메시지 유실 고지가 붙는다");
   assert.equal(smallRoom.messages.filter((m) => m.text === "보류될 메시지").length, 1, "대화 기록에는 그대로 한 번 남는다(사라지지 않는다)");
+});
+
+test("불변식 4·10 회귀: 다음 지휘 AI 턴이 예약됐지만(지휘 AI가 바빠서) 아직 claim되기 전에 끝나면, 보류 메시지가 조용히 사라지지 않는다", async () => {
+  // claimUnit이 아니라 finishWorkerUnit(예약 시점)에서 heldMessages를 비우면, 지휘 AI가 바빠 다음
+  // 회신 턴이 큐에서 기다리는 사이 오케스트레이션이 끝날 때(×취소·모드 끔 등) 이미 비워진 heldMessages를
+  //보고 endOrchestration이 유실 안내를 건너뛴다 — claim 시점(claimUnit)에서 비워야 맞다(설계 §(7)).
+  const { room, calls } = matrixRoom(true);
+  room.sendUserMessage("claude에게 맡겨줘");
+  await settle();
+  calls[0].finish("@agy 맡아줘"); // agy 작업자 도는 중, claude는 쉰다
+  await settle();
+  // claude를 "실제로 도는" 상태로 만든다: 독립 발언(동시 실행)으로 claude·codex를 함께 부른다.
+  room.sendUserMessage({ text: "@claude @codex 각자 답해줘", independent: true });
+  await settle();
+  assert.ok(room.runningTurns && [...room.runningTurns].some((item) => item.agent.id === "claude"), "claude가 지금 실제로 돈다");
+  room.sendUserMessage("보류될 메시지");
+  await settle();
+  assert.equal(room.orchestration.heldMessages.length, 1);
+  calls.find((c) => c.agentId === "agy" && !c.resolved).finish("agy 완료"); // 다음 지휘 AI 턴(라운드 2)을 예약하지만, claude가 바빠 claim되지 못하고 큐에 남는다
+  await settle();
+  assert.equal(room.orchestration.round, 1, "라운드 2 턴이 아직 claim되지 않았다(지휘 AI가 바쁘다)");
+  assert.equal(room.orchestration.heldMessages.length, 1, "claim 전이므로 비워지지 않은 채 그대로다");
+  room.endOrchestration("모드 꺼짐 테스트"); // 큐에 남은 라운드 2 턴이 치워진다
+  await settle();
+  const notice = room.messages.filter((m) => m.authorType === "system").at(-1)?.text || "";
+  assert.match(notice, /전달되지 않았습니다/, "claim되지 못한 턴이 치워질 때도 보류 메시지 유실 안내가 나간다");
 });
