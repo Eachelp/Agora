@@ -50,6 +50,11 @@ function stripEmoticonTags(value) {
 }
 
 const DEFAULT_MENTION_CHAIN_LIMIT = 2;
+// 오케스트레이터 안전선(계획 v4 §2-8, 설계 §(5)): 라운드 50 또는 실행 150회.
+// 보통 대화의 "AI끼리 계속 부르기" 합계 상한(설계 §(10))도 같이 둔다. 시험이 주입할 수 있게 생성자 옵션으로도 받는다.
+const ORCHESTRATION_ROUND_CEILING = 50;
+const ORCHESTRATION_EXECUTION_CEILING = 150;
+const KEEP_CALLING_CEILING = 50;
 const LOST_TURN_STALL_SECONDS = 120;
 // 실행 중인 일반 턴이 이 시간 넘게 진전(delta·도구·파일)이 없으면 한 번 안내한다.
 // 큐 정체 경고는 "시작 못 한 턴"만 보고, 러너 무음 감지는 실행을 죽이지 않으므로,
@@ -121,12 +126,24 @@ class ChatRoom extends EventEmitter {
       permissionMode: "chat",
       ...(options.meta || {}),
     };
+    // 오케스트레이터 모드·"AI끼리 계속 부르기"는 permissionMode와 같은 자리(세션 메타)에 산다. 기본값은 꺼짐.
+    if (!this.meta.orchestrator) this.meta.orchestrator = { enabled: false, leadId: null };
+    if (typeof this.meta.keepCalling !== "boolean") this.meta.keepCalling = false;
     this.discussionRunBudget = Number.isInteger(options.discussionRunBudget)
       ? options.discussionRunBudget
       : DEFAULT_DISCUSSION_RUN_BUDGET;
     this.mentionChainLimit = Number.isInteger(options.mentionChainLimit)
       ? options.mentionChainLimit
       : DEFAULT_MENTION_CHAIN_LIMIT;
+    this.roundCeiling = Number.isInteger(options.roundCeiling) ? options.roundCeiling : ORCHESTRATION_ROUND_CEILING;
+    this.executionCeiling = Number.isInteger(options.executionCeiling) ? options.executionCeiling : ORCHESTRATION_EXECUTION_CEILING;
+    this.keepCallingCeiling = Number.isInteger(options.keepCallingCeiling) ? options.keepCallingCeiling : KEEP_CALLING_CEILING;
+    // 방에 한 번에 하나뿐인 오케스트레이션(휘발 상태, 재시작하면 사라진다). null이거나 하나.
+    this.orchestration = null;
+    this.orchestrationSeq = 0;
+    // turnRootId(연쇄를 처음 일으킨 사용자 메시지) → 지금까지 만든 자동 호출 수. keepCalling 합계 상한에 쓴다.
+    this.mentionCallCounts = new Map();
+    this.keepCallingCeilingNoticed = new Set();
     // 브로드캐스트 응답 순서 셔플에 쓰는 난수원. 테스트에서 고정 순서를
     // 만들 수 있도록 주입 가능합니다.
     this.random = typeof options.random === "function" ? options.random : Math.random;
@@ -271,6 +288,19 @@ class ChatRoom extends EventEmitter {
       agents: this.publicAgents(),
       messages: this.messages,
       typing: [...this.typingCounts.keys()],
+      orchestration: this.orchestrationSnapshot(),
+    };
+  }
+
+  // 화면이 구독하는 오케스트레이션 스냅숏(라운드·실행 횟수만 — 설계 §(5)). 일시 정지 표시는
+  // 렌더러가 기존 pendingApprovals/userQuestions 스냅숏에서 따로 계산한다(§(9)).
+  orchestrationSnapshot() {
+    if (!this.orchestration) return null;
+    return {
+      active: true,
+      round: this.orchestration.round,
+      executions: this.orchestration.executions,
+      leadId: this.orchestration.leadId,
     };
   }
 
@@ -304,10 +334,30 @@ class ChatRoom extends EventEmitter {
     entry.turnRootId = entry.id;
 
     this.mentionsMuted = false;
+    // ONE @ 규칙(설계 §(3)): 이름으로 부른 메시지는 모드와 무관하게 그 AI에게 간다. 모드가 가르는
+    // 것은 @ 없는 메시지의 수신자뿐이다. 그룹 별칭(@all 등)은 지휘 AI를 거치지 않고 늘 그대로 모두에게 간다.
+    const groupMentioned = hasGroupMention(trimmed, GROUP_ALIASES);
+    const specificIds = parseMentions(trimmed, this.agents);
+    const orchestrator = this.meta.orchestrator || {};
+    const leadId = orchestrator.enabled ? orchestrator.leadId : null;
+    const routeToLead = Boolean(leadId) && !groupMentioned
+      && (specificIds.length === 0 || (specificIds.length === 1 && specificIds[0] === leadId));
+    if (routeToLead && this.orchestration) {
+      // 보류: 턴을 만들지 않는다. 메시지는 대화에 그대로 남고 heldMessages에 쌓인다(설계 §(3)·§(8)).
+      this.orchestration.heldMessages.push(trimmed);
+      const leadWaiting = this.awaitingUsers.has(leadId)
+        || this.pendingUserQuestionList().some((question) => question.agentId === leadId);
+      this.appendSystem(leadWaiting
+        ? `@${leadId}가 질문 카드에 답을 기다리는 중입니다. 이 메시지는 그 카드에 답하거나 건너뛴 뒤, 다음 회신에 함께 전달됩니다.`
+        : "결과가 모이면 이 메시지까지 보고 이어 갑니다. 지금 바로 바꾸려면 [잠깐]을 누르세요.");
+      return entry;
+    }
     const mentionedIds = parseMentions(trimmed, this.agents, GROUP_ALIASES);
-    const targets = mentionedIds.length > 0
-      ? mentionedIds.map((agentId) => this.findAgent(agentId)).filter(Boolean)
-      : this.enabledAgents();
+    const targets = routeToLead
+      ? [this.findAgent(leadId)].filter(Boolean)
+      : mentionedIds.length > 0
+        ? mentionedIds.map((agentId) => this.findAgent(agentId)).filter(Boolean)
+        : this.enabledAgents();
     const respondents = [];
     for (const agent of targets) {
       if (!agent.available) {
@@ -364,6 +414,7 @@ class ChatRoom extends EventEmitter {
             ...(order.length > 1 && !independent
               ? { broadcast: { position: index + 1, total: order.length } }
               : {}),
+            ...(routeToLead ? { orchestrationStart: { leadId } } : {}),
           }, {
             lane,
             insertAt: insertAt === null ? null : insertAt + index,
@@ -417,7 +468,10 @@ class ChatRoom extends EventEmitter {
     const queued = [...this.turnQueue, ...this.deferredTurnQueue];
     if ([...queued, ...this.liveTurns()].some((item) => item.context.discussionSummary)) return false;
     const agentIds = new Set(order.map((agent) => agent.id));
-    return !queued.some((item) => agentIds.has(item.agent.id) && !(item.context.turnRootId && this.isFreeChatContext(item.context)));
+    // 오케스트레이션 턴은 막는 걸로도 안 친다(걷어낼 수도 없다, 위와 같은 교차점) — 직접 @other는
+    // 그 담당자가 작업자로 바쁘더라도 빠른 줄에 서고, 담당자 게이트가 뒤로 미룬다.
+    return !queued.some((item) => agentIds.has(item.agent.id) && !item.context.orchestration
+      && !(item.context.turnRootId && this.isFreeChatContext(item.context)));
   }
 
   shuffle(list) {
@@ -651,11 +705,16 @@ class ChatRoom extends EventEmitter {
     const generation = this.generation;
     // 담당 에이전트까지 키에 넣는다. 빼면 같은 토론·메시지를 다른 AI에게 한 두 번째
     // 요청이 첫 턴의 promise를 받고 조용히 사라진다.
-    const dedupeKey = context.discussionSummary
-      ? `summary:${context.discussionSummary.discussionId}:${context.discussionSummary.record ? "record" : "summary"}:${agent.id}`
-      : context.simplifyMeta
-        ? `simplify:${context.simplifyMeta.messageId}:${agent.id}`
-        : (context.discussion || !context.turnRootId ? null : `${context.turnRootId}:${agent.id}`);
+    // 오케스트레이션 턴(지휘 AI·작업자)은 별도 키 공간을 쓴다(설계 §(4)) — 지휘 AI 답의 메시지 id를
+    // turnRootId로 재사용했으므로 보통 자유 대화 키와 같은 모양이면 그 뒤에 같은 메시지로 또 온
+    // @멘션 호출과 섞일 수 있고, collectSupersedable/isFastEligible도 이 키로 오케스트레이션 턴을 가려낸다.
+    const dedupeKey = context.orchestration
+      ? `orch:${context.orchestration.id}:${context.orchestration.round}:${agent.id}`
+      : context.discussionSummary
+        ? `summary:${context.discussionSummary.discussionId}:${context.discussionSummary.record ? "record" : "summary"}:${agent.id}`
+        : context.simplifyMeta
+          ? `simplify:${context.simplifyMeta.messageId}:${agent.id}`
+          : (context.discussion || !context.turnRootId ? null : `${context.turnRootId}:${agent.id}`);
     if (dedupeKey) {
       if (this.pendingTurns.has(dedupeKey)) {
         return this.pendingTurns.get(dedupeKey);
@@ -744,10 +803,13 @@ class ChatRoom extends EventEmitter {
     this.emit("turn-state", this.turnState());
   }
 
-  // 스케줄러가 직접 내는 turn-state. 리스너가 던져도 방은 그대로 간다(경고만 남긴다).
+  // 스케줄러가 직접 내는 turn-state. 리스너가 던져도 방은 그대로 간다(경고만 남긴다). 오케스트레이션
+  // 스냅숏도 같은 전환 지점마다 함께 낸다(turnState()의 기존 모양은 바꾸지 않는다 — 기존 시험이 그
+  // 전체 모양을 deepEqual로 견주므로, 화면은 별도 이벤트 "orchestration"으로 구독한다, §(5)·§(9)).
   emitTurnStateSafe() {
     try {
       this.emitTurnState();
+      this.emit("orchestration", this.orchestrationSnapshot());
     } catch (error) {
       console.warn("[agora] turn-state 리스너 실패:", error?.message || error);
     }
@@ -815,6 +877,13 @@ class ChatRoom extends EventEmitter {
   cancelTurn(turnId) {
     const item = [...this.turnQueue, ...this.deferredTurnQueue].find((entry) => entry.turnId === turnId);
     if (!item) return false;
+    // 이미 claim된(=오케스트레이션이 생긴) 지휘 AI 회신 턴·작업자 묶음 항목은 그 한 항목만 지우지 않고
+    // 오케스트레이션 전체를 끝낸다(설계 §(8)·§(13) 불변식 14). 아직 claim 전(orchestrationStart만 있는
+    // 턴)은 끝낼 오케스트레이션이 없으므로 보통 × 그대로다.
+    if (item.context.orchestration) {
+      this.endOrchestration("오케스트레이션을 여기서 끝냅니다. 지금까지의 결과는 위에 있습니다.");
+      return true;
+    }
     this.removeQueued(item);
     // 사용자가 일부러 지운 턴이다. "유실됐을 수 있다"는 안내를 붙이지 않는다.
     this.retireTurn(item, undefined, { lost: false });
@@ -834,6 +903,9 @@ class ChatRoom extends EventEmitter {
   collectSupersedable(agentId) {
     return [...this.turnQueue, ...this.deferredTurnQueue].filter(
       (item) => item.agent.id === agentId && item.context.turnRootId && this.isFreeChatContext(item.context)
+        // 오케스트레이션 턴(지휘 AI·작업자)은 걷어낼 수 없다 — 직접 @other 메시지가 진행 중인
+        // 작업자 할당을 지워버리면 안 된다(설계 §(4) "교차점").
+        && !item.context.orchestration
     );
   }
 
@@ -871,10 +943,18 @@ class ChatRoom extends EventEmitter {
     return Promise.all(started);
   }
 
-  // 같은 단위(같은 parallelGroupId의 큐 항목 전부, 없으면 항목 하나)로 같이 시작하는 항목들.
+  // 같은 단위(같은 parallelGroupId 또는 workerUnitId의 큐 항목 전부, 없으면 항목 하나)로 같이 시작하는 항목들.
+  // workerUnitId는 오케스트레이션 작업자 묶음을 묻는 키다(설계 §(4) — parallelGroupId는 쓰지 않는다,
+  // 그 필드가 buildAgentPrompt의 무거운 "자기 폴더에만" 계약과 폴더 밖 변경 감시를 함께 켜기 때문이다).
   unitOfQueued(item) {
-    const groupId = item.context?.parallelGroupId;
-    return groupId ? this.turnQueue.filter((entry) => entry.context?.parallelGroupId === groupId) : [item];
+    const groupId = item.context?.parallelGroupId || item.context?.workerUnitId;
+    if (!groupId) return [item];
+    return this.turnQueue.filter((entry) => (entry.context?.parallelGroupId || entry.context?.workerUnitId) === groupId);
+  }
+
+  // 오케스트레이션 턴이 아닌 활성 단위가 하나라도 있는가. 메인 줄 게이트와 정체 진단이 같이 쓴다(§2.4(c)).
+  hasNonOrchestrationActiveUnit() {
+    return [...this.activeUnits].some((unit) => !unit.items[0].context.orchestration);
   }
 
   agentIsRunning(agentId) {
@@ -910,7 +990,10 @@ class ChatRoom extends EventEmitter {
       if (members.some((member) => this.agentIsRunning(member.agent.id))) continue;
       units.push(this.claimUnit(members));
     }
-    if (this.activeUnits.size === 0) {
+    // 메인 줄은 "활성 단위가 하나도 없을 때"가 아니라 "오케스트레이션이 아닌 활성 단위가 하나도 없을 때"
+    // 시작한다(설계 §2.4(c)) — 오케스트레이션이 라운드를 쉬지 않고 도는 동안에도 @all 같은 메인 줄
+    // 메시지가 굶지 않는다. activeUnits가 비었으면 every()가 참을 돌려줘 기존 동작과 같다.
+    if (!this.hasNonOrchestrationActiveUnit()) {
       const head = this.turnQueue.find((item) => item.lane !== "fast");
       if (head) {
         const members = this.unitOfQueued(head);
@@ -940,6 +1023,17 @@ class ChatRoom extends EventEmitter {
       this.removeQueued(item);
       this.releaseQueuedTurn(item);
       this.runningTurns.add(item);
+      // 지휘 AI의 첫 턴(사용자 메시지)만 이 표식을 갖는다. claim 시점에 조건이 맞으면 오케스트레이션을
+      // 새로 만든다 — 큐에서 기다리는 동안 모드가 꺼지거나 지휘 AI가 바뀌었으면 보통 턴으로 돈다(설계 §2.3).
+      if (item.context.orchestrationStart && !item.context.orchestration) {
+        this.maybeStartOrchestration(item);
+      }
+      // 오케스트레이션이 사는 동안 claim되는 모든 오케스트레이션 턴(지휘 AI+작업자)마다 실행 횟수를 올린다(§(5)).
+      // round는 "지휘 AI 턴이 지금까지 몇 번 돌았나"이므로 지휘 AI 턴이 claim될 때만 그 값으로 맞춘다.
+      if (item.context.orchestration && this.orchestration && this.orchestration.id === item.context.orchestration.id) {
+        this.orchestration.executions += 1;
+        if (item.context.orchestration.role === "lead") this.orchestration.round = item.context.orchestration.round;
+      }
       // 단위의 실제 크기는 지금 센다: 구성원이 갈아끼워져 줄었으면 "참가자 N명" 계약도 그 크기를 쓴다.
       item.parallelTotal = members.length;
       // 빠른 턴과 독립 발언 턴은 시작 시점에 끝난 답까지 본다. 일반(이어 발언) 턴은 예약 시점의 기록을 그대로 쓴다.
@@ -961,6 +1055,31 @@ class ChatRoom extends EventEmitter {
     return unit;
   }
 
+  // 지휘 AI에게 가는 메시지가 claim되는 순간(스케줄 시점이 아니라) 조건을 다시 확인하고 오케스트레이션을
+  // 만든다(설계 §2.3). 조건이 안 맞으면(모드 꺼짐·지휘 AI 바뀜) 조용히 보통 턴으로 둔다 — 시작한 적 없는
+  // 오케스트레이션은 정리할 것이 없다. 토론과 겹치는 좁은 창(§2.4(a))만 한 줄 안내한다.
+  maybeStartOrchestration(item) {
+    const start = item.context.orchestrationStart;
+    const cfg = this.meta.orchestrator || {};
+    const stillValid = Boolean(cfg.enabled) && cfg.leadId === start.leadId;
+    if (stillValid && (this.discussionRequested || this.discussionActive)) {
+      this.appendSystem("오케스트레이션이 토론 시작과 겹쳐 이번 요청은 보통 대화로 처리합니다. 토론이 끝난 뒤 다시 말씀해 주세요.");
+      return;
+    }
+    if (!stillValid || this.orchestration) return;
+    this.orchestrationSeq += 1;
+    this.orchestration = {
+      id: `o${this.sessionId || "s"}-${this.orchestrationSeq}`,
+      leadId: start.leadId,
+      round: 1,
+      executions: 0,
+      heldMessages: [],
+      rootMessageId: item.context.turnRootId,
+      ceilingNoticed: false,
+    };
+    item.context.orchestration = { id: this.orchestration.id, role: "lead", round: 1 };
+  }
+
   // 지금 실행 중인 턴들. 순차 실행에서는 언제나 0개 또는 1개다.
   syncCurrentTurn() {
     this.currentTurn = this.liveTurns()[0] || null;
@@ -978,8 +1097,9 @@ class ChatRoom extends EventEmitter {
       ? Date.now()
       : null;
     const generation = this.generation;
+    let outcomes = [];
     try {
-      await Promise.all(members.map((item) => this.runQueuedTurn(item)));
+      outcomes = await Promise.all(members.map((item) => this.runQueuedTurn(item)));
       // 중지·초기화로 세대가 바뀌었으면 알리지 않는다. 비워진 대화에 뒤늦은
       // 안내만 남는다.
       if (startedAt !== null && generation === this.generation) {
@@ -988,11 +1108,169 @@ class ChatRoom extends EventEmitter {
     } catch (error) {
       console.warn("[agora] 턴 단위 실행 중 실패:", error?.message || error);
     } finally {
-      // 단위가 끝나야 일반 줄이 시작할 수 있다. 유휴 대기자를 깨운 뒤 펌프한다.
+      // 단위가 끝나야 일반 줄이 시작할 수 있다. 오케스트레이션 다음 단계(작업자 묶음 짓기, 결과 수집)는
+      // activeUnits에서 뺀 뒤·유휴 대기자를 깨우기 전에 건다(설계 §(4)의 자리 — this.orchestration이
+      // 여기서 null이 돼야 토론이 기다리고 있었으면 깬다, §2.4(b)).
       this.activeUnits.delete(unit);
+      try {
+        this.handleOrchestrationUnit(unit, outcomes);
+      } catch (error) {
+        console.warn("[agora] 오케스트레이션 처리 중 실패:", error?.message || error);
+        this.endOrchestration("오케스트레이션이 내부 오류로 끝났습니다. 지금까지의 결과는 위에 있습니다.");
+      }
       this.resolveIdleWaiters();
       this.pumpAfterTurn();
     }
+  }
+
+  // runUnit의 finally 전용 공용 문(설계 §(4)) — 오케스트레이션 턴이 아니면 아무것도 하지 않는다.
+  // 끝났거나 바뀐 오케스트레이션의 늦은 결과는 역할과 무관하게 조용히 버린다(§(13) 불변식 15).
+  handleOrchestrationUnit(unit, outcomes) {
+    const marker = unit.items[0].context.orchestration;
+    if (!marker) return;
+    if (!this.orchestration || this.orchestration.id !== marker.id) return;
+    if (marker.role === "lead") {
+      this.handleLeadTurnEnd(unit.items[0], outcomes[0]);
+    } else if (marker.role === "worker") {
+      this.finishWorkerUnit(unit.items, outcomes);
+    }
+  }
+
+  // 지휘 AI 턴이 끝났다: @작업자 호출이 있으면 안전선을 거쳐 작업자 묶음을 claim하고,
+  // 없으면(또는 자신이 실패·불가용) 오케스트레이션을 끝낸다(설계 §(4)·§(8)).
+  handleLeadTurnEnd(item, outcome) {
+    const orch = this.orchestration;
+    if (outcome === undefined) {
+      this.endOrchestration(`@${orch.leadId}를 더 쓸 수 없어 오케스트레이션을 끝냅니다. 지금까지의 결과는 위에 있습니다.`);
+      return;
+    }
+    if (!outcome.ok) {
+      this.endOrchestration(`@${orch.leadId} 응답이 실패해 오케스트레이션을 끝냅니다. 지금까지의 결과는 위에 있습니다.`);
+      return;
+    }
+    const text = outcome.text || "";
+    // 그룹 별칭 없이(§(4) — isFastEligible이 쓰는 호출 방식과 같다), 자기 자신을 뺀 멘션.
+    const mentionedIds = [...new Set(parseMentions(text, this.agents))].filter((id) => id !== orch.leadId);
+    const available = new Set(this.enabledAgents().map((agent) => agent.id));
+    const workerIds = mentionedIds.filter((id) => available.has(id));
+    const unavailableIds = mentionedIds.filter((id) => !available.has(id));
+    if (workerIds.length === 0) {
+      if (unavailableIds.length > 0) {
+        this.endOrchestration(`⟦${unavailableIds.join(", ")}⟧을 부를 수 없어 맡기지 못했습니다.`);
+        return;
+      }
+      // @ 없이 답함(또는 그룹 별칭·자기 자신만) = 이번 답이 오케스트레이션의 최종 답이다.
+      if (outcome.controlRequest?.action === "ASK_USER" && !outcome.controlRequest.ambiguous) {
+        this.setAwaitingUser(orch.leadId, outcome.controlRequest.question || "", outcome.controlRequest.options || [], outcome.controlRequest.multi);
+      }
+      this.endOrchestration(null);
+      return;
+    }
+    if (orch.executions + workerIds.length > this.executionCeiling) {
+      this.endOrchestration(`실행 횟수 안전선(${this.executionCeiling}회)에 닿아 더 맡기지 않았습니다. 메시지를 보내면 이어 갑니다.`);
+      return;
+    }
+    this.scheduleWorkerUnit(workerIds, item, outcome.messageId);
+  }
+
+  // 작업자 묶음은 쪼개지지 않게 한 묶음으로 올린다(설계 §(4) — pumpSuspended로 감싼다).
+  scheduleWorkerUnit(workerIds, leadItem, leadMessageId) {
+    const orch = this.orchestration;
+    const round = leadItem.context.orchestration.round;
+    const workerUnitId = `wu-${orch.id}-${round}`;
+    const attachments = this.attachmentsOfMessages([leadItem.context.turnRootId]);
+    this.pumpSuspended += 1;
+    try {
+      for (const agentId of workerIds) {
+        const agent = this.findAgent(agentId);
+        if (!agent) continue;
+        this.scheduleTurn(agent, {
+          orchestration: { id: orch.id, role: "worker", round },
+          workerUnitId,
+          turnRootId: leadMessageId,
+          independent: true,
+          attachments,
+        }, { lane: "fast" });
+      }
+    } finally {
+      this.pumpSuspended -= 1;
+      this.pumpTurnQueue();
+    }
+  }
+
+  // 작업자 묶음이 전부 끝났다: 결과 블록을 짜고(§(7)) 안전선을 거쳐 지휘 AI의 다음 회신 턴을 claim한다.
+  finishWorkerUnit(members, outcomes) {
+    const orch = this.orchestration;
+    const round = members[0].context.orchestration.round;
+    const lines = [`=== 작업자 결과(라운드 ${round}) ===`];
+    members.forEach((item, index) => {
+      const outcome = outcomes[index];
+      const id = item.agent.id;
+      if (outcome === undefined) {
+        lines.push(`[@${id}] 사용할 수 없음(비활성화되었거나 설치되지 않음)`);
+      } else if (!outcome.ok) {
+        lines.push(`[@${id}] 실패(${outcome.stopReason || "실패"})`);
+        lines.push(String(outcome.error || "").slice(0, 1000));
+      } else if (outcome.controlRequest?.action === "ASK_USER") {
+        lines.push(`[@${id}] 질문 있음: ${outcome.controlRequest.question || ""}`);
+        if (outcome.controlRequest.options?.length > 0) lines.push(`OPTION: ${outcome.controlRequest.options.join(", ")}`);
+      } else {
+        const text = String(outcome.text || "");
+        lines.push(`[@${id}] 완료`);
+        lines.push(text.length > 2000 ? `${text.slice(0, 2000)}…(생략, 전체 ${text.length}자)` : text);
+      }
+      lines.push("---");
+    });
+    lines.push("=== 작업자 결과 끝 ===");
+    const extraLines = [lines.join("\n")];
+    if (orch.heldMessages.length > 0) {
+      extraLines.push([
+        "=== 사용자가 그 사이 보낸 메시지 ===",
+        ...orch.heldMessages.map((text) => `"${text}"`),
+        "=== 사용자가 그 사이 보낸 메시지 끝 ===",
+      ].join("\n"));
+      orch.heldMessages = [];
+    }
+    const nextRound = round + 1;
+    if (nextRound > this.roundCeiling) {
+      this.endOrchestration(`라운드 안전선(${this.roundCeiling})에 닿아 멈췄습니다. 메시지를 보내면 이어 갑니다.`);
+      return;
+    }
+    const leadAgent = this.findAgent(orch.leadId);
+    if (!leadAgent || !leadAgent.available || leadAgent.enabled === false) {
+      this.endOrchestration(`@${orch.leadId}를 더 쓸 수 없어 오케스트레이션을 끝냅니다. 지금까지의 결과는 위에 있습니다.`);
+      return;
+    }
+    this.scheduleTurn(leadAgent, {
+      orchestration: { id: orch.id, role: "lead", round: nextRound },
+      turnRootId: orch.rootMessageId,
+      extraLines,
+    }, { lane: "fast" });
+  }
+
+  // 오케스트레이션을 끝내는 모든 경로(×취소·모드 끔·지휘 AI 못 씀·안전선·정상 끝맺음)가 공유하는 헬퍼
+  // (중지·잠깐·삭제·종료는 stopAllSilently가 이미 큐 전체를 치우므로 이 헬퍼를 쓰지 않는다, 설계 §(8)).
+  endOrchestration(notice) {
+    if (!this.orchestration) return;
+    const orch = this.orchestration;
+    // 형제를 치운다: 같은 오케스트레이션 id의 아직 claim 안 된 대기 항목(작업자 묶음의 나머지,
+    // 지휘 AI의 대기 중인 회신 턴)을 전부 큐에서 뺀다. 개별 유실 안내는 내지 않는다.
+    for (const item of [...this.turnQueue, ...this.deferredTurnQueue]) {
+      if (item.context.orchestration?.id === orch.id) {
+        this.removeQueued(item);
+        this.retireTurn(item, undefined, { lost: false });
+      }
+    }
+    let line = notice || "";
+    if (orch.heldMessages.length > 0) {
+      const heldNotice = "그 사이 보낸 메시지 " + orch.heldMessages.length + "개는 지휘 AI에게 따로 묶어 전달되지 않았습니다(대화에는 그대로 남아 있습니다).";
+      line = line ? `${line} ${heldNotice}` : heldNotice;
+    }
+    if (line) this.appendSystem(line);
+    this.orchestration = null;
+    this.resolveIdleWaiters();
+    this.pumpAfterTurn();
+    this.emitTurnStateSafe();
   }
 
   // 펌프 호출이 던져도 약속이 이미 풀린 항목·단위의 정리를 막지 않는다.
@@ -1031,6 +1309,9 @@ class ChatRoom extends EventEmitter {
       // 풀린 담당자의 빠른 항목은 지금 시작해야 한다.
       this.pumpAfterTurn();
     }
+    // runUnit의 Promise.all이 이 값을 받아 오케스트레이션 결과 수집에 쓴다(§(4)·§(7)).
+    // item.promise(= scheduleResponse 호출자가 받는 약속)와는 별개 경로다.
+    return outcome;
   }
 
   // 담당자별 폴더 계약 감시 — 실행 전후 상태를 비교해 "폴더 밖이 바뀌었다"를 알린다.
@@ -1069,7 +1350,7 @@ class ChatRoom extends EventEmitter {
   // 유휴: 돌고 있는 단위(승인·질문 카드를 기다리는 턴, 폴더 감시 중인 단위, 중지했지만 프로세스가 아직 안 끝난 단위 포함)도
   // 기다리는 턴도 없다.
   isIdle() {
-    return this.activeUnits.size === 0 && this.turnQueue.length === 0 && this.deferredTurnQueue.length === 0;
+    return !this.orchestration && this.activeUnits.size === 0 && this.turnQueue.length === 0 && this.deferredTurnQueue.length === 0;
   }
 
   waitForIdle() {
@@ -1134,7 +1415,7 @@ class ChatRoom extends EventEmitter {
       return own.length > 0 ? own : null;
     }
     if (deferred && (this.discussionActive || this.discussionRequested)) return running;
-    return this.activeUnits.size > 0 || running.length > 0 ? running : null;
+    return this.hasNonOrchestrationActiveUnit() || running.length > 0 ? running : null;
   }
 
   isFreeChatContext(context = {}) {
@@ -1278,11 +1559,15 @@ class ChatRoom extends EventEmitter {
       : this.meta.permissionMode;
 
     const mentionDepth = context.mentionDepth || 0;
+    const orchestrationRole = context.orchestration?.role || null;
 
     // 이 턴이 실행 중 질문 도구를 붙일 수 있는 종류인가. 자유 대화이면서 파일 작업 권한(읽기·쓰기)이 있는
     // 턴만이다. 토론·결론 종합·쉽게 설명 같은 도우미 턴과 대화 전용(chat) 턴은 아니다 — 대화 전용 답은
-    // 짧아 끝에서 묻는 것으로 충분하고, 붙이면 시작이 느려지고 토큰이 늘기만 한다.
-    const questionPurpose = this.isFreeChatContext(context) && FILE_WORK_PERMISSIONS.has(permissionMode) ? "chat" : "other";
+    // 짧아 끝에서 묻는 것으로 충분하고, 붙이면 시작이 느려지고 토큰이 늘기만 한다. 작업자는 늘 꺼진다
+    // (설계 §(6)) — 작업자가 되물을 유일한 길은 응답 끝 ASK_USER(지휘 AI에게 전달)뿐이다.
+    const questionPurpose = orchestrationRole === "worker"
+      ? "other"
+      : this.isFreeChatContext(context) && FILE_WORK_PERMISSIONS.has(permissionMode) ? "chat" : "other";
     let questionToolPossible = false;
     try {
       questionToolPossible = Boolean(this.questionTool?.canAttach?.(agent, questionPurpose));
@@ -1321,8 +1606,16 @@ class ChatRoom extends EventEmitter {
         replyTarget: context.replyTarget || null,
         handoff: context.handoff || null,
         // 토론·결론 종합·쉽게 설명에서는 @멘션 호출을 끈다. 연쇄 깊이 상한도 여기서 막는다.
-        mentionsEnabled: !context.discussion && !context.discussionSummary && !context.simplifyMeta && mentionDepth < this.mentionChainLimit,
+        // 지휘 AI는 상한 없이 늘 호출할 수 있고(§(13) 불변식 4), 작업자는 늘 못 부른다(불변식 3).
+        mentionsEnabled: orchestrationRole === "lead"
+          ? true
+          : orchestrationRole === "worker"
+            ? false
+            : !context.discussion && !context.discussionSummary && !context.simplifyMeta && mentionDepth < this.mentionChainLimit,
         userQuestionTool,
+        orchestration: context.orchestration ? { role: orchestrationRole, leadId: this.orchestration?.leadId || null } : null,
+        // 작업자 결과·보류 메시지 블록(설계 §(7)) — 기본값 []이면 기존 턴은 한 글자도 안 바뀐다.
+        extraLines: context.extraLines || [],
       });
       prompt = buildPrompt(questionToolPossible);
     } catch (error) {
@@ -1550,20 +1843,32 @@ class ChatRoom extends EventEmitter {
     });
     // 토론 모드는 자체 턴 오케스트레이션이 있으므로 멘션 호출을 만들지 않습니다.
     if (!context.discussion && !context.discussionSummary && !context.simplifyMeta) {
-      this.scheduleMentionReplies(
-        agent,
-        text,
-        mentionDepth,
-        context.attachments || [],
-        context.turnRootId
-      );
-      // 일반 채팅 턴이 계약(ASK_USER + OPTION)으로 물었을 때만 '답변 대기'로
-      // 세운다. 산문의 물음표·목록을 읽는 휴리스틱은 쓰지 않는다 — 뜻을 못 읽어
-      // 도움 제안 마무리나 방향 메뉴까지 질문으로 오인했고, 계약이 있는 지금은
-      // 에이전트가 "사용자 답 없이는 못 간다"고 스스로 표시한 것만 세우는 편이
-      // 맞다. 사용자는 선택지 칩이나 입력창 타이핑으로 답하고, ×로 답 없이 지운다.
-      if (controlRequest?.action === "ASK_USER" && !controlRequest.ambiguous) {
-        this.setAwaitingUser(agent.id, controlRequest.question || "", controlRequest.options || [], controlRequest.multi);
+      if (orchestrationRole === "lead") {
+        // 작업자 호출은 여기서 걸지 않는다 — runUnit의 finally(§(4))가 건다(타이밍 문제: 이 턴이
+        // 아직 runningTurns에 남아 있는 동안 걸면 concurrentWork가 지휘 AI 자신을 "아직 답이 없는
+        // 참가자"로 작업자에게 잘못 알린다). setAwaitingUser도 그 자리에서 조건부로 부른다(§(6)).
+      } else if (orchestrationRole === "worker") {
+        // 작업자는 다른 참가자를 못 부른다(§(13) 불변식 3). 호출을 시도했으면 한 줄만 안내한다.
+        const attempted = parseMentions(text, this.agents).filter((id) => id !== agent.id);
+        if (attempted.length > 0) {
+          this.appendSystem(`@${agent.id}가 다른 참가자를 부르려 했지만 작업자는 다른 참가자를 부를 수 없습니다. 필요하면 지휘 AI가 다음 회신에서 다시 맡길 수 있습니다.`);
+        }
+      } else {
+        this.scheduleMentionReplies(
+          agent,
+          text,
+          mentionDepth,
+          context.attachments || [],
+          context.turnRootId
+        );
+        // 일반 채팅 턴이 계약(ASK_USER + OPTION)으로 물었을 때만 '답변 대기'로
+        // 세운다. 산문의 물음표·목록을 읽는 휴리스틱은 쓰지 않는다 — 뜻을 못 읽어
+        // 도움 제안 마무리나 방향 메뉴까지 질문으로 오인했고, 계약이 있는 지금은
+        // 에이전트가 "사용자 답 없이는 못 간다"고 스스로 표시한 것만 세우는 편이
+        // 맞다. 사용자는 선택지 칩이나 입력창 타이핑으로 답하고, ×로 답 없이 지운다.
+        if (controlRequest?.action === "ASK_USER" && !controlRequest.ambiguous) {
+          this.setAwaitingUser(agent.id, controlRequest.question || "", controlRequest.options || [], controlRequest.multi);
+        }
       }
     }
     return {
@@ -1582,11 +1887,38 @@ class ChatRoom extends EventEmitter {
   // 연쇄 깊이 상한으로 무한 호출을 막습니다.
   scheduleMentionReplies(agent, text, depth, attachments = [], turnRootId = null) {
     if (this.mentionsMuted) return;
-    if (depth >= this.mentionChainLimit) return;
     const mentionedIds = parseMentions(text, this.agents).filter((id) => id !== agent.id);
+    // 켜짐이 아니면 지금처럼 깊이 상한에서 멈춘다. 다른 점은: 걸러진 멘션이 있으면 한 줄 안내한다
+    // (지금은 조용히 버림 — 설계 §(10) 결정으로 바뀌는 부분).
+    if (!this.meta.keepCalling) {
+      if (depth >= this.mentionChainLimit) {
+        if (mentionedIds.length > 0) {
+          const names = mentionedIds.map((id) => `@${id}`).join(", ");
+          this.appendSystem(`${names} 호출이 전달 상한(${this.mentionChainLimit})에 걸려 전달되지 않았습니다. 계속 이어 가려면 입력창 위 'AI끼리 계속 부르기'를 켜세요.`);
+        }
+        return;
+      }
+      for (const agentId of mentionedIds) {
+        const target = this.findAgent(agentId);
+        if (!target || !target.available || target.enabled === false) continue;
+        this.scheduleResponse(target, { mentionDepth: depth + 1, attachments, turnRootId });
+      }
+      return;
+    }
+    // 켜짐: 깊이 상한을 보지 않는다. 대신 이 메시지(turnRootId)에서 이어진 자동 호출의 합계를
+    // 50에서 막는다 — 갈래가 퍼져도 합계로 막는다. 안내는 루트마다 한 번이다.
     for (const agentId of mentionedIds) {
       const target = this.findAgent(agentId);
       if (!target || !target.available || target.enabled === false) continue;
+      const count = this.mentionCallCounts.get(turnRootId) || 0;
+      if (count >= this.keepCallingCeiling) {
+        if (!this.keepCallingCeilingNoticed.has(turnRootId)) {
+          this.keepCallingCeilingNoticed.add(turnRootId);
+          this.appendSystem(`이 메시지에서 이어진 자동 호출이 ${this.keepCallingCeiling}번에 닿아 멈췄습니다. 메시지를 보내면 이어 갑니다.`);
+        }
+        break;
+      }
+      this.mentionCallCounts.set(turnRootId, count + 1);
       this.scheduleResponse(target, { mentionDepth: depth + 1, attachments, turnRootId });
     }
   }
@@ -1720,6 +2052,11 @@ class ChatRoom extends EventEmitter {
   // V1.5: options.protocol이 있으면 구조화 토론이다 — Preset이 정한 임시
   // 역할·발언 순서·cycle 수를 따르고, 모델 출력은 그 순서를 바꿀 수 없다.
   async startDiscussion(options = {}) {
+    // 오케스트레이션이 있으면 상태를 건드리기 전에 즉시 거절한다(§2.4(a)) — 기다리게 두면
+    // discussionRequested가 메인 줄의 줄 계산을 어지럽힌다(설계 §2.4).
+    if (this.orchestration) {
+      return { ok: false, error: "오케스트레이션이 끝난 뒤에 토론을 시작할 수 있습니다." };
+    }
     const enabled = this.enabledAgents();
     const agentById = new Map(enabled.map((agent) => [agent.id, agent]));
     let pool = enabled;
@@ -2046,6 +2383,11 @@ class ChatRoom extends EventEmitter {
       this.activeRuns = 0;
       this.emit("busy", false);
     }
+    // 반드시 resolveIdleWaiters()보다 앞(§2.4(b)) — 그래야 토론이 기다리고 있었으면 깬다. 늦게
+    // 끝나는 지휘 AI·작업자 프로세스의 결과는 runUnit의 공용 문(§(4))에서 id 불일치로 폐기된다.
+    this.orchestration = null;
+    this.mentionCallCounts.clear();
+    this.keepCallingCeilingNoticed.clear();
     this.resolveIdleWaiters();
     if (hadApprovals) this.emit("approval-wait");
   }

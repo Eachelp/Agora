@@ -67,7 +67,11 @@ function buildAgentPrompt({
   // 시작 시점 기록을 쓰는 턴(빠른 턴, 독립 발언 턴)이 답할 사용자 메시지 본문. 없으면 예전 문구 그대로다.
   replyTarget = null,
   extraLines = [],
+  // 오케스트레이터 역할({ role: "lead"|"worker", leadId }) — 없으면(null) 보통 자유 대화 턴과 글자 하나
+  // 다르지 않다(설계 §(11)).
+  orchestration = null,
 }) {
+  const orchestrationRole = orchestration?.role || null;
   const isDiscussionSummary = Boolean(discussionSummary);
   const isSimplify = Boolean(simplifyMeta);
   const agentsById = new Map(agents.map((entry) => [entry.id, entry]));
@@ -138,11 +142,22 @@ function buildAgentPrompt({
     lines.push("- 다른 참가자를 @멘션으로 호출하지 마세요.");
     lines.push("- 인사말이나 서론 없이, 결과만 바로 출력하세요.");
   } else {
-    lines.push(
-      `당신은 여러 AI 코딩 에이전트가 사용자와 함께 있는 그룹 채팅의 참가자 "@${agent.id}"(${agent.name})입니다.`
-    );
-    const roster = ["사용자(User)", ...agents.map((entry) => `@${entry.id}(${entry.name})`)];
-    lines.push(`참가자: ${roster.join(", ")}`);
+    if (orchestrationRole === "lead") {
+      lines.push(
+        `당신은 @${agent.id}, 이 방의 지휘 AI입니다. 사용자 요청을 보고, 필요하면 아래 참가자에게 작업을 나눠 맡기세요: ${others.map((entry) => `@${entry.id}`).join(", ")}.`
+      );
+    } else if (orchestrationRole === "worker") {
+      lines.push(
+        `당신은 @${agent.id}, 지휘 AI @${orchestration.leadId}가 이번 라운드에 맡긴 일 하나를 처리합니다. 다른 참가자를 부르거나 사용자에게 직접 묻지 마세요 — 결정이 필요하면 응답 끝에 ASK_USER로 남기면 지휘 AI에게 전달됩니다.`
+      );
+      lines.push("맡은 일만 간결하게 처리하고, 당신의 답이 그대로 지휘 AI에게 전달됩니다.");
+    } else {
+      lines.push(
+        `당신은 여러 AI 코딩 에이전트가 사용자와 함께 있는 그룹 채팅의 참가자 "@${agent.id}"(${agent.name})입니다.`
+      );
+      const roster = ["사용자(User)", ...agents.map((entry) => `@${entry.id}(${entry.name})`)];
+      lines.push(`참가자: ${roster.join(", ")}`);
+    }
     lines.push("");
     lines.push("규칙:");
     // 시작 시점 기록을 쓰는 턴은 답할 메시지가 기록의 마지막이 아닐 수 있다(그 사이에 다른 참가자의 답이 끝나 들어와 있다).
@@ -154,7 +169,14 @@ function buildAgentPrompt({
     lines.push(
       `- 출력 전체가 채팅 메시지 하나로 그대로 전송됩니다. "[@${agent.id}]" 같은 접두어나 서명을 붙이지 마세요.`
     );
-    if (others.length > 0 && mentionsEnabled) {
+    if (orchestrationRole === "lead") {
+      // 지휘 AI 전용 두 줄(설계 §(11)) — 기존 "다른 참가자를 호출하려면…" 문단을 대체한다.
+      // 호출 상한 문구는 지휘 AI에겐 안 맞으므로 넣지 않는다.
+      lines.push("- @이름으로 부르면 그 참가자가 이번 라운드에 당신과 **별도로** 작업을 시작합니다. 한 번에 여러 명을 불러도 됩니다 — 같이 시작합니다.");
+      lines.push("- 각자에게 맡기는 내용은 **그 사람 혼자 보고 끝낼 수 있게 분명하게** 적으세요(서로의 질문을 못 듣습니다). 여러 명을 같이 부를 때는 겹치지 않게 서로 다른 파일·자료를 맡기세요.");
+      lines.push("- 맡긴 작업의 결과(성공·실패·질문 포함)는 다음 당신의 차례에 자동으로 모여서 옵니다. 실패나 질문이 있으면 당신이 판단해 다시 맡기거나 사용자에게 설명하세요.");
+      lines.push("- 할 일을 다 맡겼거나 더 맡길 필요가 없으면, **@ 없이** 사용자에게 바로 답하세요. 그 답이 사용자가 보는 최종 답입니다.");
+    } else if (others.length > 0 && mentionsEnabled) {
       lines.push(
         `- 다른 참가자를 호출하려면 @이름(${others.map((entry) => `@${entry.id}`).join(", ")})을 쓰세요. 그러면 그 참가자가 이어서 답합니다. 호출 없이 언급만 할 때는 @ 없이 이름만 쓰세요. 호출은 꼭 필요할 때만 하세요.`
       );
@@ -167,10 +189,14 @@ function buildAgentPrompt({
     // 같은 조건(isFreeChatContext)에서만 이 계약을 읽는다.
     if (!discussion) {
       lines.push(
-        "- 맡은 작업을 이어가려면 사용자의 결정이 꼭 필요할 때만, 응답 **맨 끝**에 `ASK_USER: <질문 한 줄>`을 붙이세요. 고르는 질문이면 그 아래 `OPTION: <보기>` 줄을 2~5개 이어 붙이세요(짧은 명사구). 보기를 여러 개 고를 수 있으면 OPTION 줄 바로 앞에 `MULTI: yes` 줄을 넣으세요. 제어 줄은 응답 마지막의 연속된 줄이어야 합니다(뒤에 다른 문장 금지)."
+        orchestrationRole === "worker"
+          ? "- 맡은 작업을 이어가려면 **지휘 AI의 판단**이 꼭 필요할 때만, 응답 **맨 끝**에 `ASK_USER: <질문 한 줄>`을 붙이세요. 고르는 질문이면 그 아래 `OPTION: <보기>` 줄을 2~5개 이어 붙이세요(짧은 명사구). 보기를 여러 개 고를 수 있으면 OPTION 줄 바로 앞에 `MULTI: yes` 줄을 넣으세요. 제어 줄은 응답 마지막의 연속된 줄이어야 합니다(뒤에 다른 문장 금지)."
+          : "- 맡은 작업을 이어가려면 사용자의 결정이 꼭 필요할 때만, 응답 **맨 끝**에 `ASK_USER: <질문 한 줄>`을 붙이세요. 고르는 질문이면 그 아래 `OPTION: <보기>` 줄을 2~5개 이어 붙이세요(짧은 명사구). 보기를 여러 개 고를 수 있으면 OPTION 줄 바로 앞에 `MULTI: yes` 줄을 넣으세요. 제어 줄은 응답 마지막의 연속된 줄이어야 합니다(뒤에 다른 문장 금지)."
       );
       lines.push(
-        "- 제어 줄은 화면에 보이지 않고 '답변 대기' 표시와 선택 버튼으로 바뀝니다. 질문은 본문에도 자연스럽게 적으세요. 선택지를 제안하며 마무리하는 경우나 \"더 도울 일이 있을까요?\" 같은 마무리 인사에는 붙이지 마세요 — 그런 답은 사용자가 읽고 알아서 이어갑니다."
+        orchestrationRole === "worker"
+          ? "- 제어 줄은 화면에 보이지 않고, **지휘 AI에게 전달되어 다음 회신 턴에서 판단됩니다**(사용자에게 직접 묻는 것이 아닙니다)."
+          : "- 제어 줄은 화면에 보이지 않고 '답변 대기' 표시와 선택 버튼으로 바뀝니다. 질문은 본문에도 자연스럽게 적으세요. 선택지를 제안하며 마무리하는 경우나 \"더 도울 일이 있을까요?\" 같은 마무리 인사에는 붙이지 마세요 — 그런 답은 사용자가 읽고 알아서 이어갑니다."
       );
       // 질문 도구가 이번 실행에 붙었을 때만: 작업 도중 막히는 결정은 ask_user로 묻고 같은 작업을 이어 간다.
       // 위의 끝 ASK_USER 줄은 도구가 없거나 실패할 때의 대체 수단으로 그대로 남는다.

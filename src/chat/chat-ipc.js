@@ -249,6 +249,8 @@ function publicMeta(meta) {
     agents: meta.agents || {},
     status: meta.status || "idle",
     readOnly: Boolean(meta.readOnly),
+    orchestrator: meta.orchestrator || { enabled: false, leadId: null },
+    keepCalling: Boolean(meta.keepCalling),
   };
 }
 
@@ -991,6 +993,8 @@ function roomMeta(meta) {
     memoryContext: memory && project ? memory.readForPrompt(project.id) : "",
     rulesContext: memory && project ? memory.readRules(project.id) : "",
       workflowContext: project ? buildWorkflowContext(project.id) : "",
+      orchestrator: meta?.orchestrator || { enabled: false, leadId: null },
+      keepCalling: Boolean(meta?.keepCalling),
     };
   }
 
@@ -1155,6 +1159,8 @@ function roomMeta(meta) {
     });
     on("typing", (payload) => broadcast("chat:typing", { sessionId, ...payload }));
     on("turn-state", (payload) => broadcast("chat:turn-state", { sessionId, ...payload }));
+    // 오케스트레이션 상태(라운드·실행 횟수, 설계 §(5)) — turnState()의 기존 모양은 바꾸지 않고 별도로 낸다.
+    on("orchestration", (orchestration) => broadcast("chat:orchestration", { sessionId, orchestration }));
     on("reset", () => broadcast("chat:reset", { sessionId }));
     on("run-event", (payload) => broadcast("chat:run-event", { sessionId, ...payload }));
     on("agents", (agents) => broadcast("chat:agents", { sessionId, agents }));
@@ -1230,6 +1236,19 @@ function roomMeta(meta) {
     const meta = store.readMeta(sessionId);
     room.setAgents(buildRoomAgents(meta));
     if (meta) room.setMeta(roomMeta(meta));
+    // 지휘 AI가 비활성화되거나 CLI를 찾지 못하게 되면, 일반 모드로 돌아가는 길이 막히지 않도록
+    // 모드를 스스로 끈다(원칙: 일반 모드로 돌아가는 것은 어떤 상태에서도 막히면 안 된다).
+    const orchestrator = meta?.orchestrator;
+    if (orchestrator?.enabled && orchestrator.leadId) {
+      const lead = room.findAgent(orchestrator.leadId);
+      if (!lead || !lead.available || lead.enabled === false) {
+        const notice = `지휘 AI @${orchestrator.leadId}를 쓸 수 없어 오케스트레이터 모드를 껐습니다.`;
+        if (room.orchestration) room.endOrchestration(notice);
+        else room.appendSystem(notice);
+        store.updateMeta(sessionId, { orchestrator: { enabled: false, leadId: null } });
+        room.setMeta(roomMeta(store.readMeta(sessionId)));
+      }
+    }
   }
 
   function sessionState(sessionId) {
@@ -1245,6 +1264,8 @@ function roomMeta(meta) {
       })),
       typing: room.state().typing,
       turnState: room.turnState(),
+      // 라운드·실행 횟수만(§(5)) — 일시 정지 표시는 화면이 pendingApprovals/userQuestions에서 계산한다(§(9)).
+      orchestration: room.orchestrationSnapshot(),
       // 창이 닫혀 있던 사이 온 승인 요청도 창이 다시 붙을 때 이 목록으로 되살아난다.
       pendingApprovals: room.pendingApprovalList().map((approval) => ({ sessionId, ...approval })),
       // 답을 기다리는 질문(창이 다시 붙을 때 되살아난다)과, 끝난 것·중단된 것을 포함한 질문 기록 전체.
@@ -2184,6 +2205,50 @@ function roomMeta(meta) {
     );
 
     ipcMain.handle(
+      "chat:orchestrator:set",
+      wrap(async ({ sessionId, enabled, leadId }) => {
+        requireSession(sessionId);
+        const room = getRoom(sessionId);
+        const meta = store.readMeta(sessionId);
+        const nextEnabled = Boolean(enabled);
+        const nextLeadId = nextEnabled ? (leadId || null) : null;
+        if (nextEnabled) {
+          const lead = room ? room.findAgent(nextLeadId) : null;
+          if (!nextLeadId || !lead || !lead.available || lead.enabled === false) {
+            throw new Error("지휘 AI로 쓸 수 있는 에이전트를 골라 주세요.");
+          }
+        }
+        const current = meta.orchestrator || { enabled: false, leadId: null };
+        // 모드를 끄거나 지휘 AI를 바꾸면 "모드 꺼짐"과 같은 정리 사유다(설계 §2.1) — 지금 진행 중인
+        // 오케스트레이션이 있으면 끝낸다. 켜진 채로 같은 지휘 AI를 다시 보내는 것은 아무 일도 안 한다.
+        const endsCurrent = current.enabled && (!nextEnabled || current.leadId !== nextLeadId);
+        store.updateMeta(sessionId, { orchestrator: { enabled: nextEnabled, leadId: nextLeadId } });
+        if (room) {
+          room.setMeta(roomMeta(store.readMeta(sessionId)));
+          if (endsCurrent && room.orchestration) {
+            room.endOrchestration(
+              !nextEnabled
+                ? "오케스트레이터 모드를 꺼서 오케스트레이션을 끝냅니다. 지금까지의 결과는 위에 있습니다."
+                : "지휘 AI를 바꿔서 오케스트레이션을 끝냅니다. 지금까지의 결과는 위에 있습니다."
+            );
+          }
+        }
+        return { meta: publicMeta(store.readMeta(sessionId)) };
+      })
+    );
+
+    ipcMain.handle(
+      "chat:keep-calling:set",
+      wrap(async ({ sessionId, enabled }) => {
+        requireSession(sessionId);
+        store.updateMeta(sessionId, { keepCalling: Boolean(enabled) });
+        const room = getRoom(sessionId);
+        if (room) room.setMeta(roomMeta(store.readMeta(sessionId)));
+        return { meta: publicMeta(store.readMeta(sessionId)) };
+      })
+    );
+
+    ipcMain.handle(
       "chat:agent:configure",
       wrap(async ({ sessionId, agentId, patch }) => {
         requireSession(sessionId);
@@ -2352,6 +2417,14 @@ function roomMeta(meta) {
         room.interruptQuestions();
       } catch {}
       try {
+        // 오케스트레이션이 떠 있으면 앱 종료로 조용히 사라지지 않게 한 줄 남긴다(저장되어 다시 열어도
+        // 보인다). stopAllSilently가 바로 뒤에서 this.orchestration을 null로 되돌린다.
+        if (room.orchestration) {
+          const o = room.orchestration;
+          room.appendSystem(
+            `오케스트레이터 ⟦${o.leadId}⟧ 호출이 ${o.round}라운드/실행 ${o.executions}회에서 앱 종료로 멈췄습니다. 다시 시작하려면 지휘 AI에게 메시지를 보내 주세요.`
+          );
+        }
         // 토론 중이면 턴 사이라도 'running'으로 남겨, 다시 켠 뒤 끊긴 토론을 닫는다(chat-store closeDanglingDiscussions).
         if ((room.activeRuns > 0 || room.discussionActive) && store && !store.readOnly) {
           store.setSessionStatus(sessionId, "running");
