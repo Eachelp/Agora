@@ -174,10 +174,12 @@ function agyArgv({ permissionMode, workspace, model, effort, attachmentsDir, has
 // 실행 중 질문 도구(MCP)를 이 실행에만 붙이는 인자. 사용자의 CLI 설정 파일은 건드리지 않는다.
 // - Claude: --allowedTools가 없으면 -p에서 도구가 거부되어 모델이 권한만 요청한다.
 //   (--strict-mcp-config는 권한 모드별 argv에 이미 들어 있다.)
-// - Codex: 기본 도구 시간 제한(60초)이면 사용자가 1분만 고민해도 질문이 취소되므로 30분으로 늘린다.
+// - Codex: 기본 도구 시간 제한(60초)이면 사용자가 1분만 고민해도 질문이 취소되므로 35분으로 늘린다.
+//   질문 중계소는 30분을 기다린 뒤 "시간 초과, 더 묻지 마세요" 결과를 직접 돌려준다. CLI 쪽 제한이 같거나 짧으면
+//   CLI가 먼저 포기해 그 결과가 모델에 닿지 않고 같은 질문이 되풀이될 수 있으므로, 중계소보다 늘 5분 길게 둔다.
 const QUESTION_KEY_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const QUESTION_TOOL_PATTERN = /^mcp__[A-Za-z0-9_-]{1,64}__[A-Za-z0-9_-]{1,64}$/;
-const CODEX_QUESTION_TOOL_TIMEOUT_SEC = 1800;
+const QUESTION_TOOL_TIMEOUT_SEC = 35 * 60;
 
 // JSON 기본 문자열 이스케이프는 TOML 기본 문자열의 부분집합이다. TOML이 날것으로 받지 않는 DEL만 더 막는다.
 function tomlString(value) {
@@ -213,7 +215,7 @@ function questionToolArgs(providerId, { server, serverKey, toolName }) {
     ...(envEntries.length > 0 ? ["-c", `${prefix}.env={ ${envEntries.join(", ")} }`] : []),
     "-c", `${prefix}.enabled=true`,
     "-c", `${prefix}.startup_timeout_sec=30`,
-    "-c", `${prefix}.tool_timeout_sec=${CODEX_QUESTION_TOOL_TIMEOUT_SEC}`,
+    "-c", `${prefix}.tool_timeout_sec=${QUESTION_TOOL_TIMEOUT_SEC}`,
   ];
 }
 
@@ -375,6 +377,7 @@ function buildAgentInvocation(input = {}) {
 module.exports = {
   PERMISSION_MODES,
   PERMISSION_RANK,
+  QUESTION_TOOL_TIMEOUT_SEC,
   agyModelForEffort,
   INLINE_TEXT_LIMIT,
   buildAgentInvocation,

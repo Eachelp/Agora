@@ -8,7 +8,7 @@ const {
   SERVER_KEY, TOOL_NAME, ENV_URL, ENV_TOKEN, ATTACHABLE_PURPOSES,
   resolveMcpScript, questionToolSupport, attachUserQuestionTool,
 } = require("../src/chat/user-question-run");
-const { createUserQuestionBroker } = require("../src/chat/user-question-broker");
+const { createUserQuestionBroker, DEFAULT_WAIT_MS } = require("../src/chat/user-question-broker");
 
 const ROOT = path.join(__dirname, "..");
 const CHAT_CWD = "C:\\Users\\u\\.agora\\runtime\\chat";
@@ -70,7 +70,7 @@ for (const mode of ["chat", "workspace-read", "workspace-write"]) {
   });
 }
 
-test("Codex: 서버 설정 6줄(-c)과 30분 도구 제한이 붙고, 노력은 호출자가 준 값 그대로다", () => {
+test("Codex: 서버 설정 6줄(-c)과 35분 도구 제한이 붙고, 노력은 호출자가 준 값 그대로다", () => {
   const base = build("codex", { permissionMode: "chat", model: "gpt-6-luna", effort: "low" });
   const withQuestion = build("codex", { permissionMode: "chat", model: "gpt-6-luna", effort: "low", userQuestion: QUESTION });
   assert.equal(withQuestion.questionToolAttached, true);
@@ -88,7 +88,9 @@ test("Codex: 서버 설정 6줄(-c)과 30분 도구 제한이 붙고, 노력은 
   assert.deepEqual(Object.keys(values), ["command", "args", "env", "enabled", "startup_timeout_sec", "tool_timeout_sec"]);
   assert.equal(values.enabled, "true");
   assert.equal(values.startup_timeout_sec, "30");
-  assert.equal(values.tool_timeout_sec, "1800", "기본 60초 제한이면 1분만 고민해도 질문이 취소된다");
+  // 기본 60초 제한이면 1분만 고민해도 질문이 취소된다. 중계소의 30분 대기보다 길어야 중계소의 시간 초과 결과가 먼저 닿는다.
+  assert.equal(values.tool_timeout_sec, "2100");
+  assert.ok(Number(values.tool_timeout_sec) * 1000 > DEFAULT_WAIT_MS);
   // 이스케이프: TOML 기본 문자열 문법에 맞고 원래 값으로 되돌아온다.
   const TOML_BASIC = /^"(?:[^"\\\u0000-\u001f\u007f]|\\["\\bfnrt]|\\u[0-9A-Fa-f]{4})*"$/;
   assert.match(values.command, TOML_BASIC);

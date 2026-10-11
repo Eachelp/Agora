@@ -77,7 +77,11 @@ function questionOutcomeLine(previous, record) {
   if (!previous || previous.status !== "pending" || record.status === "pending") return null;
   const who = `@${record.agentId}의 질문 ${record.questions.length}개`;
   if (record.status === "submitting" || record.status === "answered") {
-    const clip = (text, max) => (text.length > max ? `${text.slice(0, max)}…` : text);
+    // 여러 줄로 쓴 답도 대화에는 한 줄로 남긴다(줄바꿈·연속 공백은 한 칸으로, 전체 답은 질문 기록에 그대로 있다).
+    const clip = (text, max) => {
+      const flat = String(text).replace(/\s+/g, " ").trim();
+      return flat.length > max ? `${flat.slice(0, max)}…` : flat;
+    };
     const parts = (record.answers || []).map((answer) => {
       const picked = [...(answer.selected || []), ...(answer.other ? [`기타 "${clip(answer.other, 60)}"`] : [])];
       return answer.text !== undefined ? `"${clip(answer.text, 60)}"` : picked.join(", ");
@@ -88,7 +92,8 @@ function questionOutcomeLine(previous, record) {
   switch (record.reason) {
     case "user-skip": return `${who}를 건너뛰었습니다. 답 없이 이어 가도록 알렸습니다.`;
     case "timeout": return `${who}에 오래 답이 없어 닫았습니다.`;
-    case "stopped": return null; // 중지·삭제는 따로 안내가 있다.
+    case "stopped": return `${who}: 중지로 닫혔습니다.`; // 중지·삭제·잠깐. 무엇을 물었는지 남긴다.
+    case "connection-lost": return `${who}: 연결이 끊겨 닫혔습니다. 작업은 질문 없이 이어질 수 있습니다.`;
     case "app-quit":
     case "app-restart": return `${who}는 앱이 꺼져 답을 받지 못했습니다. 필요하면 다시 말을 걸어 주세요.`;
     default: return `${who}는 답을 받기 전에 작업이 끝나 닫혔습니다.`;
@@ -647,7 +652,7 @@ class ChatRoom extends EventEmitter {
   }
 
   droppedQuestionsNote(count) {
-    return count > 0 ? ` 대기 중이던 질문 ${count}개는 전달되지 않았으니 필요하면 다시 보내 주세요.` : "";
+    return count > 0 ? ` 대기 중이던 메시지 ${count}개는 전달되지 않았으니 필요하면 다시 보내 주세요.` : "";
   }
 
   // 사용자 개입("잠깐"): 현재 실행과 대기 턴을 모두 중지하고 발언권을
@@ -937,7 +942,7 @@ class ChatRoom extends EventEmitter {
     if (this.lostTurnNotified.has(item.turnId)) return;
     this.lostTurnNotified.add(item.turnId);
     this.turnStartedAt.delete(item.turnId);
-    this.appendSystem("중지로 @" + item.agent.id + " 응답 대기가 취소됐습니다. 방금 질문은 전달되지 않았을 수 있으니 필요하면 다시 보내 주세요.");
+    this.appendSystem("중지로 @" + item.agent.id + " 응답 대기가 취소됐습니다. 방금 메시지는 전달되지 않았을 수 있으니 필요하면 다시 보내 주세요.");
   }
 
   resolveIdleWaiters() {

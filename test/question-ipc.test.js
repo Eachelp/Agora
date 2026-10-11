@@ -11,6 +11,7 @@ const { spawn } = require("node:child_process");
 const readline = require("node:readline");
 const { createChatFeature } = require("../src/chat/chat-ipc");
 const { ChatStore } = require("../src/chat/chat-store");
+const { DEFAULT_WAIT_MS } = require("../src/chat/user-question-broker");
 const { waitFor, httpPost, scriptedRunner } = require("./question-helpers.cjs");
 
 function fakeRecord(id, name, aliases, extra = {}) {
@@ -403,7 +404,8 @@ test("앱이 만든 실행 인자로 띄운 진짜 MCP 서버를 거쳐 답이 �
   assert.match(text, /A: "그냥요"/);
   assert.match(text, /도구·파일 사용을 허락한 것이 아닙니다/);
   assert.equal(captured.length, 1, "실행은 한 번뿐이다");
-  assert.deepEqual(captured[0].extraEnv, { MCP_TOOL_TIMEOUT: "1800000" }, "Claude의 MCP 도구 시간 제한을 30분으로 맞춘다");
+  assert.deepEqual(captured[0].extraEnv, { MCP_TOOL_TIMEOUT: "2100000" }, "Claude의 MCP 도구 시간 제한은 중계소의 30분 대기보다 5분 길다");
+  assert.ok(Number(captured[0].extraEnv.MCP_TOOL_TIMEOUT) > DEFAULT_WAIT_MS);
   assert.match(captured[0].prompt, /agora_user_question 서버의 ask_user 도구/);
   assert.deepEqual(waiting, [true, false]);
   await waitFor(() => env.channel("chat:user-question").at(-1).question.status === "answered", 5000, "전달 확인");

@@ -75,7 +75,7 @@ test("한 질문의 답 한 줄은 길면 줄여 남기고, 답이 하나뿐이�
   assert.match(line, /^@claude의 질문 1개 → 답: "가{60}…"$/);
 });
 
-test("건너뛰면 건너뛰었다는 한 줄이 남고, 중지로 닫힌 질문은 따로 줄을 더하지 않는다", async (t) => {
+test("건너뛰면 건너뛰었다는 한 줄이, 중지로 닫히면 무엇을 물었는지 한 줄이 남는다", async (t) => {
   const runner = scriptedRunner(async ({ ask, args }) => {
     await ask([{ question: "하나?", options: ["가", "나"] }]);
     return "계속";
@@ -93,7 +93,53 @@ test("건너뛰면 건너뛰었다는 한 줄이 남고, 중지로 닫힌 질문
   await waitFor(() => pending(second).length === 1);
   second.stopAll();
   assert.equal(pending(second).length, 0);
-  assert.deepEqual(systemLines(second).filter((text) => text.includes("질문")), []);
+  // 중지·삭제·잠깐은 모두 같은 닫힘이라, 무엇을 물었는지 한 줄을 남긴다(예전에는 아무 줄도 없었다).
+  assert.deepEqual(systemLines(second).filter((text) => text.includes("질문")), ["@claude의 질문 1개: 중지로 닫혔습니다."]);
+
+  const interjectRunner = scriptedRunner(async ({ ask }) => { await ask([{ question: "하나?" }, { question: "둘?" }]); return "x"; });
+  const third = setup(t, interjectRunner).room;
+  third.sendUserMessage("@claude 셋째");
+  await waitFor(() => pending(third).length === 1);
+  third.interject();
+  assert.deepEqual(systemLines(third).filter((text) => text.includes("질문")), ["@claude의 질문 2개: 중지로 닫혔습니다."]);
+});
+
+test("여러 줄로 쓴 답도 대화에는 한 줄로 남고, 전체 답은 질문 기록에 그대로 있다", async (t) => {
+  const runner = scriptedRunner(async ({ ask }) => { await ask([{ question: "의견은?" }, { question: "더?", options: ["가", "나"], multiSelect: true }]); return "끝"; });
+  const { room } = setup(t, runner);
+  room.sendUserMessage("@claude 시작");
+  await waitFor(() => pending(room).length === 1);
+  const questionId = pending(room)[0].questionId;
+  room.answerUserQuestion({ questionId, answers: [{ text: "첫 줄\n\n  둘째 줄\t끝" }, { selected: ["가"], other: "기타\r\n줄" }] });
+  await room.waitForIdle();
+  const [line] = systemLines(room).filter((text) => text.includes("→ 답:"));
+  assert.equal(line, '@claude의 질문 2개 → 답: 1) "첫 줄 둘째 줄 끝" · 2) 가, 기타 "기타 줄"');
+  assert.equal(/[\r\n\t]/.test(line), false);
+  assert.equal(room.userQuestionList().find((q) => q.questionId === questionId).answers[0].text, "첫 줄\n\n  둘째 줄\t끝", "전체 답은 그대로 보관한다");
+});
+
+test("호출한 쪽(CLI)이 도구 호출을 먼저 끊으면 '연결이 끊겨 닫혔다'고 알리고, 작업이 끝났다고 하지 않는다", async (t) => {
+  const { httpPost } = require("./question-helpers.cjs");
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const runner = scriptedRunner(async ({ base, token }) => {
+    const requests = new Set();
+    const asking = httpPost(base, token, "ask", { questions: [{ question: "하나?", options: ["가", "나"] }] }, requests).catch(() => null);
+    await waitFor(() => pending(room).length === 1);
+    [...requests][0].destroy(); // CLI가 도구 시간 제한으로 포기한 것과 같다. 프로세스는 살아 있다.
+    await asking;
+    await gate;
+    return "계속했습니다";
+  });
+  const { room } = setup(t, runner);
+  room.sendUserMessage("@claude 시작");
+  await waitFor(() => pending(room).length === 1);
+  await waitFor(() => pending(room).length === 0);
+  const lines = systemLines(room).filter((text) => text.includes("질문"));
+  assert.deepEqual(lines, ["@claude의 질문 1개: 연결이 끊겨 닫혔습니다. 작업은 질문 없이 이어질 수 있습니다."]);
+  assert.doesNotMatch(lines[0], /작업이 끝나/);
+  release();
+  await room.waitForIdle();
 });
 
 test("다시 켠 뒤 답을 기다리다 중단된 질문은 대화에 한 줄로 알리고, 카드로 되살아나지 않는다", () => {

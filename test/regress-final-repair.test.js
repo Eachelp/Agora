@@ -206,7 +206,7 @@ test("5. 방: 잠깐(interject)은 한 줄만 남기고, 버려진 질문 수를
   room.interject();
   assert.equal(systems.length, 1, JSON.stringify(systems));
   assert.match(systems[0], /사용자가 개입해/);
-  assert.match(systems[0], /대기 중이던 질문 1개는 전달되지 않았으니/);
+  assert.match(systems[0], /대기 중이던 메시지 1개는 전달되지 않았으니/);
   gate.resolve({ ok: true, text: "" });
 });
 
@@ -217,7 +217,7 @@ test("5. 방: 중지(stopAll)는 한 줄만 남긴다. 버릴 질문이 없으�
   room.stopAll();
   assert.equal(systems.length, 1, JSON.stringify(systems));
   assert.match(systems[0], /^응답을 중지했습니다\./);
-  assert.match(systems[0], /대기 중이던 질문 1개/);
+  assert.match(systems[0], /대기 중이던 메시지 1개/);
   gate.resolve({ ok: true, text: "" });
 
   const quiet = [];

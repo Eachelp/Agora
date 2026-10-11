@@ -37,6 +37,7 @@ const {
   PERMISSION_MODES,
   INLINE_TEXT_LIMIT,
   minPermissionMode,
+  QUESTION_TOOL_TIMEOUT_SEC,
 } = require("./chat-argv");
 const { createLineParser } = require("./chat-events");
 const { ProcessHarnessAdapter } = require("../harness/process-harness-adapter");
@@ -846,8 +847,9 @@ function createChatFeature(options) {
         ...(hardOutputLimitBytes ? { hardOutputLimitBytes } : {}),
         onRawChunk: rawLog.write,
         // Claude CLI는 MCP 도구 호출마다 시간 제한을 둔다. 사용자가 답을 고민하는 동안 도구 호출이 끊기지 않게
-        // 질문 중계소의 대기 상한(30분)과 같게 맞춘다. 질문 도구를 붙이지 않은 실행에는 더하지 않는다.
-        ...(invocation.questionToolAttached && agent.id === "claude" ? { extraEnv: { MCP_TOOL_TIMEOUT: "1800000" } } : {}),
+        // 질문 중계소의 대기 상한(30분)보다 5분 길게 둔다. 같거나 짧으면 CLI가 먼저 포기해 중계소의
+        // "시간 초과" 결과가 모델에 닿지 않는다. 질문 도구를 붙이지 않은 실행에는 더하지 않는다.
+        ...(invocation.questionToolAttached && agent.id === "claude" ? { extraEnv: { MCP_TOOL_TIMEOUT: String(QUESTION_TOOL_TIMEOUT_SEC * 1000) } } : {}),
       };
       // 대화 턴은 매번 새 CLI 프로세스로 돈다(세션을 이어 붙이지 않는다).
       const run = harnessAdapter.runTurn({ invocation: harnessInvocation });
