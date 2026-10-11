@@ -595,7 +595,7 @@ class ChatRoom extends EventEmitter {
     // 담당 에이전트까지 키에 넣는다. 빼면 같은 토론·메시지를 다른 AI에게 한 두 번째
     // 요청이 첫 턴의 promise를 받고 조용히 사라진다.
     const dedupeKey = context.discussionSummary
-      ? `summary:${context.discussionSummary.discussionId}:${agent.id}`
+      ? `summary:${context.discussionSummary.discussionId}:${context.discussionSummary.record ? "record" : "summary"}:${agent.id}`
       : context.simplifyMeta
         ? `simplify:${context.simplifyMeta.messageId}:${agent.id}`
         : (context.discussion || !context.turnRootId ? null : `${context.turnRootId}:${agent.id}`);
@@ -1432,6 +1432,27 @@ class ChatRoom extends EventEmitter {
     return { ok: true };
   }
 
+  // 끝난 토론 한 편의 결론 정보(discussionMeta)와 그 구간의 대화 메시지(시스템·오류 제외).
+  // 결론 종합과 자동 기록이 같은 구간을 쓰도록 여기 한 곳에서 자른다.
+  discussionRecordOf(discussionId) {
+    const conclusionMsg = this.messages.find(
+      (m) => m.discussionMeta && m.discussionMeta.discussionId === discussionId
+    );
+    if (!conclusionMsg || !conclusionMsg.discussionMeta) {
+      return { ok: false, error: "해당 토론 기록을 찾을 수 없습니다." };
+    }
+    const meta = conclusionMsg.discussionMeta;
+    let startIndex = meta.startMessageId ? this.messages.findIndex((m) => m.id === meta.startMessageId) : 0;
+    if (startIndex === -1) startIndex = 0;
+    let endIndex = meta.endMessageId ? this.messages.findIndex((m) => m.id === meta.endMessageId) : this.messages.length - 1;
+    if (endIndex === -1) endIndex = this.messages.length - 1;
+    const messages = this.messages
+      .slice(startIndex, endIndex + 1)
+      .filter((m) => m.authorType !== "system" && !m.error);
+    if (messages.length === 0) return { ok: false, error: "요약할 토론 메시지가 없습니다." };
+    return { ok: true, meta, messages };
+  }
+
   // 토론 결론 종합: 최근 사용자 질문부터 토론 종료까지의 발언을 대상 에이전트가 요약합니다.
   summarizeDiscussion(discussionId, agentId) {
     if (this.discussionRequested || this.discussionActive) {
@@ -1442,26 +1463,10 @@ class ChatRoom extends EventEmitter {
       return Promise.resolve({ ok: false, error: "요약할 에이전트를 사용할 수 없습니다." });
     }
 
-    const conclusionMsg = this.messages.find(
-      (m) => m.discussionMeta && m.discussionMeta.discussionId === discussionId
-    );
-    if (!conclusionMsg || !conclusionMsg.discussionMeta) {
-      return Promise.resolve({ ok: false, error: "해당 토론 기록을 찾을 수 없습니다." });
-    }
-
-    const { startMessageId, endMessageId, incomplete, participants, reason, failures } = conclusionMsg.discussionMeta;
-    let startIndex = startMessageId ? this.messages.findIndex((m) => m.id === startMessageId) : 0;
-    if (startIndex === -1) startIndex = 0;
-    let endIndex = endMessageId ? this.messages.findIndex((m) => m.id === endMessageId) : this.messages.length - 1;
-    if (endIndex === -1) endIndex = this.messages.length - 1;
-
-    const rawSlice = this.messages.slice(startIndex, endIndex + 1);
-    const discussionMessages = rawSlice.filter(
-      (m) => m.authorType !== "system" && !m.error
-    );
-    if (discussionMessages.length === 0) {
-      return Promise.resolve({ ok: false, error: "요약할 토론 메시지가 없습니다." });
-    }
+    const found = this.discussionRecordOf(discussionId);
+    if (!found.ok) return Promise.resolve(found);
+    const { incomplete, participants, reason, failures } = found.meta;
+    const discussionMessages = found.messages;
 
     return this.scheduleResponse(agent, {
       discussionSummary: {
@@ -1722,7 +1727,7 @@ class ChatRoom extends EventEmitter {
         this.endDiscussionState();
       }
     }
-    return { ok: true, completed, truncated: !concluded && completed >= budget, concluded };
+    return { ok: true, completed, truncated: !concluded && completed >= budget, concluded, discussionId };
   }
 
   // 토론 상태를 풀고, 토론 동안 미뤄 둔 일반 턴을 큐로 돌려보낸다.

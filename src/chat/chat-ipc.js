@@ -1006,17 +1006,42 @@ function roomMeta(meta) {
     return lines.join("\n");
   }
 
-  async function recordDiscussion(sessionId) {
+  // 아직 끝나지 않은 토론 기록의 표식. 기록 턴이 앱 종료로 끊기면 표식이 남아, 그 대화를 다음에 열 때 한 번 더 만든다.
+  // 대화마다 하나만 둔다(토론이 연달아 끝나도 가장 최근 것만 다시 만든다).
+  function setPendingDiscussionRecord(sessionId, discussionId) {
+    try {
+      const next = discussionId || null;
+      if (store && !store.readOnly && (store.readMeta(sessionId)?.pendingDiscussionRecord || null) !== next) {
+        store.updateMeta(sessionId, { pendingDiscussionRecord: next });
+      }
+    } catch (error) {
+      console.warn("[agora] 토론 기록 표식 저장 실패:", error?.message || error);
+    }
+  }
+
+  async function recordDiscussion(sessionId, discussionId) {
     const room = getRoom(sessionId);
     const meta = store.readMeta(sessionId);
     const project = projectForSession(meta);
     if (!room || !project) return { ok: false, error: "토론 프로젝트를 찾을 수 없습니다." };
     // 기록 담당을 정한 프로젝트에서만 기록한다(recordAgent, 없으면 옛 recorder→review 역할).
     const recorder = resolveRecordTarget(project, room.enabledAgents());
-    if (!recorder) return { ok: false, error: "이 프로젝트는 토론 자동 기록을 쓰지 않거나, 담당 에이전트를 사용할 수 없습니다." };
+    // 기록할 필요가 없거나 할 수 없는 경우는 표식을 남기지 않는다(다시 시도해도 같다).
+    if (!recorder) {
+      setPendingDiscussionRecord(sessionId, null);
+      return { ok: false, error: "이 프로젝트는 토론 자동 기록을 쓰지 않거나, 담당 에이전트를 사용할 수 없습니다." };
+    }
+    // 방 전체가 아니라 끝난 그 토론의 구간만 기록 근거로 쓴다.
+    const range = room.discussionRecordOf(discussionId);
+    if (!range.ok) {
+      setPendingDiscussionRecord(sessionId, null);
+      return range;
+    }
+    setPendingDiscussionRecord(sessionId, discussionId);
     // 토론 기록은 대화를 읽는 일반 턴으로 실행하고 출력 형식만 기록 계약을 씁니다.
     const result = await room.scheduleResponse(recorder.agent, {
-      discussionSummary: { record: true },
+      discussionSummary: { record: true, discussionId },
+      discussionSummaryMessages: range.messages,
       agentConfig: recorder.agentConfig,
     });
     if (result?.ok && result.text) {
@@ -1024,8 +1049,17 @@ function roomMeta(meta) {
         chatId: sessionId,
         recorderAgentId: recorder.agent?.id || null,
       });
-      return { ok: Boolean(entry), entry };
+      if (entry) {
+        setPendingDiscussionRecord(sessionId, null);
+        return { ok: true, entry };
+      }
     }
+    // 앱이 끝나는 중이면 표식을 남겨 다음에 다시 만든다. 그 밖의 실패(중지·실행 오류)는 다시 시도하지 않고 알린다.
+    if (shuttingDown) return { ok: false, error: "앱 종료로 토론 기록이 끊겼습니다." };
+    setPendingDiscussionRecord(sessionId, null);
+    try {
+      room.appendSystem("토론 자동 기록을 만들지 못했습니다. 필요하면 토론의 '결론 종합하기'로 요약을 받아 메모리에 직접 남겨 주세요.");
+    } catch {}
     return { ok: false, error: "기록관이 요약을 만들지 못했습니다." };
   }
 
@@ -1165,6 +1199,13 @@ function roomMeta(meta) {
     on("user-question", syncRoomStatus);
 
     rooms.set(sessionId, room);
+    // 지난번에 앱 종료로 끊긴 토론 기록이 있으면 이 대화를 연 지금 한 번 더 만든다.
+    const pendingRecord = session.meta.pendingDiscussionRecord;
+    if (pendingRecord && !store.readOnly && !shuttingDown) {
+      setImmediate(() => {
+        if (!shuttingDown) recordDiscussion(sessionId, pendingRecord).catch((error) => console.warn("[agora] 토론 기록 재시도 실패:", error?.message || error));
+      });
+    }
     return room;
   }
 
@@ -2004,7 +2045,7 @@ function roomMeta(meta) {
         started
           .then((result) => {
             if (result?.ok && result.concluded) {
-              recordDiscussion(sessionId).catch(() => {});
+              recordDiscussion(sessionId, result.discussionId).catch(() => {});
             }
           })
           .catch(() => {});
