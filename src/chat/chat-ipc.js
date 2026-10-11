@@ -22,6 +22,7 @@ const {
   claudeResolvedModelLabel,
   claudeObservationContext,
   toPublicProviders,
+  resolveEffortVariant,
 } = require("../providers/provider-capabilities");
 const { toDiagnostics } = require("../providers/provider-diagnostics");
 const { roomAgentsFromCapabilities, GROUP_ALIASES } = require("./chat-agents");
@@ -845,12 +846,16 @@ function createChatFeature(options) {
 
       // effective auto-approval을 한 번만 계산해 process invocation에 넘긴다.
       const effectiveAutoApprove = permissionMode === "workspace-write" && Boolean(config.autoApprove || autoApprove);
+      // 접히기 전에 저장된 AGY 변형 id(gemini-3.8-flash-high)는 목록에서 사라져 있다. 세션 참가자는 방을 만들 때
+      // (모델, 노력) 쌍으로 옮겨 오지만, 프로젝트 역할(기록 담당 등)이 싣는 저장값은 그대로 들어온다. 이때 노력이
+      // 다른 모델 기준값이면 '--model 변형 --effort 다른 단계'가 함께 나가므로, 변형 id가 담은 노력을 따른다.
+      const variant = resolveEffortVariant(record.modelOptions, agent.model);
       const invocation = buildAgentInvocation({
         provider: record,
         permissionMode,
         workspace: canonicalWorkspace,
-        model: agent.model,
-        effort: agent.effort,
+        model: variant ? variant.model : agent.model,
+        effort: variant ? variant.effort : agent.effort,
         attachments: enriched,
         chatCwd: store.runtimeChatDir(),
         attachmentsDir,
