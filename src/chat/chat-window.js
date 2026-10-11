@@ -28,6 +28,9 @@ function createChatWindow({ BrowserWindow, onReady, onClosed }) {
     win.webContents.send("chat:maximized-state", false);
   });
 
+  // 외부 주소가 앱 안의 새 창으로 열리지 않게 한다(가운데 클릭·Ctrl+클릭·window.open 모두).
+  win.webContents.setWindowOpenHandler?.(() => ({ action: "deny" }));
+
   win.setMenuBarVisibility(false);
   win.once("ready-to-show", () => {
     win.show();

@@ -4,6 +4,7 @@
 // 지원: 문단, # 제목, 파이프 표, 순서/비순서 목록, ``` 코드 펜스(언어 라벨), `인라인 코드`, **굵게**, http(s) 링크, @멘션.
 (function attachChatMarkdown(global) {
   const FENCE_OPEN = /^```([A-Za-z0-9_+-]*)\s*$/;
+  const MAX_LIST_NUMBER = 99;
   const LIST_ITEM = /^(\s*)([-*]|\d+[.)])\s+(.*)$/;
   const HEADING = /^(#{1,6})\s+(.*)$/;
 
@@ -83,6 +84,22 @@
     return tokens;
   }
 
+  // 사용자가 쓴 글은 서식을 해석하지 않는다. 멘션만 골라내고 나머지(**, 백틱, 링크 주소, 파일 경로 포함)는
+  // 쓴 그대로 text 토큰에 둔다. 코드·링크 안의 @는 멘션이 아니므로 INLINE_PATTERN이 먼저 삼키게 둔다.
+  function tokenizeMentions(text) {
+    const source = String(text || "");
+    const tokens = [];
+    let lastIndex = 0;
+    for (const match of source.matchAll(INLINE_PATTERN)) {
+      if (!match[5]) continue;
+      if (match.index > lastIndex) tokens.push({ type: "text", text: source.slice(lastIndex, match.index) });
+      tokens.push({ type: "mention", text: match[5] });
+      lastIndex = match.index + match[0].length;
+    }
+    if (lastIndex < source.length) tokens.push({ type: "text", text: source.slice(lastIndex) });
+    return tokens;
+  }
+
   function tokenizeBlocks(text) {
     const lines = String(text || "").split(/\r?\n/);
     const blocks = [];
@@ -140,19 +157,22 @@
         const ordered = /^\d/.test(listMatch[2]);
         const items = [];
         const rawLines = [];
-        let sequential = true;
+        const numbers = [];
         while (index < lines.length) {
           const itemMatch = lines[index].match(LIST_ITEM);
           if (!itemMatch || /^\d/.test(itemMatch[2]) !== ordered) break;
-          if (ordered && parseInt(itemMatch[2], 10) !== items.length + 1) sequential = false;
+          if (ordered) numbers.push(parseInt(itemMatch[2], 10));
           items.push(tokenizeInline(itemMatch[3]));
           rawLines.push(lines[index].trim());
           index += 1;
         }
-        // <ol>은 항상 1부터 번호를 매기므로, 1부터 이어지지 않는 번호('3. ...', '2026. 10. 10.')는
-        // 원문 번호가 사라지지 않게 문단으로 그대로 보여 줍니다.
-        if (ordered && !sequential) blocks.push({ type: "paragraph", lines: rawLines.map(tokenizeInline) });
-        else blocks.push({ type: "list", ordered, items });
+        // 연도 같은 큰 숫자('2026. 10. 10.')는 목록 번호가 아니라 날짜 줄이므로 문단으로 그대로 보여 줍니다.
+        // 그 밖의 순서 목록은 원문 번호(start와 numbers)를 함께 넘겨, 3번부터 시작하거나 건너뛰어도 번호가 유지되게 합니다.
+        if (ordered && numbers.some((number) => number > MAX_LIST_NUMBER)) {
+          blocks.push({ type: "paragraph", lines: rawLines.map(tokenizeInline) });
+        } else {
+          blocks.push(ordered ? { type: "list", ordered, items, start: numbers[0], numbers } : { type: "list", ordered, items });
+        }
         continue;
       }
 
@@ -169,7 +189,7 @@
     return blocks;
   }
 
-  const api = { tokenizeBlocks, tokenizeInline };
+  const api = { tokenizeBlocks, tokenizeInline, tokenizeMentions };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
   } else {

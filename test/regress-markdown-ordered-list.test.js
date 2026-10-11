@@ -16,16 +16,19 @@ test("F17 한국식 날짜 줄은 연도가 지워지지 않고 원문 그대로
 });
 
 test("F17 3번부터 시작하는 순서 목록은 번호가 1로 바뀌지 않는다", () => {
-  const blocks = tokenizeBlocks("3. 세 번째 단계부터 다시 하세요");
-  assert.equal(blocks[0].type, "paragraph");
-  assert.equal(textOf(blocks[0].lines), "3. 세 번째 단계부터 다시 하세요");
+  // 목록 모양을 유지하되 시작 번호(start)와 원문 번호(numbers)를 함께 넘겨 렌더러가 <ol start>·li.value로 그린다.
+  const [list] = tokenizeBlocks("3. 세 번째 단계부터 다시 하세요");
+  assert.equal(list.type, "list");
+  assert.equal(list.ordered, true);
+  assert.equal(list.start, 3);
+  assert.deepEqual(list.numbers, [3]);
+  assert.equal(textOf([list.items[0]]), "세 번째 단계부터 다시 하세요");
 });
 
 test("F17 하위 불릿으로 끊긴 단계 목록도 각 단계 번호가 유지된다", () => {
   const blocks = tokenizeBlocks("1. 설치\n   - npm install\n2. 실행\n   - npm start\n3. 확인");
-  const shown = blocks.filter((b) => b.type !== "list" || b.ordered).map((b) =>
-    b.type === "list" ? b.items.map((i, n) => `${n + 1}. ${textOf([i])}`) : b.lines.map((l) => textOf([l])));
-  assert.deepEqual(shown.flat(), ["1. 설치", "2. 실행", "3. 확인"]);
+  const steps = blocks.filter((b) => b.type === "list" && b.ordered).map((b) => `${b.start}. ${textOf([b.items[0]])}`);
+  assert.deepEqual(steps, ["1. 설치", "2. 실행", "3. 확인"]);
 });
 
 test("F17 1부터 이어지는 목록은 그대로 순서 목록이다", () => {

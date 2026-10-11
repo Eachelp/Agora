@@ -3019,16 +3019,18 @@ function renderInlineTokens(container, tokens) {
       chip.className = "file-chip";
       chip.textContent = token.text;
       chip.title = `${token.path}\n클릭하면 경로를 복사합니다`;
+      let resetTimer = null;
       chip.addEventListener("click", async () => {
-        const original = chip.textContent;
         try {
           await navigator.clipboard.writeText(token.path);
           chip.textContent = "경로 복사됨";
         } catch {
           chip.textContent = "복사 실패";
         }
-        setTimeout(() => {
-          chip.textContent = original;
+        // 연달아 눌러도 원래 라벨은 토큰의 파일 이름이다('경로 복사됨'을 원래 값으로 기억하지 않는다).
+        clearTimeout(resetTimer);
+        resetTimer = setTimeout(() => {
+          chip.textContent = token.text;
         }, 1200);
       });
       container.append(chip);
@@ -3037,7 +3039,8 @@ function renderInlineTokens(container, tokens) {
       anchor.href = token.href;
       anchor.textContent = token.text;
       anchor.rel = "noreferrer noopener";
-      anchor.addEventListener("click", (event) => event.preventDefault());
+      // 가운데 클릭은 click이 아니라 auxclick으로 와서 따로 막아야 한다.
+      for (const type of ["click", "auxclick"]) anchor.addEventListener(type, (event) => event.preventDefault());
       anchor.title = "외부 링크는 채팅창에서 열리지 않습니다";
       container.append(anchor);
     } else if (token.type === "mention") {
@@ -3140,11 +3143,14 @@ function renderRichText(container, text) {
     } else if (block.type === "list") {
       const list = document.createElement(block.ordered ? "ol" : "ul");
       list.className = "md-list";
-      for (const itemTokens of block.items) {
+      if (block.ordered && block.start !== 1) list.start = block.start;
+      block.items.forEach((itemTokens, index) => {
         const item = document.createElement("li");
+        // 번호가 건너뛰면 원문 번호를 그대로 보여 준다.
+        if (block.ordered && block.numbers[index] !== block.start + index) item.value = block.numbers[index];
         renderInlineTokens(item, itemTokens);
         list.append(item);
-      }
+      });
       container.append(list);
     } else {
       const paragraph = document.createElement("p");
@@ -3160,12 +3166,8 @@ function renderRichText(container, text) {
 }
 
 function renderTextWithMentions(container, text) {
-  renderInlineTokens(
-    container,
-    chatMarkdown.tokenizeInline(text).map((token) =>
-      token.type === "mention" ? token : { type: "text", text: token.text ?? token.href ?? "" }
-    )
-  );
+  // 내 말풍선은 쓴 글 그대로 보여 준다(에이전트가 받는 글과 같아야 한다). 멘션만 표시한다.
+  renderInlineTokens(container, chatMarkdown.tokenizeMentions(text));
   renderMathIfAvailable(container);
 }
 
@@ -3243,26 +3245,31 @@ function scrollToBottom(force = false) {
 // 마크다운 기호를 걷어내 순수 텍스트로 만듭니다.
 // 메모장·메신저처럼 마크다운을 해석하지 않는 곳에 붙여넣기 위한 용도입니다.
 function stripMarkdown(text) {
+  // 코드와 주소는 바꾸지 않고 그대로 둔다(파일 이름·식별자의 밑줄, 코드의 #·- 가 서식으로 오인되면 값이 틀려진다).
+  const kept = [];
+  const keep = (value) => `\uE000${kept.push(value) - 1}\uE001`;
   let out = String(text || "");
-  // 코드 펜스는 내용만 남깁니다.
-  out = out.replace(/```[^\n]*\n([\s\S]*?)```/g, "$1");
+  out = out.replace(/```[^\n]*\n([\s\S]*?)```/g, (_, code) => keep(code));
+  out = out.replace(/`([^`]+)`/g, (_, code) => keep(code));
   // 이미지 → 대체 텍스트, 링크 → 표시 텍스트만.
   out = out.replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1");
   out = out.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");
+  out = out.replace(/(?:https?|file):\/\/[^\s<>"'`]+/g, keep);
   // 제목·인용 기호 제거.
   out = out.replace(/^\s{0,3}#{1,6}\s+/gm, "");
   out = out.replace(/^\s{0,3}>\s?/gm, "");
-  // 강조 기호 제거 (굵게/기울임/취소선/인라인 코드).
-  out = out.replace(/(\*\*\*|___)(.+?)\1/g, "$2");
-  out = out.replace(/(\*\*|__)(.+?)\1/g, "$2");
-  out = out.replace(/(\*|_)(?=\S)(.+?)(?<=\S)\1/g, "$2");
+  // 강조 기호 제거. 이 화면이 그리는 서식은 **굵게**뿐이라 _밑줄_ 강조는 건드리지 않고(파일 이름·식별자 보호),
+  // 단어 안의 *는 곱셈 등일 수 있어 단어 경계에서만 지운다.
+  out = out.replace(/\*\*\*(.+?)\*\*\*/g, "$1");
+  out = out.replace(/\*\*(.+?)\*\*/g, "$1");
+  out = out.replace(/(?<![\p{L}\p{N}*])\*(?=\S)([^*\n]+?)(?<=\S)\*(?![\p{L}\p{N}*])/gu, "$1");
   out = out.replace(/~~(.+?)~~/g, "$1");
-  out = out.replace(/`([^`]+)`/g, "$1");
   // 목록 기호는 가운뎃점으로, 수평선은 제거.
   out = out.replace(/^\s{0,3}[-*+]\s+/gm, "· ");
   out = out.replace(/^\s{0,3}(?:[-*_]\s*){3,}$/gm, "");
   // 표 구분선 제거.
   out = out.replace(/^\s*\|?[\s:|-]+\|[\s:|-]*$/gm, "");
+  out = out.replace(/\uE000(\d+)\uE001/g, (_, index) => kept[Number(index)]);
   return out.replace(/\n{3,}/g, "\n\n").trim();
 }
 
@@ -4045,6 +4052,11 @@ function acceptMention(index) {
   const option = mentionState.options[index];
   if (!option) return;
   const caret = composerInput.selectionStart;
+  // 팝업을 연 뒤 캐럿만 옮겼다면(방향키·Home/End) 낡은 위치로 글을 바꾸지 않는다.
+  if (caret !== mentionState.start + mentionState.query.length) {
+    closeMentionPopup();
+    return;
+  }
   const before = composerInput.value.slice(0, mentionState.start);
   const after = composerInput.value.slice(caret);
   const inserted = `${option.alias} `;
@@ -4106,6 +4118,8 @@ composerInput.addEventListener("input", () => {
 composerInput.addEventListener("click", updateMentionPopup);
 
 composerInput.addEventListener("keydown", (event) => {
+  // 캐럿만 옮겨졌을 수 있으니 확정 키 전에 현재 캐럿 기준으로 팝업을 다시 맞춘다(어긋나면 닫혀 Enter는 전송으로 간다).
+  if (mentionState && (event.key === "Tab" || event.key === "Enter")) updateMentionPopup();
   if (mentionState && !mentionPopup.hidden) {
     if (event.key === "ArrowDown") {
       event.preventDefault();
