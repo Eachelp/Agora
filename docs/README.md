@@ -49,6 +49,8 @@
 | [개정 기록 2026-10-11 질문 카드](design/AGORA_REVISION_2026-10-11_QUESTION_UI.md) | 실행 중 질문(ask_user) 결정·실제 CLI 시험의 함정·한계·저장 내용 |
 | [개정 기록 2026-10-11 바로 답하기](design/AGORA_REVISION_2026-10-11_REPLY_NOW.md) | 턴 스케줄러(빠른 줄·일반 줄·담당자 게이트) 설계, F24·F27, 불변식·시나리오·구현 결과 |
 | [개정 기록 2026-10-11 오케스트레이터](design/AGORA_REVISION_2026-10-11_ORCHESTRATOR.md) | 지휘 AI·작업자 모드, "AI끼리 계속 부르기" 설계·불변식·시나리오와 구현 결과(현재 기능) |
+| [남은 버그 수정 A](design/AGORA_REVISION_2026-10-11_REMAINING_BUGS_A.md) | (작업 기록) 8a 단계 — 계정·로그인·프록시·설정·저장·첨부 묶음별 수정 내역 |
+| [남은 버그 정리 B](design/AGORA_REVISION_2026-10-11_REMAINING_BUGS_B.md) | (작업 기록) 8b 단계 — 채팅 화면·IPC·저장소·토론 프롬프트·실행기 묶음별 수정 내역 |
 | [D-0 결정 기록](design/AGORA_STAGE_D0_WORKSPACE_LEASE_DECISIONS.md) | (제거됨·역사 기록) 워크스페이스 변경 소유권의 결정·검수 이력. 2026-10-11 stage 4에서 lease 제거 — 개정 기록 §4a |
 | [D-A0 결정 기록](design/AGORA_STAGE_DA0_VERIFICATION_BOUNDARY_DECISIONS.md) | (제거됨·역사 기록) 검증 안전 경계의 결정·검수 이력 |
 | [Stage D Charter](design/AGORA_STAGE_D_ASSURANCE_CHARTER.md) | (대체됨·역사 기록) 전문 모드 제거로 적용 대상이 없어진 v0.5 의미 계약. 폐기 사유는 개정 기록 §4 |
