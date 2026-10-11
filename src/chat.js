@@ -2184,7 +2184,7 @@ function openWorkflowPopover(anchor) {
       const result = await call(window.chatApi.memoryAppend(project.id, content, "사람이 추가한 기록"));
       if (result) {
         memoryPreview.value = result.memory || "";
-        memoryInput.value = "";
+        clearDraft(memoryInput);
         flashNotice("누적 요약에 기록했습니다.", false);
       }
     });
@@ -2250,8 +2250,7 @@ function openWorkflowPopover(anchor) {
     );
     decisionCancel.addEventListener("click", () => {
       editingDecisionId = null;
-      decisionTitle.value = "";
-      decisionContent.value = "";
+      clearDraft(decisionTitle, decisionContent);
       decisionSave.textContent = "결정 기록";
       decisionCancel.hidden = true;
       decisionFormTitle.textContent = "새 결정";
@@ -2471,8 +2470,7 @@ function openWorkflowPopover(anchor) {
     taskCancel.hidden = true;
     const resetTaskForm = () => {
       editingTaskId = null;
-      taskTitle.value = "";
-      taskDescription.value = "";
+      clearDraft(taskTitle, taskDescription);
       taskDecision.value = "";
       taskAgent.value = "";
       taskCreate.textContent = "작업 만들기";
@@ -2725,7 +2723,8 @@ function openWorkflowPopover(anchor) {
 
     tabPanels.tasks.append(taskProposalsSection, taskFormToggle, taskForm, tasksSection, doneToggle, doneSection);
 
-    // 저장하지 않은 입력을 기억해 두었다가 다시 만들 때 되돌린다.
+    // 저장하지 않은 입력을 기억해 두었다가 다시 만들 때 되돌린다. 저장·취소·초기화로 폼을 비울 때는 반드시 clearDraft로
+    // 비운다. 값만 비우고 표시(dirty)를 남기면 빈 글이 초안으로 잡혀, 빈 '새 결정·새 작업' 폼이 다시 열린다.
     const draftFields = { rules: rulesInput, memory: memoryInput, decisionTitle, decisionContent, taskTitle, taskDescription };
     const clearDraft = (...fields) => {
       for (const field of fields) {

@@ -100,6 +100,7 @@ function loadWorkflowPopover() {
       chatApi: {
         rulesRead: async () => ({ rules: context.rulesOnDisk, history: "" }),
         memoryRead: async () => ({ content: "" }),
+        memoryAppend: async () => ({ memory: "저장된 기록" }),
         decisionsResolve: () => {
           context.resolves += 1;
           return new Promise((resolve) => { context.pending = resolve; });
@@ -150,6 +151,78 @@ test("F12 응답을 기다리는 사이 사용자가 닫은 팝오버는 다시 
   await tick();
   assert.equal(view.popover.hidden, true);
   assert.equal(view.popover.children.length, 0);
+});
+
+// 입력 초안 표시(dataset.dirty)는 글을 쓸 때 켜지고 폼을 비울 때 꺼져야 한다. 꺼지지 않으면 취소한 폼이 빈 글로
+// 초안에 잡혀, 상관없는 승인·삭제 뒤 팝오버를 다시 만들 때 빈 '새 결정·새 작업' 폼이 다시 열린다.
+const approveFirstProposal = async (view) => {
+  view.popover.find((node) => node.tagName === "BUTTON" && node.textContent === "승인").click();
+  view.context.pending({ ok: true });
+  await tick();
+};
+
+test("F12 고치다 취소한 결정 입력은 다시 그릴 때 빈 '새 결정' 폼을 다시 열지 않는다", async () => {
+  const view = loadWorkflowPopover();
+  view.context.workflow = {
+    decisions: [
+      { id: "d1", status: "proposed", title: "후보", content: "내용", updatedAt: 1 },
+      { id: "c1", status: "confirmed", title: "확정", content: "확정된 내용", updatedAt: 1 },
+    ],
+    tasks: [],
+    statuses: [],
+  };
+  view.context.openWorkflowPopover({ getBoundingClientRect: () => ({}) });
+  await tick();
+  view.tabButton("결정").click();
+
+  const decisionForm = () => view.popover.byClass("is-collapsed")[0];
+  const content = () => decisionForm().find((node) => node.tagName === "TEXTAREA");
+  view.popover.find((node) => node.tagName === "BUTTON" && node.textContent === "수정").click();
+  assert.equal(decisionForm().hidden, false, "수정을 누르면 폼이 열린다");
+  content().type_("고치던 글");
+  decisionForm().find((node) => node.tagName === "BUTTON" && node.textContent === "취소").click();
+  assert.equal(content().value, "", "취소하면 폼이 비워진다");
+
+  await approveFirstProposal(view);
+  assert.equal(decisionForm().hidden, true, "취소한 입력은 초안이 아니므로 빈 새 결정 폼이 다시 열리면 안 된다");
+  assert.equal(content().value, "");
+});
+
+test("F12 고치다 취소한 작업 입력은 다시 그릴 때 빈 '새 작업' 폼을 다시 열지 않는다", async () => {
+  const view = loadWorkflowPopover();
+  view.context.workflow = {
+    decisions: [{ id: "d1", status: "proposed", title: "후보", content: "내용", updatedAt: 1 }],
+    tasks: [{ id: "t1", status: "todo", title: "작업", description: "설명", decisionId: "", agentId: "" }],
+    statuses: [],
+  };
+  view.context.openWorkflowPopover({ getBoundingClientRect: () => ({}) });
+  await tick();
+
+  const taskForm = () => view.popover.byClass("is-collapsed")[1];
+  const title = () => taskForm().find((node) => node.tagName === "INPUT" && node.placeholder === "작업 제목");
+  view.popover.find((node) => node.tagName === "BUTTON" && node.textContent === "수정").click();
+  assert.equal(taskForm().hidden, false, "수정을 누르면 폼이 열린다");
+  title().type_("고치던 제목");
+  taskForm().find((node) => node.tagName === "BUTTON" && node.textContent === "취소").click();
+  assert.equal(title().value, "", "취소하면 폼이 비워진다");
+
+  await approveFirstProposal(view);
+  assert.equal(taskForm().hidden, true, "취소한 입력은 초안이 아니므로 빈 새 작업 폼이 다시 열리면 안 된다");
+  assert.equal(title().value, "");
+});
+
+test("F12 기억을 추가한 입력은 저장됐으므로 다시 그릴 때 초안으로 이어지지 않는다", async () => {
+  const view = loadWorkflowPopover();
+  view.context.openWorkflowPopover({ getBoundingClientRect: () => ({}) });
+  await tick();
+  const memoryInput = () => view.popover.find((node) => node.tagName === "TEXTAREA" && node.placeholder === "사람이 직접 남길 중요한 맥락");
+  memoryInput().type_("남길 맥락");
+  view.popover.find((node) => node.tagName === "BUTTON" && node.textContent === "기억 추가").click();
+  await tick();
+  assert.equal(memoryInput().value, "", "저장하면 입력칸이 비워진다");
+
+  await approveFirstProposal(view);
+  assert.equal(memoryInput().dataset.dirty, undefined, "저장한 입력은 미저장 초안으로 남으면 안 된다");
 });
 
 test("F14 접힌 시스템 알림은 뒤에 다른 메시지가 붙어도 다시 펼칠 수 있다", () => {
