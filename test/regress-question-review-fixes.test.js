@@ -73,6 +73,19 @@ test("셸 래퍼(.cmd)로 설치된 Codex는 카드를 못 쓴다고 대화에 �
   assert.ok(room.messages.some((m) => m.authorType === "agent" && m.author === "codex"), "응답은 정상");
 });
 
+test("셸 래퍼 안내의 '한 번'은 대화마다(앱을 켠 동안)다: 다른 대화(새 방)에서는 같은 안내가 다시 한 번 나온다", async (t) => {
+  // 문서가 '대화마다 한 번, 앱을 다시 켜면 다시 한 번'이라고 말한다. 기억을 방 밖(모듈 전역 등)에 두면 이 말이 거짓이 된다.
+  const notices = (room) => room.messages.filter((m) => m.authorType === "system" && /설치 방식/.test(m.text));
+  const first = shellRoom(t).room;
+  const second = shellRoom(t).room;
+  first.sendUserMessage("@codex 안녕");
+  await first.waitForIdle();
+  second.sendUserMessage("@codex 안녕");
+  await second.waitForIdle();
+  assert.equal(notices(first).length, 1);
+  assert.equal(notices(second).length, 1);
+});
+
 test("셸 래퍼 안내는 해당 없는 경우(카드가 붙는 Claude, 원래 지원 밖인 AGY)에는 나오지 않는다", async (t) => {
   const { room } = shellRoom(t);
   room.sendUserMessage("@claude 안녕");
@@ -89,6 +102,9 @@ test("사용자 문서가 .cmd 한계와 매 턴 붙는 비용(Codex 시작 지�
   const record = read("docs", "design", "AGORA_REVISION_2026-10-11_QUESTION_UI.md");
   assert.doesNotMatch(record, /필요한 실행에만 붙인다/, "실제로는 파일 작업 권한의 일반 대화 턴마다 붙는다");
   assert.match(record, /매번[^\n]*붙/);
+  // 안내는 영원히 한 번이 아니라 대화마다·앱을 켠 동안 한 번이다(위 시험이 코드로 확인한다).
+  assert.match(guide, /대화마다 AI마다 한 번 나오고, Agora를 다시 켜면 다시 한 번/);
+  assert.match(record, /대화\(방\)마다·에이전트마다 한 번, 앱을 다시 켜면 다시 한 번/);
 });
 
 test("대화 전용 방에서는 셸 래퍼(.cmd) 안내가 나오지 않는다(붙일 일이 없었으므로)", async (t) => {

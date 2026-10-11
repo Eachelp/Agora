@@ -1056,7 +1056,7 @@ class ChatRoom extends EventEmitter {
     let questionToolPossible = false;
     try {
       questionToolPossible = Boolean(this.questionTool?.canAttach?.(agent, questionPurpose));
-      // 셸 래퍼(.cmd) 설치는 조용히 빠지면 카드가 왜 안 뜨는지 알 길이 없다. 에이전트마다 한 번 알린다.
+      // 셸 래퍼(.cmd) 설치는 조용히 빠지면 카드가 왜 안 뜨는지 알 길이 없다. 이 방에서 에이전트마다 한 번 알린다(기억은 앱을 켜 둔 동안만이라 다시 켜면 다시 한 번).
       if (!questionToolPossible && questionPurpose === "chat" && this.questionTool?.support?.(agent, questionPurpose)?.code === "shell" && !this.questionShellNoticed.has(agent.id)) {
         this.questionShellNoticed.add(agent.id);
         this.appendSystem(`@${agent.id}는 설치 방식 때문에 작업 중 질문 기능을 쓸 수 없습니다. 결정이 필요하면 답변 끝에서 선택지로 묻습니다.`);
