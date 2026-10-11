@@ -44,7 +44,7 @@
 - **빠른 줄(fast lane)**: `lane === "fast"`인 항목. §2.2 조건을 만족하는 사용자 메시지로만 만든다.
 - **단위(unit)**: 한 번에 같이 시작하는 묶음. 같은 `parallelGroupId`의 항목들은 한 단위(독립 발언), 나머지는 항목 하나가 한 단위. 단위의 모든 항목이 같이 시작하고, 단위가 **전부 끝난 뒤**(폴더 감시까지) 단위가 끝난다.
 - **돌고 있다(running)**: 항목이 `runningTurns`에 있다 = 시작해서 아직 끝나지 않았다. 승인 카드·질문 카드를 기다리는 동안도 돌고 있다(D3).
-- **담당자 바쁨(`agentBusy`)**: 돌고 있는 항목의 담당자 id 집합. 평소에는 `runningTurns`의 담당자와 같다. 다른 점은 중지 뒤다. 중지는 `runningTurns`를 즉시 비우지만(화면용), 취소한 프로세스가 **실제로 끝날 때까지** `agentBusy`는 남는다(§3). 담당자 게이트는 이 집합을 본다.
+- **살아 있는 턴(live)**: `runningTurns`의 항목 중 `item.generation === this.generation`인 것. 중지는 세대를 올리므로, 취소했지만 프로세스가 아직 끝나지 않은 턴은 `runningTurns`에는 남고 live가 아니다. 화면(`turnState`)·`syncCurrentTurn`·`interject`의 `interrupted`·`stopAll`의 `hadWork`·동시 작업 목록·돌고 있는 턴 중복 방지는 live만 본다. 담당자 게이트와 정체 경고 판정은 `runningTurns` 전부(live + 취소 중)를 본다(§3). 별도의 "담당자 바쁨" 집합은 두지 않는다 — 계획 v4 §1의 "새 상태는 `runningTurns`로 통일한다"를 따른다.
 
 ### 2.2 어떤 사용자 메시지가 빠른 턴이 되는가
 
@@ -73,20 +73,20 @@
 패스의 규칙(순서가 곧 규칙이다):
 
 0. **세대 점검.** `generation`이 다른 항목은 시작하지 않고 `retireTurn(item, undefined, {lost: true})`로 치운다(지금 `runQueuedTurn` 첫머리의 점검을 옮긴 것).
-1. **빠른 줄.** `lane === "fast"` 항목을 큐 순서대로 본다. 단위의 **모든 담당자가 `agentBusy`에 없으면** 시작한다(담당자 게이트). 한 패스 안에서 앞서 고른 단위의 담당자도 `agentBusy`에 이미 들어갔으므로 같은 담당자가 두 번 골라지지 않는다.
-2. **일반 줄.** 1을 마친 뒤 **돌고 있는 단위가 하나도 없고**(`activeUnits`가 비어 있음) 일반 항목이 있으면, 일반 항목 중 첫 단위(맨 앞 항목 + 그 뒤로 이어진 같은 `parallelGroupId` 항목들)를 본다. 그 단위의 모든 담당자가 `agentBusy`에 없으면 시작한다. **맨 앞 일반 항목이 담당자 게이트에 걸리면 그 뒤 일반 항목으로 건너뛰지 않는다**(일반 줄은 엄격한 FIFO다. 빠른 줄만 건너뛰며 시작한다).
+1. **빠른 줄.** `lane === "fast"` 항목을 큐 순서대로 본다. 단위의 **모든 담당자가 `runningTurns`의 담당자에 없으면**(담당자 게이트, 취소 중인 턴 포함) 시작한다. 한 패스 안에서 앞서 고른 단위의 항목도 이미 `runningTurns`에 들어갔으므로 같은 담당자가 두 번 골라지지 않는다.
+2. **일반 줄.** 1을 마친 뒤 **돌고 있는 단위가 하나도 없고**(`activeUnits`가 비어 있음) 일반 항목이 있으면, 일반 항목 중 첫 단위(맨 앞 항목 + 그 뒤로 이어진 같은 `parallelGroupId` 항목들)를 시작한다. 일반 줄은 엄격한 FIFO라 맨 앞 단위가 못 시작하면 그 뒤로 건너뛰지 않는다(빠른 줄만 건너뛰며 시작한다). `activeUnits`가 비면 `runningTurns`도 비어 있으므로 이때 담당자 게이트는 걸리지 않는다. 그래도 `runningTurns`를 한 번 더 확인하는 방어 검사를 둔다.
 3. 따라서 한 패스에서는 **빠른 단위 여럿** 또는 **일반 단위 하나**가 시작한다. 둘이 한 패스에서 같이 시작하는 일은 없다(1이 시작했다면 2의 "돌고 있는 단위 없음"이 거짓이다).
 4. `pumpSuspended > 0`(한 메시지를 여러 명에게 큐잉하는 중)이면 패스를 하지 않고 돌아온다. 해제하는 쪽(`sendUserMessage`의 `finally`)이 펌프를 부른다. 패스 도중 다시 불리면(리스너가 방을 건드리는 경우) `pumpAgain`만 켜고 돌아오며, 패스가 끝나기 직전에 한 번 더 돈다. 펌프는 시작한 단위의 약속들을 모은 `Promise`를 돌려준다(`await room.pumpTurnQueue()`로 낡은 세대 항목이 치워졌는지 보는 시험이 그대로 통과한다).
 
 단위의 실행(`runUnit`)은 `try { 항목들을 동시에 runQueuedTurn; (독립 발언 단위고 쓰기 방이면) 폴더 감시 } finally { activeUnits에서 뺌; resolveIdleWaiters(); pumpTurnQueue() }`다. 항목의 실행(`runQueuedTurn`)은 `try { await respond } catch { outcome = undefined } finally { runningTurns·agentBusy에서 뺌; syncCurrentTurn(); emitTurnState()(리스너 예외는 삼키고 경고); item.resolve(outcome) }`다. `item.resolve`는 어떤 예외 뒤에도 정확히 한 번 불린다.
 
-시작(claim) 때 항목마다 하는 일: 대기 장부 정리(`releaseQueuedTurn`: 모든 별칭 키와 대기 시각 제거), `runningTurns`·`agentBusy`·`activeUnits`에 등록, 시작 시점 기록 길이 정하기(§2.6), 동시 작업 담당자 목록 정하기(§2.7).
+시작(claim) 때 항목마다 하는 일: 대기 장부 정리(`releaseQueuedTurn`: 모든 별칭 키와 대기 시각 제거), `runningTurns`·`activeUnits`에 등록, 시작 시점 기록 길이 정하기(§2.6), 동시 작업 담당자 목록 정하기(§2.7).
 
 > 이 규칙으로 계획의 시나리오가 나온다. 사이 A·B·C(일반)에서 B가 도는 중 `@B`를 보내면 빠른 항목이 큐 끝에 "대기"로 서고, B가 끝난 패스에서 1단계가 먼저 그 빠른 항목을 시작한다. 2단계의 "돌고 있는 단위 없음"이 거짓이 되어 C는 빠른 턴이 끝난 **뒤**에 시작한다("B가 끝난 직후 시작, C는 그 뒤").
 
 ### 2.4 담당자 게이트
 
-같은 담당자의 턴이 둘 이상 **동시에** 돌지 않는다. 빠른 턴의 담당자가 `agentBusy`에 있으면(그 담당자의 답이 도는 중, 승인·질문 카드 대기 중 포함, 중지한 프로세스가 아직 끝나지 않은 경우 포함) 빠른 항목은 큐에서 **대기**로 남고, 그 실행이 끝나는 순간의 패스(`runUnit`의 `finally`)가 시작한다. 일반 항목도 같은 게이트를 본다(예: 빠른 턴이 도는 담당자의 일반 턴은 그 실행이 끝나야 시작).
+같은 담당자의 턴이 둘 이상 **동시에** 돌지 않는다. 빠른 턴의 담당자가 `runningTurns`에 있으면(그 담당자의 답이 도는 중, 승인·질문 카드 대기 중 포함, 중지했지만 프로세스가 아직 끝나지 않은 경우 포함) 빠른 항목은 큐에서 **대기**로 남고, 그 실행이 끝나는 순간의 패스(`runUnit`의 `finally`)가 시작한다. 일반 항목도 같은 게이트를 본다(예: 빠른 턴이 도는 담당자의 일반 턴은 그 실행이 끝나야 시작).
 
 ### 2.5 대기 중인 대상은 제자리에서 갈아끼운다
 
@@ -117,11 +117,11 @@
   - `  · 서로 겹칠 것 같으면 직접 하지 말고 사용자에게 질문하세요.`
 
   독립 발언의 "자기 폴더에만" 계약보다 가볍다. 문구에는 기존 시험이 "동시에 실행되고 있습니다"로 가려내는 독립 발언 계약 문구를 쓰지 않는다(`동시에 일하고 있습니다`로 구분).
-- 이 계약은 강제가 아니다. 강제 수단은 없고(폴더 잠금은 2026-10 결정으로 제거되었다), **빠른 턴이 쓰기 방에서 다른 턴과 겹쳐 시작할 때 방이 시스템 줄로 한 번 알린다**: `@codex가 @claude와 같은 폴더에서 동시에 일합니다. 같은 파일을 서로 덮어쓸 수 있으니 끝난 뒤 결과를 확인해 주세요.` 이 기록이 예외를 던져도 시작은 막지 않는다(`try/catch` + 경고). 독립 발언 단위의 기존 "폴더 밖 변경" 감시는 그대로다.
+- 이 계약은 강제가 아니고 강제 수단도 없다(폴더 잠금은 2026-10 결정으로 제거되었다). 겹쳐 시작하는 턴을 알리는 **시스템 줄은 이 설계에 넣지 않는다**: 계획 규칙 6은 프롬프트 계약만 정했고, 대화에 줄이 하나 더 끼면 질문 카드 안내 줄의 위치와 기존 시험의 줄 수 확인에 영향을 준다(§7, 사용자가 원하면 별도로 더한다). 독립 발언 단위의 기존 "폴더 밖 변경" 감시는 그대로다.
 
 ### 2.8 안내 문구와 화면
 
-- **정체 경고**(`checkTurnStall`): 시작 가능한 빠른 턴은 바로 시작해 큐에 없으므로 경고 대상이 아니다(계획 규칙 9). 큐에 남은 턴은 "정상 대기"(돌고 있는 턴이 있거나 중지한 프로세스가 끝나길 기다림 — `runningTurns` 또는 `agentBusy`가 비어 있지 않음)이면 지금의 "차례를 기다리고 있습니다 (@x 실행 중)" 문구를 그대로 쓰고, 그렇지 않으면(= 시작할 수 있는데 못 시작한 상태) 지금의 "유실됐을 수 있습니다" 문구다.
+- **정체 경고**(`checkTurnStall`): 시작 가능한 빠른 턴은 바로 시작해 큐에 없으므로 경고 대상이 아니다(계획 규칙 9). 큐에 남은 턴은 "정상 대기"(`runningTurns`가 비어 있지 않음 — 취소 중인 턴 포함)이면 지금의 "차례를 기다리고 있습니다 (@x 실행 중)" 문구를 그대로 쓰고, 그렇지 않으면(= 시작할 수 있는데 못 시작한 상태) 지금의 "유실됐을 수 있습니다" 문구다.
 - **`queuedAgentsBehind(agentId)`**(10분 정체·한도 안내의 "뒤에서 기다리는 턴"): 이 실행 때문에 막힌 대기 턴 = **일반 줄 대기 턴 전부 + 이 담당자의 빠른 대기 턴**. 담당자 id는 중복 없이 모은다. 지금처럼 "다른 에이전트만" 거르지 않는다(같은 담당자의 이어 보낸 메시지도 이 실행 뒤에서 기다리므로).
 - **질문 카드 안내**(`sendUserMessage`의 "카드에 답하거나 건너뛴 뒤 전달됩니다"): 안내는 **그 턴이 실제로 카드를 쥔 실행 뒤에서 기다릴 때만** 낸다. 이를 위해 안내 줄은 큐잉·펌프를 마친 **뒤에** 정하고, 그 시점에 아직 큐에 남은 항목(= 정말 기다리는 항목)만 본다. 규칙은 다음과 같다.
   - 빠른 항목: 자기 담당자의 카드(`own`)가 있을 때만 `own` 안내. 다른 담당자의 카드(`others`)는 안내하지 않는다(바로 시작하거나 자기 담당자만 기다리므로).
@@ -137,9 +137,9 @@
 |---|---|---|
 | `turnActive` (boolean) | 펌프 루프가 도는 동안 참. 유휴 판정·재진입 방지에 쓴다. | **없어진다.** 유휴 판정은 `activeUnits`, 재진입 방지는 `pumping`/`pumpAgain`이 맡는다. 코드·시험에서 `turnActive`를 직접 읽는 곳은 없다. |
 | `activeUnits` (Set, 신규) | — | 시작해서 아직 끝나지 않은 **단위**들. 단위는 항목들이 다 끝나고 폴더 감시까지 마친 뒤 `finally`에서 빠진다. 중지(`stopAllSilently`)는 건드리지 않는다: 취소한 프로세스가 실제로 끝나야 빠진다(지금 `turnActive`와 같은 수명). |
-| `agentBusy` (Set, 신규) | — | 돌고 있는 항목의 담당자 id. claim에서 넣고 `runQueuedTurn`의 `finally`에서 뺀다. 중지가 비우지 않는다(위와 같은 이유). 게이트가 보는 값. |
-| `runningTurns` (Set) | 돌고 있는 항목. 독립 발언 묶음은 여러 개. | 같은 뜻. 이제 **일반·빠른 턴이 섞여** 여러 개일 수 있다. 화면의 `running`은 그대로 이것에서 만든다. 중지가 즉시 비우는 것은 그대로(화면용). |
-| `currentTurn` | `runningTurns`의 첫 항목 | 그대로(`syncCurrentTurn`). `interject`의 `interrupted` 판정은 `currentTurn !== null` 대신 **`runningTurns.size > 0`**을 쓴다. |
+| 살아 있는 턴(live) (파생 읽기) | — | `runningTurns` 중 현재 `generation`인 항목. 화면·`interject`·`stopAll`·동시 작업 목록·돌고 있는 턴 중복 방지가 읽는 값(§2.1). 새 필드나 집합이 아니다. |
+| `runningTurns` (Set) | 돌고 있는 항목. 독립 발언 묶음은 여러 개. 중지가 즉시 비운다(화면용). | 같은 뜻이고 **새 상태의 유일한 기준**이다(계획 v4: 새 상태는 `runningTurns`로 통일). 이제 **일반·빠른 턴이 섞여** 여러 개일 수 있다. 달라지는 점은 **중지가 비우지 않는다**는 것이다: 취소한 프로세스가 끝나 `runQueuedTurn`의 `finally`에서 빠질 때까지 남아, 담당자 게이트가 "같은 담당자의 프로세스가 겹쳐 돌지 않음"을 그대로 지킨다. 화면에서는 세대가 달라진 항목이 live 필터로 즉시 사라진다("중지하면 실행 중이던 턴도 상태에서 즉시 사라진다" 시험). `activeUnits`는 `runningTurns`로 합칠 수 없다: 단위는 항목이 끝난 뒤에도 폴더 감시가 끝날 때까지 더 살고, `waitForIdle`(과 `settle()`을 쓰는 폴더 계약 시험)이 그것을 기다려야 한다. |
+| `currentTurn` | `runningTurns`의 첫 항목 | 그대로(`syncCurrentTurn`)지만 **첫 live 항목**이다. `interject`의 `interrupted` 판정은 `currentTurn !== null` 대신 **live 돌고 있는 턴이 있는지**를 쓴다. |
 | `pumpSuspended` (정수) | 팬아웃 중 펌프를 미룸 | 같은 뜻. 해제(`finally`) **직후** 펌프를 부르는 일을 `sendUserMessage`의 `finally` 안으로 옮겨, 팬아웃 중 예외가 나도 큐에 쌓인 항목이 펌프되지 않은 채 남지 않게 한다. |
 | `pumping`, `pumpAgain` (신규) | — | 패스 재진입 방지. `pumping`은 패스를 `try/finally`로 감싸 예외가 나도 풀린다. |
 | `idleWaiters` | 유휴가 되면 모두 깨움 | 같은 뜻. 유휴의 정의가 바뀐다(아래). |
@@ -163,25 +163,25 @@
 | **빠른 메시지 도착** | §2.2 조건이면 `lane = fast` 항목을 만든다. 갈아끼울 대기 턴이 있으면 제자리 교체(§2.5). `pumpSuspended`로 팬아웃을 묶고, 끝나면 펌프. 담당자가 비었으면 같은 패스에서 시작, 아니면 큐에 "대기". | 팬아웃 `finally`가 `pumpSuspended`를 내리고 펌프까지 부른다. 키는 `pendingTurns`에 들어가고 시작·폐기 때 지워진다. |
 | **일반 메시지 도착** | 지금과 같다(갈아끼우기는 맨 뒤). 일반 줄은 돌고 있는 턴이 모두 끝나야 시작. | 같다. |
 | **멘션 호출·전달·결론 종합·쉽게 설명·기록관·토론 턴 도착** | 일반 줄(`lane` 없음). 멘션 호출은 키가 있으면 접힌다(§4.2). | 같다. |
-| **시작(claim)** | 큐에서 빼고 → 장부 정리 → `runningTurns`·`agentBusy`·`activeUnits` 등록 → 시작 시점 기록 길이·동시 작업 목록 정함 → 실행. | 등록과 실행 사이에 예외가 나면 `runUnit`이 `finally`에서 등록한 것을 모두 되돌리고 항목을 resolve한다(항목은 큐에도 없고 돌지도 않는 상태가 되지 않는다). |
-| **정상 종료** | `runningTurns`·`agentBusy`에서 빼고 `item.resolve(outcome)`. 단위의 모든 항목이 끝나면(폴더 감시 포함) `activeUnits`에서 빼고 → `resolveIdleWaiters` → 펌프. | `finally`. 이 순서라서 유휴 대기자는 다음 턴이 시작되기 전에 깨어나지 않는다(큐가 비어 있을 때만 깨운다). |
+| **시작(claim)** | 큐에서 빼고 → 장부 정리 → `runningTurns`·`activeUnits` 등록 → 시작 시점 기록 길이·동시 작업 목록 정함 → 실행. | 등록과 실행 사이에 예외가 나면 `runUnit`이 `finally`에서 등록한 것을 모두 되돌리고 항목을 resolve한다(항목은 큐에도 없고 돌지도 않는 상태가 되지 않는다). |
+| **정상 종료** | `runningTurns`에서 빼고 `item.resolve(outcome)`. 단위의 모든 항목이 끝나면(폴더 감시 포함) `activeUnits`에서 빼고 → `resolveIdleWaiters` → 펌프. | `finally`. 이 순서라서 유휴 대기자는 다음 턴이 시작되기 전에 깨어나지 않는다(큐가 비어 있을 때만 깨운다). |
 | **실패**(러너 예외·결과 `ok:false`·프롬프트 생성 실패·담당자가 사라짐/비활성) | 오류 메시지를 남기거나(`runResponseTurn`의 기존 경로) 조용히 `undefined`를 돌려주고 정상 종료와 같은 정리. 실패는 큐에 다시 넣지 않는다. | 같다. 실패해도 `item.resolve`는 정확히 한 번. |
 | **세대 불일치 항목**(시험이 직접 넣은 항목 등) | 패스 0단계에서 시작하지 않고 `retireTurn(..., {lost:true})`. | 장부 정리 + 유실 안내. |
 | **대기 턴 × 취소**(`cancelTurn`) | 큐에서 빼고 `retireTurn({lost:false})`. 그 항목이 막고 있던 뒤 항목이 풀릴 수 있으므로 **펌프를 부른다**(지금은 루프가 알아서 다음을 집었다). | 키·대기 시각 제거, promise resolve. 안내 없음. |
 | **갈아끼우기**(supersede) | 걷어낸 항목은 `retire`(안내 없음), 새 항목이 키를 물려받는다. | 걷어낸 항목 resolve, 키는 새 항목으로 옮겨 가 시작·폐기 때 지워진다. |
-| **중지·잠깐**(`stopAll`/`interject`/`stopAllSilently`) | 세대를 올리고 실행을 취소 → 질문 닫기 → **두 큐의 모든 항목 폐기**(빠른 대기 포함, `retire`) → `pendingTurns`·`turnStartedAt` 비움 → `runningTurns` 비움 → `mentionsMuted` 정리 → 승인 해제 → 입력 중·busy 해제 → 유휴 대기 해제 시도. `agentBusy`·`activeUnits`는 **건드리지 않는다**: 취소한 프로세스가 끝나야 풀린다. 이 순서는 지금과 같아야 한다(리스너 예외는 마지막 emit에서만 밖으로 나온다는 기존 시험). | 프로세스가 끝나면 그 단위의 `finally`가 `agentBusy`·`activeUnits`를 풀고, 큐가 비어 있으므로 아무것도 시작하지 않고 유휴 대기자를 깨운다. 취소된 실행의 늦은 답은 세대 가드로 버려지고 @멘션 호출도 만들지 않는다. |
+| **중지·잠깐**(`stopAll`/`interject`/`stopAllSilently`) | 세대를 올리고 실행을 취소 → 질문 닫기 → **두 큐의 모든 항목 폐기**(빠른 대기 포함, `retire`) → `pendingTurns`·`turnStartedAt` 비움 → `syncCurrentTurn`·`emitTurnState`(세대가 달라진 `runningTurns` 항목은 live 필터로 즉시 빠진다) → `mentionsMuted` 정리 → 승인 해제 → 입력 중·busy 해제 → 유휴 대기 해제 시도. `runningTurns`·`activeUnits`는 **비우지 않는다**: 취소한 프로세스가 끝나야 빠진다. 나머지 순서는 지금과 같아야 한다(리스너 예외는 마지막 emit에서만 밖으로 나온다는 기존 시험). | 프로세스가 끝나면 그 항목의 `finally`가 `runningTurns`에서, 단위의 `finally`가 `activeUnits`에서 빠지고, 큐가 비어 있으므로 아무것도 시작하지 않고 유휴 대기자를 깨운다. 취소된 실행의 늦은 답은 세대 가드로 버려지고 @멘션 호출도 만들지 않는다. |
 | **대화 삭제** | `stopAllSilently` 후 `liveRuns`가 0이 될 때까지 기다렸다 삭제(지금과 같다). 빠른 대기·실행 중 항목도 위와 같이 정리된다. | 삭제된 방에서 늦게 끝난 단위의 `finally`가 펌프를 불러도 큐가 비어 있다. |
 | **앱 종료**(`shutdown`) | 질문 닫기 → 상태 저장 → `stopAllSilently`(예외는 삼킴). | 위와 같다. 종료 뒤 새 시작은 없다(큐가 비었고 새 메시지가 없다). |
 | **토론 요청**(`startDiscussion`) | `discussionRequested = true`. 이후 오는 메시지는 빠른 턴이 아니다. 이미 있는 빠른 턴(대기 포함)은 정상적으로 끝나고, 토론은 유휴를 기다린다. | 취소·예외 모든 길에서 `finally`로 `discussionRequested` 해제. |
 | **토론 시작** | 유휴를 다시 확인한 뒤 같은 동기 구간에서 `discussionActive = true`. 토론 턴은 일반 줄이라 돌고 있는 턴이 없을 때만 시작(그 사이에 빠른 턴이 없으므로 항상 시작). | `endDiscussionState`가 `finally`에서 플래그를 모두 풀고 미뤄 둔 일반 턴을 큐로 돌려보낸 뒤 펌프한다(결론 메시지 기록이 예외를 던져도). |
 | **토론 중 메시지** | 일반 턴 → `deferredTurnQueue`. 빠른 턴 아님. | 토론 종료·중지 때 정리. |
-| **승인 카드 대기** | 그 턴은 계속 `runningTurns`·`agentBusy`에 있다. 같은 담당자의 빠른 메시지는 "대기", 다른 담당자의 빠른 메시지는 시작한다(카드가 여럿 뜰 수 있다 — 화면에는 승인 큐가 있다). 쓰기 방이면 새로 시작하는 턴의 `concurrentWork`에 이 담당자가 들어간다. | 승인·거부·중지 모두 `requestApproval` 약속을 푼다(중지는 `approval-resolved` 후 거부). 거부·중지 뒤 턴이 끝나면 정상 종료 정리. |
+| **승인 카드 대기** | 그 턴은 계속 `runningTurns`에 있다. 같은 담당자의 빠른 메시지는 "대기", 다른 담당자의 빠른 메시지는 시작한다(카드가 여럿 뜰 수 있다 — 화면에는 승인 큐가 있다). 쓰기 방이면 새로 시작하는 턴의 `concurrentWork`에 이 담당자가 들어간다. | 승인·거부·중지 모두 `requestApproval` 약속을 푼다(중지는 `approval-resolved` 후 거부). 거부·중지 뒤 턴이 끝나면 정상 종료 정리. |
 | **승인 응답** | 같은 턴이 자동 승인으로 한 번 더 실행(같은 항목, 같은 게이트). | 같다. |
 | **질문 카드 대기** | 위 승인 대기와 같다. 질문 안내 줄은 §2.8 규칙. | `closeQuestionRun`이 `finally`에서 질문·연결을 정리(지금과 같음). |
 | **질문 응답·건너뛰기** | 같은 실행이 이어진다. 스케줄러 전이는 없다. | 같다. |
 | **창이 닫힘/다시 붙음** | 방은 창과 무관하게 계속 돈다. 다시 붙을 때 `chat:state` 스냅숏이 `turnState`(돌고 있는 담당자, 대기 항목과 `fast`), 승인·질문 대기 목록을 낸다. 빠른 대기 항목이 스냅숏에 그대로 나오고 × 취소가 된다. | 창에 저장된 상태가 없다. |
 | **담당자 비활성·설치 해제**(`setAgents`) | 큐의 항목은 시작 때 `runResponseTurn`이 거르고 `undefined`로 끝난다. 빠른 대기 항목도 같다. | 위 "실패"와 같다. |
-| **리스너 예외**(`emit`) | 스케줄러가 직접 내는 `turn-state`는 `try/catch`로 삼키고 경고만 남긴다. 그 밖의 `emit`(`message`, `typing` 등)은 지금처럼 `chat-ipc`의 `on` 래퍼가 막는다. 예외가 나도 `agentBusy`·`activeUnits`·`pumping`·`pumpSuspended`는 `finally`로 되돌아온다. | 위 표의 `finally`들. |
+| **리스너 예외**(`emit`) | 스케줄러가 직접 내는 `turn-state`는 `try/catch`로 삼키고 경고만 남긴다. 그 밖의 `emit`(`message`, `typing` 등)은 지금처럼 `chat-ipc`의 `on` 래퍼가 막는다. 예외가 나도 `runningTurns`·`activeUnits`·`pumping`·`pumpSuspended`는 `finally`로 되돌아온다. | 위 표의 `finally`들. |
 
 ### 4.2 F27 — 갈아끼운 뒤 앞 담당자의 @멘션이 같은 담당자에게 중복 턴을 만드는 문제
 
@@ -196,22 +196,22 @@
 
 ### 4.3 try/finally 점검표(구현 때 하나씩 확인)
 
-`pumping` ← 패스 `finally`. `pumpSuspended` ← 팬아웃 `finally`(펌프 호출 포함). 단위 `activeUnits` ← `runUnit` `finally`. `agentBusy`·`runningTurns` ← `runQueuedTurn` `finally`. 항목 promise ← `finally`에서 정확히 한 번. `discussionRequested`/`discussionActive` ← `startDiscussion` `finally`/`endDiscussionState`. `turnStartedAt`·`pendingTurns` 키 ← `releaseQueuedTurn`/`retireTurn`. 이 가운데 하나라도 예외 한 번에 남으면 "방이 영영 바쁨"이 되므로, 구현 시험은 항목마다 예외를 주입해(러너 throw, `turn-state` 리스너 throw, `message` 리스너 throw, 프롬프트 생성 throw) 기준선으로 돌아오는지 본다.
+`pumping` ← 패스 `finally`. `pumpSuspended` ← 팬아웃 `finally`(펌프 호출 포함). 단위 `activeUnits` ← `runUnit` `finally`. `runningTurns` ← `runQueuedTurn` `finally`. 항목 promise ← `finally`에서 정확히 한 번. `discussionRequested`/`discussionActive` ← `startDiscussion` `finally`/`endDiscussionState`. `turnStartedAt`·`pendingTurns` 키 ← `releaseQueuedTurn`/`retireTurn`. 이 가운데 하나라도 예외 한 번에 남으면 "방이 영영 바쁨"이 되므로, 구현 시험은 항목마다 예외를 주입해(러너 throw, `turn-state` 리스너 throw, `message` 리스너 throw, 프롬프트 생성 throw) 기준선으로 돌아오는지 본다.
 
 ## 5. 불변식 (속성 시험이 된다)
 
 속성 시험은 가짜 러너(약속을 직접 풀 수 있음)와 고정 난수로 만든 무작위 사건열(메시지 종류, 러너 종료·실패, 취소, 중지, 잠깐, 토론, 승인·질문 대기, 삭제)을 돌리고, **사건마다** 아래를 점검한다.
 
-1. **담당자 단독 실행**: 한 순간에 같은 담당자의 `runningTurns` 항목은 최대 하나다. 중지한 프로세스가 끝나기 전에도(`agentBusy`) 같은 담당자의 새 턴은 시작하지 않는다.
+1. **담당자 단독 실행**: 한 순간에 같은 담당자의 `runningTurns` 항목은 취소 중인 것까지 합쳐 최대 하나다. 중지한 프로세스가 끝나기 전에는 같은 담당자의 새 턴이 시작하지 않는다.
 2. **일반 줄 배타**: 일반 항목이 시작할 때 `activeUnits`는 비어 있었다. 일반 단위가 도는 동안 다른 단위는 시작하지 않는다(빠른 단위 포함).
 3. **일반 줄 FIFO**: 일반 항목은 큐 순서대로 시작한다(맨 앞이 게이트에 걸리면 뒤가 앞서지 않는다). 갈아끼운 항목은 걷어낸 항목의 자리를 지킨다.
 4. **빠른 턴 자격**: `lane === "fast"` 항목은 §2.2 조건에서만 생긴다. 토론·결론 종합·쉽게 설명·전달·멘션 호출·기록관 턴, 토론 중·토론 요청 중의 메시지, 그룹 별칭·멘션 없음·이어 발언 둘 이상은 빠르지 않다.
-5. **빠른 턴 시작**: 대기 중인 빠른 항목은 자기 담당자(독립 발언 단위면 모든 담당자)가 비는 **같은 패스**에서 시작한다. 시작 못 한 빠른 항목은 반드시 `agentBusy`에 걸려 있다(걸림 없이 큐에 머무는 빠른 항목이 없다).
-6. **진행성**: `activeUnits`가 비어 있고 큐가 비어 있지 않으면, 다음 패스는 반드시 단위 하나 이상을 시작한다(`agentBusy`도 비어 있으므로 게이트에 걸릴 항목이 없다). 곧 일반 줄·빠른 줄 어느 쪽도 교착되지 않는다.
+5. **빠른 턴 시작**: 대기 중인 빠른 항목은 자기 담당자(독립 발언 단위면 모든 담당자)가 비는 **같은 패스**에서 시작한다. 시작 못 한 빠른 항목은 반드시 `runningTurns`의 담당자에 걸려 있다(걸림 없이 큐에 머무는 빠른 항목이 없다).
+6. **진행성**: `activeUnits`가 비어 있고 큐가 비어 있지 않으면, 다음 패스는 단위를 하나 이상 시작하거나 항목을 하나 이상 치운다(낡은 세대 항목은 0단계에서 치운다). `activeUnits`가 비면 `runningTurns`도 비어 있으므로 게이트에 걸릴 항목이 없다. 곧 일반 줄·빠른 줄 어느 쪽도 교착되지 않는다.
 7. **토론 배타**: 토론 턴(`context.discussion`)이 돌 때 다른 턴이 돌지 않는다. `discussionActive`는 유휴일 때만 켜진다. 토론 중에는 빠른 항목이 없고, 토론 중 온 일반 턴은 `deferredTurnQueue`에만 있다.
 8. **시작 시점 기록**: 빠른 턴·독립 발언 턴의 프롬프트에는 시작 전에 끝난 모든 에이전트 답이 있다(자기 담당자의 직전 답 포함). 독립 발언 턴의 프롬프트에는 같은 뿌리의 형제 답이 없다. 일반 턴의 기록은 예약 시점 + 같은 뿌리 확장이다.
 9. **모든 약속은 정확히 한 번 풀린다**: 시작한 항목은 종료 때, 시작 못 한 항목은 폐기·취소·갈아끼움·중지 때. 두 번 풀리거나 영영 안 풀리는 항목이 없다.
-10. **정리**: `stopAll`·`interject`·`clear`·삭제·종료 뒤 두 큐와 `pendingTurns`·`turnStartedAt`이 비고, `runningTurns`가 비며, 프로세스가 끝난 뒤에는 `agentBusy`·`activeUnits`·`pumping`·`pumpSuspended`가 기준선(0·빈 집합)이다. 승인·질문 대기·입력 중 표시도 비어 있다.
+10. **정리**: `stopAll`·`interject`·`clear`·삭제·종료 뒤 두 큐와 `pendingTurns`·`turnStartedAt`이 비고, live 돌고 있는 턴이 없으며, 프로세스가 끝난 뒤에는 `runningTurns`·`activeUnits`·`pumping`·`pumpSuspended`가 기준선(0·빈 집합)이다. 승인·질문 대기·입력 중 표시도 비어 있다.
 11. **유휴**: `waitForIdle`은 `activeUnits`와 두 큐가 모두 비었을 때만 풀리고, 그 순간 이후 첫 새 사건 전까지 비어 있다. 풀린 대기자는 놓치지 않는다.
 12. **안내**: 유실 안내(`중지로 … 취소됐습니다`)는 중지·세대 불일치로 폐기된 일반 턴에만 나온다. 사용자가 ×로 지운 턴, 갈아끼운 턴은 안내하지 않는다. 시작 가능한 빠른 턴에는 정체 경고가 나오지 않는다.
 13. **중복 방지**: 같은 계보(같은 뿌리의 키와 갈아끼워 물려받은 키)의 같은 담당자 항목은 큐에 **하나**뿐이다. 옛 뿌리 멘션 호출이 대기 중인 갈아끼운 항목에 접힌다(F27). 새 항목이 시작한 뒤의 멘션 호출은 새 턴으로 잡힌다.
@@ -235,9 +235,9 @@
 | S8 | 토론 시작을 눌렀고 도는 턴이 끝나길 기다리는 중(`discussionRequested`) | `@codex 질문` | 일반 턴이 되어 토론보다 **먼저** 끝난다(유휴가 아니므로 토론은 그 뒤 시작). 중복·유실·동시 실행 없음. 유휴 확인 틈에 끼어도 토론 턴과 일반 턴이 동시에 돌지 않는다. |
 | S9 | 아무것도 안 도는 방 | `@claude 안녕` | 빠른 항목이지만 같은 패스에서 즉시 시작(큐에 안 보임). |
 | S10 | 같은 담당자 동시 실행 0건 | 무작위 사건열 | 모든 사건 뒤 §5의 1·2·3·6이 성립한다(속성 시험). |
-| S11 | 빠른 턴이 도는 중 | 중지 / 잠깐 / 대기 × / 대화 삭제 / 앱 종료 | 빠른 턴(돌고 있는 것·대기 중인 것) 모두 정리된다. 중지·잠깐은 빠른 대기 항목을 버리고 "…전달되지 않았으니 다시 보내 주세요"에 센다. × 취소는 안내를 남기지 않는다. 프로세스가 끝나면 `agentBusy`·`activeUnits`가 기준선. |
+| S11 | 빠른 턴이 도는 중 | 중지 / 잠깐 / 대기 × / 대화 삭제 / 앱 종료 | 빠른 턴(돌고 있는 것·대기 중인 것) 모두 정리된다. 중지·잠깐은 빠른 대기 항목을 버리고 "…전달되지 않았으니 다시 보내 주세요"에 센다. × 취소는 안내를 남기지 않는다. 프로세스가 끝나면 `runningTurns`·`activeUnits`가 기준선. |
 | S12 | 쓰기 방, claude가 혼자 도는 중 | (없음) | claude의 프롬프트에 동시 작업 계약이 **없다**. |
-| S13 | 쓰기 방, claude가 도는 중 | `@codex 파일 만들어` | codex의 프롬프트에 `@claude`를 가리키는 동시 작업 계약이 있고, 방이 한 번 "같은 폴더에서 동시에 일합니다" 줄을 남긴다. claude의 프롬프트(이미 보낸 것)는 그대로. 읽기·대화 전용 방에서는 둘 다 없다. |
+| S13 | 쓰기 방, claude가 도는 중 | `@codex 파일 만들어` | codex의 프롬프트에 `@claude`를 가리키는 동시 작업 계약이 있다(방이 따로 시스템 줄을 남기지는 않는다). claude의 프롬프트(이미 보낸 것)는 그대로. 읽기·대화 전용 방에서는 계약이 없다. |
 | S14 | 쓰기 방, claude가 승인 카드를 기다리는 중 | `@codex …` | codex는 시작하고 프롬프트에 계약이 있다. `@claude …`는 대기(카드를 쥔 담당자). 중지하면 승인이 풀리고 둘 다 정리. |
 | S15 | claude가 질문 카드를 기다리는 중 | `@claude …` / `@codex …` | claude 쪽은 "대기"이고 "@claude가 질문 카드에 답을 기다리는 중입니다…" 안내가 질문마다 한 번. codex 쪽은 바로 시작하고 "카드를 기다리는 중이라 전달됩니다" 안내는 **없다**. 멘션 없는 메시지(일반 줄)에는 지금처럼 `own`+`others` 안내. |
 | S16 | F24: 독립 발언 모드, claude가 "계획"에 답하는 중 | `@claude @codex 위 계획을 각자 검토해` | 두 담당자가 한 단위로 **claude의 첫 답이 끝난 뒤에** 시작하고(claude가 바빴으므로 단위 전체가 대기), 두 프롬프트에 계획 본문이 있다. 형제 답은 서로 없다. |
@@ -253,12 +253,12 @@
 - **빠른 턴은 아직 끝나지 않은 답을 못 본다.** 시작 시점에 끝난 답만 본다. 도는 중인 다른 모델의 답은 볼 수 없다(사용자가 그 순서를 원한 것이다).
 - **쓰기 방 동시 작업.** 폴더 잠금이 없으므로 같은 파일을 서로 덮어쓸 수 있다. 계약은 프롬프트일 뿐 강제가 아니다. 먼저 시작한 턴은 나중 턴이 시작했음을 모른다(보낸 프롬프트는 바꿀 수 없다). 방이 시작 때 한 줄로 알리는 것이 유일한 보완이다.
 - **일반 줄의 굶음.** 일반 턴(토론 시작 포함)은 도는 턴이 하나도 없어야 시작한다. 빠른 턴이 끊김 없이 이어서 돌면 일반 턴·토론 시작이 미뤄진다. 사용자가 보낸 메시지로만 생기는 일이고 중지·잠깐으로 풀린다. 빠른 턴이 일반 줄을 막지 않게 하는 완화(담당자만 비면 일반 턴도 시작)는 같은 일반 줄에서 앞 답을 읽는 계약과 충돌하므로 하지 않는다.
-- **프로세스가 취소 뒤에도 끝나지 않으면** 그 담당자와 일반 줄이 막힌다. 지금의 `turnActive`와 같은 한계이고 이번에 넓히지 않는다(§3의 `agentBusy`·`activeUnits`가 중지에서 안 풀리는 것은 일부러다: 같은 담당자의 프로세스가 겹쳐 돌지 않게).
+- **프로세스가 취소 뒤에도 끝나지 않으면** 그 담당자와 일반 줄이 막힌다. 지금의 `turnActive`와 같은 한계이고 이번에 넓히지 않는다(§3의 `runningTurns`·`activeUnits`가 중지에서 안 풀리는 것은 일부러다: 같은 담당자의 프로세스가 겹쳐 돌지 않게).
 - **동시 프로세스 수 증가.** 빠른 턴 때문에 한 방에서 도는 CLI가 늘 수 있다(사용량·부하). 담당자 수가 상한이다.
 - **빠른 턴의 앞 대기 항목 대체.** 빠른 메시지가 일반 줄 대기 턴을 갈아끼우면 일반 줄 자리에서 순서를 기다린다(바로 답하지 않는다). 계획 규칙 3이 정한 것이다.
 
 **일부러 하지 않는 것**
-
+- 겹쳐 시작하는 쓰기 턴을 알리는 시스템 줄. 계획 규칙 6은 프롬프트 계약만 정했고, 대화 줄이 늘면 질문 카드 안내 줄 위치와 기존 시험의 줄 수 확인에 영향을 준다. 사용자가 원하면 별도로 더한다(§2.7).
 - 일반 턴 전체를 시작 시점 기록으로 옮기는 일. 예약 시점 고정은 갈아끼우기와 "뒷사람은 앞 답을 읽는다" 계약의 바탕이다. 그래서 일반 턴이 빠른 턴의 답을 못 볼 수 있다(다른 뿌리이므로). 필요하면 별도 개정으로 다룬다.
 - 에이전트 답 속 @멘션 호출을 빠른 줄에 세우는 일(빠른 턴의 답이 부른 호출도 일반 줄). 에이전트가 낸 호출이고 연쇄 상한이 있으며, 빠르게 만들면 동시 실행이 연쇄로 퍼진다.
 - 이어 발언 둘 이상(`@a @b` 순차)의 빠른 처리, 그룹 별칭(@모두)의 빠른 처리. 순서 계약 때문이다.
@@ -295,7 +295,7 @@
 | 파일 | 변경 |
 |---|---|
 | `src/chat/chat-mention.js` | `hasGroupMention` 추가(내보내기). |
-| `src/chat/chat-room.js` | `sendUserMessage`(빠른 판정, 제자리 갈아끼우기, 팬아웃 `finally`에서 펌프, 질문 안내를 펌프 뒤로), `supersedeQueuedTurns`(자리·줄·키 물려주기), `scheduleResponse`(`lane`, `dedupeKeys`), `pumpTurnQueue`/`runQueuedTurn`/`runParallelTurns`(→ 패스·`runUnit`), `releaseQueuedTurn`(모든 키), `promptMessages`(시작 시점·형제 제외), `startDiscussion`(유휴 재확인·`finally`), `waitForIdle`·`resolveIdleWaiters`(`activeUnits`), `turnState`(`fast`), `interject`(`runningTurns.size`), `cancelTurn`(펌프), `checkTurnStall`·`queuedAgentsBehind`(§2.8). `stopAllSilently`는 순서를 바꾸지 않고 `agentBusy`·`activeUnits`를 건드리지 않는다. |
+| `src/chat/chat-room.js` | `sendUserMessage`(빠른 판정, 제자리 갈아끼우기, 팬아웃 `finally`에서 펌프, 질문 안내를 펌프 뒤로), `supersedeQueuedTurns`(자리·줄·키 물려주기), `scheduleResponse`(`lane`, `dedupeKeys`), `pumpTurnQueue`/`runQueuedTurn`/`runParallelTurns`(→ 패스·`runUnit`), `releaseQueuedTurn`(모든 키), `promptMessages`(시작 시점·형제 제외), `startDiscussion`(유휴 재확인·`finally`), `waitForIdle`·`resolveIdleWaiters`(`activeUnits`), `turnState`·`syncCurrentTurn`(live 필터, `fast`), `interject`·`stopAll`(live 돌고 있는 턴), `cancelTurn`(펌프), `checkTurnStall`·`queuedAgentsBehind`(§2.8). `stopAllSilently`는 순서를 바꾸지 않고 `runningTurns`를 비우지 않으며 `activeUnits`를 건드리지 않는다. |
 | `src/chat/chat-prompt.js` | `concurrentWork` 입력과 가벼운 계약. |
 | `src/chat.js` | 대기 항목 `fast` 툴팁(선택). |
 | `test/reply-now-*.test.js` | 새 시험(진입점 우선): `reply-now-scheduler`(S1~S9·S17·S18), `reply-now-property`(§5, 시드 고정 무작위 사건열), `reply-now-prompt`(S12~S16 기록·계약), `reply-now-ipc`(S11·S19). |
