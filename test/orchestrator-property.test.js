@@ -85,8 +85,26 @@ function makeWorld(seed, overrides = {}) {
     return originalRunResponseTurn(agent, context, generation);
   };
 
+  // 보류 메시지 보존(불변식 10·11)을 "텍스트 단위로" 추적한다 — 보류되는 순간의 원문을 유일하게
+  // 식별할 수 있어야 뒤에서 "정확히 한 번 전달됐다"를 셀 수 있으므로, 보낼 때마다 일련번호를 붙인다.
+  let msgSeq = 0;
+  const heldTexts = [];
+  const originalSendUserMessage = room.sendUserMessage.bind(room);
+  room.sendUserMessage = (input) => {
+    msgSeq += 1;
+    const payload = typeof input === "string" ? { text: input } : input || {};
+    const tagged = { ...payload, text: `${payload.text}#${msgSeq}` };
+    const before = room.orchestration?.heldMessages.length ?? -1;
+    const entry = originalSendUserMessage(tagged);
+    if (before >= 0 && room.orchestration && room.orchestration.heldMessages.length > before) {
+      heldTexts.push(room.orchestration.heldMessages.at(-1));
+    }
+    return entry;
+  };
+
   return {
-    room, calls, systems, rand, settleFlags,
+    room, calls, systems, rand, settleFlags, heldTexts,
+    stoppedHeld: 0, // 중지·잠깐·삭제 직전에 남아 있던 보류 메시지 수(설계상 안내 없이 버려도 된다, 불변식 10).
     endedSnapshot: new Map(), // orchId -> calls.length(그 orchId) 당시 — 끝난 뒤 늘지 않아야 한다(불변식 11·3).
     lastSnapshot: new Map(), // orchId -> {round, executions}(불변식 2 단조증가).
     prevOrchId: null,
@@ -282,9 +300,9 @@ async function step(world, rand) {
     room.cancelTurn(item.turnId);
     return "cancelTurn";
   }
-  if (pick < 0.73) { room.stopAll(); return "stopAll"; }
-  if (pick < 0.77) { room.interject(); return "interject"; }
-  if (pick < 0.8) { room.clear(); return "clear(delete)"; }
+  if (pick < 0.73) { world.stoppedHeld += room.orchestration?.heldMessages.length ?? 0; room.stopAll(); return "stopAll"; }
+  if (pick < 0.77) { world.stoppedHeld += room.orchestration?.heldMessages.length ?? 0; room.interject(); return "interject"; }
+  if (pick < 0.8) { world.stoppedHeld += room.orchestration?.heldMessages.length ?? 0; room.clear(); return "clear(delete)"; }
   if (pick < 0.87) return toggleOrchestrator(world, rand);
   if (pick < 0.91) { room.setMeta({ keepCalling: !room.meta.keepCalling }); return "keepCalling toggle"; }
   if (pick < 0.96) return toggleAgentAvailability(world, rand);
@@ -324,6 +342,22 @@ async function drain(world, label) {
   // 불변식 5: 작업자가 다른 참가자를 부르려 하면 매번 안내 한 줄(더도 덜도 아니게)이 난다.
   const noticeCount = world.systems.filter((text) => /다른 참가자를 부를 수 없습니다/.test(text)).length;
   assert.equal(noticeCount, world.expectedWorkerMentionNotices, `${label}: 작업자 호출 차단 안내 수`);
+  // 불변식 10·11(보존): 보류된 메시지마다 "정확히 한 번 지휘 AI에게 전달됐다" 또는 "유실 안내로 셌다"
+  // 또는 "중지·잠깐·삭제로 안내 없이 버려졌다(설계상 허용)"여야 하고, 셋을 더하면 보류된 총수와 같아야
+  // 한다 — 둘 다 아니거나(조용히 사라짐) 둘 다이면(중복) 틀렸다는 뜻이다.
+  for (const text of world.heldTexts) {
+    const delivered = calls.filter((c) => c.context?.orchestration?.role === "lead"
+      && (c.context.extraLines || []).some((block) => block.includes(`"${text}"`))).length;
+    assert.ok(delivered <= 1, `${label}: 보류 메시지 "${text}"가 두 번 이상 전달됐다`);
+  }
+  const deliveredTotal = world.heldTexts.filter((text) => calls.some((c) => c.context?.orchestration?.role === "lead"
+    && (c.context.extraLines || []).some((block) => block.includes(`"${text}"`)))).length;
+  const noticedTotal = world.systems.reduce((sum, text) => {
+    const match = text.match(/그 사이 보낸 메시지 (\d+)개는/);
+    return sum + (match ? Number(match[1]) : 0);
+  }, 0);
+  assert.equal(deliveredTotal + noticedTotal + world.stoppedHeld, world.heldTexts.length,
+    `${label}: 보류 메시지 보존(전달 ${deliveredTotal} + 유실안내 ${noticedTotal} + 중지류 묵살 ${world.stoppedHeld} !== 보류된 총수 ${world.heldTexts.length})`);
 }
 
 const SEEDS = Array.from({ length: 300 }, (_, i) => i + 1);
