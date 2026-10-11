@@ -29,6 +29,16 @@ class FakeNode {
   get classList() {
     return {
       add: (...names) => { for (const name of names) if (!this.className.split(/\s+/).includes(name)) this.className = `${this.className} ${name}`.trim(); },
+      remove: (...names) => {
+        this.className = this.className.split(/\s+/).filter((part) => part && !names.includes(part)).join(" ");
+      },
+      toggle: (name, force) => {
+        const has = this.className.split(/\s+/).includes(name);
+        const next = force === undefined ? !has : Boolean(force);
+        if (next && !has) this.className = `${this.className} ${name}`.trim();
+        if (!next && has) this.className = this.className.split(/\s+/).filter((part) => part !== name).join(" ");
+        return next;
+      },
       contains: (name) => this.className.split(/\s+/).includes(name),
     };
   }

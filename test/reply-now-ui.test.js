@@ -47,10 +47,12 @@ function loadUi() {
     renderHeader() {},
     call: async (promise) => promise,
     agentById: (id) => agents.find((agent) => agent.id === id) || null,
+    renderOrchestrationStatus() {},
     window: {
       chatApi: {
         onTyping: (handler) => { handlers.typing = handler; },
         onTurnState: (handler) => { handlers.turnState = handler; },
+        onOrchestration: () => {},
         turnCancel: async (...args) => { cancels.push(args); return { ok: true }; },
       },
     },

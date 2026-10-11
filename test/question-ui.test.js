@@ -80,6 +80,7 @@ function loadUi() {
     switchActiveSession(id) { context.activeSessionId = id; },
     renderAllMessages() {}, showPendingNotices() {}, renderProjects() {}, renderHeader() {},
     renderAgents() {}, renderPendingAttachments() {}, showNextApproval() {}, syncComposerLock() {},
+    renderOrchestrationStatus() {},
     addApproval() {}, call: async (promise) => promise,
     agentById(id) { return context.agents.find((agent) => agent.id === id) || null; },
   };
