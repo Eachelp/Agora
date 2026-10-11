@@ -195,7 +195,7 @@
 | **갈아끼우기**(supersede) | 걷어낸 항목은 `retire`(안내 없음), 새 항목이 키를 물려받는다. 빠른 자격 메시지면 줄은 메시지 단위(§2.5)이고 새 항목들은 결정된 줄에서 걷어낸 가장 앞 항목의 자리에 붙어 들어간다. 기존 독립 발언 묶음의 한 구성원만 걷어내면 묶음에는 나머지가 남아 여전히 한 단위이고(D7), 시작 때 크기를 다시 센다. | 걷어낸 항목 resolve, 키는 새 항목으로 옮겨 가 시작·폐기 때 지워진다. 어떤 길에서도 줄이 섞인 묶음·반쪽 묶음이 큐에 남지 않는다(inv. 17). |
 | **중지·잠깐**(`stopAll`/`interject`/`stopAllSilently`) | 세대를 올리고 실행을 취소 → 질문 닫기 → **두 큐의 모든 항목 폐기**(빠른 대기 포함, `retire`) → `pendingTurns`·`turnStartedAt` 비움 → `syncCurrentTurn`·`emitTurnState`(세대가 달라진 `runningTurns` 항목은 live 필터로 즉시 빠진다) → `mentionsMuted` 정리 → 승인 해제 → 입력 중·busy 해제 → 유휴 대기 해제 시도. `runningTurns`·`activeUnits`는 **비우지 않는다**: 취소한 프로세스가 끝나야 빠진다. 나머지 순서는 지금과 같아야 한다(리스너 예외는 마지막 emit에서만 밖으로 나온다는 기존 시험). | 프로세스가 끝나면 그 항목의 `finally`가 `runningTurns`에서, 단위의 `finally`가 `activeUnits`에서 빠지고, 큐가 비어 있으므로 아무것도 시작하지 않고 유휴 대기자를 깨운다. 취소된 실행의 늦은 답은 세대 가드로 버려지고 @멘션 호출도 만들지 않는다. 그 사이 다른 담당자의 새 빠른 턴이 시작했을 수 있다: 옛 프로세스의 종료는 `liveRuns`만 내리고 `activeRuns`·`busy`는 건드리지 않는다(§3, 세대가 다른 실행). 옛 담당자를 기다리던 새 빠른 항목은 그 항목 끝 펌프에서 시작한다. |
 | **대화 삭제** | `stopAllSilently` 후 `liveRuns`가 0이 될 때까지 기다렸다 삭제(지금과 같다). 빠른 대기·실행 중 항목도 위와 같이 정리된다. | 삭제된 방에서 늦게 끝난 단위의 `finally`가 펌프를 불러도 큐가 비어 있다. |
-| **앱 종료**(`shutdown`) | 질문 닫기 → 상태 저장 → `stopAllSilently`(예외는 삼킴). | 위와 같다. 종료 뒤 새 시작은 없다(큐가 비었고 새 메시지가 없다). |
+| **앱 종료**(`shutdown`) | 질문 닫기 → 상태 저장 → `stopAllSilently`(예외는 삼킴). 종료 경로에서는 Windows `taskkill`이 끝나기를 기다린다(`useSynchronousTreeKill`): 비동기 `taskkill`은 앱이 먼저 사라지면 함께 죽어, CLI가 둘 이상 돌 때 하나가 앱이 꺼진 뒤에도 남았다(main v1.3.1에도 있던 문제, `test/reply-now-quit-kill.test.js`). | 위와 같다. 종료 뒤 새 시작은 없다(큐가 비었고 새 메시지가 없다). |
 | **토론 요청**(`startDiscussion`) | `discussionRequested = true`. 이후 오는 메시지는 빠른 턴이 아니다. 이미 있는 빠른 턴(대기 포함)은 정상적으로 끝나고, 토론은 유휴를 기다린다. | 취소·예외 모든 길에서 `finally`로 `discussionRequested` 해제. |
 | **토론 시작** | 유휴를 다시 확인한 뒤 같은 동기 구간에서 `discussionActive = true`. 토론 턴은 일반 줄이라 돌고 있는 턴이 없을 때만 시작(그 사이에 빠른 턴이 없으므로 항상 시작). | `endDiscussionState`가 `finally`에서 플래그를 모두 풀고 미뤄 둔 일반 턴을 큐로 돌려보낸 뒤 펌프한다(결론 메시지 기록이 예외를 던져도). |
 | **토론 중 메시지** | 일반 턴 → `deferredTurnQueue`. 빠른 턴 아님. | 토론 종료·중지 때 정리. |
@@ -377,3 +377,5 @@
 **화면(`src/chat.js`).** 점검만 했고 고친 곳은 없다. 입력 중 표시는 담당자마다 따로 나오고 하나가 끝나도 나머지가 남으며, `roomIsBusy()`는 `running`이 둘이어도 중지·잠깐 버튼을 보이고, 대기 줄은 `fast` 항목에 안내 툴팁과 × 취소(그 턴의 `turnId`만)를 낸다(`test/reply-now-ui.test.js`).
 
 **시험.** 새 시험은 `reply-now-notices`(정체 경고·× 취소·중지), `reply-now-prompt-matrix`(main 대조), `reply-now-ui`(렌더러)다. `reply-now-prompt.test.js`의 S26 두 건은 위 고침(답할 메시지가 마지막이면 줄을 바꾸지 않음)이 의도적으로 바꾼 동작을 기대하고 있어 고쳤다: 기다렸다 시작한 빠른 턴(앞 답이 끝나 들어온 뒤)에서 `replyTarget`을 확인하도록 하고, 마지막인 경우·다른 턴이 함께 도는 경우·400자·독립 발언 단위의 확인을 더했다.
+
+**앱 종료.** 독립 검증이 찾은 문제: 앱을 완전히 끌 때 CLI가 둘 이상 돌고 있으면 하나가 남았다. 원인은 비동기 `taskkill`이 부모(앱)와 같은 작업 묶음에 있어 앱이 먼저 끝나면 같이 죽는 것이다(main에도 있음). `shutdown()`이 `useSynchronousTreeKill()`을 켜면 `killTree`가 `spawnSync`로 `taskkill`이 끝나기를 기다린 뒤 직계 프로세스를 닫는다. 중지·잠깐·대기 ×·삭제는 영향이 없다.

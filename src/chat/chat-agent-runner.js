@@ -1,4 +1,4 @@
-const { spawn } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const { StringDecoder } = require("node:string_decoder");
 const { buildRunMetrics } = require("./chat-run-metrics");
@@ -202,10 +202,18 @@ function compactToLength(text, limit) {
 // taskkill이 끝나기 전에 같은 자식을 다시 죽이려는 호출(출력 폭주 중 반복 등)은 무시합니다.
 const treeKillStarted = new WeakSet();
 
+// 앱 종료 경로 전용. 비동기 taskkill은 앱이 먼저 사라지면 함께 죽어(자식 프로세스 묶음) CLI가 남으므로,
+// 종료가 시작된 뒤에는 taskkill이 끝날 때까지 기다린다. 앱이 곧 끝나므로 되돌리지 않는다.
+let killTreeSynchronously = false;
+function useSynchronousTreeKill() {
+  killTreeSynchronously = true;
+}
+
 function killTree(child, platform = process.platform) {
   if (!child || child.killed || child.exitCode != null) return;
   if (platform === "win32") {
-    if (treeKillStarted.has(child)) return;
+    // 이미 비동기 taskkill이 걸린 자식도 종료 경로에서는 끝까지 기다려 다시 죽인다.
+    if (treeKillStarted.has(child) && !killTreeSynchronously) return;
     treeKillStarted.add(child);
     const killSelf = () => {
       try {
@@ -220,6 +228,11 @@ function killTree(child, platform = process.platform) {
     // taskkill이 트리를 훑기 전에 부모를 먼저 죽이면 자손이 고아로 남으므로,
     // taskkill이 끝난 뒤(또는 실행 자체가 막혔을 때)에만 직계 프로세스를 닫습니다.
     try {
+      if (killTreeSynchronously) {
+        spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true, timeout: 5000 });
+        killSelf();
+        return;
+      }
       const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
         windowsHide: true,
       });
@@ -788,6 +801,7 @@ function runAgentProcess({
 module.exports = {
   runAgentProcess,
   killTree,
+  useSynchronousTreeKill,
   quoteForShell,
   quoteArgForShell,
   compactArgvPrompt,

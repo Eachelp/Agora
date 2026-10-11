@@ -41,6 +41,7 @@ const {
   QUESTION_TOOL_TIMEOUT_SEC,
 } = require("./chat-argv");
 const { createLineParser } = require("./chat-events");
+const { useSynchronousTreeKill } = require("./chat-agent-runner");
 const { ProcessHarnessAdapter } = require("../harness/process-harness-adapter");
 const { persistRunMetrics } = require("./chat-run-metrics-store");
 const {
@@ -2339,6 +2340,8 @@ function roomMeta(meta) {
   // 앱 종료: 진행 중이던 세션은 interrupted로 남겨 다음 시작 때 안내합니다.
   function shutdown() {
     shuttingDown = true;
+    // 여러 CLI를 동시에 돌리다 종료해도 하나도 남지 않게, 아래 중지는 taskkill이 끝나기를 기다린다.
+    useSynchronousTreeKill();
     if (providerRecheckTimer) {
       clearInterval(providerRecheckTimer);
       providerRecheckTimer = null;
