@@ -1,6 +1,6 @@
 # Agora — 개정 기록 2026-10-11: 오케스트레이터 설계
 
-> 상태: **설계 (2026-10-11, 작업 폴더 `D:/Projects/Agora-wt/s6`, 브랜치 `feat/orchestrator`)**. 아직 구현 전이고, 이 문서가 확정된 뒤 구현한다.
+> 상태: **구현됨 (2026-10-11, 작업 폴더 `D:/Projects/Agora-wt/s6`, 브랜치 `feat/orchestrator`, v1.5.0 예정)**. O1(방 로직·IPC·저장·프롬프트, 커밋 `8882d24`·`3632413`)과 O2(화면·문서)로 두 단계에 걸쳐 구현했다. 구현 중 설계를 바꾼 한 곳은 본문에 "구현 단계에서 바꿈"으로 표시(§(12) "지휘 AI가 비활성·미설치" 행). 화면: 방 머리줄 **[오케스트레이터]** 칩(지휘 AI 선택 팝오버), 입력창 안내문, 입력창 위 **"AI끼리 계속 부르기"** 체크(오케스트레이터 켜짐과 무관하게 항상 밝게, §(0)·§(10) 그대로), 라운드·실행 횟수 상태 줄(§(5)·§(9))을 `chat.html`·`chat.js`·`chat.css`에 더했다. 새 시험: `test/orchestrator-room.test.js`·`orchestrator-ipc.test.js`·`orchestrator-prompt.test.js`·`orchestrator-keep-calling.test.js`(O1, 방·IPC·프롬프트·keepCalling 시나리오) + `test/orchestrator-ui.test.js`(O2, 칩·팝오버·입력창 안내문·체크·상태 줄·실시간 구독·per-room 격리). 사용자 안내는 [사용 안내](../../사용-안내.md)에 있다.
 > 근거: 계획 v5(`D:/Projects/Agora-review-2026-10/02-계획/계획-v5-6단계-사용자결정.md`, 사용자 결정, v4와 충돌하면 최우선) · 계획 v4 §2(`계획-v4-5·6단계-상세.md`) · `AGORA_REVISION_2026-10-11_REPLY_NOW.md`(바로 답하기 스케줄러, 지금 main에 있음) · `AGORA_REVISION_2026-10-11_QUESTION_UI.md`(질문 카드). 코드는 v1.4.0(main `f5e0eaf`) 기준 `src/chat/chat-room.js`·`chat-prompt.js`·`chat-ipc.js`·`chat-mention.js`·`chat.js`·`chat.html`을 읽고 썼다.
 > 목적 3기둥 중 (2) "여러 에이전트를 결합한 실행"이 제거된 전문 모드에서 여기(보통 대화의 오케스트레이터 모드)로 옮겨 온다. Agora는 코딩 전용 도구가 아니므로 아래 설계는 코드 작업을 전제하지 않는다(연구·조사·기획 방에서도 그대로 쓴다).
 
