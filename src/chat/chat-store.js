@@ -434,6 +434,7 @@ class ChatStore {
       if (entry.status !== "running") continue;
       const meta = this.readMeta(entry.id);
       if (!meta || meta.readOnly || meta.status !== "running") continue;
+      this.closeDanglingDiscussions(entry.id);
       this.appendEvent(entry.id, {
         kind: "message",
         message: {
@@ -446,6 +447,42 @@ class ChatStore {
       });
       this.updateMeta(entry.id, { status: "interrupted" });
     }
+  }
+
+  // 토론 도중 앱이 끝나면 결론(discussionMeta) 메시지가 남지 않아 '결론 종합하기' 버튼을 달 곳이 없다.
+  // 시작 메시지에 남긴 discussionStart 표식 가운데 결론이 없는 토론을 '중단됨' 결론으로 닫는다.
+  closeDanglingDiscussions(id) {
+    const messages = this.readMessages(id);
+    const closed = new Set(messages.map((message) => message.discussionMeta?.discussionId).filter(Boolean));
+    messages.forEach((message, index) => {
+      const start = message.discussionStart;
+      if (!start?.discussionId || closed.has(start.discussionId)) return;
+      // 끊긴 토론은 다음 토론이 시작되기 전(없으면 대화 끝)까지다.
+      const next = messages.findIndex((later, laterIndex) => laterIndex > index && later.discussionStart);
+      const last = messages[(next === -1 ? messages.length : next) - 1];
+      this.appendEvent(id, {
+        kind: "message",
+        message: {
+          id: `disc-cut-${start.discussionId}`,
+          ts: this.now(),
+          authorType: "system",
+          author: "system",
+          text: "앱이 종료되어 토론이 중간에 끊겼습니다. 여기까지의 발언으로 '결론 종합하기'를 쓸 수 있습니다.",
+          discussionMeta: {
+            discussionId: start.discussionId,
+            startMessageId: start.startMessageId || null,
+            endMessageId: last.id,
+            concluded: false,
+            completed: messages.slice(index + 1, (next === -1 ? messages.length : next)).filter((m) => m.authorType === "agent" && !m.error).length,
+            budget: start.budget || null,
+            incomplete: true,
+            reason: "interrupted",
+            failures: 0,
+            participants: Array.isArray(start.participants) ? start.participants : [],
+          },
+        },
+      });
+    });
   }
 
   deleteSession(id) {

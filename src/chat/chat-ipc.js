@@ -2289,7 +2289,8 @@ function roomMeta(meta) {
         room.interruptQuestions();
       } catch {}
       try {
-        if (room.activeRuns > 0 && store && !store.readOnly) {
+        // 토론 중이면 턴 사이라도 'running'으로 남겨, 다시 켠 뒤 끊긴 토론을 닫는다(chat-store closeDanglingDiscussions).
+        if ((room.activeRuns > 0 || room.discussionActive) && store && !store.readOnly) {
           store.setSessionStatus(sessionId, "running");
         } else if (store && !store.readOnly) {
           const meta = store.readMeta(sessionId);

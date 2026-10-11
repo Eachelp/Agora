@@ -1537,15 +1537,22 @@ class ChatRoom extends EventEmitter {
       : clampDiscussionTurnBudget(options.turnBudget, this.discussionRunBudget);
     // 시작 안내를 기록하다 실패해도 토론 플래그가 남아 대화가 멈추지 않게 한다.
     try {
-      if (protocol) {
-        this.appendSystem(
-          `구조화 토론 시작 · ${protocol.presetName} Preset · ${pool.map((agent) => `@${agent.id}`).join(", ")} · ${protocol.cycleBudget}사이클(최대 ${budget}턴)`
-        );
-      } else {
-        this.appendSystem(
-          `자율 토론 시작 · ${pool.map((agent) => `@${agent.id}`).join(", ")} · 최대 ${budget}턴`
-        );
-      }
+      // 시작 메시지에 토론 id를 남겨 둔다. 앱이 토론 도중 끝나 결론 메시지가 없을 때, 다시 켠 뒤
+      // 이 표식으로 끊긴 토론을 찾아 닫는다(chat-store.js closeDanglingDiscussions).
+      const discussionStart = {
+        discussionId,
+        startMessageId,
+        participants: pool.map((agent) => agent.id),
+        budget,
+      };
+      this.appendMessage({
+        authorType: "system",
+        author: "system",
+        text: protocol
+          ? `구조화 토론 시작 · ${protocol.presetName} Preset · ${pool.map((agent) => `@${agent.id}`).join(", ")} · ${protocol.cycleBudget}사이클(최대 ${budget}턴)`
+          : `자율 토론 시작 · ${pool.map((agent) => `@${agent.id}`).join(", ")} · 최대 ${budget}턴`,
+        discussionStart,
+      });
     } catch (error) {
       this.endDiscussionState();
       throw error;
