@@ -251,7 +251,11 @@ ORCHESTRATION_EXECUTION_CEILING = 150
 
 ## (9) 일시 정지 표시
 
-`meta.permissionMode`가 `workspace-write`이고 자동 승인이 꺼져 있을 때 지휘 AI 또는 작업자 턴이 `pendingApprovals`에 걸려 있으면(기존 승인 카드 메커니즘, 바뀌지 않는다) 화면의 오케스트레이터 상태 줄이 "라운드 N · 실행 M" 대신(또는 그 옆에) "일시 정지(승인 대기)"를 보인다. 질문 카드는 지휘 AI 자신의 것만 있을 수 있으므로(작업자에겐 질문 도구를 안 붙인다, §(6)) 같은 표시가 "일시 정지(질문 대기)"로도 쓰인다. 두 표시 모두 `room.state()`의 `orchestration` 필드가 아니라, 이미 있는 `pendingApprovals`/`userQuestions` 스냅숏에서 렌더러가 계산한다(새 방 상태 불필요).
+`meta.permissionMode`가 `workspace-write`이고 자동 승인이 꺼져 있을 때 지휘 AI 또는 작업자 턴이 `pendingApprovals`에 걸려 있으면(기존 승인 카드 메커니즘, 바뀌지 않는다) 화면의 오케스트레이터 상태 줄이 "라운드 N · 실행 M" 대신(또는 그 옆에) "일시 정지(승인 대기)"를 보인다. 질문 카드는 지휘 AI 자신의 것만 있을 수 있으므로(작업자에겐 질문 도구를 안 붙인다, §(6)) 같은 표시가 "일시 정지(질문 대기)"로도 쓰인다.
+
+**검증에서 고침(review-behaviour, major)**: 처음 구현은 "지휘 AI 또는 작업자 턴이"라는 scope를 실제로는 안 지켰다 — `pendingApprovals`/`userQuestions`를 `sessionId`만으로 걸러, **이 방의 무관한 곁가지 대화**(예: 오케스트레이션과 나란히 도는 직접 `@other` 턴, §(8) "직접 @other")가 승인·질문을 기다려도 "일시 정지"가 잘못 켜졌다. 고침: `orchestrationSnapshot()`이 `agentIds`(지휘 AI + 지금 이 오케스트레이션으로 claim된 작업자 id들, `liveTurns()`에서 `context.orchestration.id` 일치로 추린다)를 함께 내려 주고, 렌더러는 `approval.agentId`/`question.agentId`가 그 집합에 있을 때만 "일시 정지"를 켠다(`src/chat/chat-room.js`의 `orchestrationSnapshot`, `src/chat.js`의 `renderOrchestrationStatus`). `agentIds`는 상태 줄에 그리지 않는다(§(5) "화면엔 라운드·실행 횟수만"은 그대로 — scope 계산에만 쓰는 내부 값이다).
+
+두 표시 모두 `room.state()`의 `orchestration.{round,executions}` 필드 자체는 바꾸지 않고, 이미 있는 `pendingApprovals`/`userQuestions` 스냅숏 + 위 `agentIds`에서 렌더러가 계산한다(새 방 상태 불필요).
 
 ## (10) "AI끼리 계속 부르기"(keepCalling)
 

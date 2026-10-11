@@ -296,11 +296,19 @@ class ChatRoom extends EventEmitter {
   // 렌더러가 기존 pendingApprovals/userQuestions 스냅숏에서 따로 계산한다(§(9)).
   orchestrationSnapshot() {
     if (!this.orchestration) return null;
+    // agentIds: 지휘 AI + 지금 이 오케스트레이션으로 돌고 있는 작업자(§(9) "지휘 AI 또는 작업자 턴이
+    // pendingApprovals에 걸려 있으면"의 scope). 화면 상시 표시(라운드·실행 횟수만, §(5))에는 안 쓰고
+    // 일시 정지 판정을 무관한 곁가지 대화와 가르는 데만 쓴다.
+    const workerIds = this.liveTurns()
+      .filter((item) => item.context.orchestration?.id === this.orchestration.id
+        && item.context.orchestration.role === "worker")
+      .map((item) => item.agent.id);
     return {
       active: true,
       round: this.orchestration.round,
       executions: this.orchestration.executions,
       leadId: this.orchestration.leadId,
+      agentIds: [...new Set([this.orchestration.leadId, ...workerIds])],
     };
   }
 

@@ -98,7 +98,7 @@ function loadOrchestratorBlock(agents, initialMeta) {
     activeSessionId: "room-a",
     approvalQueue: [],
     activeApproval: null,
-    questionCards: { hasPending: () => false },
+    questionCards: { hasPending: () => false, isWaiting: () => false },
     agentById: (id) => agents.find((agent) => agent.id === id) || null,
     openPopover(anchor, build) {
       popover.textContent = "";
@@ -234,21 +234,41 @@ test("상태 줄: 오케스트레이션이 없으면 숨고, 있으면 지휘 AI
   assert.equal(ui.orchestrationStatusRow.textContent, "");
 });
 
-test("상태 줄: 승인 대기·질문 대기면 라운드·실행 횟수 옆에 일시 정지를 덧붙인다", () => {
+test("상태 줄: 승인 대기·질문 대기면 라운드·실행 횟수 옆에 일시 정지를 덧붙인다(지휘 AI·작업자 몫만)", () => {
   const { ui } = loadOrchestratorBlock(
     [{ id: "claude", name: "Claude", available: true, enabled: true }],
     { orchestrator: { enabled: true, leadId: "claude" } }
   );
-  ui.orchestration = { active: true, round: 1, executions: 1, leadId: "claude" };
+  ui.orchestration = { active: true, round: 1, executions: 1, leadId: "claude", agentIds: ["claude", "agy"] };
 
-  ui.approvalQueue.push({ sessionId: "room-a" });
+  ui.approvalQueue.push({ sessionId: "room-a", agentId: "claude" });
   ui.renderOrchestrationStatus();
   assert.match(ui.orchestrationStatusRow.textContent, /일시 정지\(승인 대기\)$/);
   ui.approvalQueue.length = 0;
 
-  ui.questionCards = { hasPending: () => true };
+  ui.questionCards = { isWaiting: (id) => id === "agy" };
   ui.renderOrchestrationStatus();
   assert.match(ui.orchestrationStatusRow.textContent, /일시 정지\(질문 대기\)$/);
+});
+
+test("상태 줄: 오케스트레이션과 무관한 곁가지 대화(@other)의 승인·질문은 일시 정지로 세지 않는다", () => {
+  // 적대적 검토 발견(review-behaviour, major): waitingApproval이 sessionId만 보고 agentId를 보지
+  // 않아, 직접 @codex로 건 무관한 대화의 승인 카드가 claude 하나만 지휘하는 오케스트레이션을
+  // "일시 정지"로 잘못 보이게 했다. agentIds 범위로 좁혀 고친 것을 이 시험이 지킨다.
+  const { ui } = loadOrchestratorBlock(
+    [{ id: "claude", name: "Claude", available: true, enabled: true }],
+    { orchestrator: { enabled: true, leadId: "claude" } }
+  );
+  ui.orchestration = { active: true, round: 1, executions: 2, leadId: "claude", agentIds: ["claude"] };
+
+  ui.approvalQueue.push({ sessionId: "room-a", agentId: "codex" });
+  ui.renderOrchestrationStatus();
+  assert.equal(ui.orchestrationStatusRow.textContent, "오케스트레이터 · @claude · 라운드 1 · 실행 2회");
+  ui.approvalQueue.length = 0;
+
+  ui.questionCards = { isWaiting: (id) => id === "codex" };
+  ui.renderOrchestrationStatus();
+  assert.equal(ui.orchestrationStatusRow.textContent, "오케스트레이터 · @claude · 라운드 1 · 실행 2회");
 });
 
 test("실시간 구독: 지금 방 것만 받고, 다른 방 알림은 무시한다(방마다 따로 보인다)", () => {

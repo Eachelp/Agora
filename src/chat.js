@@ -1508,9 +1508,17 @@ function renderOrchestrationStatus() {
   }
   const lead = agentById(orchestration.leadId);
   const leadLabel = lead ? `@${lead.id}` : `@${orchestration.leadId}`;
-  const waitingApproval = approvalQueue.some((approval) => approval.sessionId === activeSessionId)
-    || Boolean(activeApproval && activeApproval.sessionId === activeSessionId);
-  const waitingQuestion = !waitingApproval && questionCards.hasPending();
+  // 일시 정지는 이 오케스트레이션의 지휘 AI·작업자(§(9))에 걸린 승인·질문만 본다 — 무관한 곁가지
+  // 대화(예: 직접 @other)의 승인·질문은 세지 않는다(orchestration.agentIds가 없는 옛 스냅숏은
+  // 지휘 AI 하나로 좁혀 둔다).
+  const participantIds = new Set(orchestration.agentIds || [orchestration.leadId]);
+  const waitingApproval = approvalQueue.some(
+    (approval) => approval.sessionId === activeSessionId && participantIds.has(approval.agentId)
+  ) || Boolean(
+    activeApproval && activeApproval.sessionId === activeSessionId && participantIds.has(activeApproval.agentId)
+  );
+  const waitingQuestion = !waitingApproval
+    && [...participantIds].some((id) => questionCards.isWaiting(id));
   const pause = waitingApproval ? " · 일시 정지(승인 대기)" : waitingQuestion ? " · 일시 정지(질문 대기)" : "";
   orchestrationStatusRow.textContent =
     `오케스트레이터 · ${leadLabel} · 라운드 ${orchestration.round} · 실행 ${orchestration.executions}회${pause}`;
