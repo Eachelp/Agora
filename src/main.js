@@ -115,6 +115,7 @@ let accountSwitching = null;
 const chatFeature = createChatFeature({
   electron: { ipcMain, dialog, BrowserWindow, shell },
   onWindowReady: () => sendAppearanceToWindows(),
+  getAppearance: getAppearancePayload,
   prepareAgent: ({ agent }) => accountSwitching.prepareChatAgent(agent),
   // 출력 hard limit은 기본값이 없습니다(상한 없음).
   // 사용자가 settings.json의 agentOutputHardLimitMB에 양수를 넣은 경우에만 적용됩니다.

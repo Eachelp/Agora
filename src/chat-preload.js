@@ -7,6 +7,7 @@ const INVOKE = Object.freeze({
   OPEN_EXTERNAL: "chat:open-external",
   OPEN_SETTINGS: "chat:open-settings",
   USAGE: "chat:usage",
+  APPEARANCE_GET: "chat:appearance:get",
   PROJECTS_CREATE: "chat:projects:create",
   PROJECTS_SELECT: "chat:projects:select",
   PROJECTS_UPDATE: "chat:projects:update",
@@ -67,6 +68,8 @@ contextBridge.exposeInMainWorld("chatApi", {
   openExternal: (url) => ipcRenderer.invoke(INVOKE.OPEN_EXTERNAL, { url }),
   openSettings: (section) => ipcRenderer.send(INVOKE.OPEN_SETTINGS, section),
   usage: (force = false) => ipcRenderer.invoke(INVOKE.USAGE, { force }),
+  // 창을 새로고침하면 main이 다시 밀어 주지 않으므로, 시작할 때 저장된 화면 설정을 직접 가져온다.
+  appearanceGet: () => ipcRenderer.invoke(INVOKE.APPEARANCE_GET),
 
   projectsCreate: (name, workspace) => ipcRenderer.invoke(INVOKE.PROJECTS_CREATE, { name, workspace }),
   projectsSelect: (projectId) => ipcRenderer.invoke(INVOKE.PROJECTS_SELECT, { projectId }),

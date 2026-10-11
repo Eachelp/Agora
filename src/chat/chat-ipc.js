@@ -1318,6 +1318,10 @@ function roomMeta(meta) {
 
   function registerIpcHandlers() {
     ipcMain.handle("chat:state", wrap(async (input) => fullState(input)));
+    ipcMain.handle(
+      "chat:appearance:get",
+      wrap(async () => ({ appearance: typeof options.getAppearance === "function" ? options.getAppearance() : null }))
+    );
 
     ipcMain.handle(
       "chat:providers:refresh",

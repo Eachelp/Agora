@@ -4488,7 +4488,16 @@ window.chatApi.onApprovalResolved(({ approvalId }) => {
   dismissApproval(approvalId);
   syncComposerLock();
 });
-window.chatApi.onAppearance(applyAppearance);
+// main이 저장된 화면 설정을 밀어 주는 것은 창이 처음 뜰 때뿐이라, 새로고침하면 기본 색으로 돌아간다.
+// 시작할 때 직접 가져오되, 그 사이 더 새 값이 밀려왔다면 그것을 덮지 않는다.
+let appearancePushed = false;
+window.chatApi.onAppearance((appearance) => {
+  appearancePushed = true;
+  applyAppearance(appearance);
+});
+call(window.chatApi.appearanceGet()).then((result) => {
+  if (!appearancePushed && result?.appearance) applyAppearance(result.appearance);
+});
 
 // --- 사용량 (사이드바 스트립 + 팝오버) ---
 const USAGE_STALE_MS = 60000;
