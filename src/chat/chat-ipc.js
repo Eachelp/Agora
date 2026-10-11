@@ -743,7 +743,21 @@ function createChatFeature(options) {
       if (!fs.existsSync(dir)) return;
       const room = rooms.get(sessionId);
       const used = new Set();
-      for (const message of room ? room.messages : store.readMessages(sessionId)) {
+      // 저장소의 관대한 읽기는 못 읽거나 깨진 줄을 조용히 건너뛰어 보낸 첨부까지 '쓰지 않는 사본'으로 보이게 합니다.
+      // 여기서는 엄격히 읽어, 못 읽거나 깨진 줄이 하나라도 있으면 아무것도 지우지 않습니다(없는 파일은 보낸 메시지가 없다는 뜻).
+      let raw = "";
+      try {
+        raw = fs.readFileSync(store.transcriptPath(sessionId), "utf8");
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+      const messages = [...(room ? room.messages : [])];
+      for (const line of raw.split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        const event = JSON.parse(line);
+        if (event?.kind === "message" && event.message) messages.push(event.message);
+      }
+      for (const message of messages) {
         for (const attachment of message.attachments || []) used.add(attachment.fileName);
       }
       for (const name of fs.readdirSync(dir)) {
