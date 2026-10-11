@@ -945,10 +945,15 @@ class ChatRoom extends EventEmitter {
       // 빠른 턴과 독립 발언 턴은 시작 시점에 끝난 답까지 본다. 일반(이어 발언) 턴은 예약 시점의 기록을 그대로 쓴다.
       if (item.lane === "fast" || item.context.independent) {
         item.promptLimit = this.messages.length;
+        // 답할 메시지가 기록의 마지막이면 예전 문구("마지막 메시지에 이어")가 그대로 맞으므로 프롬프트를 바꾸지 않는다.
+        // 그 뒤에 다른 참가자의 답이 끝나 들어와 있을 때만 그 메시지를 직접 가리킨다.
+        const history = this.promptMessages(item.promptLimit, item.context.independent, item.context.turnRootId);
         const rootMessage = item.context.turnRootId
           ? this.messages.find((message) => message.id === item.context.turnRootId)
           : null;
-        const target = String(rootMessage?.text || "").replace(/\s+/g, " ").trim().slice(0, 400);
+        const target = history.at(-1)?.id === item.context.turnRootId
+          ? ""
+          : String(rootMessage?.text || "").replace(/\s+/g, " ").trim().slice(0, 400);
         item.replyTarget = target || null;
       }
     }

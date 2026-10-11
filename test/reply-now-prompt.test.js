@@ -128,33 +128,60 @@ test("S16 이어 발언 모드의 예약 시점 기록은 그대로다(같은 �
   assert.doesNotMatch(calls[1].prompt, /이번에 답할 메시지는/);
 });
 
-test("S26 빠른 턴·독립 발언 턴의 프롬프트는 답할 메시지를 직접 가리키고 '마지막 메시지에 이어'·'한 번에 한 명만' 줄이 없다", async () => {
+test("S26 빠른 턴의 답할 메시지 뒤에 다른 답이 끝나 들어와 있으면 프롬프트가 답할 메시지를 직접 가리키고 '마지막 메시지에 이어'·'한 번에 한 명만' 줄이 없다", async () => {
   const { room, calls } = makeRoom();
   room.sendUserMessage("@all 질문");
   await settle();
-  calls[0].finish("클로드 답");
+  room.sendUserMessage("@claude   이건\n이렇게 해 줘"); // claude가 아직 도는 중: 빠른 턴이 기다린다
   await settle();
-  calls[1].finish("코덱스 답");
+  calls[0].finish("클로드 답"); // 답할 메시지 뒤에 claude 자신의 답이 들어온다
   await settle();
-  room.sendUserMessage("@claude   이건\n이렇게 해 줘");
-  await settle();
-  const fast = calls.find((call, index) => index >= 2 && call.agentId === "claude");
+  const fast = calls.find((call, index) => index >= 1 && call.agentId === "claude");
   assert.ok(fast, "빠른 claude가 시작했다");
   assert.match(fast.prompt, /이번에 답할 메시지는 사용자의 "@claude 이건 이렇게 해 줘"입니다/);
   assert.match(fast.prompt, /마지막 메시지가 아닐 수 있고/);
   assert.doesNotMatch(fast.prompt, /아래 대화의 마지막 메시지에 이어 자연스럽게 답하세요/);
   assert.doesNotMatch(fast.prompt, /한 번에 한 명만 발언합니다/);
   assert.match(fast.prompt, /답을 마치면 사용자에게 결정을 넘기거나/);
-  assert.match(fast.prompt, /코덱스 답/, "시작 시점에 끝난 답을 본다");
+  assert.match(fast.prompt, /클로드 답/, "시작 시점에 끝난 답을 본다");
 });
 
-test("S26 replyTarget은 400자까지만 쓰고, 독립 발언 일반 줄 단위에도 붙는다", async () => {
+test("S26 답할 메시지가 기록의 마지막이면(아무도 안 도는 방의 직접 답장) 프롬프트는 예전과 한 글자도 다르지 않다", async () => {
   const { room, calls } = makeRoom();
-  room.sendUserMessage({ text: `@모두 ${"가".repeat(500)}`, independent: true });
+  room.sendUserMessage("@claude 안녕");
+  await settle();
+  assert.doesNotMatch(calls[0].prompt, /이번에 답할 메시지는/);
+  assert.match(calls[0].prompt, /아래 대화의 마지막 메시지에 이어 자연스럽게 답하세요/);
+  assert.match(calls[0].prompt, /한 번에 한 명만 발언합니다/);
+  assert.doesNotMatch(calls[0].prompt, /그 답이 아직 없습니다|동시에 일하고 있습니다/);
+});
+
+test("S26 다른 턴이 함께 도는 빠른 턴은 '한 번에 한 명만 발언합니다'를 뺀다(답할 메시지가 마지막이어도)", async () => {
+  const { room, calls } = makeRoom();
+  room.sendUserMessage("@claude 오래 걸리는 일");
+  await settle();
+  room.sendUserMessage("@codex 안녕");
+  await settle();
+  assert.equal(calls[1].agentId, "codex");
+  assert.doesNotMatch(calls[1].prompt, /이번에 답할 메시지는/);
+  assert.match(calls[1].prompt, /아래 대화의 마지막 메시지에 이어 자연스럽게 답하세요/);
+  assert.doesNotMatch(calls[1].prompt, /한 번에 한 명만 발언합니다/);
+  assert.match(calls[1].prompt, /지금 @claude가 답하는 중이라 위 대화에는 그 답이 아직 없습니다/);
+});
+
+test("S26 replyTarget은 400자까지만 쓰고, 독립 발언 단위의 모든 구성원에게 붙는다", async () => {
+  const { room, calls } = makeRoom();
+  room.sendUserMessage("@claude 앞 질문");
+  await settle();
+  room.sendUserMessage({ text: `@claude @codex ${"가".repeat(500)}`, independent: true }); // claude가 바빠 단위 전체가 기다린다
+  await settle();
+  calls[0].finish("앞 답");
   await settle();
   assert.equal(calls.length, 3);
-  const quoted = /사용자의 "([^"]*)"/.exec(calls[0].prompt)[1];
-  assert.equal(quoted.length, 400);
+  for (const call of calls.slice(1)) {
+    const quoted = /사용자의 "([^"]*)"/.exec(call.prompt)[1];
+    assert.equal(quoted.length, 400);
+  }
 });
 
 test("S26 일반 줄의 이어 발언·멘션 호출·토론의 프롬프트는 replyTarget 없이 지금과 한 글자도 다르지 않다", async () => {
