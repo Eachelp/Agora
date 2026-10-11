@@ -36,7 +36,7 @@ test("F2 대화 이동 팝오버는 대화가 실제로 속한 프로젝트를 '
     window: { chatApi: { sessionsMove: async (sessionId, projectId) => { moves.push([sessionId, projectId]); return {}; } } },
   };
   vm.createContext(context);
-  vm.runInContext(section("// 대화가 실제로 속한 프로젝트.", "// 채팅 목록은 프로젝트 트리 안에"), context);
+  vm.runInContext(section("function sessionOwnerProjectId(", "function renderSessions("), context);
 
   context.openSessionMovePopover({}, { id: "x", projectId: "p2" });
   const options = context.target.byClass("project-move-option");
@@ -57,7 +57,7 @@ test("F6 알림이 연달아 떠도 영구 저장소 경고 문구는 원래대�
     clearTimeout: (id) => { if (id) timers[id - 1] = null; },
   };
   vm.createContext(context);
-  vm.runInContext(section("// 저장소 경고(읽기 전용·손상)는 자동으로", "async function call("), context);
+  vm.runInContext(section("function showPersistentWarning(", "async function call("), context);
 
   const warning = "이 .agora 저장소는 더 새로운 버전이 만든 것이라 읽기 전용으로 열렸습니다.";
   context.showPersistentWarning(warning);
@@ -110,7 +110,7 @@ function loadWorkflowPopover() {
   };
   vm.createContext(context);
   vm.runInContext(
-    section("const WORKFLOW_STATUS_LABELS", "// --- 토론 팝오버 ---"),
+    section("const WORKFLOW_STATUS_LABELS", "workflowButton.addEventListener("),
     context
   );
   const openTab = () => popover.byClass("workflow-tab-panel").findIndex((panel) => panel.classList.contains("is-active"));
@@ -235,7 +235,7 @@ test("F14 접힌 시스템 알림은 뒤에 다른 메시지가 붙어도 다시
   };
   vm.createContext(context);
   vm.runInContext(
-    [section("// 같은 시스템 알림이 연달아 오면", "function appendMessage(")].join("\n"),
+    [section("function mergeIntoPreviousSystem(", "function appendMessage(")].join("\n"),
     context
   );
   let key = 0;
