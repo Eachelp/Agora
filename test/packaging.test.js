@@ -51,6 +51,19 @@ test("패키징은 node_modules/electron(개발·CLI용 전체 배포본)을 중
   assert.ok(packageJson.build.files.includes("!node_modules/@electron-internal/**/*"));
 });
 
+test("로컬 실행 체크리스트는 전문 모드 시대 역사 기록이라고 밝힌다(현재 기능 확인 결과가 아니다)", () => {
+  const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+  const docsReadme = fs.readFileSync(path.join(ROOT, "docs", "README.md"), "utf8");
+  // README.md의 링크 문구, docs/README.md의 전체 Markdown 목록 표의 그 행 — 둘 다 이 문서를
+  // "제거됨·역사 기록"으로 밝혀야 한다("현재 UI·CLI 확인 시나리오"처럼 지금 쓰는 것으로 읽히면 안 된다).
+  const readmeLink = readme.split("\n").find((l) => l.includes("AGORA_V1_5_LOCAL_SMOKE_CHECKLIST.md"));
+  const tableRow = docsReadme.split("\n").find((l) => l.startsWith("|") && l.includes("AGORA_V1_5_LOCAL_SMOKE_CHECKLIST.md"));
+  assert.ok(readmeLink && tableRow, "두 문서 모두에서 체크리스트를 가리키는 줄을 찾아야 한다");
+  for (const line of [readmeLink, tableRow]) {
+    assert.match(line, /제거됨|역사 기록/, "전문 모드 시대 문서라고 밝혀야 한다");
+  }
+});
+
 test("README가 .agora 저장소·권한·첨부·AGY 구분을 문서화한다", () => {
   const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
   assert.match(readme, /\.agora/);

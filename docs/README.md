@@ -25,7 +25,7 @@
 
 ## 팀 확인과 검증 기록
 
-[실제 앱·CLI 실행 체크리스트](design/AGORA_V1_5_LOCAL_SMOKE_CHECKLIST.md)에 기대 동작과 결과를 기록합니다. 자동 테스트, 앱 화면 확인, 실제 CLI를 연결한 작업 실행은 서로 다른 검증입니다. 실제로 수행한 항목만 결과로 남깁니다.
+자동 테스트, 앱 화면 확인, 실제 CLI를 연결한 작업 실행은 서로 다른 검증입니다. 현재 기능(오케스트레이터·바로 답하기·질문 카드 등)의 실제 Electron·CLI 확인 결과는 각 단계 작업의 진행 기록에 남습니다. [로컬 실행 체크리스트](design/AGORA_V1_5_LOCAL_SMOKE_CHECKLIST.md)는 (제거됨·역사 기록) 전문 모드 시대에 쓰던 시나리오 모음입니다.
 
 ## 전체 Markdown 목록
 
@@ -40,7 +40,7 @@
 | [미래 확장 호환성](design/AGORA_V1_FUTURE_COMPATIBILITY.md) | 현재 기능과 미래 V2·V3의 경계 |
 | [V1.5 구현 계획](design/AGORA_V1_5_IMPLEMENTATION_PLAN.md) | 최초 계획 및 후속 구현 결정 이력. 상단에 현재 도달 범위 표시 |
 | [V1.5 제안](design/AGORA_V1_5_PROPOSAL.md) | 최초 제안 기록. 전체가 현재 기능 명세는 아님 |
-| [로컬 실행 체크리스트](design/AGORA_V1_5_LOCAL_SMOKE_CHECKLIST.md) | 현재 UI·실제 CLI 확인 시나리오와 수행 결과 |
+| [로컬 실행 체크리스트](design/AGORA_V1_5_LOCAL_SMOKE_CHECKLIST.md) | (제거됨·역사 기록) 전문 모드 시대의 실제 UI·CLI 확인 시나리오 |
 | [초기 구현 계획](design/AGORA_IMPLEMENTATION_PLAN.md) | 초기 전환 당시 계획 |
 | [Managed Harness 개발일지](design/AGORA_MANAGED_HARNESS_EVOLUTION_LOG.md) | (제거됨·역사 기록) Stage별 개발·검증 이력. 본문의 ‘다음 단계’는 작성 당시 기준 |
 | [Stage C 최종 검수](design/AGORA_STAGE_C_FINAL_REVIEW.md) | (대체됨·역사 기록) 2026-08-20 검수 대상 커밋의 판정 |

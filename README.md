@@ -123,7 +123,7 @@ artifacts/Agora-<버전>.exe
 - [설치 가이드](설치-가이드.md)
 - [사용 안내](사용-안내.md)
 - [문서 안내와 현재 지원 범위](docs/README.md)
-- [실제 앱·CLI 실행 체크리스트](docs/design/AGORA_V1_5_LOCAL_SMOKE_CHECKLIST.md)
+- [로컬 실행 체크리스트(제거됨·역사 기록, 전문 모드 시대)](docs/design/AGORA_V1_5_LOCAL_SMOKE_CHECKLIST.md)
 - [Agora V1 설계](docs/design/AGORA_V1_DESIGN.md)
 - [V1.5 구현 계획과 결정 이력](docs/design/AGORA_V1_5_IMPLEMENTATION_PLAN.md)
 - [오케스트레이터 설계와 구현 결과](docs/design/AGORA_REVISION_2026-10-11_ORCHESTRATOR.md)
