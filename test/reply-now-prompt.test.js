@@ -19,7 +19,7 @@ test("S12 쓰기 방에서 혼자 도는 턴에는 동시 작업 안내도 계�
   assert.doesNotMatch(calls[0].prompt, NOT_YET);
 });
 
-for (const [mode, hasContract] of [["workspace-write", true], ["workspace-read", false], ["chat", false]]) {
+for (const [mode, hasContract] of [["workspace-write", true], ["workspace-read", true], ["chat", false]]) {
   test(`S13 ${mode} 방: 다른 턴이 도는 중에 시작하는 턴은 "아직 대화에 없는 답" 줄${hasContract ? "과 쓰기 계약" : "만"} 받고, 이미 보낸 프롬프트는 그대로다`, async () => {
     const { room, calls } = makeRoom({ meta: { permissionMode: mode } });
     room.sendUserMessage("@claude 길게");

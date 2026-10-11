@@ -250,13 +250,14 @@ ${memoryFull.slice(-budget)}`
     );
   }
   // 같은 단위가 아닌 다른 턴이 지금 돌고 있는 자유 대화 턴: 그 답이 아직 대화에 없다는 것을 알린다(권한과 무관).
-  // 쓰기 권한이면 같은 작업 폴더에서 동시에 일하는 계약도 더한다(강제가 아니라 프롬프트 계약이다).
+  // 쓰기·읽기 권한이면 같은 작업 폴더에서 동시에 일하는 계약도 더한다(강제가 아니라 프롬프트 계약이다).
   if (concurrentWork.length > 0 && !discussion && !isDiscussionSummary && !isSimplify) {
     const names = concurrentWork.map((id) => `@${id}`).join(", ");
     lines.push(
       `- 지금 ${names}가 답하는 중이라 위 대화에는 그 답이 아직 없습니다. 기다리지 말고 지금 있는 대화로 답하되, 그 답이 있어야 판단되는 부분은 그렇다고 밝히세요.`
     );
-    if (permissionMode === "workspace-write") {
+    // 읽기 권한도 같은 폴더를 보므로(파일이 바뀌는 중에 읽는다) 같은 안내를 준다. 대화 전용 방에는 붙지 않는다.
+    if (permissionMode === "workspace-write" || permissionMode === "workspace-read") {
       lines.push(`- 지금 다른 AI(${names})가 같은 작업 폴더에서 동시에 일하고 있습니다. 서로의 작업이 섞이지 않게 다음을 지키세요.`);
       lines.push("  · 그 AI가 만들거나 고치는 파일은 건드리지 마세요(읽기는 자유입니다). 어떤 파일을 쓰는지 알 수 없으면 새 파일로 만들거나 먼저 사용자에게 물어보세요.");
       lines.push("  · git·패키지 설치·빌드처럼 작업 폴더 전체에 영향을 주는 명령은 실행하지 마세요.");

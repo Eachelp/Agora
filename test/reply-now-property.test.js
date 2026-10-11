@@ -203,7 +203,7 @@ for (const seed of [1, 7, 20261011, 4242]) {
   }
 }
 
-test("S24 속성: 쓰기 방의 동시 작업 계약은 '권한이 쓰기이고 같은 단위가 아닌 도는 턴이 있을 때'와 정확히 일치한다", async () => {
+test("S24 속성: 파일 작업 방(쓰기·읽기)의 동시 작업 계약은 '같은 단위가 아닌 도는 턴이 있을 때'에만 있고, 대화 전용 방에는 없다", async () => {
   for (const permissionMode of ["workspace-write", "workspace-read", "chat"]) {
     const world = makeWorld(99, { meta: { permissionMode } });
     world.discussions = [];
@@ -216,10 +216,12 @@ test("S24 속성: 쓰기 방의 동시 작업 계약은 '권한이 쓰기이고 
     for (const call of world.calls) {
       const notYet = /그 답이 아직 없습니다/.test(call.prompt);
       const contract = /동시에 일하고 있습니다/.test(call.prompt);
-      if (permissionMode !== "workspace-write") assert.equal(contract, false, `${permissionMode}: 쓰기 계약은 쓰기 권한에서만`);
+      if (permissionMode === "chat") assert.equal(contract, false, "대화 전용 방에는 폴더 계약이 없다");
+      else assert.equal(contract, notYet, `${permissionMode}: 폴더 계약은 알림 줄과 함께 (같은 조건)`);
       assert.equal(contract && !notYet, false, "계약이 있으면 알림 줄도 있다");
       if (/자율 토론/.test(call.prompt)) assert.equal(notYet || contract, false, "토론 턴에는 동시 작업 줄이 없다");
     }
+    assert.ok(world.calls.some((call) => /그 답이 아직 없습니다/.test(call.prompt)), `${permissionMode}: 시험이 동시 작업 턴을 실제로 만들었다`);
   }
 });
 
