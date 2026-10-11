@@ -13,9 +13,10 @@ const { createChatFeature } = require("../src/chat/chat-ipc");
 const ROOT = path.join(__dirname, "..");
 const read = (file) => fs.readFileSync(path.join(ROOT, file), "utf8");
 
-test("chat:appearance:get은 main이 주입한 저장된 화면 설정을 돌려준다", async () => {
+test("chat:appearance:get은 main이 주입한 저장된 화면 설정을 돌려준다", async (t) => {
   const handlers = new Map();
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-appearance-")));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
   const saved = { fontFamily: "", fontSize: 14, uiTheme: { accent: "#aa3366" }, showAwaiting: true };
   const feature = createChatFeature({
     electron: {

@@ -41,8 +41,14 @@ function makeFeature(root) {
   return { feature, invoke: (channel, input = {}) => handlers.get(channel)({}, input) };
 }
 
-test("읽기 전용 저장소에서도 고른 대화가 현재 대화가 되어 본문과 활성 id가 같다", async () => {
+function mkRoot(t) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-readonly-")));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
+  return root;
+}
+
+test("읽기 전용 저장소에서도 고른 대화가 현재 대화가 되어 본문과 활성 id가 같다", async (t) => {
+  const root = mkRoot(t);
   let app = makeFeature(root);
   const a = (await app.invoke("chat:state")).activeSessionId;
   const b = (await app.invoke("chat:sessions:create")).activeSessionId;
@@ -71,12 +77,6 @@ test("읽기 전용 저장소에서도 고른 대화가 현재 대화가 되어 
   assert.equal(JSON.parse(fs.readFileSync(configPath, "utf8")).schemaVersion, 999);
   app.feature.shutdown?.();
 });
-
-function mkRoot(t) {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-readonly-")));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
-  return root;
-}
 
 // 읽기 전용 저장소에서는 활성 프로젝트를 저장하지 못하고 새 대화도 만들 수 없다. 대화가 없는 프로젝트를 그냥 받으면
 // 응답이 옛 프로젝트·빈 대화로 돌아가 사이드바 선택이 아무 말 없이 되돌아가므로, 이유를 알리고 선택은 그대로 둔다.

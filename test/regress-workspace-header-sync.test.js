@@ -49,9 +49,10 @@ function makeFeature(root, pickedDir) {
   return { feature, invoke: (channel, input = {}) => handlers.get(channel)({}, input) };
 }
 
-test("폴더를 고르고 해제하면 응답이 보고 있는 대화의 meta를 함께 돌려준다", async () => {
+test("폴더를 고르고 해제하면 응답이 보고 있는 대화의 meta를 함께 돌려준다", async (t) => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-wsync-")));
   const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-wsync-dir-")));
+  for (const dir of [root, folder]) t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
   const app = makeFeature(root, folder);
   const created = await app.invoke("chat:projects:create", { name: "폴더 시험" });
   const projectId = created.activeProjectId;
