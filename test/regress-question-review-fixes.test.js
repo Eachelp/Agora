@@ -53,14 +53,15 @@ function shellRoom(t, meta = { permissionMode: "workspace-read" }) {
 
 test("셸 래퍼(.cmd)로 설치된 Codex는 카드를 못 쓴다고 대화에 한 번만 알리고, 응답은 도구 없이 이어진다", async (t) => {
   const { room, log } = shellRoom(t);
-  const notices = () => room.messages.filter((m) => m.authorType === "system" && /셸 래퍼/.test(m.text));
+  const notices = () => room.messages.filter((m) => m.authorType === "system" && /설치 방식/.test(m.text));
   room.sendUserMessage("@codex 안녕");
   await room.waitForIdle();
   room.sendUserMessage("@codex 또 안녕");
   await room.waitForIdle();
   assert.equal(notices().length, 1, "에이전트마다 한 번");
   assert.match(notices()[0].text, /@codex/);
-  assert.match(notices()[0].text, /응답 끝에서 묻는/);
+  assert.doesNotMatch(notices()[0].text, /.cmd|셸|래퍼|도구|MCP|argv/, "개발자 용어 없이 쉬운 말로");
+  assert.match(notices()[0].text, /답변 끝에서 선택지로 묻습니다/);
   assert.ok(log.calls.every((c) => !("userQuestion" in c)));
   assert.ok(room.messages.some((m) => m.authorType === "agent" && m.author === "codex"), "응답은 정상");
 });
@@ -70,7 +71,7 @@ test("셸 래퍼 안내는 해당 없는 경우(카드가 붙는 Claude, 원래 
   room.sendUserMessage("@claude 안녕");
   room.sendUserMessage("@agy 안녕");
   await room.waitForIdle();
-  assert.equal(room.messages.filter((m) => /셸 래퍼/.test(m.text || "")).length, 0);
+  assert.equal(room.messages.filter((m) => /설치 방식/.test(m.text || "")).length, 0);
 });
 
 test("사용자 문서가 .cmd 한계와 매 턴 붙는 비용(Codex 시작 지연·토큰)을 숨기지 않는다", () => {

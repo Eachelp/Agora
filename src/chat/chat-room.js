@@ -520,10 +520,12 @@ class ChatRoom extends EventEmitter {
     try {
       handle = await this.questionTool.attach({ agent, runId, turnId, purpose });
     } catch (error) {
-      handle = { attached: false, reason: error?.message || String(error) };
+      handle = { attached: false, reason: "작업 중 질문 기능을 준비하지 못했습니다.", detail: error?.message || String(error) };
     }
     if (!handle?.attached) {
-      this.appendSystem(`@${agent.id}에게 실행 중 질문 도구를 붙이지 못해 응답 끝에서 묻는 방식으로 진행합니다. (${handle?.reason || "이유를 알 수 없음"})`);
+      // 원인 글은 로그에만 남기고, 대화에는 쉬운 말로 알린다.
+      console.warn("[agora] 작업 중 질문 기능을 붙이지 못했습니다:", handle?.reason, handle?.detail || "");
+      this.appendSystem(`@${agent.id}: 작업 중 질문 기능을 켜지 못했습니다. 이번에는 답변 끝에서 선택지로 묻습니다.`);
       return null;
     }
     this.questionRuns.set(runId, { handle, agentId: agent.id, turnId: turnId ?? null, run: null });
@@ -1037,7 +1039,7 @@ class ChatRoom extends EventEmitter {
       // 셸 래퍼(.cmd) 설치는 조용히 빠지면 카드가 왜 안 뜨는지 알 길이 없다. 에이전트마다 한 번 알린다.
       if (!questionToolPossible && questionPurpose === "chat" && this.questionTool?.support?.(agent, questionPurpose)?.code === "shell" && !this.questionShellNoticed.has(agent.id)) {
         this.questionShellNoticed.add(agent.id);
-        this.appendSystem(`@${agent.id}는 셸 래퍼(.cmd)로 설치돼 있어 일하는 도중 묻는 질문 카드를 쓰지 못합니다. 결정이 필요하면 응답 끝에서 묻는 방식으로 진행합니다.`);
+        this.appendSystem(`@${agent.id}는 설치 방식 때문에 작업 중 질문 기능을 쓸 수 없습니다. 결정이 필요하면 답변 끝에서 선택지로 묻습니다.`);
       }
     } catch {}
     let prompt;

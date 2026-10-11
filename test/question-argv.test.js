@@ -190,7 +190,7 @@ test("붙일 수 있는 실행 판단: 일반 대화 턴의 Claude·Codex만, �
     assert.equal(ok({ providerId: "claude", purpose }), false, `purpose=${purpose}`);
     assert.equal(ok({ providerId: "codex", purpose }), false, `purpose=${purpose}`);
   }
-  assert.match(questionToolSupport({ providerId: "claude", purpose: "chat", needsShell: true }).reason, /셸 래퍼/);
+  assert.match(questionToolSupport({ providerId: "claude", purpose: "chat", needsShell: true }).reason, /설치 방식/);
 });
 
 test("attachUserQuestionTool: 등록·서버 설정·정리, 붙지 못해도 던지지 않는다", async (t) => {
@@ -217,7 +217,7 @@ test("attachUserQuestionTool: 등록·서버 설정·정리, 붙지 못해도 �
   assert.equal(again.attached, true, "정리된 실행 ID는 다시 등록할 수 있다");
   const duplicate = await attachUserQuestionTool({ broker, runId: "run-42", providerId: "codex", purpose: "chat" });
   assert.equal(duplicate.attached, false);
-  assert.match(duplicate.reason, /이미 등록/);
+  assert.match(duplicate.detail, /이미 등록/);
 
   const refusals = [
     { providerId: "agy", purpose: "chat" },
@@ -233,7 +233,8 @@ test("attachUserQuestionTool: 등록·서버 설정·정리, 붙지 못해도 �
   const failing = { registerRun: async () => { throw new Error("포트를 열 수 없습니다"); } };
   const failed = await attachUserQuestionTool({ broker: failing, runId: "x", providerId: "claude", purpose: "chat" });
   assert.equal(failed.attached, false);
-  assert.match(failed.reason, /포트를 열 수 없습니다/);
+  assert.doesNotMatch(failed.reason, /포트를 열 수 없습니다/, "원인 글은 사용자에게 보이는 이유에 넣지 않는다");
+  assert.match(failed.detail, /포트를 열 수 없습니다/, "로그용으로 따로 담는다");
 });
 
 test("패키지: 연결 도구 파일은 asarUnpack으로 풀리고 런타임에 풀린 경로를 쓴다", () => {

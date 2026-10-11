@@ -1065,7 +1065,7 @@ function roomMeta(meta) {
       } catch (error) {
         console.warn("[agora] 질문 기록 저장 실패:", error?.message || error);
         if (!saveFailureNoticed.has(noticeKey)) {
-          const delivered = showSystemNotice(`질문과 답을 디스크에 저장하지 못했습니다. 다시 열면 방금 질문이 보이지 않을 수 있습니다. (${error?.message || error})`, sessionId);
+          const delivered = showSystemNotice(`질문과 답을 디스크에 저장하지 못했습니다. 다시 열면 방금 질문이 보이지 않을 수 있습니다.`, sessionId);
           if (delivered) saveFailureNoticed.add(noticeKey);
         }
       }

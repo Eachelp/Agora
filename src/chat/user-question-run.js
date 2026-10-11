@@ -32,16 +32,17 @@ function resolveMcpScript(dir = __dirname) {
 }
 
 // 붙일 수 있는 실행인지 판단한다(붙이지 못하는 이유도 함께). 가장 안전한 부분집합만 허용한다.
+// reason은 사용자에게 보여도 되는 쉬운 말이다. 원인이 된 오류 글은 detail에 따로 담아 로그에만 쓴다.
 function questionToolSupport({ providerId, needsShell = false, purpose, hasBroker = true } = {}) {
-  if (providerId !== "claude" && providerId !== "codex") return { ok: false, reason: "이 통로는 실행 중 질문 연결을 지원하지 않습니다." };
-  if (!ATTACHABLE_PURPOSES.includes(purpose)) return { ok: false, reason: "이 종류의 실행에는 질문 도구를 붙이지 않습니다." };
-  if (needsShell) return { ok: false, code: "shell", reason: "셸 래퍼(.cmd)로 설치된 CLI에는 질문 설정을 안전하게 전달할 수 없습니다." };
-  if (!hasBroker) return { ok: false, reason: "질문 중계소를 사용할 수 없습니다." };
+  if (providerId !== "claude" && providerId !== "codex") return { ok: false, reason: "이 AI는 작업 중 질문 기능을 지원하지 않습니다." };
+  if (!ATTACHABLE_PURPOSES.includes(purpose)) return { ok: false, reason: "이 종류의 응답에는 작업 중 질문 기능을 붙이지 않습니다." };
+  if (needsShell) return { ok: false, code: "shell", reason: "이 AI는 설치 방식 때문에 작업 중 질문 기능을 쓸 수 없습니다." };
+  if (!hasBroker) return { ok: false, reason: "작업 중 질문 기능을 준비하지 못했습니다." };
   return { ok: true, reason: "" };
 }
 
 // 성공: { attached:true, server:{command,args,env}, serverKey, toolName, cleanup(reason?) }
-// 실패·미지원: { attached:false, reason } — 어떤 경우에도 던지지 않는다(실행은 질문 도구 없이 계속된다).
+// 실패·미지원: { attached:false, reason, detail? } — 어떤 경우에도 던지지 않는다(실행은 질문 도구 없이 계속된다).
 async function attachUserQuestionTool({
   broker, runId, providerId, needsShell = false, purpose, meta = {}, scriptPath = resolveMcpScript(),
 } = {}) {
@@ -66,7 +67,7 @@ async function attachUserQuestionTool({
       cleanup: (reason = "run-ended") => broker.finishRun(runId, reason),
     };
   } catch (error) {
-    return { attached: false, reason: `질문 중계소를 준비하지 못했습니다: ${error?.message || error}` };
+    return { attached: false, reason: "작업 중 질문 기능을 준비하지 못했습니다.", detail: String(error?.message || error) };
   }
 }
 

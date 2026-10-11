@@ -352,7 +352,7 @@ test("질문 도구를 붙이지 못하면 이유를 알리고, 프롬프트도 
     questionTool: {
       broker: {},
       canAttach: () => true,
-      attach: async () => ({ attached: false, reason: "중계소를 시작하지 못했습니다" }),
+      attach: async () => ({ attached: false, reason: "작업 중 질문 기능을 준비하지 못했습니다.", detail: "listen EADDRINUSE 127.0.0.1:0" }),
     },
   });
   room.sendUserMessage("@claude 안녕");
@@ -361,7 +361,9 @@ test("질문 도구를 붙이지 못하면 이유를 알리고, 프롬프트도 
   assert.equal("userQuestion" in calls[0], false);
   assert.doesNotMatch(calls[0].prompt, /ask_user/);
   assert.match(calls[0].prompt, /ASK_USER: <질문 한 줄>/);
-  assert.ok(room.messages.some((m) => m.authorType === "system" && /중계소를 시작하지 못했습니다/.test(m.text)), "붙이지 못한 이유를 알린다");
+  const notice = room.messages.find((m) => m.authorType === "system");
+  assert.match(notice.text, /작업 중 질문 기능을 켜지 못했습니다. 이번에는 답변 끝에서 선택지로 묻습니다/, "붙이지 못했다고 쉬운 말로 알린다");
+  assert.doesNotMatch(notice.text, /EADDRINUSE|중계소|MCP|도구|래퍼|argv|listen/, "개발자 용어와 원인 오류 글은 대화에 내지 않는다");
   assert.equal(room.messages.find((m) => m.authorType === "agent").text, "완료", "대화는 그대로 진행된다");
 });
 
