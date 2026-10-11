@@ -287,6 +287,32 @@ test("카드가 둘이면 막고 있는 에이전트를 모두 알리고, 카드
   await room.waitForIdle();
 });
 
+test("전달(handoffMessage)도 질문 카드를 쥔 담당자에게 보내면 사용자 메시지처럼 안내가 나온다", async (t) => {
+  let claudeAsked = false; // 전달로 받은 두 번째 턴은 다시 묻지 않고 그냥 답한다
+  const runner = scriptedRunner(async ({ ask, args }) => {
+    if (args.agent.id === "codex") return "codex의 말";
+    if (claudeAsked) return "그냥 답";
+    claudeAsked = true;
+    await ask([{ question: "하나?", options: ["가", "나"] }]);
+    return "첫 답";
+  });
+  const { room } = setup(t, runner);
+  room.sendUserMessage("@claude 시작");
+  await waitFor(() => pending(room).length === 1);
+  room.sendUserMessage("@codex 안녕");
+  await waitFor(() => room.messages.some((m) => m.author === "codex" && m.text === "codex의 말"));
+  const codexMessage = room.messages.find((m) => m.author === "codex" && m.text === "codex의 말");
+
+  room.handoffMessage("claude", codexMessage.id, "CONTINUE");
+  assert.ok(
+    systemLines(room).includes("@claude가 질문 카드에 답을 기다리는 중입니다. 이 메시지는 카드에 답하거나 건너뛴 뒤 전달됩니다."),
+    "sendUserMessage만이 아니라 handoffMessage도 카드를 쥔 담당자에게 새 턴을 줄 세울 때는 안내해야 한다"
+  );
+
+  room.cancelUserQuestion({ questionId: pending(room)[0].questionId });
+  await room.waitForIdle();
+});
+
 test("여러 에이전트에게 한꺼번에 보낸 메시지에는 같은 안내가 한 줄만 나오고, 받은 쪽은 이미 안내받은 것으로 센다", async (t) => {
   const asked = new Set();
   const runner = scriptedRunner(async ({ ask, args }) => {

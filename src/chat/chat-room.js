@@ -707,7 +707,12 @@ class ChatRoom extends EventEmitter {
   // 방 전체 턴 큐. 일반 응답과 멘션 호출은 대기 중인 같은 에이전트의
   // 턴을 공유해, 한 릴레이에서 같은 발언권이 중복 예약되지 않게 합니다.
   scheduleResponse(agent, context = {}) {
-    return this.scheduleTurn(agent, context).promise;
+    const item = this.scheduleTurn(agent, context);
+    // sendUserMessage는 새 턴을 만든 뒤 스스로 announceQuestionWait를 부른다(배치 안내를 합치려고).
+    // 이 밖의 모든 길(전달·멘션 연쇄·토론)은 scheduleResponse 하나로 모이므로 여기서 한 번만 불러
+    // 어디로 들어오든 대상이 질문 카드를 쥐고 있으면 조용히 줄서지 않게 한다.
+    this.announceQuestionWait([item]);
+    return item.promise;
   }
 
   // scheduleResponse의 본체. 큐에 선 항목(이미 같은 키의 대기·실행 턴이 있으면 그 항목)을 돌려준다.
