@@ -308,7 +308,7 @@ test("토론 자동 기록은 전문 실행 경로를 타지 않는다", () => {
   const ipc = read("src/chat/chat-ipc.js");
   const body = ipc.slice(ipc.indexOf("async function recordDiscussion"));
   const fn = body.slice(0, body.indexOf("\n  function "));
-  assert.ok(fn.includes("discussionSummary: { record: true }"), "토론 기록은 대화를 읽는 일반 턴이어야 합니다");
+  assert.match(fn, /discussionSummary: { record: true[,} ]/, "토론 기록은 대화를 읽는 일반 턴이어야 합니다");
   assert.ok(!fn.includes("runRecorder"), "전문 실행 Recorder 단계를 쓰면 안 됩니다");
   assert.ok(!fn.includes("withProfessionalAuthorization"), "run-scoped 권한을 요구하면 안 됩니다");
 });
