@@ -1,7 +1,10 @@
 "use strict";
 
-// 질문 도구를 붙이지 않는 실행은 프롬프트도 실행 인자도 질문 도구를 방에 연결하기 직전(658984a)과 글자 하나까지 같아야 한다.
-// 기준값(test/fixtures/question-golden.json의 expected)은 그때의 모듈로 만들었다.
+// 질문 도구를 붙이지 않는 실행의 프롬프트·실행 인자를 기준값(test/fixtures/question-golden.json의 expected)과 글자 하나까지 견준다.
+// 기준값은 main(v1.2.1) 모듈의 출력과 같고 다른 곳은 한 군데뿐이다: 일반 대화 프롬프트(0·1·5·6번)의 끝 ASK_USER 줄에
+// "보기를 여러 개 고를 수 있으면 … `MULTI: yes` 줄을 넣으세요." 한 문장이 더 있다(여러 개 고르기용으로 일부러 더한 것).
+// 토론·결론 종합·쉽게 설명 프롬프트와 모든 실행 인자(argv)는 main과 같다. 실행 인자 계산 결과에는 questionToolAttached: false가
+// 키 하나로 더 실린다(argv에는 영향이 없다).
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const golden = require("./fixtures/question-golden.json");
@@ -9,14 +12,14 @@ const { buildAgentPrompt } = require("../src/chat/chat-prompt");
 const { buildAgentInvocation } = require("../src/chat/chat-argv");
 
 for (const item of golden.prompts) {
-  test(`질문 도구 없는 프롬프트는 예전과 같다: ${item.name}`, () => {
+  test(`질문 도구 없는 프롬프트는 기준값과 같다: ${item.name}`, () => {
     assert.equal(buildAgentPrompt(item.input), item.expected);
     assert.equal(buildAgentPrompt({ ...item.input, userQuestionTool: false }), item.expected);
   });
 }
 
 for (const item of golden.invocations) {
-  test(`질문 도구 없는 실행 인자는 예전과 같다: ${item.name}`, () => {
+  test(`질문 도구 없는 실행 인자는 기준값과 같다: ${item.name}`, () => {
     const result = buildAgentInvocation(item.input);
     assert.equal(result.questionToolAttached, false);
     assert.deepEqual(result, item.expected);

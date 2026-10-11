@@ -56,7 +56,8 @@ function buildAgentPrompt({
   mentionsEnabled = !discussion,
   discussionSummary = null,
   simplifyMeta = null,
-  // 이번 실행에 질문 도구(ask_user)가 실제로 붙었는가. 붙지 않았으면 프롬프트는 예전과 같다.
+  // 이번 실행에 질문 도구(ask_user)가 실제로 붙었는가. 붙지 않았으면 도구 안내 줄을 더하지 않는다
+  // (끝 ASK_USER 줄의 MULTI 안내 한 문장은 도구와 상관없이 일반 대화 프롬프트에 늘 들어 있다).
   userQuestionTool = false,
   extraLines = [],
 }) {
