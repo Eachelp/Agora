@@ -3783,6 +3783,8 @@ function roomIsBusy() {
 
 // 중지·잠깐 버튼과 대기 중인 발언 목록(각각 ×로 그 턴만 취소).
 function renderBusyControls() {
+  // 대기 줄(방금 보낸 메시지의 '대기 ×')이 생겨도 바닥을 보던 사람은 그 줄까지 본다. 다시 그리기 전에 잰다.
+  const stick = isNearBottom();
   const busy = roomIsBusy();
   stopButton.hidden = !busy;
   interjectButton.hidden = !busy;
@@ -3806,6 +3808,7 @@ function renderBusyControls() {
     pill.append(cancel);
     queueRow.append(pill);
   }
+  scrollToBottom(stick);
 }
 
 // --- 첨부 (작성 중) ---
@@ -4238,7 +4241,11 @@ window.chatApi.onTurnState(({ sessionId, ...state }) => {
 });
 window.chatApi.onUserQuestion?.(({ sessionId, question }) => {
   if (sessionId !== activeSessionId) return;
+  // 카드가 뜨면 입력 영역이 커져 대화 영역이 줄어든다. 스크롤 위치는 그대로라 가장 새 줄이 아래로 밀려나므로,
+  // 바닥을 보던 사람(카드가 뜨기 전에 잰다)은 다시 바닥에 붙인다. 위로 올려 읽던 사람은 건드리지 않는다.
+  const stick = isNearBottom();
   questionCards.apply(question);
+  scrollToBottom(stick);
 });
 window.chatApi.onReset(({ sessionId }) => {
   if (sessionId !== activeSessionId) return;

@@ -21,14 +21,30 @@ function section(start, end) {
   return source.slice(from, to);
 }
 
+// 대화 영역(chatScroll)의 크기 모델. 질문 카드가 떠 있으면 입력 영역이 커져 대화 영역이 455px에서 167px로 줄어든다
+// (900x700 창에서 잰 값). 스크롤 위치는 브라우저처럼 범위 밖이면 끝으로 당겨진다(영역이 다시 커져도 바닥에 있던 사람은 바닥에 남는다).
+function fakeScroller({ questionRow, typingRow, queueRow }) {
+  let top = 0;
+  return {
+    get clientHeight() { return questionRow.hidden ? 455 : 167; },
+    get scrollHeight() { return 2000 + 28 * typingRow.children.length + 30 * queueRow.children.length; },
+    get scrollTop() { return Math.min(top, Math.max(0, this.scrollHeight - this.clientHeight)); },
+    set scrollTop(value) { top = Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight)); },
+  };
+}
+
 function loadUi() {
   const calls = [];
   const handlers = {};
   const questionRow = new FakeNode("div");
+  questionRow.hidden = true; // chat.html에서 처음에는 숨겨져 있다.
+  const typingRow = new FakeNode("div");
+  const queueRow = new FakeNode("div");
   const context = {
     questionCard,
     document: makeDocument(),
     questionRow,
+    chatScroll: fakeScroller({ questionRow, typingRow, queueRow }),
     activeSessionId: "room-a",
     agents: [{ id: "claude", name: "Claude", color: "#d97706" }],
     sessionMeta: null,
@@ -39,12 +55,12 @@ function loadUi() {
     composerInput: { focus() { context.composerFocused += 1; } },
     composerFocused: 0,
     messageList: new FakeNode("ul"),
-    typingRow: new FakeNode("div"),
+    typingRow,
     liveRuns: new Map(),
     effortLabel: (value) => String(value),
     stopButton: new FakeNode("button"),
     interjectButton: new FakeNode("button"),
-    queueRow: new FakeNode("div"),
+    queueRow,
     storeWarning: new FakeNode("div"),
     pendingAttachments: [],
     chatMessages: [],
@@ -62,13 +78,14 @@ function loadUi() {
       },
     },
     switchActiveSession(id) { context.activeSessionId = id; },
-    renderAllMessages() {}, showPendingNotices() {}, scrollToBottom() {}, renderProjects() {}, renderHeader() {},
+    renderAllMessages() {}, showPendingNotices() {}, renderProjects() {}, renderHeader() {},
     renderAgents() {}, renderPendingAttachments() {}, showNextApproval() {}, syncComposerLock() {},
     addApproval() {}, call: async (promise) => promise,
     agentById(id) { return context.agents.find((agent) => agent.id === id) || null; },
   };
   vm.createContext(context);
   vm.runInContext([
+    section("function isNearBottom()", "// 마크다운 기호를 걷어내"),
     section("const questionCards = questionCard.createQuestionCards({", "const typingAgents"),
     section("const LIVE_DISPLAY_LIMIT_CHARS", "function handleRunEvent("),
     section("function handleRunEvent(", "// 방이 바쁜지."),
@@ -263,4 +280,51 @@ test("다른 방에서 답을 기다리는 질문은 사이드바에서 '질문 
   const plain = row({});
   assert.equal(plain.byClass("session-wait").length, 0);
   assert.equal(plain.byClass("is-running").length, 1);
+});
+
+// ---- 카드가 대화 영역을 줄여도 가장 새 줄이 보인다 ----
+// 카드가 뜨면 입력 영역이 커져 대화 영역이 줄어든다. 스크롤 위치는 그대로라서 바닥을 보던 사람의 화면에서 가장 새 줄
+// ('답변 대기 중' 표시, 방금 보낸 메시지의 '대기 ×')이 아래로 밀려나 보이지 않던 것을 막는다.
+const gap = (ui) => ui.chatScroll.scrollHeight - ui.chatScroll.scrollTop - ui.chatScroll.clientHeight;
+
+test("질문 카드가 떠 대화 영역이 줄어도, 바닥을 보던 사람은 가장 새 줄('답변 대기 중' 표시)을 계속 본다", () => {
+  const { ui, handlers } = loadUi();
+  ui.typingAgents.add("claude");
+  ui.renderTyping();
+  ui.chatScroll.scrollTop = 1e9;
+  assert.equal(gap(ui), 0);
+
+  handlers.userQuestion({ sessionId: "room-a", question: pendingQuestion() });
+  assert.equal(ui.chatScroll.clientHeight, 167, "카드가 떠서 대화 영역이 줄었다");
+  assert.equal(ui.typingRow.children[0].textContent, "Claude 답변 대기 중");
+  assert.equal(gap(ui), 0, "맨 아래 줄이 그대로 보인다");
+});
+
+test("위로 올려 읽던 사람의 스크롤은 카드가 떠도 움직이지 않는다", () => {
+  const { ui, handlers } = loadUi();
+  ui.chatScroll.scrollTop = 500;
+  handlers.userQuestion({ sessionId: "room-a", question: pendingQuestion() });
+  assert.equal(ui.chatScroll.clientHeight, 167);
+  assert.equal(ui.chatScroll.scrollTop, 500);
+});
+
+test("카드가 떠 있는 동안 보낸 메시지가 대기열에 들어가도 그 '대기 ×' 줄은 화면 밖으로 밀리지 않는다", () => {
+  const { ui, handlers } = loadUi();
+  handlers.userQuestion({ sessionId: "room-a", question: pendingQuestion() });
+  ui.chatScroll.scrollTop = 1e9;
+  assert.equal(gap(ui), 0);
+
+  const queued = (...ids) => ({ current: "claude", running: ["claude"], queue: ids.map((turnId) => ({ turnId, agentId: "claude", discussion: false })), deferred: [] });
+  ui.roomTurnState = queued("t2");
+  ui.renderBusyControls();
+  assert.equal(ui.queueRow.children.length, 1);
+  assert.match(ui.queueRow.children[0].textContent, /^Claude 대기/);
+  assert.equal(gap(ui), 0, "대기 줄까지 보인다");
+
+  // 위로 올려 읽던 사람은 건드리지 않는다.
+  ui.chatScroll.scrollTop = 300;
+  ui.roomTurnState = queued("t2", "t3");
+  ui.renderBusyControls();
+  assert.equal(ui.queueRow.children.length, 2);
+  assert.equal(ui.chatScroll.scrollTop, 300);
 });
