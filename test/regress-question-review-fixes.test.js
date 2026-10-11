@@ -80,7 +80,7 @@ test("사용자 문서가 .cmd 한계와 매 턴 붙는 비용(Codex 시작 지�
   assert.match(guide, /Codex는[^\n]*5초[^\n]*3배/);
   assert.match(read("README.md"), /\.cmd/);
   const record = read("docs", "design", "AGORA_REVISION_2026-10-11_QUESTION_UI.md");
-  assert.doesNotMatch(record, /필요한 실행에만 붙인다/, "실제로는 일반 대화 턴마다 붙는다");
+  assert.doesNotMatch(record, /필요한 실행에만 붙인다/, "실제로는 파일 작업 권한의 일반 대화 턴마다 붙는다");
   assert.match(record, /매번[^\n]*붙/);
 });
 
