@@ -34,15 +34,21 @@ function normalizeChoice(value) {
   return text;
 }
 
-// 검사 대상은 플래그 이름뿐이다. 값 인자(작업 폴더·출력 파일·이미지 경로)에는 'bypass' 같은 낱말이
-// 얼마든지 들어 있을 수 있으므로(D:\work\cors-bypass) 글자 내용으로 거르지 않는다.
+// 검사 대상은 플래그 이름과, 값 자리에 놓인 '권한 우회' 값(--permission-mode bypassPermissions,
+// --permission-mode=bypassPermissions)뿐이다. 값 인자(작업 폴더·출력 파일·이미지 경로)에는 'bypass' 같은
+// 낱말이 얼마든지 들어 있을 수 있으므로(D:\work\cors-bypass) 글자 내용으로는 거르지 않고,
+// 값 전체가 bypassPermissions이거나 dangerously로 시작할 때만 막는다.
 const FLAG_NAME_PATTERN = /^--?[A-Za-z][\w-]*/;
+const BYPASS_VALUE_PATTERN = /^(?:bypassPermissions$|dangerously)/i;
 
 function assertSafeArgv(argv, { autoApprove = false } = {}) {
   for (const arg of argv) {
     const text = String(arg);
     const flag = text.match(FLAG_NAME_PATTERN)?.[0] || "";
-    if (/dangerously|bypass/i.test(flag) && !(autoApprove && AUTO_APPROVE_FLAGS.has(text))) {
+    // --플래그=값이면 값 부분, 플래그가 아니면 인자 전체가 값이다.
+    const value = flag && text[flag.length] === "=" ? text.slice(flag.length + 1) : text;
+    const forbiddenFlag = /dangerously|bypass/i.test(flag) && !(autoApprove && AUTO_APPROVE_FLAGS.has(text));
+    if (forbiddenFlag || BYPASS_VALUE_PATTERN.test(value)) {
       throw new Error(`금지된 실행 플래그가 생성되었습니다: ${arg}`);
     }
   }

@@ -46,6 +46,29 @@ test("F73: 금지 플래그는 여전히 막고, 자동 승인 플래그는 허�
   assert.deepEqual(assertSafeArgv(["--cd", "D:\\work\\paywall-bypass"]), ["--cd", "D:\\work\\paywall-bypass"]);
 });
 
+test("F73: 이름이 평범한 플래그라도 값이 권한 우회면 막고(인자 둘·--플래그=값), 경로 값은 그대로 통과한다", () => {
+  for (const argv of [
+    ["--permission-mode", "bypassPermissions"],
+    ["--permission-mode=bypassPermissions"],
+    ["--permission-mode", "BypassPermissions"],
+    ["--mode", "dangerouslySkipPermissions"],
+    ["--mode=dangerously-skip-permissions"],
+  ]) {
+    assert.throws(() => assertSafeArgv(argv), /금지된/, argv.join(" "));
+    // 자동 승인 허용 목록은 플래그 이름 두 개뿐이라 값 자리의 우회 낱말은 자동 승인에서도 막힌다.
+    assert.throws(() => assertSafeArgv(argv, { autoApprove: true }), /금지된/, `자동 승인: ${argv.join(" ")}`);
+  }
+  for (const argv of [
+    ["--permission-mode", "acceptEdits"],
+    ["--add-dir=D:\\work\\cors-bypass"],
+    ["--cd", "D:\\work\\bypassPermissions"],
+    ["--cd=D:\\work\\dangerously-fun"],
+    ["-c", "model_reasoning_effort=high"],
+  ]) {
+    assert.deepEqual(assertSafeArgv(argv), argv, argv.join(" "));
+  }
+});
+
 // ---- F155 ------------------------------------------------------------------
 
 // libuv(Windows)가 인자를 감쌀 때의 길이: 따옴표는 \" 로, 따옴표·끝 앞의 역슬래시는 두 배로.
