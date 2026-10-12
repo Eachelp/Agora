@@ -416,9 +416,12 @@ class ChatRoom extends EventEmitter {
           const mine = victimsOf[index];
           for (const item of mine) this.retireTurn(item, undefined, { keepKeys: true });
           const roots = [...new Set(mine.map((item) => item.context.turnRootId))];
+          // 갈아끼운 턴이 앞 메시지들에서 이미 이어받은 첨부도 함께 넘긴다. 뿌리 메시지에서만 다시 읽으면
+          // 세 번째 갈아끼움부터 맨 처음 메시지의 첨부가 빠진다(그 메시지는 더는 뿌리가 아니다).
+          const carried = mine.flatMap((item) => item.context.attachments || []);
           const newItem = this.scheduleTurn(agent, {
             attachments: roots.length > 0
-              ? this.attachmentsOfMessages([...roots, entry.id])
+              ? [...new Set([...carried, ...this.attachmentsOfMessages([...roots, entry.id])])]
               : attachments,
             turnRootId: entry.id,
             independent,
@@ -1070,6 +1073,13 @@ class ChatRoom extends EventEmitter {
           "=== 사용자가 그 사이 보낸 메시지 끝 ===",
         ].join("\n");
         item.context.extraLines = [...(item.context.extraLines || []), heldBlock];
+        // 보류 메시지의 첨부는 안내 줄만이 아니라 실제 파일로도 이 턴에 실린다. 오케스트레이션이 모아 두므로
+        // 이후 라운드의 지휘 AI 턴과 작업자 턴에도 계속 실린다(CLI 실행은 매번 새 프로세스라 다시 주지 않으면 잃는다).
+        this.orchestration.attachments = [...new Set([
+          ...this.orchestration.attachments,
+          ...this.orchestration.heldMessages.flatMap((held) => held.attachments || []),
+        ])];
+        item.context.attachments = [...this.orchestration.attachments];
         this.orchestration.heldMessages = [];
       }
       // 단위의 실제 크기는 지금 센다: 구성원이 갈아끼워져 줄었으면 "참가자 N명" 계약도 그 크기를 쓴다.
@@ -1114,6 +1124,9 @@ class ChatRoom extends EventEmitter {
       heldMessages: [],
       rootMessageId: item.context.turnRootId,
       ceilingNoticed: false,
+      // 이 오케스트레이션의 모든 턴(지휘 AI 회신·작업자)이 매번 받는 첨부. 첫 요청의 첨부로 시작하고,
+      // 지휘 AI가 받은 보류 메시지의 첨부가 더해진다(claimUnit).
+      attachments: [...(item.context.attachments || [])],
     };
     item.context.orchestration = { id: this.orchestration.id, role: "lead", round: 1 };
   }
@@ -1208,15 +1221,17 @@ class ChatRoom extends EventEmitter {
       this.endOrchestration(`실행 횟수 안전선(${this.executionCeiling}회)에 닿아 더 맡기지 않았습니다. 메시지를 보내면 이어 갑니다.`);
       return;
     }
-    this.scheduleWorkerUnit(workerIds, item, outcome.messageId);
+    this.scheduleWorkerUnit(workerIds, item, outcome.messageId, unavailableIds);
   }
 
   // 작업자 묶음은 쪼개지지 않게 한 묶음으로 올린다(설계 §(4) — pumpSuspended로 감싼다).
-  scheduleWorkerUnit(workerIds, leadItem, leadMessageId) {
+  // skippedWorkerIds: 지휘 AI가 불렀지만 시작 전에 걸러진(비활성·미설치) id. 묶음이 끝날 때 결과 블록에 적는다.
+  scheduleWorkerUnit(workerIds, leadItem, leadMessageId, skippedWorkerIds = []) {
     const orch = this.orchestration;
     const round = leadItem.context.orchestration.round;
     const workerUnitId = `wu-${orch.id}-${round}`;
-    const attachments = this.attachmentsOfMessages([leadItem.context.turnRootId]);
+    // 원 요청의 첨부와 지휘 AI가 이미 받은 보류 메시지의 첨부를 작업자에게도 그대로 물려준다.
+    const attachments = [...orch.attachments];
     this.pumpSuspended += 1;
     try {
       for (const agentId of workerIds) {
@@ -1228,6 +1243,7 @@ class ChatRoom extends EventEmitter {
           turnRootId: leadMessageId,
           independent: true,
           attachments,
+          skippedWorkerIds,
         }, { lane: "fast" });
       }
     } finally {
@@ -1259,6 +1275,11 @@ class ChatRoom extends EventEmitter {
       }
       lines.push("---");
     });
+    // 시작 전에 걸러져 claim하지 않은 작업자도 결과에서 빠지지 않게 적는다(설계 §(7)·불변식 7).
+    for (const id of members[0].context.skippedWorkerIds || []) {
+      lines.push(`[@${id}] 사용할 수 없음(비활성화되었거나 설치되지 않음)`);
+      lines.push("---");
+    }
     lines.push("=== 작업자 결과 끝 ===");
     const extraLines = [lines.join("\n")];
     const nextRound = round + 1;
@@ -1279,8 +1300,9 @@ class ChatRoom extends EventEmitter {
       orchestration: { id: orch.id, role: "lead", round: nextRound },
       turnRootId: orch.rootMessageId,
       extraLines,
-      // 원 요청의 첨부를 2라운드 이상에서도 다시 싣는다(scheduleWorkerUnit과 같은 패턴, 9b 감사).
-      attachments: this.attachmentsOfMessages([orch.rootMessageId]),
+      // 원 요청의 첨부(와 앞 라운드에서 받은 보류 메시지의 첨부)를 2라운드 이상에서도 다시 싣는다
+      // (scheduleWorkerUnit과 같은 패턴, 9b 감사).
+      attachments: [...orch.attachments],
     }, { lane: "fast" });
   }
 
@@ -1641,13 +1663,15 @@ class ChatRoom extends EventEmitter {
         // 시작 시점 기록을 쓰는 턴(빠른 턴, 독립 발언 턴)이 답할 사용자 메시지.
         replyTarget: context.replyTarget || null,
         handoff: context.handoff || null,
-        // 토론·결론 종합·쉽게 설명에서는 @멘션 호출을 끈다. 연쇄 깊이 상한도 여기서 막는다.
+        // 토론·결론 종합·쉽게 설명에서는 @멘션 호출을 끈다. 연쇄 깊이 상한도 여기서 막는다
+        // ('AI끼리 계속 부르기'가 켜져 있으면 scheduleMentionReplies가 깊이 상한을 보지 않으므로 여기서도 막지 않는다).
         // 지휘 AI는 상한 없이 늘 호출할 수 있고(§(13) 불변식 4), 작업자는 늘 못 부른다(불변식 3).
         mentionsEnabled: orchestrationRole === "lead"
           ? true
           : orchestrationRole === "worker"
             ? false
-            : !context.discussion && !context.discussionSummary && !context.simplifyMeta && mentionDepth < this.mentionChainLimit,
+            : !context.discussion && !context.discussionSummary && !context.simplifyMeta
+              && (this.meta.keepCalling || mentionDepth < this.mentionChainLimit),
         userQuestionTool,
         orchestration: context.orchestration ? { role: orchestrationRole, leadId: this.orchestration?.leadId || null } : null,
         // 작업자 결과·보류 메시지 블록(설계 §(7)) — 기본값 []이면 기존 턴은 한 글자도 안 바뀐다.
