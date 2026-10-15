@@ -107,6 +107,42 @@ test("AGY 구간은 표시 문구보다 window·bucketId 필드로 먼저 가린
   assert.equal(classifyWindow("5-Hour Limit Remaining"), "5시간");
 });
 
+test("AGY 응답에 Gemini 그룹이 없으면 Claude/GPT 한도를 대표 칸에 올리지 않는다", () => {
+  // daily 호스트가 실제로 돌려준 형태(2026-10-16): Claude/GPT 그룹 하나뿐입니다.
+  assert.deepEqual(
+    normalizeAgyQuota({
+      groups: [{
+        displayName: "Claude and GPT models",
+        buckets: [
+          { bucketId: "3p-weekly", displayName: "Weekly Limit Remaining", window: "weekly", remainingFraction: 0.8585932 },
+          { bucketId: "3p-5h", displayName: "Five Hour Limit Remaining", window: "5h", remainingFraction: 1 },
+        ],
+      }],
+    }),
+    [
+      { label: "Claude / GPT · 주간", usedPercent: 14, resetText: "" },
+      { label: "Claude / GPT · 5시간", usedPercent: 0, resetText: "" },
+    ]
+  );
+});
+
+test("AGY 한도 요약은 Gemini 그룹을 주는 정식 호스트에서 받는다", async (t) => {
+  const originalFetch = global.fetch;
+  const urls = [];
+  t.after(() => {
+    global.fetch = originalFetch;
+    clearUsageCache();
+  });
+  global.fetch = async (url) => {
+    urls.push(String(url));
+    if (String(url).includes("loadCodeAssist")) return jsonResponse({ cloudaicompanionProject: "projects/test" });
+    if (String(url).includes("userinfo")) return jsonResponse({});
+    return jsonResponse({ groups: [] });
+  };
+  await fetchAntigravityUsage({ credential: { token: { access_token: "a", refresh_token: "host-test" } }, force: true });
+  assert.ok(urls.includes("https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"), urls.join("\n"));
+});
+
 test("AGY 그룹 이름이 바뀌어 gemini를 못 찾으면 전체를 그대로 쓴다", () => {
   assert.deepEqual(
     normalizeAgyQuota({

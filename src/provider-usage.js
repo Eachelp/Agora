@@ -114,9 +114,15 @@ function normalizeAgyQuota(data) {
     }
   }
 
-  // Gemini 계열 그룹(또는 Gemini가 없을 땐 첫 번째 그룹)에서 5시간·주간 대표 창을 추출합니다.
-  const primaryGroups = geminiGroups.length > 0 ? geminiGroups : [groups[0]];
-  const secondaryGroups = geminiGroups.length > 0 ? otherGroups : groups.slice(1);
+  // Gemini 계열 그룹에서 5시간·주간 대표 창을 추출합니다. Gemini가 없으면 이름이 바뀐 경우로
+  // 보고 첫 그룹을 쓰되, Claude/GPT 같은 외부 모델 그룹(bucketId "3p-…")은 대표로 올리지 않습니다.
+  // 응답에서 Gemini 그룹이 빠졌을 때 Claude/GPT 한도가 AGY 한도처럼 보이면 안 됩니다.
+  const isThirdParty = (group) =>
+    /claude|gpt/i.test(String(group?.displayName || group?.name || "")) ||
+    (group?.buckets || []).some((bucket) => /^3p[-_]/i.test(String(bucket?.bucketId || "")));
+  const fallbackPrimary = otherGroups.find((group) => !isThirdParty(group));
+  const primaryGroups = geminiGroups.length > 0 ? geminiGroups : [fallbackPrimary].filter(Boolean);
+  const secondaryGroups = otherGroups.filter((group) => !primaryGroups.includes(group));
 
   const primaryBuckets = primaryGroups.flatMap((group) =>
     (group.buckets || []).map((b) => parseBucket(group, b)).filter(Boolean)
@@ -259,8 +265,10 @@ async function fetchAntigravityUsage({ credential, force = false } = {}) {
     ]);
     const project = assist?.cloudaicompanionProject;
     if (!project) throw new Error("AGY 프로젝트 정보를 찾지 못했습니다.");
+    // 한도 요약은 정식 호스트에서 받습니다. daily 호스트는 Gemini 그룹을 빼고 Claude/GPT
+    // 그룹만 돌려줄 때가 있어(2026-10 확인) agy CLI의 "Models & Quota"와 값이 달라집니다.
     const quota = await json(
-      "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+      "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
       {
         method: "POST",
         headers,
