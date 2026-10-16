@@ -95,7 +95,8 @@ test("agy 1.1.14: 권한 거부 ERROR는 approval-required로 유지된다", () 
 
 test("agy 1.1.14: result SUCCESS + response는 final이다", () => {
   const e = parseAgyLine(resultLine(CID, "SUCCESS", "The command printed:\n```\nv24.18.0\n```\n"));
-  assert.deepEqual(e, { kind: "final", text: "The command printed:\n```\nv24.18.0\n```\n" });
+  // result는 print 모드의 마지막 이벤트라 terminal로 표시한다(CLI가 종료 단계에서 멈춰도 턴을 마치게).
+  assert.deepEqual(e, { kind: "final", text: "The command printed:\n```\nv24.18.0\n```\n", terminal: true });
 });
 
 test("agy 1.1.14: result ERROR + response가 있어도 final이 아닌 error로 처리된다", () => {

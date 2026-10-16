@@ -44,6 +44,10 @@ const MAX_DELTA_TEXT_CHARS = 2 * 1024 * 1024;
 // 여기서는 실행을 죽이지 않고, stdout/stderr가 이 시간만큼 조용하면 상태 이벤트만
 // 남겨 사용자가 판단할 근거를 줍니다. 침묵이 계속되면 같은 간격으로 반복 알립니다.
 const DEFAULT_SILENCE_WARNING_MS = 5 * 60 * 1000;
+// 마지막 이벤트(terminal final)를 받은 뒤 CLI가 스스로 끝나기를 기다리는 시간입니다.
+// AGY CLI는 결과를 낸 뒤 종료 단계(언어 서버 정리)에서 멈출 때가 있어(2026-10 확인),
+// 그대로 두면 답은 다 보였는데 "입력 중"이 사라지지 않습니다. 정상 종료는 1초 안팎입니다.
+const DEFAULT_FINAL_EXIT_GRACE_MS = 10 * 1000;
 // 위 간격보다 촘촘하게 확인해, 경고가 실제 무음 시각에서 너무 늦게 뜨지 않게 합니다.
 const SILENCE_CHECK_INTERVAL_MS = 30 * 1000;
 
@@ -267,6 +271,7 @@ function runAgentProcess({
   onRawChunk = null,
   promptTransport = "stdin",
   silenceWarningMs = DEFAULT_SILENCE_WARNING_MS,
+  finalExitGraceMs = DEFAULT_FINAL_EXIT_GRACE_MS,
   requireFinal = null,
   // 이 실행에만 더할 환경 변수(없으면 상위 환경 그대로). 질문 도구를 붙인 Claude 실행의 MCP_TOOL_TIMEOUT에 쓴다.
   extraEnv = null,
@@ -281,6 +286,7 @@ function runAgentProcess({
   let outputLimitHit = false;
   let timer = null;
   let silenceTimer = null;
+  let finalExitTimer = null;
   // 질문 도구로 사용자의 답을 기다리는 동안은 실행 시간 제한과 무음 경고를 멈춘다(setWaitingUser).
   // 사용자가 오래 고민했다고 실행이 시간 초과로 죽거나 "N분째 응답 없음"이 뜨면 안 된다.
   let waitingUser = false;
@@ -312,6 +318,7 @@ function runAgentProcess({
   const cleanup = () => {
     if (timer) clearTimeout(timer);
     if (silenceTimer) clearInterval(silenceTimer);
+    if (finalExitTimer) clearTimeout(finalExitTimer);
     if (outputFile) {
       try {
         fs.rmSync(outputFile, { force: true });
@@ -486,6 +493,18 @@ function runAgentProcess({
         }
       }
       if (event.kind === "final") parsedFinal = event.text;
+      if (event.kind === "final" && event.terminal && !finalExitTimer && finalExitGraceMs > 0) {
+        finalExitTimer = setTimeout(() => {
+          if (settled || !String(parsedFinal || "").trim()) return;
+          killTree(child, platform);
+          finish({
+            ok: true,
+            text: String(parsedFinal).trim(),
+            output: { stdoutBytes, captureTruncated: stdoutBuffer.truncated, exitForcedAfterFinal: true },
+          });
+        }, finalExitGraceMs);
+        if (typeof finalExitTimer.unref === "function") finalExitTimer.unref();
+      }
       // 재연결 과정에서는 여러 오류가 연속으로 옵니다. 첫 경고보다 마지막
       // turn.failed 원인이 사용자에게 더 유용하므로 최신 오류를 보존합니다.
       if (event.kind === "error") parsedError = event.message;
@@ -810,5 +829,6 @@ module.exports = {
   DEFAULT_CAPTURE_OUTPUT_BYTES,
   DEFAULT_HARD_OUTPUT_LIMIT_BYTES,
   DEFAULT_SILENCE_WARNING_MS,
+  DEFAULT_FINAL_EXIT_GRACE_MS,
   MAX_ARGV_PROMPT_CHARS,
 };

@@ -380,7 +380,9 @@ function parseAgyLine(line) {
     if (result.status && result.status !== "SUCCESS") {
       return { kind: "error", message: truncateLabel(result.error || result.response || `AGY ${result.status}`, 200) };
     }
-    if (result.response) return { kind: "final", text: String(result.response) };
+    // result는 print 모드의 마지막 이벤트다. terminal 표시를 보고 러너가 CLI가 스스로 끝나지
+    // 않을 때(종료 단계에서 멈춤) 받은 답으로 턴을 마친다.
+    if (result.response) return { kind: "final", text: String(result.response), terminal: true };
   }
   return null;
 }

@@ -632,3 +632,41 @@ test("무음 시계는 상태 줄이 아니라 진전 이벤트로만 되감긴�
   }).promise;
   assert.ok(!events2.some((e) => e.kind === "status" && /응답 없음/.test(e.label)), "진전이 있으면 무음 경고가 없다");
 });
+
+test("마지막 final을 낸 뒤 CLI가 끝나지 않으면 유예 후 받은 답으로 턴을 마친다", async () => {
+  // AGY CLI가 result를 낸 뒤 종료 단계에서 멈춘 상황: 답을 찍고 프로세스는 살아 있다.
+  const script = "console.log(JSON.stringify({kind:'final',text:'다 했습니다',terminal:true}));setInterval(()=>{},1000)";
+  const startedAt = Date.now();
+  const result = await runNode(script, {
+    parseLine: (line) => JSON.parse(line),
+    finalExitGraceMs: 200,
+    timeoutMs: 8000,
+  }).promise;
+  assert.equal(result.ok, true);
+  assert.equal(result.text, "다 했습니다");
+  assert.equal(result.output.exitForcedAfterFinal, true);
+  assert.ok(Date.now() - startedAt < 5000, "시간 초과까지 기다리지 않는다");
+});
+
+test("terminal 표시가 없는 final은 프로세스가 남아 있어도 턴을 일찍 끝내지 않는다", async () => {
+  // Codex처럼 한 턴에 final이 여러 번 올 수 있는 공급자는 프로세스 종료를 기다린다.
+  const script = "console.log(JSON.stringify({kind:'final',text:'중간'}));setTimeout(()=>{console.log(JSON.stringify({kind:'final',text:'최종'}));process.exit(0)},600)";
+  const result = await runNode(script, {
+    parseLine: (line) => JSON.parse(line),
+    finalExitGraceMs: 100,
+  }).promise;
+  assert.equal(result.ok, true);
+  assert.equal(result.text, "최종");
+  assert.equal(result.output.exitForcedAfterFinal, undefined);
+});
+
+test("terminal final 뒤 CLI가 스스로 끝나면 유예 타이머가 끼어들지 않는다", async () => {
+  const script = "console.log(JSON.stringify({kind:'final',text:'정상 종료',terminal:true}))";
+  const result = await runNode(script, {
+    parseLine: (line) => JSON.parse(line),
+    finalExitGraceMs: 5000,
+  }).promise;
+  assert.equal(result.ok, true);
+  assert.equal(result.text, "정상 종료");
+  assert.equal(result.output.exitForcedAfterFinal, undefined);
+});
