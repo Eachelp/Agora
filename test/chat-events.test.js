@@ -300,3 +300,28 @@ test("agy: 거부 메시지에 되풀이된 명령어 때문에 승인 판정이
   });
   assert.equal(parseAgyLine(internal).kind, "tool-finished");
 });
+
+// 아래는 AIG 아틀리에 21ab9e68에서 옮긴 시험이다(handoff 2026-10-15 A1).
+// 승인 범위 A안: 무엇을 청했는지 읽어야 그것만 허락할 수 있다. 문구는 2026-10-15 agy 1.3.4 실측.
+test("agy: 승인 요청이 청한 경로·명령을 함께 읽는다", () => {
+  const denied = (tool, parameters, message) => parseAgyLine(JSON.stringify({
+    event: "step_update",
+    step_update: { state: "ERROR", tool_name: tool, tool_info: { name: tool, parameters, error: { type: "TOOL_ERROR", message } } },
+  }));
+  const write = denied("write_to_file", { TargetFile: "D:/agy-probe-tmp/note.txt" },
+    'permission check failed for write_file "D:\\\\agy-probe-tmp\\\\note.txt": user denied permission for write_file(D:\\agy-probe-tmp\\note.txt)');
+  assert.equal(write.kind, "approval-required");
+  assert.deepEqual(write.target, { type: "path", path: "D:/agy-probe-tmp/note.txt", isDirectory: false });
+
+  const list = denied("list_dir", { DirectoryPath: "/home/user/data" }, "user denied permission for list_dir(/home/user/data)");
+  assert.deepEqual(list.target, { type: "path", path: "/home/user/data", isDirectory: true });
+
+  const command = denied("run_command", { CommandLine: "npm test" }, "User denied permission to run command:\nnpm test");
+  assert.deepEqual(command.target, { type: "command", command: "npm test" });
+
+  // 상대 경로나 알 수 없는 인자는 좁힐 근거가 없다. 대상 없이 승인 요청만 남긴다.
+  const unknown = denied("write_to_file", { TargetFile: "notes/new.md" }, "user denied permission for write_file(notes/new.md)");
+  assert.equal(unknown.kind, "approval-required");
+  assert.equal(unknown.target, undefined);
+});
+

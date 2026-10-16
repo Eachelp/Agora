@@ -1,5 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const path = require("node:path");
 
 const {
   buildAgentInvocation,
@@ -402,3 +403,20 @@ test("AGY 접힌 Claude 5.5 모델은 고른 노력의 변형 id로 호출되고
   assert.equal(modelArg(fixed), "gpt-oss-120b-medium");
   assert.equal(fixed.argv.includes("--effort"), false);
 });
+
+// 아래는 AIG 아틀리에 21ab9e68에서 옮긴 시험이다(handoff 2026-10-15 A1).
+// 승인 카드에서 폴더 요청을 승인하면 모든 확인을 끄지 않고 그 폴더만 더 연다(승인 범위 A안).
+test("승인한 폴더는 쓰기 권한에서만 --add-dir로 더 열고, 위험 플래그를 붙이지 않는다", () => {
+  // 어느 OS에서 돌려도 절대 경로가 되게 만든다.
+  const granted = path.resolve("outside", "notes");
+  for (const id of ["claude", "codex", "agy"]) {
+    const result = build(id, { permissionMode: "workspace-write", workspace: WORKSPACE, extraDirs: [granted] });
+    assert.equal(result.ok, true, result.error);
+    const index = result.argv.lastIndexOf("--add-dir");
+    assert.equal(result.argv[index + 1], granted, `${id}는 승인한 폴더를 연다`);
+    assert.ok(!result.argv.some((arg) => /dangerously|bypass/.test(arg)), `${id}는 모든 확인을 끄지 않는다`);
+  }
+  assert.equal(build("claude", { permissionMode: "workspace-read", workspace: WORKSPACE, extraDirs: [granted] }).ok, false);
+  assert.equal(build("agy", { permissionMode: "workspace-write", workspace: WORKSPACE, extraDirs: ["relative/dir"] }).ok, false);
+});
+

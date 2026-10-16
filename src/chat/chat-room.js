@@ -106,6 +106,21 @@ function questionOutcomeLine(previous, record) {
   }
 }
 
+// 승인 요청 하나를 승인했을 때 다시 실행에서 무엇을 여는지.
+// 경로를 청한 요청은 그 폴더만 더 연다({kind: "folder", dir}). 명령 실행처럼 좁혀서 허락할
+// 방법이 없는 요청은 모든 확인을 끈 채 다시 실행한다({kind: "all"}) — 예전에는 모든 승인이
+// 이쪽이었다. 2026-10-15 agy 1.3.4에서 승인을 청한 폴더를 --add-dir로 열면 모든 확인을
+// 끄지 않고도 그 폴더에만 쓰는 것을 확인했다(AIG 아틀리에 21ab9e68).
+function approvalGrant(approval) {
+  const target = approval?.target;
+  if (target?.type === "path" && typeof target.path === "string" && target.path.trim()) {
+    const dir = target.isDirectory ? target.path : path.dirname(target.path);
+    if (dir && dir !== "." && dir !== target.path) return { kind: "folder", dir };
+    if (target.isDirectory) return { kind: "folder", dir: target.path };
+  }
+  return { kind: "all" };
+}
+
 let messageSeq = 0;
 function nextMessageId() {
   messageSeq += 1;
@@ -507,6 +522,8 @@ class ChatRoom extends EventEmitter {
       summary: approval?.summary || "도구 실행 권한이 필요합니다.",
       detail: approval?.detail || "",
       retryScope: "turn",
+      // 승인하면 어디까지 풀리는지. 카드가 이것을 그대로 보여 준다.
+      grant: approvalGrant(approval),
     };
     return new Promise((resolve) => {
       // 이벤트는 창이 열려 있을 때만 닿는다. 요청 내용도 함께 들고 있어야 창이 닫혀 있던
@@ -1687,6 +1704,8 @@ class ChatRoom extends EventEmitter {
     let result;
     let runId;
     let approvedRetry = false;
+    // 승인한 요청의 범위(approvalGrant). 다시 실행할 때 무엇을 열지 정한다.
+    let approvedGrant = null;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       this.runSeq += 1;
       runId = `r${this.sessionId || "s"}-${this.runSeq}`;
@@ -1732,7 +1751,11 @@ class ChatRoom extends EventEmitter {
           emitEvent,
           permissionMode,
           // 자동 승인은 workspace-write에서만 실제 argv에 반영된다(IPC 경계가 다시 막는다).
-          autoApprove: agent.autoApprove || approvedRetry,
+          // 승인한 요청이 폴더면 그 폴더만 더 열고(grantDirs), 좁힐 수 없는 요청일 때만
+          // 모든 확인을 끈다 — 카드가 그 차이를 미리 알린다(approvalGrant).
+          autoApprove: agent.autoApprove || (approvedRetry && approvedGrant?.kind !== "folder"),
+          // 승인한 폴더가 있을 때만 싣는다. 보통 실행의 인자 모양은 그대로 둔다(question-ipc·question-room 시험).
+          ...(approvedRetry && approvedGrant?.kind === "folder" ? { grantDirs: [approvedGrant.dir] } : {}),
           ...(questionHandle ? { userQuestion: questionHandle } : {}),
         });
         const questionRun = this.questionRuns.get(runId);
@@ -1780,6 +1803,7 @@ class ChatRoom extends EventEmitter {
       // 이 실행의 결과 메시지는 오지 않는다(승인 뒤 다시 실행). 승인을 기다리는 동안 점선
       // 초안 말풍선이 응답 중으로 남지 않게 거둔다.
       this.discardLiveRun(runId, agent);
+      approvedGrant = approvalGrant(result.approval);
       const approved = await this.requestApproval(agent, result.approval);
       if (generation !== this.generation) return;
       if (!approved) {

@@ -2723,7 +2723,11 @@ textarea:focus-visible {
 .approval-dialog h2 { margin: 0 0 10px; font-size: 16px; }
 .approval-dialog p { margin: 8px 0; font-size: 12px; }
 .approval-dialog pre { max-height: 180px; overflow: auto; white-space: pre-wrap; font-size: 11px; background: var(--bg); padding: 10px; border-radius: 8px; }
-.approval-warning { color: #92400e; }
+/* 승인하면 어디까지 풀리는지. 좁힐 수 없는 요청(모든 확인 해제)은 눈에 띄게 경고한다. */
+.approval-dialog .approval-scope { font-weight: 600; }
+.approval-dialog .approval-scope.is-warning {
+  color: var(--danger); background: var(--danger-soft); padding: 8px 10px; border-radius: 8px;
+}
 .approval-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 /* 다른 창 위에서도 열리므로 한 층 위에 둔다. 메시지의 줄바꿈을 살린다. */
 .confirm-backdrop { z-index: 70; }

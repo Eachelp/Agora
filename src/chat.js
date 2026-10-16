@@ -73,6 +73,7 @@ const sidebarOpenButton = document.getElementById("sidebar-open");
 const approvalBackdrop = document.getElementById("approval-backdrop");
 const approvalSummary = document.getElementById("approval-summary");
 const approvalDetail = document.getElementById("approval-detail");
+const approvalScope = document.getElementById("approval-scope");
 const approvalApprove = document.getElementById("approval-approve");
 const approvalDeny = document.getElementById("approval-deny");
 const confirmBackdrop = document.getElementById("confirm-backdrop");
@@ -4591,6 +4592,17 @@ function showNextApproval() {
   const agent = agentById(activeApproval.agentId);
   approvalSummary.textContent = `${agent?.name || activeApproval.agentId}: ${activeApproval.summary}`;
   approvalDetail.textContent = activeApproval.detail || "세부 정보가 없습니다.";
+  // 승인하면 어디까지 풀리는지 먼저 보인다. 폴더 요청은 그 폴더만, 좁힐 수 없는 요청은 전부 풀린다.
+  const grant = activeApproval.grant || { kind: "all" };
+  const folder = grant.kind === "folder";
+  if (approvalScope) {
+    approvalScope.textContent = folder
+      ? `승인하면 이 폴더만 더 열고 이 턴을 다시 실행합니다: ${grant.dir}`
+      : "이 요청은 좁혀서 허락할 수 없습니다. 승인하면 이 턴은 파일·명령 확인이 모두 꺼진 채로 다시 실행되어, "
+        + "작업 폴더 밖의 파일도 고치거나 지울 수 있습니다.";
+    approvalScope.classList.toggle("is-warning", !folder);
+  }
+  approvalApprove.textContent = folder ? "이 폴더만 열고 다시 실행" : "모든 제한을 풀고 다시 실행";
   approvalBackdrop.hidden = false;
   syncComposerLock();
 }

@@ -307,6 +307,27 @@ function isInternalToolError(text) {
   return AGY_INTERNAL_TOOL_ERROR.test(String(text || ""));
 }
 
+// 승인 요청이 무엇을 청하는지. 경로를 청하면 그 폴더만 열어 다시 시도할 수 있다(승인 범위 A안).
+// 2026-10-15 agy 1.3.4 관측(AIG 아틀리에): 작업 폴더 밖 쓰기는 write_to_file이 parameters.TargetFile로,
+// 명령 실행은 run_command가 parameters.CommandLine으로 승인을 청한다.
+const APPROVAL_PATH_PARAMETERS = Object.freeze([
+  ["TargetFile", false], ["AbsolutePath", false], ["DirectoryPath", true], ["SearchPath", true],
+]);
+function isAbsoluteAnyOs(value) {
+  return /^[A-Za-z]:[\\/]/.test(value) || value.startsWith("/") || value.startsWith("\\\\");
+}
+function approvalTarget(parameters) {
+  if (!parameters || typeof parameters !== "object") return null;
+  if (typeof parameters.CommandLine === "string" && parameters.CommandLine.trim()) {
+    return { type: "command", command: parameters.CommandLine };
+  }
+  for (const [key, isDirectory] of APPROVAL_PATH_PARAMETERS) {
+    const value = parameters[key];
+    if (typeof value === "string" && isAbsoluteAnyOs(value)) return { type: "path", path: value, isDirectory };
+  }
+  return null;
+}
+
 function isAgyApprovalError(message, commandLine = "") {
   const raw = String(message || "");
   if (!raw) return false;
@@ -336,10 +357,12 @@ function parseAgyLine(line) {
     const toolUseId = step.id || step.step_id || (step.step_index != null ? String(step.step_index) : null);
     const command = step.command || step.tool_info?.parameters?.CommandLine || tool;
     if (step.state === "ERROR" && isAgyApprovalError(error, step.tool_info?.parameters?.CommandLine)) {
+      const target = approvalTarget(step.tool_info?.parameters);
       return {
         kind: "approval-required",
         summary: tool ? `도구 권한: ${tool}` : "도구 실행 권한",
         detail: String(error),
+        ...(target ? { target } : {}),
       };
     }
     if (tool && /^(START|STARTED|RUNNING|PENDING|ACTIVE)$/i.test(String(step.state || ""))) {

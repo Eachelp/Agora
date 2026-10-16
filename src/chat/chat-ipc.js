@@ -823,6 +823,7 @@ function createChatFeature(options) {
       emitEvent,
       permissionMode: requestedPermission,
       autoApprove = false,
+      grantDirs = [],
       userQuestion = null,
     }) => {
       const record = ensureCapabilityService().getRecord(agent.id);
@@ -892,6 +893,8 @@ function createChatFeature(options) {
         attachmentsDir,
         outputFile,
         autoApprove: effectiveAutoApprove,
+        // 승인 카드에서 허락한 폴더. 쓰기 권한에서만 연다(argv가 다시 막는다).
+        extraDirs: permissionMode === "workspace-write" ? grantDirs : [],
         userQuestion,
       });
       if (!invocation.ok) {

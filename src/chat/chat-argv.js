@@ -3,6 +3,7 @@
 // - 위험 플래그는 사용자가 에이전트별 자동 승인을 명시한 workspace-write에서만 허용합니다.
 // - 모델/노력 문자열은 허용 문자만 통과시켜 .cmd 셸 경유 시 주입을 차단합니다.
 
+const path = require("node:path");
 const { processProviderPolicy } = require("./chat-provider-policy");
 
 const PERMISSION_MODES = Object.freeze(["chat", "workspace-read", "workspace-write"]);
@@ -99,7 +100,7 @@ function agyEffortForModel(provider, model, effort) {
   return effort;
 }
 
-function claudeArgv({ permissionMode, workspace, model, effort, attachmentsDir, hasPathDeliveries, autoApprove }) {
+function claudeArgv({ permissionMode, workspace, model, effort, attachmentsDir, hasPathDeliveries, autoApprove, extraDirs = [] }) {
   const argv = [
     "-p",
     "--no-session-persistence",
@@ -132,10 +133,11 @@ function claudeArgv({ permissionMode, workspace, model, effort, attachmentsDir, 
   if (autoApprove) argv.push("--dangerously-skip-permissions");
   argv.push("--add-dir", workspace);
   if (hasPathDeliveries && attachmentsDir) argv.push("--add-dir", attachmentsDir);
+  for (const dir of extraDirs) argv.push("--add-dir", dir);
   return argv;
 }
 
-function codexArgv({ permissionMode, workspace, model, effort, outputFile, imagePaths, autoApprove }) {
+function codexArgv({ permissionMode, workspace, model, effort, outputFile, imagePaths, autoApprove, extraDirs = [] }) {
   const argv = ["exec", "-", "--skip-git-repo-check", "--ephemeral", "--color", "never", "--json"];
   if (outputFile) argv.push("-o", outputFile);
   if (model) argv.push("--model", model);
@@ -152,6 +154,8 @@ function codexArgv({ permissionMode, workspace, model, effort, outputFile, image
   }
   if (autoApprove) argv.push("--dangerously-bypass-approvals-and-sandbox", "--cd", workspace);
   else argv.push("--sandbox", "workspace-write", "--cd", workspace);
+  // 승인한 폴더는 샌드박스 안에서 쓰기를 더 연다(codex exec --add-dir).
+  for (const dir of extraDirs) argv.push("--add-dir", dir);
   return argv;
 }
 
@@ -160,7 +164,7 @@ function codexArgv({ permissionMode, workspace, model, effort, outputFile, image
 // - chat: plan 모드(수정 불가) + 샌드박스 + 슬래시 명령 차단
 // - workspace-read: plan 모드 + 샌드박스 + add-dir
 // - workspace-write: accept-edits 모드 + 샌드박스 + add-dir
-function agyArgv({ permissionMode, workspace, model, effort, attachmentsDir, hasPathDeliveries, autoApprove }) {
+function agyArgv({ permissionMode, workspace, model, effort, attachmentsDir, hasPathDeliveries, autoApprove, extraDirs = [] }) {
   // agy 1.1.10의 --print는 다음 argv를 필수 프롬프트로 소비합니다. 실제
   // 프롬프트는 runner가 모든 옵션 뒤에 붙입니다.
   const argv = ["--sandbox", "--disable-slash-commands", "--output-format", "stream-json", "--print-timeout", "10h"];
@@ -179,6 +183,7 @@ function agyArgv({ permissionMode, workspace, model, effort, attachmentsDir, has
   argv.push("--mode", "accept-edits", "--add-dir", workspace);
   if (autoApprove) argv.push("--dangerously-skip-permissions");
   if (hasPathDeliveries && attachmentsDir) argv.push("--add-dir", attachmentsDir);
+  for (const dir of extraDirs) argv.push("--add-dir", dir);
   return argv;
 }
 
@@ -273,6 +278,7 @@ function buildAgentInvocation(input = {}) {
     attachmentsDir = null,
     outputFile = null,
     autoApprove = false,
+    extraDirs = [],
     userQuestion = null, // { server: {command,args,env}, serverKey, toolName } — user-question-run.js가 만든다
   } = input;
 
@@ -291,6 +297,14 @@ function buildAgentInvocation(input = {}) {
   }
   if (autoApprove && permissionMode !== "workspace-write") {
     return { ok: false, error: "자동 승인은 workspace-write 모드에서만 사용할 수 있습니다." };
+  }
+  // 승인 카드에서 허락한 폴더. 쓰기 권한에서만, 절대 경로만 받는다.
+  const grantedDirs = Array.isArray(extraDirs) ? extraDirs.filter((dir) => typeof dir === "string" && dir.trim()) : [];
+  if (grantedDirs.length && permissionMode !== "workspace-write") {
+    return { ok: false, error: "승인한 폴더는 workspace-write 모드에서만 열 수 있습니다." };
+  }
+  if (grantedDirs.some((dir) => !path.isAbsolute(dir))) {
+    return { ok: false, error: "승인한 폴더는 절대 경로여야 합니다." };
   }
   if (!chatCwd) {
     return { ok: false, error: "채팅 전용 작업 디렉터리가 없습니다." };
@@ -336,6 +350,7 @@ function buildAgentInvocation(input = {}) {
       attachmentsDir,
       hasPathDeliveries,
       autoApprove,
+      extraDirs: grantedDirs,
     });
   } else if (provider.id === "codex") {
     argv = codexArgv({
@@ -346,6 +361,7 @@ function buildAgentInvocation(input = {}) {
       outputFile,
       imagePaths,
       autoApprove,
+      extraDirs: grantedDirs,
     });
   } else if (provider.id === "agy") {
     argv = agyArgv({
@@ -356,6 +372,7 @@ function buildAgentInvocation(input = {}) {
       attachmentsDir,
       hasPathDeliveries,
       autoApprove,
+      extraDirs: grantedDirs,
     });
   } else {
     // processProviderPolicy()가 위에서 차단하므로 도달할 수 없습니다.

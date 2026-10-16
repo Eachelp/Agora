@@ -2105,3 +2105,66 @@ test("한도로 끝난 실행 뒤에 기다리던 턴이 있으면 이어서 실
   // 큐에 있던 codex는 실제로 이어서 실행됐다.
   assert.ok(room.messages.some((message) => message.author === "codex" && message.text === "codex 답"));
 });
+
+// 아래 두 시험은 AIG 아틀리에 21ab9e68에서 옮긴 것이다(handoff 2026-10-15 A1).
+// 예전에는 어떤 요청이든 승인하면 모든 확인을 끈 채(--dangerously-…) 다시 실행했다. 폴더를 청한
+// 요청은 그 폴더만 더 열고 다시 실행한다(승인 범위 A안, 2026-10-15). 카드가 범위를 미리 알린다.
+test("폴더를 청한 권한 요청을 승인하면 그 폴더만 열고 다시 실행한다", async () => {
+  const calls = [];
+  const cards = [];
+  const target = { type: "path", path: "D:/outside/notes/new.md", isDirectory: false };
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { permissionMode: "workspace-write" },
+    runAgent: ({ agent, autoApprove, grantDirs }) => {
+      calls.push({ agentId: agent.id, autoApprove, grantDirs });
+      return {
+        promise: Promise.resolve(grantDirs?.length
+          ? { ok: true, text: "폴더를 열고 완료" }
+          : { ok: false, approvalRequired: true, approval: { summary: "도구 권한: write_to_file", target } }),
+        cancel: () => {},
+      };
+    },
+  });
+  room.once("approval-request", (payload) => {
+    cards.push(payload.grant);
+    room.resolveApproval(payload.approvalId, "approve");
+  });
+  room.sendUserMessage("@codex 써줘");
+  await settle(room);
+  assert.deepEqual(cards, [{ kind: "folder", dir: path.dirname(target.path) }]);
+  assert.deepEqual(calls, [
+    // 승인 전 보통 실행에는 grantDirs를 싣지 않는다(실행 인자 모양을 그대로 둔다).
+    { agentId: "codex", autoApprove: false, grantDirs: undefined },
+    { agentId: "codex", autoApprove: false, grantDirs: [path.dirname(target.path)] },
+  ]);
+  assert.equal(room.messages.at(-1).text, "폴더를 열고 완료");
+});
+
+test("좁힐 수 없는 권한 요청은 카드가 모든 제한이 풀린다고 알리고, 승인하면 지금처럼 다시 실행한다", async () => {
+  const calls = [];
+  const cards = [];
+  const room = new ChatRoom({
+    agents: makeAgents(),
+    meta: { permissionMode: "workspace-write" },
+    runAgent: ({ agent, autoApprove, grantDirs }) => {
+      calls.push({ agentId: agent.id, autoApprove, grantDirs });
+      return {
+        promise: Promise.resolve(autoApprove
+          ? { ok: true, text: "승인 후 완료" }
+          : { ok: false, approvalRequired: true,
+            approval: { summary: "도구 권한: run_command", target: { type: "command", command: "npm test" } } }),
+        cancel: () => {},
+      };
+    },
+  });
+  room.once("approval-request", (payload) => {
+    cards.push(payload.grant);
+    room.resolveApproval(payload.approvalId, "approve");
+  });
+  room.sendUserMessage("@codex 시험해줘");
+  await settle(room);
+  assert.deepEqual(cards, [{ kind: "all" }]);
+  assert.deepEqual(calls.map((call) => [call.autoApprove, call.grantDirs]), [[false, undefined], [true, undefined]]);
+});
+
