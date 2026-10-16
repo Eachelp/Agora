@@ -85,15 +85,35 @@
       primary.find((g) => shortWindowLabel(g.label) === target) ||
       null;
     const selected = [pick("5시간"), pick("주간")].filter(Boolean);
+    const toWindow = (gauge, label) => ({
+      label,
+      remaining: remainingPercent(gauge),
+      tone: usageTone(gauge.usedPercent),
+      resetText: gauge.resetText || "",
+    });
+
+    // 모델 전용 한도(Claude Fable, AGY Argon)는 공급자 줄 아래 하위 줄로 보여 줍니다.
+    // 공급자 쪽에서 scope·window를 붙여 보낸 게이지만 다루고, 라벨 문구로 추측하지 않습니다.
+    const scopes = [];
+    for (const gauge of gauges) {
+      if (!gauge?.scope || (gauge.window !== "5시간" && gauge.window !== "주간")) continue;
+      let entry = scopes.find((scope) => scope.label === gauge.scope);
+      if (!entry) {
+        entry = { label: gauge.scope, windows: [] };
+        scopes.push(entry);
+      }
+      if (!entry.windows.some((window) => window.label === gauge.window)) {
+        entry.windows.push(toWindow(gauge, gauge.window));
+      }
+    }
+    for (const entry of scopes) {
+      entry.windows.sort((a, b) => Number(a.label !== "5시간") - Number(b.label !== "5시간"));
+    }
 
     return {
       ...base,
-      windows: selected.map((gauge) => ({
-        label: shortWindowLabel(gauge.label),
-        remaining: remainingPercent(gauge),
-        tone: usageTone(gauge.usedPercent),
-        resetText: gauge.resetText || "",
-      })),
+      windows: selected.map((gauge) => toWindow(gauge, shortWindowLabel(gauge.label))),
+      scopes,
     };
   }
 

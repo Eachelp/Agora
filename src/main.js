@@ -576,7 +576,11 @@ async function loadAntigravityProvider(forceUsage) {
 
   let usage;
   try {
-    const data = await fetchAntigravityUsage({ credential, force: forceUsage });
+    const data = await fetchAntigravityUsage({
+      credential,
+      force: forceUsage,
+      cliVersion: chatFeature.providerVersion("agy"),
+    });
     await antigravityAccountSwitcher.snapshotCurrent({
       email: data.email || identity.email,
       plan: data.plan,

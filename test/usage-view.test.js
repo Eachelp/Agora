@@ -129,3 +129,39 @@ test("summarizeWindows는 다른 모델군 게이지를 빈 칸에 대신 넣지
   assert.deepEqual(unknown.windows, []);
   assert.equal(unknown.error, undefined);
 });
+
+test("summarizeWindows는 모델 전용 한도를 공급자 줄 아래 하위 줄로 묶는다", () => {
+  const claude = usageView.summarizeWindows({
+    id: "claude",
+    label: "Claude",
+    gauges: [
+      { label: "5시간", usedPercent: 5 },
+      { label: "주간", usedPercent: 31 },
+      { label: "Fable · 주간", usedPercent: 6, resetText: "f", scope: "Fable", window: "주간" },
+    ],
+  });
+  // 하위 줄 게이지는 공급자 칸에 섞이지 않습니다.
+  assert.deepEqual(claude.windows.map((window) => [window.label, window.remaining]), [["5시간", 95], ["주간", 69]]);
+  assert.deepEqual(claude.scopes, [
+    { label: "Fable", windows: [{ label: "주간", remaining: 94, tone: "", resetText: "f" }] },
+  ]);
+
+  // scope가 없는 범위 게이지(AGY의 Claude/GPT)는 하위 줄로 올리지 않고 상세 보기에만 둡니다.
+  const agy = usageView.summarizeWindows({
+    id: "agy",
+    label: "AGY",
+    gauges: [
+      { label: "5시간", usedPercent: 0 },
+      { label: "주간", usedPercent: 0 },
+      { label: "Gemini 4 Argon · 주간", usedPercent: 36, scope: "Argon", window: "주간" },
+      { label: "Gemini 4 Argon · 5시간", usedPercent: 92, scope: "Argon", window: "5시간" },
+      { label: "Claude / GPT · 주간", usedPercent: 14 },
+    ],
+  });
+  assert.deepEqual(agy.scopes.map((scope) => scope.label), ["Argon"]);
+  // 하위 줄 안에서도 5시간이 먼저 옵니다.
+  assert.deepEqual(agy.scopes[0].windows.map((window) => [window.label, window.remaining, window.tone]), [
+    ["5시간", 8, "is-danger"],
+    ["주간", 64, ""],
+  ]);
+});

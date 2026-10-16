@@ -2484,6 +2484,12 @@ function roomMeta(meta) {
     };
   }
 
+  // 탐지해 둔 CLI 버전(--version 첫 줄). 아직 탐지 전이면 null이며, 여기서 탐지를 일으키지 않는다.
+  // 사용량 조회가 공급자 서버에 CLI와 같은 버전을 밝히는 데 쓴다(AGY).
+  function providerVersion(id) {
+    return capabilityService?.getRecord?.(id)?.version || null;
+  }
+
   return {
     registerIpcHandlers,
     openWindow,
@@ -2491,6 +2497,7 @@ function roomMeta(meta) {
     shutdown,
     showSystemNotice,
     notifyProviderAccountChanged,
+    providerVersion,
   };
 }
 

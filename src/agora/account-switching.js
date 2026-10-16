@@ -834,7 +834,11 @@ ${restartError.message || String(restartError)}`
           // 한도 API와 별개인 계정 조회가 막히면 기존 저장 메타데이터를 유지합니다.
         }
         try {
-          const current = await fetchAntigravityUsage({ credential, force: true });
+          const current = await fetchAntigravityUsage({
+            credential,
+            force: true,
+            cliVersion: getChatFeature()?.providerVersion?.("agy"),
+          });
           meta = { email: current.email || meta.email, plan: current.plan };
         } catch {
           // 한도 조회가 막혀도 확인한 이메일과 현재 자격 증명은 저장할 수 있습니다.

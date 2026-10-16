@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const {
+  agyUserAgent,
   classifyWindow,
   clearUsageCache,
   fetchAntigravityUsage,
@@ -126,21 +127,74 @@ test("AGY 응답에 Gemini 그룹이 없으면 Claude/GPT 한도를 대표 칸�
   );
 });
 
-test("AGY 한도 요약은 Gemini 그룹을 주는 정식 호스트에서 받는다", async (t) => {
+test("AGY 한도는 agy CLI와 같은 daily 호스트에서 설치된 CLI 버전을 밝혀 받는다", async (t) => {
   const originalFetch = global.fetch;
-  const urls = [];
+  const calls = [];
   t.after(() => {
     global.fetch = originalFetch;
     clearUsageCache();
   });
-  global.fetch = async (url) => {
-    urls.push(String(url));
+  global.fetch = async (url, options) => {
+    calls.push({ url: String(url), userAgent: options?.headers?.["user-agent"] });
     if (String(url).includes("loadCodeAssist")) return jsonResponse({ cloudaicompanionProject: "projects/test" });
     if (String(url).includes("userinfo")) return jsonResponse({});
     return jsonResponse({ groups: [] });
   };
-  await fetchAntigravityUsage({ credential: { token: { access_token: "a", refresh_token: "host-test" } }, force: true });
-  assert.ok(urls.includes("https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"), urls.join("\n"));
+  await fetchAntigravityUsage({
+    credential: { token: { access_token: "a", refresh_token: "host-test" } },
+    force: true,
+    cliVersion: "1.5.2",
+  });
+  const quota = calls.find((call) => call.url.includes("retrieveUserQuotaSummary"));
+  assert.equal(quota.url, "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary");
+  // 예전에 고정한 1.0.11로 보내면 daily 호스트가 Gemini·Argon 그룹을 빼고 돌려줬습니다.
+  assert.match(quota.userAgent, /^antigravity\/cli\/1\.5\.2 /);
+});
+
+test("AGY user-agent는 버전 문자열에서 숫자만 뽑고, 모르면 확인된 버전을 쓴다", () => {
+  assert.equal(agyUserAgent("1.4.0", "win32", "x64"), "antigravity/cli/1.4.0 windows/amd64");
+  assert.equal(agyUserAgent("agy 1.6.3 (build abc)", "darwin", "arm64"), "antigravity/cli/1.6.3 darwin/arm64");
+  assert.equal(agyUserAgent(null, "linux", "x64"), "antigravity/cli/1.4.0 linux/amd64");
+  assert.equal(agyUserAgent("unknown", "win32", "x64"), "antigravity/cli/1.4.0 windows/amd64");
+});
+
+test("AGY의 모델 전용 그룹(Argon)은 Gemini 대표 칸을 차지하지 않고 따로 표시된다", () => {
+  // 2026-10-16 agy 1.4.0 `/usage`와 같은 daily 응답입니다.
+  const gauges = normalizeAgyQuota({
+    groups: [
+      {
+        displayName: "Gemini Models",
+        buckets: [
+          { bucketId: "gemini-weekly", displayName: "Weekly Limit Remaining", window: "weekly", remainingFraction: 1, resetTime: "w" },
+          { bucketId: "gemini-5h", displayName: "Five Hour Limit Remaining", window: "5h", remainingFraction: 1, resetTime: "h" },
+        ],
+      },
+      {
+        displayName: "Claude and GPT models",
+        buckets: [
+          { bucketId: "3p-weekly", displayName: "Weekly Limit Remaining", window: "weekly", remainingFraction: 0.858593225479126 },
+          { bucketId: "3p-5h", displayName: "Five Hour Limit Remaining", window: "5h", remainingFraction: 1 },
+        ],
+      },
+      {
+        displayName: "Gemini 4 Argon",
+        buckets: [{
+          bucketId: "gemini-argon-wtu-weekly",
+          displayName: "Gemini 4 Argon Weekly Limit",
+          window: "weekly",
+          remainingFraction: 0.641541600227356,
+          resetTime: "a",
+        }],
+      },
+    ],
+  });
+  assert.deepEqual(gauges, [
+    { label: "5시간", usedPercent: 0, resetText: "h" },
+    { label: "주간", usedPercent: 0, resetText: "w" },
+    { label: "Gemini 4 Argon · 주간", usedPercent: 36, resetText: "a", scope: "Argon", window: "주간" },
+    { label: "Claude / GPT · 주간", usedPercent: 14, resetText: "" },
+    { label: "Claude / GPT · 5시간", usedPercent: 0, resetText: "" },
+  ]);
 });
 
 test("AGY 그룹 이름이 바뀌어 gemini를 못 찾으면 전체를 그대로 쓴다", () => {
@@ -169,16 +223,43 @@ test("구간을 하나도 분류하지 못하면 원래 목록을 잃지 않는�
   );
 });
 
-test("Claude 한도는 5시간과 전체 주간 두 개만 쓰고 범위를 보정한다", () => {
+test("Claude 한도는 5시간과 전체 주간을 쓰고 범위를 보정하며, 예전 모델별 필드는 읽지 않는다", () => {
   const gauges = normalizeClaudeUsage({
     five_hour: { utilization: 50.4, resets_at: "a" },
     seven_day: { utilization: 120, resets_at: "b" },
-    // 모델별 7일 창은 화면에 넣지 않습니다.
+    // 모델 전용 한도는 limits 배열에서만 읽습니다. 예전 필드까지 읽으면 같은 한도를 두 번 셉니다.
     seven_day_sonnet: { utilization: 25, resets_at: "c" },
     seven_day_opus: { utilization: 88, resets_at: "d" },
   });
   assert.deepEqual(gauges.map((item) => item.label), ["5시간", "주간"]);
   assert.deepEqual(gauges.map((item) => item.usedPercent), [50, 100]);
+});
+
+test("Claude의 모델 전용 한도(Fable 주간)는 limits 배열에서 따로 읽는다", () => {
+  // 2026-10-16 실제 응답의 limits 배열 형태입니다.
+  const gauges = normalizeClaudeUsage({
+    five_hour: { utilization: 5, resets_at: "s" },
+    seven_day: { utilization: 31, resets_at: "w" },
+    limits: [
+      { kind: "session", group: "session", percent: 5, resets_at: "s", scope: null, is_active: false },
+      { kind: "weekly_all", group: "weekly", percent: 31, resets_at: "w", scope: null, is_active: true },
+      {
+        kind: "weekly_scoped",
+        group: "weekly",
+        percent: 6,
+        resets_at: "f",
+        scope: { model: { id: null, display_name: "Fable" }, surface: null },
+        is_active: false,
+      },
+      // 모델이 아닌 범위(surface)만 있는 한도는 아직 다루지 않습니다.
+      { kind: "weekly_scoped", group: "weekly", percent: 50, scope: { model: null, surface: { display_name: "Cowork" } } },
+    ],
+  });
+  assert.deepEqual(gauges, [
+    { label: "5시간", usedPercent: 5, resetText: "s" },
+    { label: "주간", usedPercent: 31, resetText: "w" },
+    { label: "Fable · 주간", usedPercent: 6, resetText: "f", scope: "Fable", window: "주간" },
+  ]);
 });
 
 test("AGY 응답에서 계정, 플랜, 한도만 정규화한다", async (t) => {

@@ -102,27 +102,34 @@ function normalizeAgyQuota(data) {
     };
   };
 
-  const geminiGroups = [];
-  const otherGroups = [];
-
-  for (const group of groups) {
-    const name = String(group?.displayName || group?.name || "");
-    if (/gemini/i.test(name)) {
-      geminiGroups.push(group);
-    } else {
-      otherGroups.push(group);
-    }
-  }
-
-  // Gemini 계열 그룹에서 5시간·주간 대표 창을 추출합니다. Gemini가 없으면 이름이 바뀐 경우로
-  // 보고 첫 그룹을 쓰되, Claude/GPT 같은 외부 모델 그룹(bucketId "3p-…")은 대표로 올리지 않습니다.
-  // 응답에서 Gemini 그룹이 빠졌을 때 Claude/GPT 한도가 AGY 한도처럼 보이면 안 됩니다.
+  // 한도 그룹은 세 갈래입니다(2026-10, agy 1.4.0의 /usage와 같은 응답).
+  //   일반 Gemini 그룹 "Gemini Models"(bucketId gemini-weekly·gemini-5h) → AGY 줄의 5시간·주간 칸
+  //   모델 전용 그룹 "Gemini 4 Argon"(bucketId gemini-argon-…) → 그 모델만의 한도, 사이드바 아래 줄
+  //   외부 모델 그룹 "Claude and GPT models"(bucketId 3p-…) → 상세 보기에만
+  // 모델 전용 그룹도 이름에 Gemini가 들어 있어, 가려내지 않으면 가장 많이 쓴 Argon 주간이
+  // AGY 주간 칸을 차지합니다.
+  const groupName = (group) => String(group?.displayName || group?.name || "").trim();
   const isThirdParty = (group) =>
-    /claude|gpt/i.test(String(group?.displayName || group?.name || "")) ||
+    /claude|gpt/i.test(groupName(group)) ||
     (group?.buckets || []).some((bucket) => /^3p[-_]/i.test(String(bucket?.bucketId || "")));
-  const fallbackPrimary = otherGroups.find((group) => !isThirdParty(group));
-  const primaryGroups = geminiGroups.length > 0 ? geminiGroups : [fallbackPrimary].filter(Boolean);
-  const secondaryGroups = otherGroups.filter((group) => !primaryGroups.includes(group));
+  const isGeneralGemini = (group) =>
+    /^gemini(?:\s+models?)?$/i.test(groupName(group)) ||
+    (group?.buckets || []).some((bucket) => /^gemini-[a-z0-9]+$/i.test(String(bucket?.bucketId || "")));
+  const geminiGroups = groups.filter((group) => /gemini/i.test(groupName(group)));
+  const generalGroups = geminiGroups.filter(isGeneralGemini);
+
+  // 일반 그룹을 알아보지 못하면(옛 응답·이름 변경) 예전처럼 Gemini 그룹 전체에서 가장 빡빡한
+  // 창을 씁니다. Gemini가 아예 없으면 첫 그룹을 쓰되, Claude/GPT 그룹은 대표로 올리지 않습니다.
+  // 응답에서 Gemini 그룹이 빠졌을 때 Claude/GPT 한도가 AGY 한도처럼 보이면 안 됩니다.
+  const primaryGroups = generalGroups.length > 0
+    ? generalGroups
+    : geminiGroups.length > 0
+      ? geminiGroups
+      : [groups.find((group) => !isThirdParty(group))].filter(Boolean);
+  const scopedGroups = generalGroups.length > 0
+    ? geminiGroups.filter((group) => !generalGroups.includes(group))
+    : [];
+  const secondaryGroups = groups.filter((group) => !primaryGroups.includes(group) && !scopedGroups.includes(group));
 
   const primaryBuckets = primaryGroups.flatMap((group) =>
     (group.buckets || []).map((b) => parseBucket(group, b)).filter(Boolean)
@@ -135,6 +142,23 @@ function normalizeAgyQuota(data) {
       resetText: b.resetText,
     }))
   );
+
+  // 모델 전용 한도에는 scope(사이드바 아래 줄 이름)와 window(5시간·주간)를 붙입니다.
+  // 상세 보기 라벨은 전체 이름("Gemini 4 Argon · 주간"), 사이드바는 짧은 이름("Argon")을 씁니다.
+  const scopedGauges = scopedGroups.flatMap((group) => {
+    const fullName = formatAgyGroupLabel(groupName(group));
+    const scope = fullName.replace(/^gemini\s+\d+(?:\.\d+)?\s+/i, "").trim() || fullName;
+    return (group.buckets || []).flatMap((bucket) => {
+      const parsed = parseBucket(group, bucket);
+      if (!parsed) return [];
+      return [{
+        label: [fullName, formatAgyBucketLabel(parsed)].filter(Boolean).join(" · "),
+        usedPercent: parsed.usedPercent,
+        resetText: parsed.resetText,
+        ...(parsed.window ? { scope, window: parsed.window } : {}),
+      }];
+    });
+  });
 
   // 비 Gemini 그룹(Claude, GPT-OSS 등 AGY 별도 할당량 모델)도 상세 보기에서 확인할 수 있게 보존합니다.
   const otherGauges = secondaryGroups.flatMap((group) =>
@@ -152,7 +176,7 @@ function normalizeAgyQuota(data) {
     })
   );
 
-  if (primaryGauges.length === 0 && otherGauges.length === 0) {
+  if (primaryGauges.length === 0 && scopedGauges.length === 0 && otherGauges.length === 0) {
     return groups.flatMap((group) =>
       (group.buckets || []).flatMap((bucket) => {
         const parsed = parseBucket(group, bucket);
@@ -166,16 +190,17 @@ function normalizeAgyQuota(data) {
     );
   }
 
-  return [...primaryGauges, ...otherGauges];
+  return [...primaryGauges, ...scopedGauges, ...otherGauges];
 }
 
+const CLAUDE_LIMIT_WINDOWS = { session: WINDOW_5H, weekly: WINDOW_WEEK };
+
 function normalizeClaudeUsage(data) {
-  // Claude는 7일 창을 전체 / Sonnet / Opus로 쪼개 주지만 화면에는 전체 하나만 씁니다.
   const windows = [
     [WINDOW_5H, data?.five_hour],
     [WINDOW_WEEK, data?.seven_day],
   ];
-  return windows.flatMap(([label, value]) => {
+  const main = windows.flatMap(([label, value]) => {
     const utilization = Number(value?.utilization);
     if (!Number.isFinite(utilization)) return [];
     return [{
@@ -184,6 +209,23 @@ function normalizeClaudeUsage(data) {
       resetText: value.resets_at || "",
     }];
   });
+  // 모델 전용 한도(2026-10 기준 Fable 주간)는 limits 배열에 scope.model로 따로 옵니다.
+  // 예전 모델별 필드(seven_day_opus·seven_day_sonnet)는 읽지 않습니다. 다시 채워져 오면
+  // limits와 같은 한도를 두 번 세게 됩니다.
+  const scoped = (Array.isArray(data?.limits) ? data.limits : []).flatMap((limit) => {
+    const scope = String(limit?.scope?.model?.display_name || "").trim();
+    const window = CLAUDE_LIMIT_WINDOWS[limit?.group];
+    const percent = Number(limit?.percent);
+    if (!scope || !window || !Number.isFinite(percent)) return [];
+    return [{
+      label: `${scope} · ${window}`,
+      usedPercent: clampPercent(percent),
+      resetText: limit.resets_at || "",
+      scope,
+      window,
+    }];
+  });
+  return [...main, ...scoped];
 }
 
 async function json(url, options, timeout = 8000) {
@@ -244,7 +286,22 @@ function tierLabel(assist) {
   return tier?.displayName || tier?.display_name || tier?.name || tier?.id || null;
 }
 
-async function fetchAntigravityUsage({ credential, force = false } = {}) {
+// AGY 한도는 agy CLI와 같은 호스트에서, CLI와 같은 user-agent로 받습니다. 서버가 user-agent의
+// CLI 버전을 보고 응답을 고르기 때문입니다. 예전에 고정해 둔 1.0.11로 보내면 daily 호스트가
+// Gemini·Argon 그룹을 빼고 Claude/GPT 그룹만 돌려줬고(2026-10-16 확인), 그 탓에 한때 정식
+// 호스트로 옮겼지만 정식 호스트에는 Argon 그룹이 없습니다. 기준은 `agy -p "/usage"` 출력입니다.
+const AGY_QUOTA_HOST = "https://daily-cloudcode-pa.googleapis.com";
+// 설치된 CLI 버전(agy --version)을 모를 때만 씁니다. 감지한 버전이 늘 우선합니다.
+const AGY_FALLBACK_CLI_VERSION = "1.4.0";
+
+function agyUserAgent(cliVersion, platform = process.platform, arch = process.arch) {
+  const version = String(cliVersion || "").match(/\d+\.\d+\.\d+/)?.[0] || AGY_FALLBACK_CLI_VERSION;
+  const osName = { win32: "windows", darwin: "darwin", linux: "linux" }[platform] || platform;
+  const cpu = { x64: "amd64", arm64: "arm64", ia32: "386" }[arch] || arch;
+  return `antigravity/cli/${version} ${osName}/${cpu}`;
+}
+
+async function fetchAntigravityUsage({ credential, force = false, cliVersion = null } = {}) {
   const token = credential?.token?.access_token;
   if (!token) throw new Error("AGY 로그인 정보가 없습니다.");
   const key = tokenKey("agy", credential?.token?.refresh_token || token);
@@ -253,10 +310,10 @@ async function fetchAntigravityUsage({ credential, force = false } = {}) {
     const headers = {
       authorization: `Bearer ${token}`,
       "content-type": "application/json",
-      "user-agent": "antigravity/cli/1.0.11 windows/amd64",
+      "user-agent": agyUserAgent(cliVersion),
     };
     const [assist, identity] = await Promise.all([
-      json("https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist", {
+      json(`${AGY_QUOTA_HOST}/v1internal:loadCodeAssist`, {
         method: "POST",
         headers,
         body: JSON.stringify({ metadata: { pluginType: "GEMINI" } }),
@@ -265,10 +322,8 @@ async function fetchAntigravityUsage({ credential, force = false } = {}) {
     ]);
     const project = assist?.cloudaicompanionProject;
     if (!project) throw new Error("AGY 프로젝트 정보를 찾지 못했습니다.");
-    // 한도 요약은 정식 호스트에서 받습니다. daily 호스트는 Gemini 그룹을 빼고 Claude/GPT
-    // 그룹만 돌려줄 때가 있어(2026-10 확인) agy CLI의 "Models & Quota"와 값이 달라집니다.
     const quota = await json(
-      "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+      `${AGY_QUOTA_HOST}/v1internal:retrieveUserQuotaSummary`,
       {
         method: "POST",
         headers,
@@ -297,6 +352,7 @@ async function fetchAntigravityIdentity({ credential, force = false } = {}) {
 }
 
 module.exports = {
+  agyUserAgent,
   classifyWindow,
   clearUsageCache,
   fetchAntigravityIdentity,
