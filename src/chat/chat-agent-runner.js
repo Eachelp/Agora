@@ -411,6 +411,9 @@ function runAgentProcess({
     let parsedError = null;
     let parsedApproval = null;
     let deltaText = "";
+    // 오류 이벤트가 실어 온 본문(예: AGY가 실패 상태로 끝나며 남긴 response). 스트리밍된 조각이 없을 때만 쓴다.
+    let errorPartialText = "";
+    const partialTextOf = () => deltaText.trim() || errorPartialText.trim();
     const stdoutDecoder = new StringDecoder("utf8");
     const stderrDecoder = new StringDecoder("utf8");
 
@@ -472,6 +475,9 @@ function runAgentProcess({
     const emit = (event) => {
       if (!event || settled) return;
       if (PROGRESS_KINDS.has(event.kind)) noteProgress();
+      if (event.kind === "error" && typeof event.partialText === "string" && event.partialText.trim()) {
+        errorPartialText = event.partialText;
+      }
       // 한도 문구가 오류로 오면 기다리지 않고 바로 끝낸다. 재시도 루프에 갇힌
       // CLI를 그대로 두면 무음 감지도 큐 경고도 비켜가 "입력 중"이 영원히 남는다.
       if (event.kind === "error" && !rateLimitInfo) {
@@ -487,7 +493,7 @@ function runAgentProcess({
             rateLimited: true,
             stopReason: RATE_LIMITED_STOP_REASON,
             error: rateLimitMessage(limit, event.message),
-            ...(deltaText.trim() ? { partialText: deltaText.trim() } : {}),
+            ...(partialTextOf() ? { partialText: partialTextOf() } : {}),
           });
           return;
         }
@@ -703,7 +709,7 @@ function runAgentProcess({
           // 화면에 흘러가던 중간 출력은 다른 실패 분기와 똑같이 보존한다.
           // 여기만 빠뜨려서, 답변을 다 스트리밍한 실행이 승인 요청으로 끝나면
           // 그 내용이 통째로 사라졌다.
-          ...(deltaText.trim() ? { partialText: deltaText.trim() } : {}),
+          ...(partialTextOf() ? { partialText: partialTextOf() } : {}),
           output: outputInfo,
         });
         return;
@@ -724,7 +730,7 @@ function runAgentProcess({
       // 보고하고, 화면에 보였던 중간 출력을 partialText로 보존합니다.
       if (outputLimitHit) {
         // 파서가 있으면 화면에 보였던 delta가, 없으면 보존된 stdout이 부분 출력입니다.
-        const partial = (deltaText.trim() || (parseLine ? "" : stdout.trim())).trim();
+        const partial = (partialTextOf() || (parseLine ? "" : stdout.trim())).trim();
         finish({
           ok: false,
           outputLimited: true,
@@ -749,7 +755,7 @@ function runAgentProcess({
             rateLimited: true,
             stopReason: RATE_LIMITED_STOP_REASON,
             error: rateLimitMessage(limit, detail),
-            ...(deltaText.trim() ? { partialText: deltaText.trim() } : {}),
+            ...(partialTextOf() ? { partialText: partialTextOf() } : {}),
             output: outputInfo,
           });
           return;
@@ -757,7 +763,7 @@ function runAgentProcess({
         finish({
           ok: false,
           error: detail || `종료 코드 ${code}`,
-          ...(deltaText.trim() ? { partialText: deltaText.trim() } : {}),
+          ...(partialTextOf() ? { partialText: partialTextOf() } : {}),
           output: outputInfo,
         });
         return;
@@ -766,7 +772,7 @@ function runAgentProcess({
       // requireFinal이면 구조화된 final이 없을 때 중간 delta를 완료 결과로 승격하지 않습니다.
       // 일반 채팅은 CLI 버전 호환을 위해 기존 fallback 동작을 유지합니다.
       if (strictFinal && parseLine) {
-        const partial = deltaText.trim();
+        const partial = partialTextOf();
         finish({
           ok: false,
           protocolFailed: true,
@@ -801,7 +807,7 @@ function runAgentProcess({
           ok: false,
           timedOut: true,
           error: `시간 초과 (${Math.round(timeoutMs / 1000)}초)`,
-          ...(deltaText.trim() ? { partialText: deltaText.trim() } : {}),
+          ...(partialTextOf() ? { partialText: partialTextOf() } : {}),
         });
       }, remainingMs);
       if (typeof timer.unref === "function") timer.unref();

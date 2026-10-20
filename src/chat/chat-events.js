@@ -401,7 +401,14 @@ function parseAgyLine(line) {
     // status가 SUCCESS가 아니면 response가 있어도 final로 승격하지 않는다.
     // provider failure가 성공처럼 보이는 것을 막는다(fail-closed 방향).
     if (result.status && result.status !== "SUCCESS") {
-      return { kind: "error", message: truncateLabel(result.error || result.response || `AGY ${result.status}`, 200) };
+      // 실패 상태로 끝나도 CLI가 이미 쓴 응답 본문(response)은 버리지 않고 싣는다 — 러너가 스트리밍된
+      // 조각이 없을 때 partialText로 보존해 오케스트레이션의 결과 블록까지 전달한다.
+      const response = typeof result.response === "string" ? result.response.trim() : "";
+      return {
+        kind: "error",
+        message: truncateLabel(result.error || result.response || `AGY ${result.status}`, 200),
+        ...(response ? { partialText: response } : {}),
+      };
     }
     // result는 print 모드의 마지막 이벤트다. terminal 표시를 보고 러너가 CLI가 스스로 끝나지
     // 않을 때(종료 단계에서 멈춤) 받은 답으로 턴을 마친다.

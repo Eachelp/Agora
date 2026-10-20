@@ -670,3 +670,23 @@ test("terminal final 뒤 CLI가 스스로 끝나면 유예 타이머가 끼어�
   assert.equal(result.text, "정상 종료");
   assert.equal(result.output.exitForcedAfterFinal, undefined);
 });
+
+test("오류 이벤트가 실어 온 본문은 스트리밍된 조각이 없을 때 partialText로 보존한다", async () => {
+  const script = [
+    "console.log(JSON.stringify({kind:'error',message:'API error (attempt 1)',partialText:'완성된 보고 본문'}))",
+  ].join(";");
+  const result = await runNode(script, { parseLine: (line) => JSON.parse(line) }).promise;
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "API error (attempt 1)");
+  assert.equal(result.partialText, "완성된 보고 본문");
+});
+
+test("스트리밍된 조각이 있으면 오류 이벤트의 본문보다 그 조각을 partialText로 쓴다", async () => {
+  const script = [
+    "console.log(JSON.stringify({kind:'delta',text:'화면에 보인 조각'}))",
+    "console.log(JSON.stringify({kind:'error',message:'오류',partialText:'오류 본문'}))",
+  ].join(";");
+  const result = await runNode(script, { parseLine: (line) => JSON.parse(line) }).promise;
+  assert.equal(result.ok, false);
+  assert.equal(result.partialText, "화면에 보인 조각");
+});

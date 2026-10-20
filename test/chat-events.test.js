@@ -325,3 +325,16 @@ test("agy: 승인 요청이 청한 경로·명령을 함께 읽는다", () => {
   assert.equal(unknown.target, undefined);
 });
 
+test("agy가 실패 상태로 끝나도 result.response 본문을 error 이벤트의 partialText로 싣는다", () => {
+  const failed = parseAgyLine(JSON.stringify({
+    event: "result",
+    result: { status: "ERROR", error: "API error (attempt 1): INTERNAL (code 500)", response: "문서 8건을 현행화했습니다.\n@codex 재검수 부탁드립니다.\n" },
+  }));
+  assert.equal(failed.kind, "error");
+  assert.match(failed.message, /INTERNAL \(code 500\)/);
+  assert.equal(failed.partialText, "문서 8건을 현행화했습니다.\n@codex 재검수 부탁드립니다.");
+  const noBody = parseAgyLine(JSON.stringify({ event: "result", result: { status: "ERROR", error: "boom" } }));
+  assert.equal(noBody.kind, "error");
+  assert.equal("partialText" in noBody, false, "본문이 없으면 필드를 만들지 않는다");
+});
+

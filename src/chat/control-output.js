@@ -32,6 +32,12 @@ const MULTI_TRUE_VALUES = new Set(["yes", "y", "true", "예"]);
 const PURPOSE_LINE_PATTERN = /^[ \t]*PURPOSE:[ \t]*([^\r\n]+?)[ \t]*$/im;
 const REASON_LINE_PATTERN = /^[ \t]*REASON:[ \t]*([^\r\n]+?)[ \t]*$/im;
 
+// 오케스트레이터 지휘 AI 전용 제어 줄. 일반 대화 턴의 parseControlOutput은 이 줄을 모른다 — 지휘 AI 턴만
+// parseOrchestrationControl로 따로 읽는다. STAGE: @a @b 한 줄이 한 단계(같은 줄은 동시, 줄 사이는 차례),
+// DONE은 오케스트레이션을 끝낸다.
+const STAGE_LINE_PATTERN = /^[ \t]*STAGE:[ \t]*([^\r\n]+?)[ \t]*$/i;
+const DONE_LINE_PATTERN = /^[ \t]*DONE(?::[ \t]*[^\r\n]*?)?[ \t]*$/i;
+
 // end-anchor 판별용 단일 줄 패턴. 응답 꼬리의 연속된 제어 줄만 골라낸다.
 const CONTROL_LINE_PATTERNS = Object.freeze([
   /^[ \t]*HANDOFF:[ \t]*@?[\p{L}\p{N}_-]+[ \t]*$/iu,
@@ -91,6 +97,39 @@ function handoffTargetForToken(token) {
     if (aliases.some((alias) => alias.toLowerCase() === lowered)) return role;
   }
   return null;
+}
+
+// 지휘 AI 답 끝의 STAGE·DONE 줄을 읽고, 그 줄만 뺀 본문을 돌려준다. 끝 제어 블록은 기존 제어 줄(ASK_USER 등)과
+// STAGE·DONE이 섞여 이어진 줄들이다(사이의 빈 줄은 허용). 코드펜스 안의 예시는 제어가 아니다.
+// 반환: { stages: ["@a @b", ...](STAGE: 뒤의 원문), done, text }. STAGE·DONE이 없으면 text는 입력 그대로다.
+function parseOrchestrationControl(text) {
+  const raw = String(text || "");
+  const rawLines = raw.split(/\r?\n/);
+  const maskedLines = maskCodeFences(raw).split(/\r?\n/);
+  let end = maskedLines.length - 1;
+  while (end >= 0 && maskedLines[end].trim() === "") end -= 1;
+  let start = end + 1;
+  for (let index = end; index >= 0; index -= 1) {
+    const line = maskedLines[index];
+    if (line.trim() === "") continue;
+    if (STAGE_LINE_PATTERN.test(line) || DONE_LINE_PATTERN.test(line) || isControlLine(line)) start = index;
+    else break;
+  }
+  const stages = [];
+  let done = false;
+  const kept = rawLines.slice(0, start);
+  for (let index = start; index <= end; index += 1) {
+    const masked = maskedLines[index];
+    if (STAGE_LINE_PATTERN.test(masked)) {
+      stages.push(rawLines[index].replace(/^[ \t]*STAGE:[ \t]*/i, "").trim());
+    } else if (DONE_LINE_PATTERN.test(masked)) {
+      done = true;
+    } else {
+      kept.push(rawLines[index]);
+    }
+  }
+  if (stages.length === 0 && !done) return { stages: [], done: false, text: raw };
+  return { stages, done, text: kept.join("\n").trimEnd() };
 }
 
 // 응답 꼬리의 제어 행동을 파싱한다. 마커가 없으면 null. 서로 다른 행동이 섞이거나
@@ -158,5 +197,6 @@ function parseControlOutput(text) {
 
 module.exports = {
   parseControlOutput,
+  parseOrchestrationControl,
   stripControlOutput,
 };

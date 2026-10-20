@@ -1,7 +1,7 @@
 const { EventEmitter } = require("node:events");
 const path = require("node:path");
 const { GROUP_ALIASES } = require("./chat-agents");
-const { parseMentions, hasGroupMention } = require("./chat-mention");
+const { parseMentions, hasGroupMention, resolveStageTargets } = require("./chat-mention");
 const { filesModifiedSince } = require("../agora/workspace-scan");
 const { buildAgentPrompt } = require("./chat-prompt");
 const {
@@ -12,7 +12,7 @@ const {
 } = require("../agora/discussion-protocol");
 const { RATE_LIMITED_STOP_REASON } = require("./rate-limit-signal");
 // 응답 꼬리의 질문 계약(ASK_USER + OPTION).
-const { parseControlOutput, stripControlOutput } = require("./control-output");
+const { parseControlOutput, parseOrchestrationControl, stripControlOutput } = require("./control-output");
 
 // 채팅방 오케스트레이션.
 // - 멘션이 없으면 세션 참가자 전체, 있으면 멘션된 참가자만 응답합니다.
@@ -54,6 +54,55 @@ const DEFAULT_MENTION_CHAIN_LIMIT = 2;
 // 보통 대화의 "AI끼리 계속 부르기" 합계 상한(설계 §(10))도 같이 둔다. 시험이 주입할 수 있게 생성자 옵션으로도 받는다.
 const ORCHESTRATION_ROUND_CEILING = 50;
 const ORCHESTRATION_EXECUTION_CEILING = 150;
+// 지휘 AI에게 넘기는 작업자 결과 블록에서 보고 하나당 싣는 글자 수(넘으면 앞부분만 싣고 전체 글자 수를 적는다).
+const LEAD_REPORT_CHARS = 6000;
+// 다음 단계 참가자에게 넘기는 앞 단계 결과에서 보고 하나당 싣는 글자 수(검수자가 보고를 온전히 읽을 수 있게 넉넉히).
+const STAGE_FORWARD_CHARS = 40000;
+// 한 라운드에 지휘 AI가 계획할 수 있는 단계 수(2026-10-20 개정).
+const MAX_ORCHESTRATION_STAGES = 4;
+
+function clipReport(text, limit) {
+  const value = String(text || "");
+  return value.length > limit ? `${value.slice(0, limit)}…(생략, 전체 ${value.length}자)` : value;
+}
+
+// 작업자 한 명의 턴 결과를 단계 결과 항목으로 바꾼다. status: done | failed | ask | unavailable | skipped.
+function stageEntryFromOutcome(id, outcome) {
+  if (outcome === undefined) return { id, status: "unavailable" };
+  if (!outcome.ok) {
+    return {
+      id,
+      status: "failed",
+      stopReason: outcome.stopReason || "실패",
+      error: String(outcome.error || ""),
+      partialText: outcome.partialText ? String(outcome.partialText) : "",
+    };
+  }
+  if (outcome.controlRequest?.action === "ASK_USER") {
+    return { id, status: "ask", question: outcome.controlRequest.question || "", options: outcome.controlRequest.options || [] };
+  }
+  return { id, status: "done", text: String(outcome.text || "") };
+}
+
+function renderStageEntry(entry, limit) {
+  const id = entry.id;
+  if (entry.status === "unavailable") return [`[@${id}] 사용할 수 없음(비활성화되었거나 설치되지 않음)`];
+  if (entry.status === "skipped") return [`[@${id}] 건너뜀(${entry.reason})`];
+  if (entry.status === "failed") {
+    const lines = [`[@${id}] 실패(${entry.stopReason})`, entry.error.slice(0, 1000)];
+    if (entry.partialText) {
+      lines.push("(실패 전까지 받은 응답)");
+      lines.push(clipReport(entry.partialText, limit));
+    }
+    return lines;
+  }
+  if (entry.status === "ask") {
+    const lines = [`[@${id}] 질문 있음: ${entry.question}`];
+    if (entry.options.length > 0) lines.push(`OPTION: ${entry.options.join(", ")}`);
+    return lines;
+  }
+  return [`[@${id}] 완료`, clipReport(entry.text, limit)];
+}
 const KEEP_CALLING_CEILING = 50;
 const LOST_TURN_STALL_SECONDS = 120;
 // 실행 중인 일반 턴이 이 시간 넘게 진전(delta·도구·파일)이 없으면 한 번 안내한다.
@@ -327,6 +376,8 @@ class ChatRoom extends EventEmitter {
       executions: this.orchestration.executions,
       leadId: this.orchestration.leadId,
       agentIds: [...new Set([this.orchestration.leadId, ...workerIds])],
+      // 단계를 실행하는 동안만 있다(상태 줄의 "k/n단계"). 지휘 AI 차례에는 null.
+      stage: this.orchestration.stage ? { ...this.orchestration.stage } : null,
     };
   }
 
@@ -746,7 +797,7 @@ class ChatRoom extends EventEmitter {
     // turnRootId로 재사용했으므로 보통 자유 대화 키와 같은 모양이면 그 뒤에 같은 메시지로 또 온
     // @멘션 호출과 섞일 수 있고, collectSupersedable/isFastEligible도 이 키로 오케스트레이션 턴을 가려낸다.
     const dedupeKey = context.orchestration
-      ? `orch:${context.orchestration.id}:${context.orchestration.round}:${agent.id}`
+      ? `orch:${context.orchestration.id}:${context.orchestration.round}:${context.orchestration.role}:${context.orchestration.stage || 0}:${agent.id}`
       : context.discussionSummary
         ? `summary:${context.discussionSummary.discussionId}:${context.discussionSummary.record ? "record" : "summary"}:${agent.id}`
         : context.simplifyMeta
@@ -1141,6 +1192,11 @@ class ChatRoom extends EventEmitter {
       heldMessages: [],
       rootMessageId: item.context.turnRootId,
       ceilingNoticed: false,
+      // 단계 계획(라운드마다 지휘 AI의 STAGE 줄로 짠다)과 지금 실행 중인 단계, 자동 재촉 표시.
+      plan: null,
+      stage: null,
+      nudged: false,
+      lastResultBlock: "",
       // 이 오케스트레이션의 모든 턴(지휘 AI 회신·작업자)이 매번 받는 첨부. 첫 요청의 첨부로 시작하고,
       // 지휘 AI가 받은 보류 메시지의 첨부가 더해진다(claimUnit).
       attachments: [...(item.context.attachments || [])],
@@ -1204,8 +1260,9 @@ class ChatRoom extends EventEmitter {
     }
   }
 
-  // 지휘 AI 턴이 끝났다: @작업자 호출이 있으면 안전선을 거쳐 작업자 묶음을 claim하고,
-  // 없으면(또는 자신이 실패·불가용) 오케스트레이션을 끝낸다(설계 §(4)·§(8)).
+  // 지휘 AI 턴이 끝났다. 읽는 순서(2026-10-20 개정): STAGE 줄(단계 계획) → DONE 줄 → 본문의 @멘션(옛 방식, 한 단계로
+  // 동시 실행) → 끝 ASK_USER → 아무 표시 없음(첫 라운드면 그 답이 최종 답, 그 뒤면 한 번 재촉). 옛 방식의 @멘션과
+  // ASK_USER가 같이 오면 지금처럼 질문은 버려진다(설계 `(6)).
   handleLeadTurnEnd(item, outcome) {
     const orch = this.orchestration;
     if (outcome === undefined) {
@@ -1216,89 +1273,222 @@ class ChatRoom extends EventEmitter {
       this.endOrchestration(`@${orch.leadId} 응답이 실패해 오케스트레이션을 끝냅니다. 지금까지의 결과는 위에 있습니다.`);
       return;
     }
+    const control = outcome.orchestrationControl || null;
+    if (control && control.stageLines.length > 0) {
+      const built = this.buildStagePlan(control.stageLines, orch.leadId);
+      if (built.notes.length > 0) {
+        this.appendSystem(`STAGE 줄에서 일부를 뺐습니다: ${built.notes.join(", ")}.`);
+      }
+      if (built.stages.length === 0) {
+        this.endOrchestration("STAGE 줄에서 맡길 수 있는 참가자를 찾지 못해 맡기지 못했습니다.");
+        return;
+      }
+      orch.nudged = false;
+      this.startStages(item, outcome.messageId, built.stages);
+      return;
+    }
+    if (control && control.done) {
+      this.endLeadAnswer(orch, outcome);
+      return;
+    }
+    // 옛 방식: 본문의 @멘션을 한 단계로 읽는다. 그룹 별칭 없이(`(4) — isFastEligible이 쓰는 호출 방식과 같다),
+    // 자기 자신을 뺀 멘션이다.
     const text = outcome.text || "";
-    // 그룹 별칭 없이(§(4) — isFastEligible이 쓰는 호출 방식과 같다), 자기 자신을 뺀 멘션.
     const mentionedIds = [...new Set(parseMentions(text, this.agents))].filter((id) => id !== orch.leadId);
-    const available = new Set(this.enabledAgents().map((agent) => agent.id));
-    const workerIds = mentionedIds.filter((id) => available.has(id));
-    const unavailableIds = mentionedIds.filter((id) => !available.has(id));
-    if (workerIds.length === 0) {
-      if (unavailableIds.length > 0) {
+    if (mentionedIds.length > 0) {
+      const available = new Set(this.enabledAgents().map((agent) => agent.id));
+      const workerIds = mentionedIds.filter((id) => available.has(id));
+      const unavailableIds = mentionedIds.filter((id) => !available.has(id));
+      if (workerIds.length === 0) {
         this.endOrchestration(`⟦${unavailableIds.join(", ")}⟧을 부를 수 없어 맡기지 못했습니다.`);
         return;
       }
-      // @ 없이 답함(또는 그룹 별칭·자기 자신만) = 이번 답이 오케스트레이션의 최종 답이다.
-      if (outcome.controlRequest?.action === "ASK_USER" && !outcome.controlRequest.ambiguous) {
-        this.setAwaitingUser(orch.leadId, outcome.controlRequest.question || "", outcome.controlRequest.options || [], outcome.controlRequest.multi);
-      }
-      this.endOrchestration(null);
+      orch.nudged = false;
+      this.startStages(item, outcome.messageId, [{ ids: workerIds, unavailable: unavailableIds }]);
       return;
     }
-    if (orch.executions + workerIds.length > this.executionCeiling) {
+    if (outcome.controlRequest?.action === "ASK_USER") {
+      this.endLeadAnswer(orch, outcome);
+      return;
+    }
+    // 아무 표시가 없다. 사용자 요청에 처음 답한 라운드는 그 답이 최종 답이다. 작업 결과를 받은 뒤라면 다음 단계도
+    // 완료도 알 수 없으므로 한 번 재촉하고, 재촉한 답도 비어 있으면 안내하고 멈춘다.
+    if (orch.nudged) {
+      this.endOrchestration("지휘 AI가 다음 단계나 완료를 표시하지 않아 멈췄습니다. 이어 가려면 메시지를 보내 주세요.");
+      return;
+    }
+    if (item.context.orchestration.round >= 2) {
+      this.nudgeLead(item);
+      return;
+    }
+    this.endOrchestration(null);
+  }
+
+  // 지휘 AI의 이 답이 최종 답이다. 끝 ASK_USER가 있으면 답변 대기 카드를 세우고 끝낸다(설계 `(6)).
+  endLeadAnswer(orch, outcome) {
+    if (outcome.controlRequest?.action === "ASK_USER" && !outcome.controlRequest.ambiguous) {
+      this.setAwaitingUser(orch.leadId, outcome.controlRequest.question || "", outcome.controlRequest.options || [], outcome.controlRequest.multi);
+    }
+    this.endOrchestration(null);
+  }
+
+  // STAGE 줄들을 단계 계획으로 바꾼다. 알 수 없는 이름·자기 자신(지휘 모델을 따로 정하지 않은 방)·중복·단계 수 초과는
+  // 버리고 이유를 notes로 돌려준다. 비활성·미설치 참가자는 단계에 남겨 두었다가 결과에 "사용할 수 없음"으로 적는다.
+  buildStagePlan(lines, leadId) {
+    const available = new Set(this.enabledAgents().map((agent) => agent.id));
+    const canCallSelf = Boolean(this.meta.orchestrator?.leadModel);
+    const seen = new Set();
+    const notes = [];
+    const stages = [];
+    for (const content of lines) {
+      const { ids, unknown } = resolveStageTargets(content, this.agents);
+      if (unknown.length > 0) notes.push(`알 수 없는 이름 ${unknown.map((token) => `⟦${token}⟧`).join(", ")}`);
+      const stage = { ids: [], unavailable: [] };
+      for (const id of ids) {
+        if (id === leadId && !canCallSelf) {
+          notes.push(`지휘 AI @${id} 자신`);
+          continue;
+        }
+        if (seen.has(id)) {
+          notes.push(`중복 @${id}`);
+          continue;
+        }
+        seen.add(id);
+        (available.has(id) ? stage.ids : stage.unavailable).push(id);
+      }
+      if (stage.ids.length === 0 && stage.unavailable.length === 0) continue;
+      if (stages.length >= MAX_ORCHESTRATION_STAGES) {
+        notes.push(`${MAX_ORCHESTRATION_STAGES}단계를 넘은 줄(${[...stage.ids, ...stage.unavailable].map((id) => `@${id}`).join(" ")})`);
+        continue;
+      }
+      stages.push(stage);
+    }
+    return { stages, notes };
+  }
+
+  // 지휘 AI 답이 가리키는 단계 계획을 세우고 첫 단계를 시작한다. 단계 하나는 한 묶음(unit)으로 같이 시작하고,
+  // 묶음이 끝나면 finishWorkerUnit이 다음 단계를 잇거나 지휘 AI에게 돌아간다.
+  startStages(leadItem, leadMessageId, stages) {
+    const orch = this.orchestration;
+    orch.plan = {
+      round: leadItem.context.orchestration.round,
+      leadMessageId,
+      stages: stages.map((stage) => ({ ids: [...stage.ids], unavailable: [...stage.unavailable], gone: [] })),
+      results: [],
+      current: -1,
+    };
+    this.scheduleStage(0);
+  }
+
+  // index번째 단계(0부터)를 한 묶음으로 올린다. 묶음은 쪼개지지 않게 올린다(설계 `(4) — pumpSuspended로 감싼다).
+  scheduleStage(index) {
+    const orch = this.orchestration;
+    const plan = orch.plan;
+    const stage = plan.stages[index];
+    plan.current = index;
+    // 시작 직전에 다시 본다 — 계획을 짠 뒤 참가자가 비활성이 됐을 수 있다.
+    const available = new Set(this.enabledAgents().map((agent) => agent.id));
+    const runnable = stage.ids.filter((id) => available.has(id));
+    stage.gone = [...stage.unavailable, ...stage.ids.filter((id) => !available.has(id))];
+    if (runnable.length === 0) {
+      plan.results[index] = stage.gone.map((id) => ({ id, status: "unavailable" }));
+      this.afterStage(index);
+      return;
+    }
+    if (orch.executions + runnable.length > this.executionCeiling) {
       this.endOrchestration(`실행 횟수 안전선(${this.executionCeiling}회)에 닿아 더 맡기지 않았습니다. 메시지를 보내면 이어 갑니다.`);
       return;
     }
-    this.scheduleWorkerUnit(workerIds, item, outcome.messageId, unavailableIds);
-  }
-
-  // 작업자 묶음은 쪼개지지 않게 한 묶음으로 올린다(설계 §(4) — pumpSuspended로 감싼다).
-  // skippedWorkerIds: 지휘 AI가 불렀지만 시작 전에 걸러진(비활성·미설치) id. 묶음이 끝날 때 결과 블록에 적는다.
-  scheduleWorkerUnit(workerIds, leadItem, leadMessageId, skippedWorkerIds = []) {
-    const orch = this.orchestration;
-    const round = leadItem.context.orchestration.round;
-    const workerUnitId = `wu-${orch.id}-${round}`;
+    orch.stage = { index: index + 1, total: plan.stages.length, agentIds: runnable };
+    // 앞 단계 결과는 다음 단계 참가자의 프롬프트로 넘긴다. 작업자는 서로의 답을 대화 기록에서 못 보므로(independent) 이 블록이 유일한 통로다.
+    const priorBlock = index > 0 ? [this.renderStageBlock(plan, "앞 단계 결과", index, STAGE_FORWARD_CHARS)] : [];
+    const workerUnitId = `wu-${orch.id}-${plan.round}-${index + 1}`;
     // 원 요청의 첨부와 지휘 AI가 이미 받은 보류 메시지의 첨부를 작업자에게도 그대로 물려준다.
     const attachments = [...orch.attachments];
     this.pumpSuspended += 1;
     try {
-      for (const agentId of workerIds) {
+      for (const agentId of runnable) {
         const agent = this.findAgent(agentId);
         if (!agent) continue;
         this.scheduleTurn(agent, {
-          orchestration: { id: orch.id, role: "worker", round },
+          orchestration: { id: orch.id, role: "worker", round: plan.round, stage: index + 1, stageTotal: plan.stages.length },
           workerUnitId,
-          turnRootId: leadMessageId,
+          turnRootId: plan.leadMessageId,
           independent: true,
           attachments,
-          skippedWorkerIds,
+          extraLines: priorBlock,
         }, { lane: "fast" });
       }
     } finally {
       this.pumpSuspended -= 1;
       this.pumpTurnQueue();
     }
+    this.emitTurnStateSafe();
   }
 
-  // 작업자 묶음이 전부 끝났다: 결과 블록을 짜고(§(7)) 안전선을 거쳐 지휘 AI의 다음 회신 턴을 claim한다.
+  // 단계 하나가 끝났다(plan.results[index]가 채워졌다): 다음 단계를 잇거나 지휘 AI에게 돌아간다.
+  // 일부만 실패하면 다음 단계를 계속하고, 단계의 참가자가 모두 실패·불가용이거나 누가 질문(ASK_USER)을 남겼으면
+  // 남은 단계를 건너뛰고 돌아간다.
+  afterStage(index) {
+    const orch = this.orchestration;
+    const plan = orch.plan;
+    const entries = plan.results[index];
+    const hasNext = index + 1 < plan.stages.length;
+    const allBad = entries.every((entry) => entry.status === "failed" || entry.status === "unavailable");
+    const asked = entries.some((entry) => entry.status === "ask");
+    if (hasNext && !allBad && !asked) {
+      this.scheduleStage(index + 1);
+      return;
+    }
+    if (hasNext) {
+      const reason = allBad ? "앞 단계가 모두 실패했거나 쓸 수 없어" : "앞 단계에서 질문이 나와";
+      for (let later = index + 1; later < plan.stages.length; later += 1) {
+        const stage = plan.stages[later];
+        plan.results[later] = [...stage.ids, ...stage.unavailable].map((id) => ({ id, status: "skipped", reason }));
+      }
+    }
+    this.replyToLead();
+  }
+
+  // 작업자 묶음(단계 하나)이 전부 끝났다: 결과를 단계 결과에 적고 다음으로 넘어간다(설계 `(7)).
   finishWorkerUnit(members, outcomes) {
     const orch = this.orchestration;
-    const round = members[0].context.orchestration.round;
-    const lines = [`=== 작업자 결과(라운드 ${round}) ===`];
-    members.forEach((item, index) => {
-      const outcome = outcomes[index];
-      const id = item.agent.id;
-      if (outcome === undefined) {
-        lines.push(`[@${id}] 사용할 수 없음(비활성화되었거나 설치되지 않음)`);
-      } else if (!outcome.ok) {
-        lines.push(`[@${id}] 실패(${outcome.stopReason || "실패"})`);
-        lines.push(String(outcome.error || "").slice(0, 1000));
-      } else if (outcome.controlRequest?.action === "ASK_USER") {
-        lines.push(`[@${id}] 질문 있음: ${outcome.controlRequest.question || ""}`);
-        if (outcome.controlRequest.options?.length > 0) lines.push(`OPTION: ${outcome.controlRequest.options.join(", ")}`);
-      } else {
-        const text = String(outcome.text || "");
-        lines.push(`[@${id}] 완료`);
-        lines.push(text.length > 2000 ? `${text.slice(0, 2000)}…(생략, 전체 ${text.length}자)` : text);
+    const plan = orch.plan;
+    const marker = members[0].context.orchestration;
+    const index = (marker.stage || 1) - 1;
+    if (!plan || plan.round !== marker.round || plan.current !== index || plan.results[index]) return;
+    const entries = members.map((item, position) => stageEntryFromOutcome(item.agent.id, outcomes[position]));
+    // 시작 전에 걸러져 claim하지 않은 작업자도 결과에서 빠지지 않게 적는다(설계 `(7)·불변식 7).
+    for (const id of plan.stages[index].gone) entries.push({ id, status: "unavailable" });
+    plan.results[index] = entries;
+    this.afterStage(index);
+  }
+
+  // 단계 결과 블록. 단계가 하나뿐이면 예전 모양 그대로고, 둘 이상이면 [k단계] 머리를 붙인다.
+  renderStageBlock(plan, title, upTo, limit) {
+    const multi = plan.stages.length > 1;
+    const lines = [`=== ${title}(라운드 ${plan.round}) ===`];
+    for (let index = 0; index < upTo; index += 1) {
+      if (multi) lines.push(`[${index + 1}단계]`);
+      for (const entry of plan.results[index] || []) {
+        lines.push(...renderStageEntry(entry, limit));
+        lines.push("---");
       }
-      lines.push("---");
-    });
-    // 시작 전에 걸러져 claim하지 않은 작업자도 결과에서 빠지지 않게 적는다(설계 §(7)·불변식 7).
-    for (const id of members[0].context.skippedWorkerIds || []) {
-      lines.push(`[@${id}] 사용할 수 없음(비활성화되었거나 설치되지 않음)`);
-      lines.push("---");
     }
-    lines.push("=== 작업자 결과 끝 ===");
-    const extraLines = [lines.join("\n")];
+    lines.push(`=== ${title} 끝 ===`);
+    return lines.join("\n");
+  }
+
+  // 모든 단계가 끝났다: 결과 블록을 짜고 안전선을 거쳐 지휘 AI의 다음 회신 턴을 claim한다.
+  replyToLead() {
+    const orch = this.orchestration;
+    const plan = orch.plan;
+    const round = plan.round;
+    const block = this.renderStageBlock(plan, "작업자 결과", plan.stages.length, LEAD_REPORT_CHARS);
+    orch.plan = null;
+    orch.stage = null;
+    orch.lastResultBlock = block;
+    this.emitTurnStateSafe();
     const nextRound = round + 1;
     if (nextRound > this.roundCeiling) {
       this.endOrchestration(`라운드 안전선(${this.roundCeiling})에 닿아 멈췄습니다. 메시지를 보내면 이어 갑니다.`);
@@ -1310,15 +1500,44 @@ class ChatRoom extends EventEmitter {
       return;
     }
     // 보류 메시지는 여기서 싣지 않는다 — claimUnit이 이 턴이 "실제로 claim되는" 순간에 싣고 비운다
-    // (§(7)·claimUnit 참고). 예약(여기)과 claim 사이에 또 보류 메시지가 들어올 수 있고, 예약된 뒤
+    // (`(7)·claimUnit 참고). 예약(여기)과 claim 사이에 또 보류 메시지가 들어올 수 있고, 예약된 뒤
     // claim되지 못한 채 버려지면(안전선이 다시 걸리거나 ×로 지워지는 등) heldMessages가 그대로
-    // 남아 있어야 endOrchestration의 "전달되지 않았습니다" 안내가 정확히 나간다(§(13) 불변식 10).
+    // 남아 있어야 endOrchestration의 "전달되지 않았습니다" 안내가 정확히 나간다(`(13) 불변식 10).
     this.scheduleTurn(leadAgent, {
       orchestration: { id: orch.id, role: "lead", round: nextRound },
       turnRootId: orch.rootMessageId,
-      extraLines,
+      extraLines: [block],
       // 원 요청의 첨부(와 앞 라운드에서 받은 보류 메시지의 첨부)를 2라운드 이상에서도 다시 싣는다
-      // (scheduleWorkerUnit과 같은 패턴, 9b 감사).
+      // (단계 작업자와 같은 패턴, 9b 감사).
+      attachments: [...orch.attachments],
+    }, { lane: "fast" });
+  }
+
+  // 작업 결과를 받은 지휘 AI가 STAGE·DONE·질문·@멘션 어느 것도 쓰지 않았다: 한 번 더 열어 표시를 요청한다.
+  // 재촉 차례도 라운드와 실행 횟수에 들어간다. 앞 라운드의 결과 블록을 다시 실어 판단 근거를 잃지 않게 한다.
+  nudgeLead(item) {
+    const orch = this.orchestration;
+    const nextRound = item.context.orchestration.round + 1;
+    if (nextRound > this.roundCeiling) {
+      this.endOrchestration(`라운드 안전선(${this.roundCeiling})에 닿아 멈췄습니다. 메시지를 보내면 이어 갑니다.`);
+      return;
+    }
+    const leadAgent = this.findAgent(orch.leadId);
+    if (!leadAgent || !leadAgent.available || leadAgent.enabled === false) {
+      this.endOrchestration(`@${orch.leadId}를 더 쓸 수 없어 오케스트레이션을 끝냅니다. 지금까지의 결과는 위에 있습니다.`);
+      return;
+    }
+    orch.nudged = true;
+    const notice = [
+      "=== 지휘 차례 안내 ===",
+      "직전 답에 `STAGE:` 줄도 `DONE` 줄도 `ASK_USER` 줄도 없어서 Agora가 다음에 무엇을 할지 알 수 없습니다.",
+      "맡길 작업이 더 있으면 답 맨 끝에 `STAGE: @이름` 줄을 쓰고, 모두 끝났으면 `DONE` 줄로 마무리하세요. 이미 사용자에게 보일 최종 답을 썼다면 같은 내용을 반복하지 말고 `DONE` 한 줄만 쓰세요.",
+      "=== 지휘 차례 안내 끝 ===",
+    ].join("\n");
+    this.scheduleTurn(leadAgent, {
+      orchestration: { id: orch.id, role: "lead", round: nextRound },
+      turnRootId: orch.rootMessageId,
+      extraLines: [...(orch.lastResultBlock ? [orch.lastResultBlock] : []), notice],
       attachments: [...orch.attachments],
     }, { lane: "fast" });
   }
@@ -1618,6 +1837,14 @@ class ChatRoom extends EventEmitter {
       ...currentAgent,
       ...(context.agentConfig || {}),
     };
+    // 지휘 차례만 방이 따로 정한 지휘 모델·노력·읽기 전용을 쓴다(2026-10-20 개정). 읽는 시점이 이 턴의 실행 직전이라
+    // 설정을 바꾸면 다음 지휘 차례부터 적용된다. 작업자 차례는 참가자의 원래 설정 그대로 돈다.
+    const leadSettings = context.orchestration?.role === "lead" ? (this.meta.orchestrator || {}) : null;
+    if (leadSettings?.leadModel) agent = { ...agent, model: leadSettings.leadModel, resolvedModel: null };
+    if (leadSettings?.leadEffort) agent = { ...agent, effort: leadSettings.leadEffort };
+    // 읽기 전용은 쓰기 방에서만 뜻이 있다(대화 전용·읽기 방은 이미 파일을 못 고친다). 자동 승인은 쓰기 권한에서만 유효하므로 같이 끈다.
+    const leadReadOnly = Boolean(leadSettings?.leadReadOnly) && this.meta.permissionMode === "workspace-write";
+    if (leadReadOnly) agent = { ...agent, autoApprove: false };
     const responseAgentMeta = {
       model: agent.model || "default",
       resolvedModel: agent.resolvedModel || (agent.model && agent.model !== "default" ? agent.model : null),
@@ -1631,7 +1858,9 @@ class ChatRoom extends EventEmitter {
     // 토론 결론 종합과 쉽게 설명은 대화 전용이다. 나머지는 방 권한 그대로다.
     const permissionMode = context.discussionSummary || context.simplifyMeta
       ? "chat"
-      : this.meta.permissionMode;
+      : leadReadOnly
+        ? "workspace-read"
+        : this.meta.permissionMode;
 
     const mentionDepth = context.mentionDepth || 0;
     const orchestrationRole = context.orchestration?.role || null;
@@ -1690,7 +1919,18 @@ class ChatRoom extends EventEmitter {
             : !context.discussion && !context.discussionSummary && !context.simplifyMeta
               && (this.meta.keepCalling || mentionDepth < this.mentionChainLimit),
         userQuestionTool,
-        orchestration: context.orchestration ? { role: orchestrationRole, leadId: this.orchestration?.leadId || null } : null,
+        orchestration: context.orchestration
+          ? {
+              role: orchestrationRole,
+              leadId: this.orchestration?.leadId || null,
+              maxStages: MAX_ORCHESTRATION_STAGES,
+              readOnly: leadReadOnly,
+              canCallSelf: Boolean(this.meta.orchestrator?.leadModel),
+              stage: context.orchestration.stageTotal > 1
+                ? { index: context.orchestration.stage, total: context.orchestration.stageTotal }
+                : null,
+            }
+          : null,
         // 작업자 결과·보류 메시지 블록(설계 §(7)) — 기본값 []이면 기존 턴은 한 글자도 안 바뀐다.
         extraLines: context.extraLines || [],
       });
@@ -1856,6 +2096,8 @@ class ChatRoom extends EventEmitter {
         ok: false,
         stopReason: result?.stopReason || (result?.outputLimited ? "OUTPUT_LIMITED" : result?.timedOut ? "TIMED_OUT" : "TRANSPORT_FAILED"),
         error: result?.error || "에이전트 실행에 실패했습니다.",
+        // 실패 전까지 받은 응답. 오케스트레이션 결과 블록이 오류 문구와 함께 지휘 AI에게 넘긴다.
+        ...(result?.partialText ? { partialText: String(result.partialText) } : {}),
         evidence: result?.evidence || null,
         transport: result?.cancelled ? "CANCELLED" : result?.timedOut ? "TIMED_OUT" : result?.outputLimited ? "OUTPUT_LIMITED" : "FAILED",
       };
@@ -1867,6 +2109,15 @@ class ChatRoom extends EventEmitter {
       const match = rawText.match(/\[\[CODEPET_DISCUSSION:(CONTINUE|AGREE|PASS|CONCLUDE)\]\]\s*$/i);
       discussionSignal = match ? match[1].toUpperCase() : "CONTINUE";
       if (match) rawText = rawText.slice(0, match.index).trim();
+    }
+    // 지휘 AI 턴은 답 끝의 STAGE·DONE 줄을 따로 읽고 화면 텍스트에서 뺀다(2026-10-20 개정). 일반·작업자 턴은 이 줄을 모른다.
+    let orchestrationControl = null;
+    if (orchestrationRole === "lead") {
+      const parsedLead = parseOrchestrationControl(rawText);
+      if (parsedLead.stages.length > 0 || parsedLead.done) {
+        orchestrationControl = { stageLines: parsedLead.stages, done: parsedLead.done };
+        rawText = parsedLead.text;
+      }
     }
     // 일반 채팅 턴은 응답 꼬리의 질문 계약(ASK_USER + OPTION)만 읽는다. 다른 제어
     // 줄(HANDOFF·COMPLETE)은 산문으로 남긴다(strip하지 않는다).
@@ -1882,6 +2133,8 @@ class ChatRoom extends EventEmitter {
     }
 
     let text = stripEmoticonTags(rawText);
+    // 제어 줄만 쓴 답이 빈 말풍선으로 남지 않게 한다.
+    if (!text && orchestrationControl) text = orchestrationControl.stageLines.length > 0 ? "(작업을 맡깁니다)" : "(완료)";
     if (context.discussion) {
       if (discussionSignal === "AGREE" && !text) {
         text = "동의합니다.";
@@ -1959,6 +2212,7 @@ class ChatRoom extends EventEmitter {
       ok: true,
       discussionSignal,
       controlRequest,
+      ...(orchestrationControl ? { orchestrationControl } : {}),
       messageId: appended?.id || null,
       text,
       runId,

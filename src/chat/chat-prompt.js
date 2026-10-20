@@ -143,14 +143,27 @@ function buildAgentPrompt({
     lines.push("- 인사말이나 서론 없이, 결과만 바로 출력하세요.");
   } else {
     if (orchestrationRole === "lead") {
+      // 지휘 AI에게 모델·권한을 따로 준 방(leadModel)에서는 자기 자신도 작업자로 맡길 수 있다.
+      const candidates = orchestration?.canCallSelf ? agents : others;
       lines.push(
-        `당신은 @${agent.id}, 이 방의 지휘 AI입니다. 사용자 요청을 보고, 필요하면 아래 참가자에게 작업을 나눠 맡기세요: ${others.map((entry) => `@${entry.id}`).join(", ")}.`
+        `당신은 @${agent.id}, 이 방의 지휘 AI입니다. 사용자 요청을 보고, 필요하면 아래 참가자에게 작업을 나눠 맡기세요: ${candidates.map((entry) => `@${entry.id}`).join(", ")}.`
       );
+      if (orchestration?.canCallSelf) {
+        lines.push(`@${agent.id} 자신도 맡길 수 있습니다. 맡기면 지금의 지휘 차례와 별개로, 이 참가자의 기본 모델이 작업자로 일하는 차례가 따로 시작됩니다.`);
+      }
     } else if (orchestrationRole === "worker") {
+      const selfLead = orchestration.leadId === agent.id;
       lines.push(
-        `당신은 @${agent.id}, 지휘 AI @${orchestration.leadId}가 이번 라운드에 맡긴 일 하나를 처리합니다. 다른 참가자를 부르거나 사용자에게 직접 묻지 마세요 — 결정이 필요하면 응답 끝에 ASK_USER로 남기면 지휘 AI에게 전달됩니다.`
+        `당신은 @${agent.id}, 지휘 AI @${orchestration.leadId}${selfLead ? "(같은 참가자의 지휘 차례)" : ""}가 이번 라운드에 맡긴 일 하나를 처리합니다. 다른 참가자를 부르거나 사용자에게 직접 묻지 마세요 — 결정이 필요하면 응답 끝에 ASK_USER로 남기면 지휘 AI에게 전달됩니다.`
       );
       lines.push("맡은 일만 간결하게 처리하고, 당신의 답이 그대로 지휘 AI에게 전달됩니다.");
+      if (orchestration.stage && orchestration.stage.total > 1) {
+        lines.push(
+          `이번 라운드는 ${orchestration.stage.total}단계로 진행되며, 당신은 ${orchestration.stage.index}/${orchestration.stage.total}단계입니다.${
+            orchestration.stage.index > 1 ? " 앞 단계 결과는 아래 '앞 단계 결과' 블록에 있습니다 — 그 결과를 바탕으로 맡은 일을 하세요." : ""
+          }`
+        );
+      }
     } else {
       lines.push(
         `당신은 여러 AI 코딩 에이전트가 사용자와 함께 있는 그룹 채팅의 참가자 "@${agent.id}"(${agent.name})입니다.`
@@ -170,12 +183,21 @@ function buildAgentPrompt({
       `- 출력 전체가 채팅 메시지 하나로 그대로 전송됩니다. "[@${agent.id}]" 같은 접두어나 서명을 붙이지 마세요.`
     );
     if (orchestrationRole === "lead") {
-      // 지휘 AI 전용 두 줄(설계 §(11)) — 기존 "다른 참가자를 호출하려면…" 문단을 대체한다.
+      // 지휘 AI 전용 줄(설계 §(11), 2026-10-20 개정) — 기존 "다른 참가자를 호출하려면…" 문단을 대체한다.
       // 호출 상한 문구는 지휘 AI에겐 안 맞으므로 넣지 않는다.
-      lines.push("- @이름으로 부르면 그 참가자가 이번 라운드에 당신과 **별도로** 작업을 시작합니다. 한 번에 여러 명을 불러도 됩니다 — 같이 시작합니다.");
+      lines.push(
+        "- 작업을 맡기려면 답 **맨 끝**에 `STAGE: @이름 @이름` 줄을 쓰세요. 한 줄이 한 단계입니다. 같은 줄의 참가자는 당신과 **별도로 동시에** 시작하고, 줄은 위에서 아래로 **차례로** 실행됩니다 — 앞 단계가 모두 끝나야 다음 단계가 시작되고, 다음 단계 참가자는 앞 단계 결과를 받습니다. "
+        + `예: 구현과 문서를 동시에 맡기고 끝나면 검수하게 하려면 \`STAGE: @claude @agy\` 다음 줄에 \`STAGE: @codex\`를 씁니다. 한 라운드에 최대 ${orchestration?.maxStages || 4}단계이고, 한 참가자는 한 번만 넣을 수 있습니다.`
+      );
+      if (orchestration?.readOnly) {
+        lines.push("- 이 방에서 지휘 AI는 파일을 읽기만 할 수 있습니다. 파일을 고치지 말고 `STAGE`로 작업자에게 맡기세요.");
+      }
       lines.push("- 각자에게 맡기는 내용은 **그 사람 혼자 보고 끝낼 수 있게 분명하게** 적으세요(서로의 질문을 못 듣습니다). 여러 명을 같이 부를 때는 겹치지 않게 서로 다른 파일·자료를 맡기세요.");
       lines.push("- 맡긴 작업의 결과(성공·실패·질문 포함)는 다음 당신의 차례에 자동으로 모여서 옵니다. 실패나 질문이 있으면 당신이 판단해 다시 맡기거나 사용자에게 설명하세요.");
-      lines.push("- 할 일을 다 맡겼거나 더 맡길 필요가 없으면, **@ 없이** 사용자에게 바로 답하세요. 그 답이 사용자가 보는 최종 답입니다.");
+      lines.push(
+        "- 더 맡길 일이 없으면 답 **맨 끝**에 `DONE` 줄을 쓰세요. 그 답이 사용자가 보는 최종 답입니다. 작업 결과를 받은 뒤의 답에는 `STAGE` 줄이나 `DONE` 줄이 꼭 있어야 하며, 둘 다 없으면 Agora가 한 번 더 물어봅니다. "
+        + "(사용자 요청에 처음 답하는 차례에 맡길 일이 없으면 그냥 답해도 최종 답으로 처리됩니다.)"
+      );
     } else if (others.length > 0 && mentionsEnabled) {
       lines.push(
         `- 다른 참가자를 호출하려면 @이름(${others.map((entry) => `@${entry.id}`).join(", ")})을 쓰세요. 그러면 그 참가자가 이어서 답합니다. 호출 없이 언급만 할 때는 @ 없이 이름만 쓰세요. 호출은 꼭 필요할 때만 하세요.`

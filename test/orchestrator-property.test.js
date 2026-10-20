@@ -509,7 +509,8 @@ test("불변식 11: 라운드 중 두 번 보낸 보류 메시지가 다음 회�
   assert.equal(secondCount, 1, "두 번째 보류 메시지가 블록 안에 정확히 한 번만 나온다");
   assert.equal(room.orchestration.heldMessages.length, 0, "실린 뒤 비운다");
   // 다음(세 번째) 라운드 회신 턴의 프롬프트에는 다시 나오지 않는다(잃지도, 중복되지도 않는다).
-  calls[2].finish("다 끝났습니다.");
+  // 작업 결과를 받은 라운드의 끝맺음에는 DONE 줄이 필요하다(없으면 Agora가 한 번 재촉한다 — orchestrator-stages.test.js).
+  calls[2].finish("다 끝났습니다.\nDONE");
   await settle();
   assert.equal(room.orchestration, null);
 });

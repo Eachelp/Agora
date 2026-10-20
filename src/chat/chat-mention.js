@@ -52,6 +52,33 @@ function parseMentions(text, agents, groupAliases = []) {
   return mentioned;
 }
 
+// STAGE 줄(지휘 AI의 단계 계획) 한 줄에서 참가자를 읽는다. `@claude @agy`가 기본 형식이고, @가 하나도 없으면
+// `claude agy`처럼 이름만 쓴 줄도 별칭으로 읽는다. 알아보지 못한 이름은 unknown으로 돌려 안내할 수 있게 한다.
+// 그룹 별칭(@all)은 단계에 쓸 수 없으므로 알 수 없는 이름과 같이 취급한다.
+function resolveStageTargets(content, agents) {
+  const source = maskNonCallingText(content);
+  const tokens = [];
+  for (const match of source.matchAll(MENTION_PATTERN)) {
+    const previous = match.index > 0 ? source[match.index - 1] : "";
+    if (previous && /[\p{L}\p{N}_@-]/u.test(previous)) continue;
+    tokens.push(match[1]);
+  }
+  if (tokens.length === 0) {
+    for (const word of source.split(/[\s,;]+/)) {
+      const cleaned = word.replace(/^[^\p{L}\p{N}_-]+|[^\p{L}\p{N}_-]+$/gu, "");
+      if (cleaned) tokens.push(cleaned);
+    }
+  }
+  const ids = [];
+  const unknown = [];
+  for (const token of tokens) {
+    const agent = agents.find((entry) => (entry.aliases || []).some((alias) => tokenMatchesAlias(token, alias)));
+    if (!agent) unknown.push(token);
+    else if (!ids.includes(agent.id)) ids.push(agent.id);
+  }
+  return { ids, unknown };
+}
+
 // 그룹 별칭(@all·@모두 …)이 호출로 들어 있는가. parseMentions가 같은 마스킹·별칭 규칙으로 읽는다.
 function hasGroupMention(text, groupAliases = []) {
   const source = maskNonCallingText(text);
@@ -88,6 +115,7 @@ module.exports = {
   hasGroupMention,
   hasLegacyRoleMention,
   parseMentions,
+  resolveStageTargets,
   tokenMatchesAlias,
   maskNonCallingText,
 };

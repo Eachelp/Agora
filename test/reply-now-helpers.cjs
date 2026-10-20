@@ -21,6 +21,8 @@ function makeRunner() {
     const gate = Promise.withResolvers();
     const call = {
       agentId: args.agent.id,
+      agent: args.agent,
+      autoApprove: args.autoApprove,
       prompt: args.prompt,
       runId: args.runId,
       permissionMode: args.permissionMode,
@@ -29,7 +31,7 @@ function makeRunner() {
       done: false,
       index: calls.length,
       finish(text = "완료") { call.done = true; gate.resolve({ ok: true, text }); },
-      fail(error = "실패") { call.done = true; gate.resolve({ ok: false, error }); },
+      fail(error = "실패", extra = {}) { call.done = true; gate.resolve({ ok: false, error, ...extra }); },
     };
     calls.push(call);
     return {

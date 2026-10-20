@@ -31,10 +31,12 @@ test("지휘 AI 역할 문단: 참가자 목록·위임 방법·결과 회신·�
   const prompt = basePrompt({ role: "lead", leadId: "claude" });
   assert.match(prompt, /당신은 @claude, 이 방의 지휘 AI입니다/);
   assert.match(prompt, /@codex, @agy/);
-  assert.match(prompt, /같이 시작합니다/);
+  assert.match(prompt, /STAGE: @이름 @이름/, "작업은 STAGE 줄로 맡긴다");
+  assert.match(prompt, /동시에\*\* 시작하고, 줄은 위에서 아래로 \*\*차례로\*\* 실행됩니다/);
   assert.match(prompt, /그 사람 혼자 보고 끝낼 수 있게 분명하게/);
   assert.match(prompt, /다음 당신의 차례에 자동으로 모여서 옵니다/);
-  assert.match(prompt, /@ 없이\*\* 사용자에게 바로 답하세요/);
+  assert.match(prompt, /답 \*\*맨 끝\*\*에 `DONE` 줄을 쓰세요/, "끝낼 때는 DONE 줄");
+  assert.match(prompt, /둘 다 없으면 Agora가 한 번 더 물어봅니다/);
   assert.doesNotMatch(prompt, /호출은 꼭 필요할 때만 하세요/, "지휘 AI에겐 호출 상한 문구가 없다");
   assert.doesNotMatch(prompt, /여러 AI 코딩 에이전트가 사용자와 함께 있는 그룹 채팅의 참가자/);
   assert.doesNotMatch(prompt, /코딩/, "중립화: '코딩' 표현을 쓰지 않는다");
