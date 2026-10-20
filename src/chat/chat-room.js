@@ -66,6 +66,13 @@ function clipReport(text, limit) {
   return value.length > limit ? `${value.slice(0, limit)}…(생략, 전체 ${value.length}자)` : value;
 }
 
+// 실패한 실행이 남긴 응답은 뒤쪽(가장 최근 출력)이 보고에 가깝다 — 러너는 화면에 흐른 조각을 최대 2MB까지 쌓아 두고
+// 실패 말풍선도 끝부분을 보여 준다. 그래서 앞이 아니라 뒤를 남긴다.
+function clipTail(text, limit) {
+  const value = String(text || "");
+  return value.length > limit ? `…(앞부분 생략, 전체 ${value.length}자)\n${value.slice(-limit)}` : value;
+}
+
 // 작업자 한 명의 턴 결과를 단계 결과 항목으로 바꾼다. status: done | failed | ask | unavailable | skipped.
 function stageEntryFromOutcome(id, outcome) {
   if (outcome === undefined) return { id, status: "unavailable" };
@@ -92,7 +99,7 @@ function renderStageEntry(entry, limit) {
     const lines = [`[@${id}] 실패(${entry.stopReason})`, entry.error.slice(0, 1000)];
     if (entry.partialText) {
       lines.push("(실패 전까지 받은 응답)");
-      lines.push(clipReport(entry.partialText, limit));
+      lines.push(clipTail(entry.partialText, limit));
     }
     return lines;
   }
@@ -1262,7 +1269,7 @@ class ChatRoom extends EventEmitter {
 
   // 지휘 AI 턴이 끝났다. 읽는 순서(2026-10-20 개정): STAGE 줄(단계 계획) → DONE 줄 → 본문의 @멘션(옛 방식, 한 단계로
   // 동시 실행) → 끝 ASK_USER → 아무 표시 없음(첫 라운드면 그 답이 최종 답, 그 뒤면 한 번 재촉). 옛 방식의 @멘션과
-  // ASK_USER가 같이 오면 지금처럼 질문은 버려진다(설계 `(6)).
+  // ASK_USER가 같이 오면 지금처럼 질문은 버려진다(설계 §(6)).
   handleLeadTurnEnd(item, outcome) {
     const orch = this.orchestration;
     if (outcome === undefined) {
@@ -1291,7 +1298,7 @@ class ChatRoom extends EventEmitter {
       this.endLeadAnswer(orch, outcome);
       return;
     }
-    // 옛 방식: 본문의 @멘션을 한 단계로 읽는다. 그룹 별칭 없이(`(4) — isFastEligible이 쓰는 호출 방식과 같다),
+    // 옛 방식: 본문의 @멘션을 한 단계로 읽는다. 그룹 별칭 없이(§(4) — isFastEligible이 쓰는 호출 방식과 같다),
     // 자기 자신을 뺀 멘션이다.
     const text = outcome.text || "";
     const mentionedIds = [...new Set(parseMentions(text, this.agents))].filter((id) => id !== orch.leadId);
@@ -1324,7 +1331,7 @@ class ChatRoom extends EventEmitter {
     this.endOrchestration(null);
   }
 
-  // 지휘 AI의 이 답이 최종 답이다. 끝 ASK_USER가 있으면 답변 대기 카드를 세우고 끝낸다(설계 `(6)).
+  // 지휘 AI의 이 답이 최종 답이다. 끝 ASK_USER가 있으면 답변 대기 카드를 세우고 끝낸다(설계 §(6)).
   endLeadAnswer(orch, outcome) {
     if (outcome.controlRequest?.action === "ASK_USER" && !outcome.controlRequest.ambiguous) {
       this.setAwaitingUser(orch.leadId, outcome.controlRequest.question || "", outcome.controlRequest.options || [], outcome.controlRequest.multi);
@@ -1380,7 +1387,7 @@ class ChatRoom extends EventEmitter {
     this.scheduleStage(0);
   }
 
-  // index번째 단계(0부터)를 한 묶음으로 올린다. 묶음은 쪼개지지 않게 올린다(설계 `(4) — pumpSuspended로 감싼다).
+  // index번째 단계(0부터)를 한 묶음으로 올린다. 묶음은 쪼개지지 않게 올린다(설계 §(4) — pumpSuspended로 감싼다).
   scheduleStage(index) {
     const orch = this.orchestration;
     const plan = orch.plan;
@@ -1450,7 +1457,7 @@ class ChatRoom extends EventEmitter {
     this.replyToLead();
   }
 
-  // 작업자 묶음(단계 하나)이 전부 끝났다: 결과를 단계 결과에 적고 다음으로 넘어간다(설계 `(7)).
+  // 작업자 묶음(단계 하나)이 전부 끝났다: 결과를 단계 결과에 적고 다음으로 넘어간다(설계 §(7)).
   finishWorkerUnit(members, outcomes) {
     const orch = this.orchestration;
     const plan = orch.plan;
@@ -1458,7 +1465,7 @@ class ChatRoom extends EventEmitter {
     const index = (marker.stage || 1) - 1;
     if (!plan || plan.round !== marker.round || plan.current !== index || plan.results[index]) return;
     const entries = members.map((item, position) => stageEntryFromOutcome(item.agent.id, outcomes[position]));
-    // 시작 전에 걸러져 claim하지 않은 작업자도 결과에서 빠지지 않게 적는다(설계 `(7)·불변식 7).
+    // 시작 전에 걸러져 claim하지 않은 작업자도 결과에서 빠지지 않게 적는다(설계 §(7)·불변식 7).
     for (const id of plan.stages[index].gone) entries.push({ id, status: "unavailable" });
     plan.results[index] = entries;
     this.afterStage(index);
@@ -1500,9 +1507,9 @@ class ChatRoom extends EventEmitter {
       return;
     }
     // 보류 메시지는 여기서 싣지 않는다 — claimUnit이 이 턴이 "실제로 claim되는" 순간에 싣고 비운다
-    // (`(7)·claimUnit 참고). 예약(여기)과 claim 사이에 또 보류 메시지가 들어올 수 있고, 예약된 뒤
+    // (§(7)·claimUnit 참고). 예약(여기)과 claim 사이에 또 보류 메시지가 들어올 수 있고, 예약된 뒤
     // claim되지 못한 채 버려지면(안전선이 다시 걸리거나 ×로 지워지는 등) heldMessages가 그대로
-    // 남아 있어야 endOrchestration의 "전달되지 않았습니다" 안내가 정확히 나간다(`(13) 불변식 10).
+    // 남아 있어야 endOrchestration의 "전달되지 않았습니다" 안내가 정확히 나간다(§(13) 불변식 10).
     this.scheduleTurn(leadAgent, {
       orchestration: { id: orch.id, role: "lead", round: nextRound },
       turnRootId: orch.rootMessageId,
@@ -2029,13 +2036,15 @@ class ChatRoom extends EventEmitter {
       // 않고, 무엇을 바꿔야 하는지 사유로 알린다.
       if (permissionMode !== "workspace-write") {
         // 방 권한은 쓰기인데 이 응답만 대화 전용으로 돈 경우(결론 종합·쉽게 설명)는
-        // 방 설정을 올려도 풀리지 않는다. 무엇을 바꿔야 하는지 구분해 알린다.
+        // 방 설정을 올려도 풀리지 않는다. 읽기 전용으로 설정한 지휘 차례도 같다. 무엇을 바꿔야 하는지 구분해 알린다.
         const cappedByTurn = this.meta.permissionMode === "workspace-write";
         result = {
           ...result,
           ok: false,
           error: cappedByTurn
-            ? "이 응답은 대화 전용이라 도구 실행 권한을 승인할 수 없습니다."
+            ? (leadReadOnly
+              ? "지휘 AI는 읽기 전용으로 설정돼 있어 도구 실행 권한을 승인할 수 없습니다. 고치는 일은 STAGE로 작업자에게 맡기거나, 오케스트레이터 설정에서 '지휘 AI는 읽기만'을 끄세요."
+              : "이 응답은 대화 전용이라 도구 실행 권한을 승인할 수 없습니다.")
             : "이 도구 실행에는 파일 변경 권한이 필요합니다. 방 권한을 '워크스페이스 쓰기'로 올린 뒤 다시 시도해 주세요.",
         };
         break;

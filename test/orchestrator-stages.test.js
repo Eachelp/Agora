@@ -166,6 +166,7 @@ test("단계 실행: 단계의 참가자가 모두 실패하면 남은 단계를
   assert.match(calls[2].prompt, /\[1단계\]\n\[@agy\] 실패/);
   assert.match(calls[2].prompt, /받아 둔 본문/);
   assert.match(calls[2].prompt, /\[2단계\]\n\[@codex\] 건너뜀\(앞 단계가 모두 실패했거나 쓸 수 없어\)/);
+  assert.equal(room.orchestration.executions, 3, "건너뛴 단계는 실행 횟수에 들지 않는다(지휘 2회 + agy 1회)");
 });
 
 test("단계 실행: 참가자가 질문(ASK_USER)을 남기면 남은 단계를 건너뛰고 질문이 지휘 AI에게 간다", async () => {
@@ -183,6 +184,7 @@ test("단계 실행: 쓸 수 없는(비활성) 참가자뿐인 단계는 시작�
   await startRound(room, calls, "STAGE: @agy");
   assert.deepEqual(ids(calls), ["claude", "claude"], "agy는 시작하지 않고 곧바로 지휘 AI 회신이 열린다");
   assert.match(calls[1].prompt, /\[@agy\] 사용할 수 없음/);
+  assert.equal(room.orchestration.executions, 2, "시작하지 않은 참가자는 결과 블록에는 적히되 실행 횟수에는 들지 않는다(지휘 2회)");
 });
 
 test("단계 실행: 중복·단계 수 초과·알 수 없는 이름·지휘 AI 자신은 빼고 한 줄로 알린다", async () => {
@@ -418,3 +420,27 @@ test("프롬프트: 단계가 둘 이상인 라운드의 작업자는 몇 번째
   assert.doesNotMatch(build(null), /단계/);
 });
 
+// ─── 보고 보존(뒤쪽 남기기)과 읽기 전용 지휘의 권한 요청 ───────────────
+
+test("보고 보존: 실패한 보고가 길면 앞이 아니라 뒤(가장 최근 출력)를 남기고 앞부분 생략을 알린다", async () => {
+  const { room, calls } = withLead();
+  await startRound(room, calls, "STAGE: @agy");
+  const partial = "처음 진행 기록 ".repeat(1500) + "마지막 보고: 8건 현행화 완료. @codex 재검수 부탁";
+  calls[1].fail("API error", { partialText: partial });
+  await settle();
+  const block = calls[2].prompt.split("=== 작업자 결과(라운드 1) ===")[1].split("=== 작업자 결과 끝 ===")[0];
+  assert.ok(block.includes("마지막 보고: 8건 현행화 완료. @codex 재검수 부탁"), "마지막 보고가 남는다");
+  assert.ok(block.includes("…(앞부분 생략, 전체 " + partial.length + "자)"));
+  assert.ok(!block.includes("처음 진행 기록 ".repeat(1000)), "앞쪽 기록은 잘린다");
+});
+
+test("읽기 전용 지휘 차례가 도구 권한을 요청하면 '대화 전용'이 아니라 읽기 전용 설정 때문임을 알린다", async () => {
+  const { room, calls } = leadRoom({ leadReadOnly: true }, { meta: { permissionMode: "workspace-write" } });
+  room.sendUserMessage("claude에게 맡겨줘");
+  await settle();
+  calls[0].fail("승인 필요", { approvalRequired: true, approval: { summary: "도구 권한: write_file", detail: "denied" } });
+  await settle();
+  const failure = room.messages.find((message) => message.error);
+  assert.match(failure.text, /지휘 AI는 읽기 전용으로 설정돼 있어/);
+  assert.doesNotMatch(failure.text, /대화 전용/);
+});

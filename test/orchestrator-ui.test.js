@@ -501,4 +501,3 @@ test("칩: 지휘 모델을 정했으면 괄호로 함께 보이고, 상태 줄�
   ui.renderOrchestrationStatus();
   assert.equal(ui.orchestrationStatusRow.textContent, "오케스트레이터 · @claude · 라운드 3 · 실행 5회");
 });
-
