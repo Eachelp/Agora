@@ -145,3 +145,12 @@ test("러너: 공급자 출력의 사용량이 결과의 runMetrics.tokens로 �
   const plain = await runAgentProcess({ commandPath: process.execPath, argv: ["-e", "process.stdout.write('완료')"], prompt: "", cwd: os.tmpdir() }).promise;
   assert.equal("tokens" in plain.runMetrics, false, "파서가 없는 실행에는 tokens가 없다");
 });
+
+test("AGY: result 줄의 키 순서가 달라도 사용량을 읽고, 단계별 usage는 여전히 합산하지 않는다", () => {
+  const collector = createUsageCollector("agy");
+  collector.observeLine(json({ result: { status: "SUCCESS", usage: { input_tokens: 10, output_tokens: 4, thinking_tokens: 2, cache_read_tokens: 6 } }, event: "result" }));
+  assert.deepEqual(collector.snapshot(), { inputTokens: 10, cacheReadTokens: 6, cacheWriteTokens: 0, outputTokens: 4, reasoningTokens: 2, costUsd: null });
+  const steps = createUsageCollector("agy");
+  steps.observeLine(json({ step_update: { state: "DONE", usage: { input_tokens: 5, output_tokens: 5 } }, event: "step_update" }));
+  assert.equal(steps.snapshot(), null);
+});

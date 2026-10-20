@@ -12,7 +12,7 @@ const {
 } = require("../agora/discussion-protocol");
 const { RATE_LIMITED_STOP_REASON } = require("./rate-limit-signal");
 // 응답 꼬리의 질문 계약(ASK_USER + OPTION).
-const { parseControlOutput, parseOrchestrationControl, stripControlOutput } = require("./control-output");
+const { createLeadStreamFilter, parseControlOutput, parseOrchestrationControl, stripControlOutput } = require("./control-output");
 
 // 채팅방 오케스트레이션.
 // - 멘션이 없으면 세션 참가자 전체, 있으면 멘션된 참가자만 응답합니다.
@@ -1282,7 +1282,7 @@ class ChatRoom extends EventEmitter {
     }
     const control = outcome.orchestrationControl || null;
     if (control && control.stageLines.length > 0) {
-      const built = this.buildStagePlan(control.stageLines, orch.leadId);
+      const built = this.buildStagePlan(control.stageLines, orch.leadId, control.canCallSelf);
       if (built.notes.length > 0) {
         this.appendSystem(`STAGE 줄에서 일부를 뺐습니다: ${built.notes.join(", ")}.`);
       }
@@ -1339,11 +1339,11 @@ class ChatRoom extends EventEmitter {
     this.endOrchestration(null);
   }
 
-  // STAGE 줄들을 단계 계획으로 바꾼다. 알 수 없는 이름·자기 자신(지휘 모델을 따로 정하지 않은 방)·중복·단계 수 초과는
-  // 버리고 이유를 notes로 돌려준다. 비활성·미설치 참가자는 단계에 남겨 두었다가 결과에 "사용할 수 없음"으로 적는다.
-  buildStagePlan(lines, leadId) {
+  // STAGE 줄들을 단계 계획으로 바꾼다. 알 수 없는 이름·자기 자신(canCallSelf가 아닐 때)·중복·단계 수 초과는 버리고
+  // 이유를 notes로 돌려준다. canCallSelf는 그 지휘 차례를 시작한 때의 설정이다(지휘 모델을 따로 정했는가). 비활성·미설치
+  // 참가자는 단계에 남겨 두었다가 결과에 "사용할 수 없음"으로 적는다.
+  buildStagePlan(lines, leadId, canCallSelf = false) {
     const available = new Set(this.enabledAgents().map((agent) => agent.id));
-    const canCallSelf = Boolean(this.meta.orchestrator?.leadModel);
     const seen = new Set();
     const notes = [];
     const stages = [];
@@ -1486,6 +1486,13 @@ class ChatRoom extends EventEmitter {
     return lines.join("\n");
   }
 
+  // 지휘 AI 회신·재촉처럼 차례를 하나 더 여는 곳에서 실행 횟수 안전선을 본다. 닿으면 오케스트레이션을 끝내고 true를 돌려준다.
+  endIfExecutionCeiling(what) {
+    if (this.orchestration.executions + 1 <= this.executionCeiling) return false;
+    this.endOrchestration(`실행 횟수 안전선(${this.executionCeiling}회)에 닿아 ${what}. 메시지를 보내면 이어 갑니다.`);
+    return true;
+  }
+
   // 모든 단계가 끝났다: 결과 블록을 짜고 안전선을 거쳐 지휘 AI의 다음 회신 턴을 claim한다.
   replyToLead() {
     const orch = this.orchestration;
@@ -1496,6 +1503,7 @@ class ChatRoom extends EventEmitter {
     orch.stage = null;
     orch.lastResultBlock = block;
     this.emitTurnStateSafe();
+    if (this.endIfExecutionCeiling("지휘 AI의 회신을 열지 않았습니다. 작업자 결과는 위에 있습니다")) return;
     const nextRound = round + 1;
     if (nextRound > this.roundCeiling) {
       this.endOrchestration(`라운드 안전선(${this.roundCeiling})에 닿아 멈췄습니다. 메시지를 보내면 이어 갑니다.`);
@@ -1524,6 +1532,7 @@ class ChatRoom extends EventEmitter {
   // 재촉 차례도 라운드와 실행 횟수에 들어간다. 앞 라운드의 결과 블록을 다시 실어 판단 근거를 잃지 않게 한다.
   nudgeLead(item) {
     const orch = this.orchestration;
+    if (this.endIfExecutionCeiling("지휘 AI에게 다시 묻지 않았습니다")) return;
     const nextRound = item.context.orchestration.round + 1;
     if (nextRound > this.roundCeiling) {
       this.endOrchestration(`라운드 안전선(${this.roundCeiling})에 닿아 멈췄습니다. 메시지를 보내면 이어 갑니다.`);
@@ -1852,6 +1861,9 @@ class ChatRoom extends EventEmitter {
     // 읽기 전용은 쓰기 방에서만 뜻이 있다(대화 전용·읽기 방은 이미 파일을 못 고친다). 자동 승인은 쓰기 권한에서만 유효하므로 같이 끈다.
     const leadReadOnly = Boolean(leadSettings?.leadReadOnly) && this.meta.permissionMode === "workspace-write";
     if (leadReadOnly) agent = { ...agent, autoApprove: false };
+    // 자기 호출을 허용하는지는 이 지휘 차례를 시작한 때의 설정으로 정한다. 프롬프트가 그렇게 안내했으므로, 답이 끝나기 전에
+    // 지휘 모델 설정이 바뀌어도 이 답의 계획은 흔들리지 않는다(바뀐 설정은 다음 지휘 차례부터 적용된다).
+    const leadCanCallSelf = Boolean(leadSettings?.leadModel);
     const responseAgentMeta = {
       model: agent.model || "default",
       resolvedModel: agent.resolvedModel || (agent.model && agent.model !== "default" ? agent.model : null),
@@ -1932,7 +1944,7 @@ class ChatRoom extends EventEmitter {
               leadId: this.orchestration?.leadId || null,
               maxStages: MAX_ORCHESTRATION_STAGES,
               readOnly: leadReadOnly,
-              canCallSelf: Boolean(this.meta.orchestrator?.leadModel),
+              canCallSelf: leadCanCallSelf,
               stage: context.orchestration.stageTotal > 1
                 ? { index: context.orchestration.stage, total: context.orchestration.stageTotal }
                 : null,
@@ -1956,16 +1968,28 @@ class ChatRoom extends EventEmitter {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       this.runSeq += 1;
       runId = `r${this.sessionId || "s"}-${this.runSeq}`;
+      // 지휘 차례의 끝 제어 줄(STAGE·DONE …)은 최종 말풍선에서 빠지므로 흘러가는 초안에서도 숨긴다.
+      const leadStream = orchestrationRole === "lead" ? createLeadStreamFilter() : null;
+      const publish = (event) => this.emit("run-event", {
+        runId,
+        agentId: agent.id,
+        model: responseAgentMeta.model,
+        effort: responseAgentMeta.effort,
+        ...event,
+      });
       const emitEvent = (event) => {
         if (generation !== this.generation || !event) return;
         this.noteProgressStall(runId, agent, context, event);
-        this.emit("run-event", {
-          runId,
-          agentId: agent.id,
-          model: responseAgentMeta.model,
-          effort: responseAgentMeta.effort,
-          ...event,
-        });
+        if (leadStream && event.kind === "delta") {
+          const shown = leadStream.push(event.text);
+          if (shown) publish({ ...event, text: shown });
+          return;
+        }
+        if (leadStream && event.kind === "run-end") {
+          const rest = leadStream.end();
+          if (rest) publish({ kind: "delta", text: rest });
+        }
+        publish(event);
       };
       this.setTyping(agent.id, true);
       this.trackRunStart(generation);
@@ -2124,7 +2148,7 @@ class ChatRoom extends EventEmitter {
     if (orchestrationRole === "lead") {
       const parsedLead = parseOrchestrationControl(rawText);
       if (parsedLead.stages.length > 0 || parsedLead.done) {
-        orchestrationControl = { stageLines: parsedLead.stages, done: parsedLead.done };
+        orchestrationControl = { stageLines: parsedLead.stages, done: parsedLead.done, canCallSelf: leadCanCallSelf };
         rawText = parsedLead.text;
       }
     }

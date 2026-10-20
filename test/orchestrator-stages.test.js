@@ -444,3 +444,110 @@ test("읽기 전용 지휘 차례가 도구 권한을 요청하면 '대화 전�
   assert.match(failure.text, /지휘 AI는 읽기 전용으로 설정돼 있어/);
   assert.doesNotMatch(failure.text, /대화 전용/);
 });
+
+// ─── 검수 보완(2026-10-20): 회신·재촉의 안전선, 자기 호출 시점, 실시간 초안의 제어 줄 ───────────────
+
+const { ChatRoom } = require("../src/chat/chat-room");
+const { createLeadStreamFilter } = require("../src/chat/control-output");
+
+test("안전선: 지휘 AI 회신 차례도 실행 횟수 안전선을 넘겨 열지 않는다", async () => {
+  const { room, calls, systems } = withLead({ executionCeiling: 2 });
+  await startRound(room, calls, "STAGE: @agy");
+  calls[1].finish("agy 완료");
+  await settle();
+  assert.deepEqual(ids(calls), ["claude", "agy"], "회신 차례는 열리지 않는다");
+  assert.equal(room.orchestration, null);
+  assert.ok(systems.some((line) => line.includes("실행 횟수 안전선(2회)") && line.includes("회신")));
+});
+
+test("안전선: 재촉 차례도 실행 횟수 안전선을 넘겨 열지 않는다", async () => {
+  const { room, calls, systems } = withLead({ executionCeiling: 3 });
+  await toRoundTwo(room, calls);
+  assert.equal(room.orchestration.executions, 3);
+  calls[2].finish("표시 없이 끝");
+  await settle();
+  assert.equal(calls.length, 3, "재촉 차례는 열리지 않는다");
+  assert.equal(room.orchestration, null);
+  assert.ok(systems.some((line) => line.includes("실행 횟수 안전선(3회)") && line.includes("다시 묻지")));
+});
+
+test("자기 호출: 지휘 차례를 시작한 때의 설정을 따른다 — 진행 중에 지휘 모델을 지워도 그 답의 자기 호출은 그대로 실행한다", async () => {
+  const { room, calls, systems } = leadRoom({ leadModel: "opus" });
+  room.sendUserMessage("claude에게 맡겨줘");
+  await settle();
+  room.setMeta({ orchestrator: { enabled: true, leadId: "claude" } });
+  calls[0].finish("STAGE: @claude\nSTAGE: @codex");
+  await settle();
+  assert.deepEqual(ids(calls), ["claude", "claude"], "자기 호출이 1단계로 시작한다");
+  assert.equal(calls[1].agent.model, "sonnet", "자기 호출 작업자는 참가자의 원래 모델이다");
+  assert.ok(!systems.some((line) => line.includes("자신")), "빠졌다는 안내가 없다");
+  calls[1].finish("구현 완료");
+  await settle();
+  assert.equal(calls[2].agentId, "codex", "2단계가 이어진다");
+});
+
+test("자기 호출: 지휘 차례를 시작한 뒤 지휘 모델을 지정해도 그 답에서는 자기 호출이 허용되지 않는다", async () => {
+  const { room, calls, systems } = leadRoom({});
+  room.sendUserMessage("claude에게 맡겨줘");
+  await settle();
+  room.setMeta({ orchestrator: { enabled: true, leadId: "claude", leadModel: "opus" } });
+  calls[0].finish("STAGE: @claude @agy");
+  await settle();
+  assert.deepEqual(ids(calls), ["claude", "agy"]);
+  assert.ok(systems.some((line) => line.includes("지휘 AI @claude 자신")));
+});
+
+function streamThrough(text, size) {
+  const filter = createLeadStreamFilter();
+  let shown = "";
+  for (let index = 0; index < text.length; index += size) shown += filter.push(text.slice(index, index + size));
+  return shown + filter.end();
+}
+
+test("실시간 초안 필터: 끝의 STAGE·DONE·질문 줄은 어떻게 쪼개져 와도 숨기고, 본문은 한 글자도 바꾸지 않는다", () => {
+  const plan = "구현과 문서를 동시에 맡기고 끝나면 검수합니다.\n\nSTAGE: @claude @agy\nSTAGE: @codex\n";
+  const prose = "첫 줄\n\n둘째 줄\nDone with the first part.\nSTAGE: 는 설명용 문장입니다\n마지막 줄 끝";
+  const ask = "질문입니다.\nASK_USER: 진행할까요?\nOPTION: 예\nOPTION: 아니오";
+  for (const size of [1, 2, 3, 5, 7, 1000]) {
+    assert.equal(streamThrough(plan, size).trimEnd(), "구현과 문서를 동시에 맡기고 끝나면 검수합니다.", "plan 조각 " + size);
+    assert.equal(streamThrough("모두 끝났습니다.\nDONE", size).trimEnd(), "모두 끝났습니다.", "DONE 조각 " + size);
+    assert.equal(streamThrough("본문\r\nSTAGE: @a\r\n", size).trimEnd(), "본문", "CRLF 조각 " + size);
+    assert.equal(streamThrough(ask, size).trimEnd(), "질문입니다.", "ASK_USER 조각 " + size);
+    assert.equal(streamThrough(prose, size), prose, "prose 조각 " + size);
+  }
+});
+
+test("실시간 초안 필터: 제어 줄이 아닌 긴 줄은 줄이 끝나길 기다리지 않고 바로 흘려 보낸다", () => {
+  const filter = createLeadStreamFilter();
+  assert.equal(filter.push("Done"), "", "DONE일 수 있어 한 박자 기다린다");
+  assert.equal(filter.push(" 으로 시작하는 긴 설명"), "Done 으로 시작하는 긴 설명");
+  assert.equal(filter.push("이 이어집니다"), "이 이어집니다", "이미 내보낸 줄의 나머지는 그대로 잇는다");
+  assert.equal(filter.push(" DONE\n"), " DONE\n", "줄 중간의 낱말은 제어로 보지 않는다");
+});
+
+test("실시간 초안: 지휘 차례에는 STAGE 줄이 흘러가지 않고, 작업자 차례의 초안은 그대로 흐른다", async () => {
+  const shown = new Map();
+  const releases = [];
+  const room = new ChatRoom({
+    agents: ["claude", "codex"].map((id) => makeAgent(id)),
+    meta: { orchestrator: { enabled: true, leadId: "claude" } },
+    runAgent: ({ agent, emitEvent }) => {
+      const gate = Promise.withResolvers();
+      const chunks = agent.id === "claude" ? ["작업을 나눕니다.\n", "STA", "GE: @co", "dex\n"] : ["진행 ", "STAGE: 문구"];
+      for (const text of chunks) emitEvent({ kind: "delta", text });
+      releases.push((text) => gate.resolve({ ok: true, text }));
+      return { promise: gate.promise, cancel() { gate.resolve({ ok: false, cancelled: true }); } };
+    },
+  });
+  room.on("run-event", (event) => {
+    if (event.kind === "delta") shown.set(event.agentId, (shown.get(event.agentId) || "") + event.text);
+  });
+  room.sendUserMessage("claude에게 맡겨줘");
+  await settle();
+  releases[0]("작업을 나눕니다.\nSTAGE: @codex");
+  await settle();
+  assert.equal((shown.get("claude") || "").trimEnd(), "작업을 나눕니다.");
+  assert.equal(shown.get("codex"), "진행 STAGE: 문구");
+  room.stopAll();
+  await settle();
+});

@@ -123,6 +123,8 @@ function onStart(world, call) {
   const mine = calls.filter((entry) => entry.marker?.id === marker.id);
   call.execsBefore = mine.length;
   const roundLead = mine.find((entry) => entry.marker.role === "lead" && entry.marker.round === marker.round);
+  // 어떤 차례든 시작하는 순간 실행 횟수가 안전선을 넘으면 안 된다(지휘 AI 회신·재촉 포함).
+  if (mine.length + 1 > world.executionCeiling) violations.push(label + ": 실행 횟수 안전선(" + world.executionCeiling + ")을 넘어 차례가 시작됐다");
   if (marker.role === "lead") {
     if (marker.round > world.roundCeiling) violations.push(label + ": 라운드 안전선(" + world.roundCeiling + ")을 넘었다");
     if (roundLead) violations.push(label + ": 같은 라운드의 지휘 차례가 두 번 열렸다");

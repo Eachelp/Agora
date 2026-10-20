@@ -58,7 +58,8 @@ const READERS = Object.freeze({
   },
   agy: {
     mode: "replace",
-    matches: (line) => /^\s*\{\s*"event"\s*:\s*"result"/.test(line),
+    // JSON 키 순서에 기대지 않는다. 걸러진 줄은 read()가 event를 한 번 더 확인한다.
+    matches: (line) => line.includes('"usage"') && /"event"\s*:\s*"result"/.test(line),
     read(raw) {
       const usage = raw?.event === "result" ? raw.result?.usage : null;
       if (!usage || typeof usage !== "object") return null;

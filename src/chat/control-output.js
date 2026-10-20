@@ -132,6 +132,65 @@ function parseOrchestrationControl(text) {
   return { stages, done, text: kept.join("\n").trimEnd() };
 }
 
+// 지휘 AI 답이 흘러나오는 동안 화면의 초안에서 끝의 제어 줄(STAGE·DONE·ASK_USER …)을 숨기는 필터. 최종 말풍선은 같은
+// 줄을 이미 지우므로(parseOrchestrationControl) 초안도 같게 보이게 한다. 제어 줄처럼 보이는 줄(과 그 사이 빈 줄)과, 아직
+// 끝나지 않았지만 제어 줄이 될 수 있는 줄의 앞머리는 잠시 붙들고, 뒤에 일반 줄이 이어지면 그대로 내보낸다. 끝날 때
+// 붙들려 있는 것은 버린다. 이미 앞머리를 내보낸 줄의 나머지는 판정 없이 잇는다.
+const CONTROL_KEYWORDS = Object.freeze(["STAGE", "DONE", "ASK_USER", "OPTION", "MULTI", "PURPOSE", "REASON", "HANDOFF", "COMPLETE"]);
+
+function isHideableLine(line) {
+  const body = line.replace(/\r?\n$/, "");
+  return body.trim() === "" || STAGE_LINE_PATTERN.test(body) || DONE_LINE_PATTERN.test(body) || isControlLine(body);
+}
+
+// 끝나지 않은 줄의 앞머리가 아직 제어 줄이 될 수 있는가: "STAGE:"·"ASK_USER:" 같은 머리표의 앞부분이거나 이미 그 머리표로 시작할 때.
+// DONE·COMPLETE는 머리표 없이 낱말 하나만 있는 줄도 제어다.
+function mayBecomeControlLine(partial) {
+  const head = partial.replace(/^[ \t]+/, "").toUpperCase();
+  if (!head) return true;
+  return CONTROL_KEYWORDS.some((word) => {
+    const label = `${word}:`;
+    return label.startsWith(head) || head.startsWith(label) || ((word === "DONE" || word === "COMPLETE") && head.trimEnd() === word);
+  });
+}
+
+function createLeadStreamFilter() {
+  let held = ""; // 붙들어 둔 줄들(제어 줄처럼 보이는 줄과 빈 줄)
+  let partial = ""; // 아직 끝나지 않은 줄
+  let midLine = false; // 이 줄의 앞머리를 이미 내보냈는가
+  return {
+    push(text) {
+      partial += String(text || "");
+      let out = "";
+      for (let newline = partial.indexOf("\n"); newline >= 0; newline = partial.indexOf("\n")) {
+        const line = partial.slice(0, newline + 1);
+        partial = partial.slice(newline + 1);
+        if (midLine || !isHideableLine(line)) {
+          out += held + line;
+          held = "";
+        } else {
+          held += line;
+        }
+        midLine = false;
+      }
+      if (partial && (midLine || !mayBecomeControlLine(partial))) {
+        out += held + partial;
+        held = "";
+        partial = "";
+        midLine = true;
+      }
+      return out;
+    },
+    end() {
+      const out = midLine || (partial && !isHideableLine(partial)) ? held + partial : "";
+      held = "";
+      partial = "";
+      midLine = false;
+      return out;
+    },
+  };
+}
+
 // 응답 꼬리의 제어 행동을 파싱한다. 마커가 없으면 null. 서로 다른 행동이 섞이거나
 // 값이 갈리면 ambiguous로 표시하고 확정하지 않는다.
 function parseControlOutput(text) {
@@ -196,6 +255,7 @@ function parseControlOutput(text) {
 }
 
 module.exports = {
+  createLeadStreamFilter,
   parseControlOutput,
   parseOrchestrationControl,
   stripControlOutput,
