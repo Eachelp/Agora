@@ -1418,7 +1418,7 @@ function renderHeader() {
   const orchestrator = sessionMeta?.orchestrator || { enabled: false, leadId: null };
   orchestratorChip.classList.toggle("is-active", Boolean(orchestrator.enabled));
   orchestratorChip.textContent = orchestrator.enabled
-    ? `오케스트레이터 · @${orchestrator.leadId}`
+    ? `오케스트레이터 · @${orchestrator.leadId}${orchestrator.leadModel ? `(${orchestrator.leadModel})` : ""}`
     : "오케스트레이터";
   composerInput.placeholder = orchestrator.enabled
     ? `메시지는 지휘 AI(@${orchestrator.leadId})에게 갑니다 · @로 부르면 그 AI에게 바로 갑니다 · 이름만 쓰면 지휘 AI가 맡깁니다(예: "codex에게 시켜")`
@@ -1475,17 +1475,93 @@ function openOrchestratorPopover(anchor) {
     enableToggle.checked = Boolean(current.enabled);
     root.append(makeField("오케스트레이터 사용", enableToggle));
 
+    // 지휘 차례에만 쓰는 모델·노력·읽기 전용. 비워 두면 그 참가자의 설정 그대로다(지휘 모델을 정하면 지휘 AI가 자기 자신도
+    // 작업자로 맡길 수 있다). 지휘 AI를 바꾸면 서버가 모델·노력을 비우므로 여기서도 같이 비운다.
+    const leadModelSelect = document.createElement("select");
+    const leadEffortSelect = document.createElement("select");
+    const leadReadOnlyToggle = document.createElement("input");
+    leadReadOnlyToggle.type = "checkbox";
+    const savedLead = () => {
+      const saved = sessionMeta?.orchestrator || {};
+      return saved.enabled && saved.leadId === leadSelect.value ? saved : {};
+    };
+    const addKeepOption = (select) => {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "참가자 설정 그대로";
+      select.append(option);
+    };
+    function populateLeadModels() {
+      leadModelSelect.textContent = "";
+      addKeepOption(leadModelSelect);
+      const provider = providerById(leadSelect.value);
+      for (const model of provider ? modelOptionsForProvider(provider) : []) {
+        const option = document.createElement("option");
+        option.value = model.id;
+        option.textContent = model.label || model.id;
+        leadModelSelect.append(option);
+      }
+      const saved = savedLead().leadModel || "";
+      leadModelSelect.value = Array.from(leadModelSelect.children).some((option) => option.value === saved) ? saved : "";
+    }
+    function populateLeadEfforts(selected) {
+      leadEffortSelect.textContent = "";
+      addKeepOption(leadEffortSelect);
+      const provider = providerById(leadSelect.value);
+      const modelId = leadModelSelect.value || agentById(leadSelect.value)?.model || "default";
+      for (const effort of provider ? effortOptionsForModel(provider, modelId) : []) {
+        const option = document.createElement("option");
+        option.value = effort;
+        option.textContent = effortLabel(effort);
+        leadEffortSelect.append(option);
+      }
+      leadEffortSelect.value = Array.from(leadEffortSelect.children).some((option) => option.value === selected) ? selected : "";
+    }
+    function syncLeadControls() {
+      populateLeadModels();
+      populateLeadEfforts(savedLead().leadEffort || "");
+      leadReadOnlyToggle.checked = Boolean(sessionMeta?.orchestrator?.leadReadOnly);
+    }
+    syncLeadControls();
+    leadReadOnlyToggle.disabled = sessionMeta?.permissionMode !== "workspace-write";
+    leadReadOnlyToggle.title = leadReadOnlyToggle.disabled
+      ? "워크스페이스 쓰기 권한에서만 뜻이 있습니다(그 밖의 권한에서는 이미 파일을 고치지 못합니다)"
+      : "지휘 AI가 파일을 읽기만 하게 합니다. 고치는 일은 작업자에게 맡깁니다";
+    root.append(
+      makeField("지휘 모델", leadModelSelect),
+      makeField("지휘 노력", leadEffortSelect),
+      makeField("지휘 AI는 읽기만", leadReadOnlyToggle)
+    );
+
     async function apply() {
       const result = await requestSessionMeta((sessionId) =>
-        window.chatApi.orchestratorSet(sessionId, enableToggle.checked, leadSelect.value));
+        window.chatApi.orchestratorSet(sessionId, enableToggle.checked, leadSelect.value, {
+          leadModel: leadModelSelect.value || null,
+          leadEffort: leadEffortSelect.value || null,
+          leadReadOnly: leadReadOnlyToggle.checked,
+        }));
       // 거절된 경우(예: 쓸 수 없는 지휘 AI) 되돌린다 — requestSessionMeta가 실패를 알려 주지 않으므로
       // 저장된 설정과 다시 맞춰 본다.
-      if (!result) enableToggle.checked = Boolean(sessionMeta?.orchestrator?.enabled);
+      if (!result) {
+        enableToggle.checked = Boolean(sessionMeta?.orchestrator?.enabled);
+        syncLeadControls();
+      }
     }
     enableToggle.addEventListener("change", apply);
     leadSelect.addEventListener("change", () => {
+      populateLeadModels();
+      populateLeadEfforts("");
       if (enableToggle.checked) apply();
     });
+    leadModelSelect.addEventListener("change", () => {
+      populateLeadEfforts(leadEffortSelect.value);
+      if (enableToggle.checked) apply();
+    });
+    for (const control of [leadEffortSelect, leadReadOnlyToggle]) {
+      control.addEventListener("change", () => {
+        if (enableToggle.checked) apply();
+      });
+    }
   });
 }
 
@@ -1521,8 +1597,9 @@ function renderOrchestrationStatus() {
   const waitingQuestion = !waitingApproval
     && [...participantIds].some((id) => questionCards.isWaiting(id));
   const pause = waitingApproval ? " · 일시 정지(승인 대기)" : waitingQuestion ? " · 일시 정지(질문 대기)" : "";
+  const stage = orchestration.stage ? ` · ${orchestration.stage.index}/${orchestration.stage.total}단계` : "";
   orchestrationStatusRow.textContent =
-    `오케스트레이터 · ${leadLabel} · 라운드 ${orchestration.round} · 실행 ${orchestration.executions}회${pause}`;
+    `오케스트레이터 · ${leadLabel} · 라운드 ${orchestration.round} · 실행 ${orchestration.executions}회${stage}${pause}`;
   orchestrationStatusRow.classList.toggle("is-paused", Boolean(pause));
   orchestrationStatusRow.hidden = false;
 }

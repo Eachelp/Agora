@@ -145,8 +145,16 @@ contextBridge.exposeInMainWorld("chatApi", {
     ipcRenderer.invoke(INVOKE.PERMISSION_SET, { sessionId, mode }),
   agentConfigure: (sessionId, agentId, patch) =>
     ipcRenderer.invoke(INVOKE.AGENT_CONFIGURE, { sessionId, agentId, patch }),
-  orchestratorSet: (sessionId, enabled, leadId) =>
-    ipcRenderer.invoke(INVOKE.ORCHESTRATOR_SET, { sessionId, enabled, leadId }),
+  // lead(선택): { leadModel, leadEffort, leadReadOnly } — 지휘 차례에만 쓰는 설정. 생략한 필드는 저장값을 유지한다.
+  orchestratorSet: (sessionId, enabled, leadId, lead = {}) =>
+    ipcRenderer.invoke(INVOKE.ORCHESTRATOR_SET, {
+      sessionId,
+      enabled,
+      leadId,
+      ...(lead.leadModel !== undefined ? { leadModel: lead.leadModel } : {}),
+      ...(lead.leadEffort !== undefined ? { leadEffort: lead.leadEffort } : {}),
+      ...(lead.leadReadOnly !== undefined ? { leadReadOnly: lead.leadReadOnly } : {}),
+    }),
   keepCallingSet: (sessionId, enabled) =>
     ipcRenderer.invoke(INVOKE.KEEP_CALLING_SET, { sessionId, enabled }),
 

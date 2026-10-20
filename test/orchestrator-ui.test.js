@@ -81,14 +81,16 @@ test("AI끼리 계속 부르기 체크는 저장된 방 설정을 그대로 반�
 });
 
 // 칩 팝오버(지휘 AI 선택 + 켜기)와 라운드·실행 횟수 상태 줄, 실시간 구독 핸들러를 한 컨텍스트에서.
-function loadOrchestratorBlock(agents, initialMeta) {
-  const calls = { orchestratorSet: [], keepCallingSet: [] };
+function loadOrchestratorBlock(agents, initialMeta, providers = []) {
+  const calls = { orchestratorSet: [], orchestratorLead: [], keepCallingSet: [] };
   const popover = new FakeNode("div");
   const handlers = {};
   let sessionMeta = initialMeta;
   const context = {
     document: makeDocument(),
     agents,
+    providers,
+    effortLabel: (value) => value,
     get sessionMeta() { return sessionMeta; },
     set sessionMeta(value) { sessionMeta = value; },
     orchestratorChip: new FakeNode("button"),
@@ -120,12 +122,23 @@ function loadOrchestratorBlock(agents, initialMeta) {
     renderHeader() {}, // 이 블록은 전체 renderHeader를 안 들여온다 — onMeta가 부르는 자리만 비워 둔다.
     window: {
       chatApi: {
-        orchestratorSet: async (sessionId, enabled, leadId) => {
+        orchestratorSet: async (sessionId, enabled, leadId, lead = {}) => {
           calls.orchestratorSet.push([sessionId, enabled, leadId]);
+          calls.orchestratorLead.push(lead);
           if (enabled && leadId === context.orchestratorRejectLeadId) {
             return { ok: false, error: "지휘 AI로 쓸 수 있는 에이전트를 골라 주세요." };
           }
-          sessionMeta = { ...sessionMeta, orchestrator: { enabled, leadId: enabled ? leadId : null } };
+          // 서버(chat:orchestrator:set)와 같은 모양으로 저장한다: 비운 값은 키를 만들지 않는다.
+          sessionMeta = {
+            ...sessionMeta,
+            orchestrator: {
+              enabled,
+              leadId: enabled ? leadId : null,
+              ...(enabled && lead.leadModel ? { leadModel: lead.leadModel } : {}),
+              ...(enabled && lead.leadEffort ? { leadEffort: lead.leadEffort } : {}),
+              ...(enabled && lead.leadReadOnly ? { leadReadOnly: true } : {}),
+            },
+          };
           return { ok: true, meta: sessionMeta };
         },
         keepCallingSet: async (sessionId, enabled) => {
@@ -141,6 +154,7 @@ function loadOrchestratorBlock(agents, initialMeta) {
   vm.createContext(context);
   vm.runInContext(
     [
+      section("function providerById(id)", "// 저장된 모델이 노력 변형 id"),
       section("function orchestratorLeadCandidates()", "// 참가자 칩 툴팁."),
       section("window.chatApi.onOrchestration(", "window.chatApi.onUserQuestion?.("),
     ].join("\n"),
@@ -346,7 +360,7 @@ test("오케스트레이터·AI끼리 계속 부르기 IPC 채널이 preload·ma
   assert.match(preload, /KEEP_CALLING_SET: "chat:keep-calling:set"/);
   assert.match(
     preload,
-    /orchestratorSet: \(sessionId, enabled, leadId\) =>\s*ipcRenderer\.invoke\(INVOKE\.ORCHESTRATOR_SET, \{ sessionId, enabled, leadId \}\)/
+    /orchestratorSet: \(sessionId, enabled, leadId, lead = \{\}\) =>\s*ipcRenderer\.invoke\(INVOKE\.ORCHESTRATOR_SET, \{\s*sessionId,\s*enabled,\s*leadId,/
   );
   assert.match(
     preload,
@@ -363,3 +377,128 @@ test("머리줄에 [오케스트레이터] 칩이 있고, 입력창 위 체크·
   assert.match(html, /id="orchestration-status-row"/);
   assert.match(html, /id="keep-calling-toggle"/);
 });
+
+// ─── 지휘 모델·노력·읽기 전용(2026-10-20) ───────────────────────
+
+const PROVIDERS = () => [
+  {
+    id: "claude",
+    efforts: ["medium", "high"],
+    modelOptions: [
+      { id: "default", label: "공급자 기본값", efforts: [] },
+      { id: "opus", label: "Opus", efforts: ["high", "max"] },
+      { id: "sonnet", label: "Sonnet", efforts: ["medium", "high"] },
+    ],
+  },
+  { id: "codex", efforts: ["high"], modelOptions: [{ id: "gpt-6.1-sol", label: "Sol", efforts: ["high"] }] },
+];
+const LEAD_AGENTS = () => [
+  { id: "claude", name: "Claude", available: true, enabled: true, model: "sonnet" },
+  { id: "codex", name: "Codex", available: true, enabled: true, model: "gpt-6.1-sol" },
+];
+const selectsOf = (popover) => popover.findAll((node) => node.tagName === "SELECT");
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+// vm 컨텍스트 안에서 만든 객체는 프로토타입이 달라 deepEqual이 구조가 같아도 실패한다.
+const plain = (value) => JSON.parse(JSON.stringify(value));
+
+test("지휘 모델 칸: 첫 선택지는 '참가자 설정 그대로'고, 지휘 AI 공급자의 모델·노력 목록이 이어진다", () => {
+  const { ui, popover } = loadOrchestratorBlock(LEAD_AGENTS(), { orchestrator: { enabled: false, leadId: null } }, PROVIDERS());
+  ui.openOrchestratorPopover({});
+  const [lead, model, effort] = selectsOf(popover);
+  assert.deepEqual(model.children.map((option) => option.value), ["", "opus", "sonnet"], "default는 빠진다");
+  assert.equal(model.children[0].textContent, "참가자 설정 그대로");
+  assert.equal(model.value, "");
+  assert.deepEqual(effort.children.map((option) => option.value), ["", "medium", "high"], "모델을 안 고르면 참가자의 현재 모델(sonnet) 기준");
+  assert.equal(lead.value, "claude");
+});
+
+test("지휘 모델 칸: 저장된 지휘 모델·노력·읽기 전용을 그대로 보여 준다", () => {
+  const meta = { permissionMode: "workspace-write", orchestrator: { enabled: true, leadId: "claude", leadModel: "opus", leadEffort: "max", leadReadOnly: true } };
+  const { ui, popover } = loadOrchestratorBlock(LEAD_AGENTS(), meta, PROVIDERS());
+  ui.openOrchestratorPopover({});
+  const [, model, effort] = selectsOf(popover);
+  assert.equal(model.value, "opus");
+  assert.deepEqual(effort.children.map((option) => option.value), ["", "high", "max"]);
+  assert.equal(effort.value, "max");
+  const readOnly = popover.findAll((node) => node.tagName === "INPUT" && node.type === "checkbox")[1];
+  assert.equal(readOnly.checked, true);
+  assert.equal(readOnly.disabled, false);
+});
+
+test("지휘 모델을 고르면 켜진 상태에서 그 값을 orchestratorSet에 실어 보내고, 노력 목록이 그 모델 기준으로 바뀐다", async () => {
+  const meta = { orchestrator: { enabled: true, leadId: "claude" } };
+  const { ui, popover, calls } = loadOrchestratorBlock(LEAD_AGENTS(), meta, PROVIDERS());
+  ui.openOrchestratorPopover({});
+  const [, model, effort] = selectsOf(popover);
+  model.value = "opus";
+  model.dispatch("change");
+  await flush();
+  assert.deepEqual(effort.children.map((option) => option.value), ["", "high", "max"]);
+  assert.deepEqual(plain(calls.orchestratorLead.at(-1)), { leadModel: "opus", leadEffort: null, leadReadOnly: false });
+  assert.equal(ui.sessionMeta.orchestrator.leadModel, "opus");
+  effort.value = "max";
+  effort.dispatch("change");
+  await flush();
+  assert.deepEqual(plain(calls.orchestratorLead.at(-1)), { leadModel: "opus", leadEffort: "max", leadReadOnly: false });
+  assert.deepEqual(ui.sessionMeta.orchestrator, { enabled: true, leadId: "claude", leadModel: "opus", leadEffort: "max" });
+});
+
+test("지휘 AI를 바꾸면 모델·노력 선택이 비워지고 새 공급자의 목록으로 바뀐다", async () => {
+  const meta = { orchestrator: { enabled: true, leadId: "claude", leadModel: "opus", leadEffort: "max" } };
+  const { ui, popover, calls } = loadOrchestratorBlock(LEAD_AGENTS(), meta, PROVIDERS());
+  ui.openOrchestratorPopover({});
+  const [lead, model, effort] = selectsOf(popover);
+  lead.value = "codex";
+  lead.dispatch("change");
+  await flush();
+  assert.deepEqual(model.children.map((option) => option.value), ["", "gpt-6.1-sol"]);
+  assert.equal(model.value, "");
+  assert.equal(effort.value, "");
+  assert.deepEqual(plain(calls.orchestratorLead.at(-1)), { leadModel: null, leadEffort: null, leadReadOnly: false });
+  assert.deepEqual(ui.sessionMeta.orchestrator, { enabled: true, leadId: "codex" });
+});
+
+test("읽기 전용 토글: 쓰기 권한 방에서만 켤 수 있고, 켜면 leadReadOnly를 보낸다", async () => {
+  const noWrite = loadOrchestratorBlock(LEAD_AGENTS(), { permissionMode: "chat", orchestrator: { enabled: true, leadId: "claude" } }, PROVIDERS());
+  noWrite.ui.openOrchestratorPopover({});
+  assert.equal(noWrite.popover.findAll((node) => node.tagName === "INPUT" && node.type === "checkbox")[1].disabled, true);
+
+  const write = loadOrchestratorBlock(LEAD_AGENTS(), { permissionMode: "workspace-write", orchestrator: { enabled: true, leadId: "claude" } }, PROVIDERS());
+  write.ui.openOrchestratorPopover({});
+  write.popover.findAll((node) => node.tagName === "INPUT" && node.type === "checkbox")[1].click();
+  await flush();
+  assert.equal(write.calls.orchestratorLead.at(-1).leadReadOnly, true);
+  assert.equal(write.ui.sessionMeta.orchestrator.leadReadOnly, true);
+});
+
+test("꺼진 상태에서 지휘 모델을 고르면 저장하지 않고, 사용을 켤 때 함께 보낸다", async () => {
+  const { ui, popover, calls } = loadOrchestratorBlock(LEAD_AGENTS(), { orchestrator: { enabled: false, leadId: null } }, PROVIDERS());
+  ui.openOrchestratorPopover({});
+  const [, model] = selectsOf(popover);
+  model.value = "opus";
+  model.dispatch("change");
+  await flush();
+  assert.equal(calls.orchestratorSet.length, 0);
+  popover.find((node) => node.tagName === "INPUT" && node.type === "checkbox").click();
+  await flush();
+  assert.deepEqual(plain(calls.orchestratorLead.at(-1)), { leadModel: "opus", leadEffort: null, leadReadOnly: false });
+});
+
+test("칩: 지휘 모델을 정했으면 괄호로 함께 보이고, 상태 줄은 단계 중일 때만 k/n단계를 덧붙인다", () => {
+  const header = loadHeaderBits();
+  header.sessionMeta = { orchestrator: { enabled: true, leadId: "claude", leadModel: "opus" } };
+  header.renderHeaderOrchestratorBits();
+  assert.equal(header.orchestratorChip.textContent, "오케스트레이터 · @claude(opus)");
+
+  const { ui } = loadOrchestratorBlock(
+    [{ id: "claude", name: "Claude", available: true, enabled: true }],
+    { orchestrator: { enabled: true, leadId: "claude" } }
+  );
+  ui.orchestration = { active: true, round: 2, executions: 4, leadId: "claude", stage: { index: 2, total: 3, agentIds: ["codex"] } };
+  ui.renderOrchestrationStatus();
+  assert.equal(ui.orchestrationStatusRow.textContent, "오케스트레이터 · @claude · 라운드 2 · 실행 4회 · 2/3단계");
+  ui.orchestration = { active: true, round: 3, executions: 5, leadId: "claude", stage: null };
+  ui.renderOrchestrationStatus();
+  assert.equal(ui.orchestrationStatusRow.textContent, "오케스트레이터 · @claude · 라운드 3 · 실행 5회");
+});
+

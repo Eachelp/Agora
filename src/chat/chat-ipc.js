@@ -25,7 +25,7 @@ const {
   resolveEffortVariant,
 } = require("../providers/provider-capabilities");
 const { toDiagnostics } = require("../providers/provider-diagnostics");
-const { roomAgentsFromCapabilities, GROUP_ALIASES } = require("./chat-agents");
+const { roomAgentsFromCapabilities, concreteModelOptions, GROUP_ALIASES } = require("./chat-agents");
 const { parseMentions, hasLegacyRoleMention } = require("./chat-mention");
 const {
   ChatRoom,
@@ -497,6 +497,33 @@ function createChatFeature(options) {
       },
     });
     return capabilityService;
+  }
+
+  // 오케스트레이터의 지휘 모델·노력·읽기 전용을 검증하고 저장할 값으로 정리한다. 모델은 지휘 AI 공급자의 모델 목록 안에서,
+  // 노력은 그 모델(없으면 참가자의 현재 모델)이 지원하는 목록 안에서만 받는다. 빈 문자열·"default"·null은 "참가자 설정 그대로"다.
+  function resolveLeadSettings({ current, nextLeadId, leadModel, leadEffort, leadReadOnly, room }) {
+    const clean = (value) => {
+      const text = typeof value === "string" ? value.trim().slice(0, 64) : "";
+      return text && text !== "default" ? text : null;
+    };
+    const sameLead = Boolean(current.enabled) && current.leadId === nextLeadId;
+    let model = sameLead ? clean(current.leadModel) : null;
+    let effort = sameLead ? clean(current.leadEffort) : null;
+    const readOnly = leadReadOnly === undefined ? Boolean(current.leadReadOnly) : Boolean(leadReadOnly);
+    if (leadModel !== undefined) model = clean(leadModel);
+    if (leadEffort !== undefined) effort = clean(leadEffort);
+    const record = ensureCapabilityService().getRecord(nextLeadId);
+    const modelOptions = record ? concreteModelOptions(record) : [];
+    if (model && !modelOptions.some((option) => option.id === model)) {
+      throw new Error("지휘 모델로 쓸 수 없는 모델입니다.");
+    }
+    if (effort) {
+      const effectiveModel = model || room?.findAgent(nextLeadId)?.model;
+      const option = modelOptions.find((entry) => entry.id === effectiveModel);
+      const efforts = (Array.isArray(option?.efforts) ? option.efforts : record?.efforts || []).filter((value) => value !== "default");
+      if (!efforts.includes(effort)) throw new Error("이 모델에서 쓸 수 없는 지휘 노력 수준입니다.");
+    }
+    return { model, effort, readOnly };
   }
 
   // renderer로 가는 공급자 목록은 전부 여기서 만든다(첫 화면 상태·broadcast·재탐지).
@@ -2226,7 +2253,7 @@ function roomMeta(meta) {
 
     ipcMain.handle(
       "chat:orchestrator:set",
-      wrap(async ({ sessionId, enabled, leadId }) => {
+      wrap(async ({ sessionId, enabled, leadId, leadModel, leadEffort, leadReadOnly }) => {
         requireSession(sessionId);
         const room = getRoom(sessionId);
         const meta = store.readMeta(sessionId);
@@ -2242,7 +2269,21 @@ function roomMeta(meta) {
         // 모드를 끄거나 지휘 AI를 바꾸면 "모드 꺼짐"과 같은 정리 사유다(설계 §2.1) — 지금 진행 중인
         // 오케스트레이션이 있으면 끝낸다. 켜진 채로 같은 지휘 AI를 다시 보내는 것은 아무 일도 안 한다.
         const endsCurrent = current.enabled && (!nextEnabled || current.leadId !== nextLeadId);
-        store.updateMeta(sessionId, { orchestrator: { enabled: nextEnabled, leadId: nextLeadId } });
+        // 지휘 모델·노력·읽기 전용(2026-10-20 개정)은 지휘 차례에만 쓰이는 선택 설정이다. 생략하면 저장값을 유지하고,
+        // 끄거나 지휘 AI를 바꾸면 모델·노력을 비운다(그 공급자의 목록에 없을 수 있다). 바꿔도 진행 중인 오케스트레이션은
+        // 끝내지 않는다 — 다음 지휘 차례부터 적용된다.
+        const lead = nextEnabled
+          ? resolveLeadSettings({ current, nextLeadId, leadModel, leadEffort, leadReadOnly, room })
+          : { model: null, effort: null, readOnly: false };
+        store.updateMeta(sessionId, {
+          orchestrator: {
+            enabled: nextEnabled,
+            leadId: nextLeadId,
+            ...(lead.model ? { leadModel: lead.model } : {}),
+            ...(lead.effort ? { leadEffort: lead.effort } : {}),
+            ...(lead.readOnly ? { leadReadOnly: true } : {}),
+          },
+        });
         if (room) {
           room.setMeta(roomMeta(store.readMeta(sessionId)));
           if (endsCurrent && room.orchestration) {
