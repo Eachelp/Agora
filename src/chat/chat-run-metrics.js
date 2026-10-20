@@ -1,5 +1,7 @@
 "use strict";
 
+const { normalizeTokens } = require("./chat-usage");
+
 function nonNegativeInteger(value, fallback = 0) {
   return Number.isInteger(value) && value >= 0 ? value : fallback;
 }
@@ -29,6 +31,7 @@ function buildRunMetrics({
   finishedAt = null,
   promptChars = 0,
   userWaitingMs = null,
+  tokens = null,
   result = {},
 } = {}) {
   const start = finiteTimestamp(startedAt, null);
@@ -40,6 +43,7 @@ function buildRunMetrics({
   const output = result?.output || {};
   const waiting = userWaitingMs == null ? null : nonNegativeInteger(userWaitingMs);
   const durationMs = start != null && finish != null ? Math.max(0, finish - start) : null;
+  const normalizedTokens = normalizeTokens(tokens);
 
   return {
     schemaVersion: 1,
@@ -80,6 +84,8 @@ function buildRunMetrics({
         : "NORMAL",
       reason: exploration.reason ? String(exploration.reason).slice(0, 80) : null,
     },
+    // 공급자가 사용량을 보고한 실행에만 있다(없으면 필드를 만들지 않는다). schemaVersion은 그대로 1이다.
+    ...(normalizedTokens ? { tokens: normalizedTokens } : {}),
   };
 }
 

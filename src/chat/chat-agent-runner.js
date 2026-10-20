@@ -367,6 +367,7 @@ function runAgentProcess({
         finishedAt: Date.now(),
         promptChars: String(prompt || "").length,
         result: baseResult,
+        tokens: typeof parseLine?.getUsage === "function" ? parseLine.getUsage() : null,
         ...(userWaitingMs !== null ? { userWaitingMs } : {}),
       });
       if (typeof onEvent === "function") {

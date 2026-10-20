@@ -1,4 +1,5 @@
 const { createRunTelemetry } = require("./chat-run-telemetry");
+const { createUsageCollector } = require("./chat-usage");
 
 // 프로바이더 CLI의 구조화 출력(JSONL)을 공통 이벤트로 정규화합니다.
 //   { kind: "delta", text }   — 실시간 본문 조각 (claude stream-json)
@@ -422,11 +423,12 @@ function parseAgyLine(line) {
 // metadata로만 추출한다. 작은 provider-neutral seam이다: extractNativeId(각 provider가
 // 실환경에서 확인된 위치만 읽는 추출기)가 값을 주면 onNativeId로 알린다(renderer/FSM/
 // generic Evidence로는 노출하지 않는다). 추출기가 없으면 sniff 자체를 하지 않는다.
-function instrumentParser(baseParser, { onNativeId = null, extractNativeId = null } = {}) {
+function instrumentParser(baseParser, { onNativeId = null, extractNativeId = null, usage = null } = {}) {
   const telemetry = createRunTelemetry();
   const notifyNativeId = typeof onNativeId === "function" ? onNativeId : null;
   const extract = typeof extractNativeId === "function" ? extractNativeId : null;
   const parser = (line) => {
+    if (usage) usage.observeLine(line);
     if (notifyNativeId && extract) {
       const raw = parseJsonLine(line);
       if (raw) {
@@ -442,6 +444,8 @@ function instrumentParser(baseParser, { onNativeId = null, extractNativeId = nul
     return event;
   };
   parser.getTelemetry = () => telemetry.snapshot();
+  // 실행 전체의 토큰 사용량(사용량 줄이 없었으면 null). 러너가 끝날 때 run-metrics에 싣는다.
+  parser.getUsage = () => (usage ? usage.snapshot() : null);
   return parser;
 }
 
@@ -466,11 +470,11 @@ function extractAgyConversationId(raw) {
 
 function createLineParser(providerId, options = {}) {
   if (providerId === "claude") {
-    return instrumentParser(createClaudeLineParser(), { onNativeId: options.onSessionId, extractNativeId: extractClaudeSessionId });
+    return instrumentParser(createClaudeLineParser(), { onNativeId: options.onSessionId, extractNativeId: extractClaudeSessionId, usage: createUsageCollector("claude") });
   }
-  if (providerId === "codex") return instrumentParser(parseCodexLine);
+  if (providerId === "codex") return instrumentParser(parseCodexLine, { usage: createUsageCollector("codex") });
   if (providerId === "agy") {
-    return instrumentParser(parseAgyLine, { onNativeId: options.onConversationId, extractNativeId: extractAgyConversationId });
+    return instrumentParser(parseAgyLine, { onNativeId: options.onConversationId, extractNativeId: extractAgyConversationId, usage: createUsageCollector("agy") });
   }
   return null;
 }
