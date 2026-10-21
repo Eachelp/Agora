@@ -144,9 +144,9 @@ function isHideableLine(line) {
 }
 
 // 끝나지 않은 줄의 앞머리가 아직 제어 줄이 될 수 있는가: "STAGE:"·"ASK_USER:" 같은 머리표의 앞부분이거나 이미 그 머리표로 시작할 때.
-// DONE·COMPLETE는 머리표 없이 낱말 하나만 있는 줄도 제어다.
+// DONE·COMPLETE는 머리표 없이 낱말 하나만 있는 줄도 제어다. CRLF의 \r만 도착한 순간에도 줄이 끝난 것이 아니므로 \r은 뗀다.
 function mayBecomeControlLine(partial) {
-  const head = partial.replace(/^[ \t]+/, "").toUpperCase();
+  const head = partial.replace(/^[ \t]+/, "").replace(/\r$/, "").toUpperCase();
   if (!head) return true;
   return CONTROL_KEYWORDS.some((word) => {
     const label = `${word}:`;

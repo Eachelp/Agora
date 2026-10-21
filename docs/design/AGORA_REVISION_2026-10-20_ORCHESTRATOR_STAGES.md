@@ -157,7 +157,7 @@ ATLAS 프로젝트를 오케스트레이터 모드로 돌리면서 다음이 드
 | S14 | Gemini 500 재현 | 실패한 작업자의 `partialText`가 결과 블록에 들어간다(실제 기록 재생에서 3,524/3,525자). |
 | S15 | 토큰 | 세 공급자 형식의 합성 줄에서 추출·합산이 맞고, 사용량 줄이 없으면 필드를 만들지 않으며, 저장했다 읽어도 같다. |
 
-**시험 파일.** `test/orchestrator-stages.test.js`(42개, S1~S14의 방 시나리오와 제어 줄 해석, 회신·재촉의 안전선, 자기 호출 시점, 실시간 초안의 제어 줄 숨김), `test/orchestrator-stages-property.test.js`(무작위 단계 시험), `test/orchestrator-lead-ipc.test.js`(5개, 지휘 모델 검증·저장·되돌림), `test/chat-usage.test.js`(9개, S15). `orchestrator-ui`(7개 추가)·`chat-events`·`chat-agent-runner`·`orchestrator-prompt`·`orchestrator-property`도 넓혔다.
+**시험 파일.** `test/orchestrator-stages.test.js`(43개, S1~S14의 방 시나리오와 제어 줄 해석, 회신·재촉의 안전선, 자기 호출 시점, 실시간 초안의 제어 줄 숨김), `test/orchestrator-stages-property.test.js`(무작위 단계 시험), `test/orchestrator-lead-ipc.test.js`(5개, 지휘 모델 검증·저장·되돌림), `test/chat-usage.test.js`(9개, S15). `orchestrator-ui`(7개 추가)·`chat-events`·`chat-agent-runner`·`orchestrator-prompt`·`orchestrator-property`도 넓혔다.
 
 **무작위 단계 시험.** 시드 160개를 130걸음씩 돌린다. 지휘 AI의 계획(중복·모르는 이름·자기 호출·4단계 초과·`DONE`/`ASK_USER` 동봉·옛 `@멘션`·표시 없음·실패), 작업자의 성공·실패·질문, 중지·잠깐·삭제·×·모드 끔, 취소 신호를 받고도 바로 끝나지 않는 프로세스의 늦은 결과, 참가자 비활성화, 지휘 모델 켜고 끄기를 섞는다. 매 걸음 불변식 18·19·20·21·23과 실행 횟수 일치를 점검하고 끝에 장부가 기준선으로 돌아오는지 본다. 닿은 경로 수는 시험 출력의 진단 줄로 남는다. 결함을 일부러 넣어 본 실험 6건(조기 종료 무시, 실행 횟수 누락, 늦은 결과 폐기 제거, 마지막 단계 전 회신, 두 단계 동시 시작, 회신 라운드 어긋남)을 모두 잡았다.
 

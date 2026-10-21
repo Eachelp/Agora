@@ -1493,6 +1493,32 @@ class ChatRoom extends EventEmitter {
     return true;
   }
 
+  // 지휘 AI의 다음 차례(회신·재촉)를 여는 단 하나의 입구. 실행 횟수 안전선, 라운드 안전선, 지휘 AI 사용 가능 여부를 한 곳에서
+  // 본 뒤 차례를 예약한다. 하나라도 걸리면 오케스트레이션을 끝내고 열지 않는다.
+  // 보류 메시지는 여기서 싣지 않는다 — claimUnit이 이 턴이 "실제로 claim되는" 순간에 싣고 비운다(§(7)·claimUnit 참고). 예약과
+  // claim 사이에 또 보류 메시지가 들어올 수 있고, claim되지 못한 채 버려지면(안전선이 다시 걸리거나 ×로 지워지는 등) heldMessages가
+  // 그대로 남아 있어야 endOrchestration의 "전달되지 않았습니다" 안내가 정확히 나간다(§(13) 불변식 10).
+  openLeadTurn(round, extraLines, ceilingNotice) {
+    const orch = this.orchestration;
+    if (this.endIfExecutionCeiling(ceilingNotice)) return;
+    if (round > this.roundCeiling) {
+      this.endOrchestration(`라운드 안전선(${this.roundCeiling})에 닿아 멈췄습니다. 메시지를 보내면 이어 갑니다.`);
+      return;
+    }
+    const leadAgent = this.findAgent(orch.leadId);
+    if (!leadAgent || !leadAgent.available || leadAgent.enabled === false) {
+      this.endOrchestration(`@${orch.leadId}를 더 쓸 수 없어 오케스트레이션을 끝냅니다. 지금까지의 결과는 위에 있습니다.`);
+      return;
+    }
+    this.scheduleTurn(leadAgent, {
+      orchestration: { id: orch.id, role: "lead", round },
+      turnRootId: orch.rootMessageId,
+      extraLines,
+      // 원 요청의 첨부(와 앞 라운드에서 받은 보류 메시지의 첨부)를 2라운드 이상에서도 다시 싣는다(단계 작업자와 같은 패턴, 9b 감사).
+      attachments: [...orch.attachments],
+    }, { lane: "fast" });
+  }
+
   // 모든 단계가 끝났다: 결과 블록을 짜고 안전선을 거쳐 지휘 AI의 다음 회신 턴을 claim한다.
   replyToLead() {
     const orch = this.orchestration;
@@ -1503,46 +1529,13 @@ class ChatRoom extends EventEmitter {
     orch.stage = null;
     orch.lastResultBlock = block;
     this.emitTurnStateSafe();
-    if (this.endIfExecutionCeiling("지휘 AI의 회신을 열지 않았습니다. 작업자 결과는 위에 있습니다")) return;
-    const nextRound = round + 1;
-    if (nextRound > this.roundCeiling) {
-      this.endOrchestration(`라운드 안전선(${this.roundCeiling})에 닿아 멈췄습니다. 메시지를 보내면 이어 갑니다.`);
-      return;
-    }
-    const leadAgent = this.findAgent(orch.leadId);
-    if (!leadAgent || !leadAgent.available || leadAgent.enabled === false) {
-      this.endOrchestration(`@${orch.leadId}를 더 쓸 수 없어 오케스트레이션을 끝냅니다. 지금까지의 결과는 위에 있습니다.`);
-      return;
-    }
-    // 보류 메시지는 여기서 싣지 않는다 — claimUnit이 이 턴이 "실제로 claim되는" 순간에 싣고 비운다
-    // (§(7)·claimUnit 참고). 예약(여기)과 claim 사이에 또 보류 메시지가 들어올 수 있고, 예약된 뒤
-    // claim되지 못한 채 버려지면(안전선이 다시 걸리거나 ×로 지워지는 등) heldMessages가 그대로
-    // 남아 있어야 endOrchestration의 "전달되지 않았습니다" 안내가 정확히 나간다(§(13) 불변식 10).
-    this.scheduleTurn(leadAgent, {
-      orchestration: { id: orch.id, role: "lead", round: nextRound },
-      turnRootId: orch.rootMessageId,
-      extraLines: [block],
-      // 원 요청의 첨부(와 앞 라운드에서 받은 보류 메시지의 첨부)를 2라운드 이상에서도 다시 싣는다
-      // (단계 작업자와 같은 패턴, 9b 감사).
-      attachments: [...orch.attachments],
-    }, { lane: "fast" });
+    this.openLeadTurn(round + 1, [block], "지휘 AI의 회신을 열지 않았습니다. 작업자 결과는 위에 있습니다");
   }
 
   // 작업 결과를 받은 지휘 AI가 STAGE·DONE·질문·@멘션 어느 것도 쓰지 않았다: 한 번 더 열어 표시를 요청한다.
   // 재촉 차례도 라운드와 실행 횟수에 들어간다. 앞 라운드의 결과 블록을 다시 실어 판단 근거를 잃지 않게 한다.
   nudgeLead(item) {
     const orch = this.orchestration;
-    if (this.endIfExecutionCeiling("지휘 AI에게 다시 묻지 않았습니다")) return;
-    const nextRound = item.context.orchestration.round + 1;
-    if (nextRound > this.roundCeiling) {
-      this.endOrchestration(`라운드 안전선(${this.roundCeiling})에 닿아 멈췄습니다. 메시지를 보내면 이어 갑니다.`);
-      return;
-    }
-    const leadAgent = this.findAgent(orch.leadId);
-    if (!leadAgent || !leadAgent.available || leadAgent.enabled === false) {
-      this.endOrchestration(`@${orch.leadId}를 더 쓸 수 없어 오케스트레이션을 끝냅니다. 지금까지의 결과는 위에 있습니다.`);
-      return;
-    }
     orch.nudged = true;
     const notice = [
       "=== 지휘 차례 안내 ===",
@@ -1550,12 +1543,7 @@ class ChatRoom extends EventEmitter {
       "맡길 작업이 더 있으면 답 맨 끝에 `STAGE: @이름` 줄을 쓰고, 모두 끝났으면 `DONE` 줄로 마무리하세요. 이미 사용자에게 보일 최종 답을 썼다면 같은 내용을 반복하지 말고 `DONE` 한 줄만 쓰세요.",
       "=== 지휘 차례 안내 끝 ===",
     ].join("\n");
-    this.scheduleTurn(leadAgent, {
-      orchestration: { id: orch.id, role: "lead", round: nextRound },
-      turnRootId: orch.rootMessageId,
-      extraLines: [...(orch.lastResultBlock ? [orch.lastResultBlock] : []), notice],
-      attachments: [...orch.attachments],
-    }, { lane: "fast" });
+    this.openLeadTurn(item.context.orchestration.round + 1, [...(orch.lastResultBlock ? [orch.lastResultBlock] : []), notice], "지휘 AI에게 다시 묻지 않았습니다");
   }
 
   // 오케스트레이션을 끝내는 모든 경로(×취소·모드 끔·지휘 AI 못 씀·안전선·정상 끝맺음)가 공유하는 헬퍼

@@ -525,6 +525,17 @@ test("실시간 초안 필터: 제어 줄이 아닌 긴 줄은 줄이 끝나길 
   assert.equal(filter.push(" DONE\n"), " DONE\n", "줄 중간의 낱말은 제어로 보지 않는다");
 });
 
+test("실시간 초안 필터: CRLF 제어 블록은 줄바꿈이 어디서 쪼개져도 숨기고, 본문 사이의 빈 줄은 그대로 둔다", () => {
+  const plan = "본문\r\nSTAGE: @codex\r\n\r\n";
+  const done = "끝났습니다.\r\nDONE\r\n\r\n";
+  const prose = "첫 문단\r\n\r\n둘째 문단\r\n";
+  for (let size = 1; size <= plan.length + 1; size += 1) {
+    assert.equal(streamThrough(plan, size).trimEnd(), "본문", "STAGE 조각 " + size);
+    assert.equal(streamThrough(done, size).trimEnd(), "끝났습니다.", "DONE 조각 " + size);
+    assert.equal(streamThrough(prose, size), prose, "prose 조각 " + size);
+  }
+});
+
 test("실시간 초안: 지휘 차례에는 STAGE 줄이 흘러가지 않고, 작업자 차례의 초안은 그대로 흐른다", async () => {
   const shown = new Map();
   const releases = [];
