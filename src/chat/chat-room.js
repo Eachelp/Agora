@@ -117,6 +117,25 @@ const LOST_TURN_STALL_SECONDS = 120;
 // 한도로 조용히 멈춘 실행에는 이 안내가 유일한 탈출 신호다.
 const PROGRESS_STALL_MINUTES = 10;
 
+// AnchorMind 기억: 차례가 시작할 때 그 사용자 메시지의 recall 결과를 기다리는 최대 시간. 넘으면 그 차례는 기억 없이 간다.
+const ANCHOR_MEMORY_WAIT_MS = 3000;
+// ponytail: 방이 recall 약속을 들고 있는 뿌리 메시지 수. 방은 앱이 켜져 있는 동안 닫히지 않아 가장 오래된 뿌리부터 버린다.
+// 그사이 새 뿌리가 50개 넘게 생긴 아주 긴 오케스트레이션은 다음 차례에 recall을 한 번 더 한다(문제가 되면 진행 중인 오케스트레이션의 뿌리를 고정한다).
+const ANCHOR_MEMORY_ROOTS = 50;
+
+// recall 약속을 최대 ANCHOR_MEMORY_WAIT_MS만 기다린다(약속은 reject하지 않는다). 늦게 온 결과는 방의 캐시에 남아 같은 뿌리의 다음 차례가 쓴다.
+function waitAnchorMemory(pending) {
+  let timer;
+  const late = new Promise((resolve) => {
+    timer = setTimeout(() => resolve({
+      block: "",
+      reason: `AnchorMind 기억을 ${ANCHOR_MEMORY_WAIT_MS / 1000}초 안에 받지 못했습니다.`,
+    }), ANCHOR_MEMORY_WAIT_MS);
+    if (typeof timer.unref === "function") timer.unref();
+  });
+  return Promise.race([pending, late]).finally(() => clearTimeout(timer));
+}
+
 // 실행 중 질문(ask_user) 기록. 끝난(되돌릴 수 없는) 상태와, 방이 기억하는 기록 수 상한.
 const QUESTION_TERMINAL = new Set(["answered", "cancelled", "interrupted"]);
 const MAX_USER_QUESTIONS = 200;
@@ -193,6 +212,11 @@ class ChatRoom extends EventEmitter {
     // runAgent({agent, prompt, runId, attachments, emitEvent}) => { promise, cancel }
     this.runAgent = options.runAgent;
     this.prepareAgent = options.prepareAgent;
+    // AnchorMind 기억: recallMemory(text) => Promise<{ block, reason }> | null. 옵션이 없으면 기억 없이 돈다.
+    this.recallMemory = options.recallMemory || null;
+    // 뿌리 사용자 메시지 id → 그 메시지의 recall 약속(부르지 않았으면 null). 같은 뿌리의 다음 차례가 다시 쓴다.
+    this.anchorMemoryRecalls = new Map();
+    this.anchorMemoryNoticed = false;
     this.meta = {
       permissionMode: "chat",
       ...(options.meta || {}),
@@ -1826,6 +1850,22 @@ class ChatRoom extends EventEmitter {
     return [...base, ...extra].filter((message) => message.authorType !== "system" && !message.error);
   }
 
+  // 이 차례에 붙일 AnchorMind 기억 약속(없으면 null). recall은 뿌리(이 차례를 일으킨 사용자 메시지)마다 처음 온 차례가 한 번만
+  // 시작하고(갈아끼워지거나 중지돼 시작하지 못한 메시지는 부르지 않는다), 같은 뿌리의 다음 차례는 그 약속을 다시 쓴다. 작업자의
+  // turnRootId는 지휘 AI 답이라(scheduleStage) 오케스트레이션의 뿌리로 찾는다. 기록관·결론 종합·쉽게 설명·전달·토론 차례는 뿌리가 없어 기억이 없다.
+  anchorMemoryFor(context) {
+    if (!this.recallMemory) return null;
+    const rootId = context.orchestration?.role === "worker" ? this.orchestration?.rootMessageId : context.turnRootId;
+    if (!rootId) return null;
+    if (!this.anchorMemoryRecalls.has(rootId)) {
+      const root = this.messages.find((message) => message.id === rootId);
+      // 글이 있는 사용자 메시지만 질의가 된다(AI 답이나 첨부만 보낸 빈 글은 아니다). 부르지 않은 뿌리도 null로 적어 둔다.
+      this.anchorMemoryRecalls.set(rootId, root?.authorType === "user" && root.text ? this.recallMemory(root.text) : null);
+      if (this.anchorMemoryRecalls.size > ANCHOR_MEMORY_ROOTS) this.anchorMemoryRecalls.delete(this.anchorMemoryRecalls.keys().next().value);
+    }
+    return this.anchorMemoryRecalls.get(rootId);
+  }
+
   async respond(agent, context = {}, generation = this.generation) {
     // 이 에이전트가 새 턴을 시작한다 = 직전 되질문에 대한 응답이 진행된다.
     // 대기 배지를 먼저 내려, 답을 받는 동안 옛 질문이 남아 있지 않게 한다.
@@ -1888,6 +1928,19 @@ class ChatRoom extends EventEmitter {
         this.appendSystem(`@${agent.id}는 설치 방식 때문에 작업 중 질문 기능을 쓸 수 없습니다. 결정이 필요하면 답변 끝에서 선택지로 묻습니다.`);
       }
     } catch {}
+    // AnchorMind 기억을 쓰는 차례만 여기서 최대 3초 기다린다. 쓰지 않는 차례(null)는 await 없이 지나가 지금과 같은 순간에 시작한다.
+    let anchorMemoryContext = "";
+    const memoryPending = this.anchorMemoryFor(context);
+    if (memoryPending) {
+      const memory = await waitAnchorMemory(memoryPending);
+      // 기다리는 사이 세대가 바뀌었거나(중지·잠깐·초기화) 오케스트레이션이 끝났으면 시작하지 않는다. run-start 전이라 거둘 초안이 없다.
+      if (generation !== this.generation) return;
+      if (context.orchestration && this.orchestration?.id !== context.orchestration.id) return;
+      // 이유는 실패가 이어지는 동안 한 번만 알리고, 기억을 받으면(관련 기억이 없었어도) 다음 실패 때 다시 알린다(chat-ipc saveFailureNoticed와 같은 규칙).
+      if (memory.reason && !this.anchorMemoryNoticed) this.appendSystem(`${memory.reason} 기억 없이 진행합니다.`);
+      this.anchorMemoryNoticed = Boolean(memory.reason);
+      anchorMemoryContext = memory.block;
+    }
     let prompt;
     let buildPrompt;
     try {
@@ -1899,6 +1952,7 @@ class ChatRoom extends EventEmitter {
         permissionMode,
         projectContext: this.meta.projectContext,
         memoryContext: this.meta.memoryContext,
+        anchorMemoryContext,
         rulesContext: this.meta.rulesContext,
         workflowContext: this.meta.workflowContext,
         discussion: context.discussion || null,
@@ -2756,6 +2810,7 @@ class ChatRoom extends EventEmitter {
     // 늦게 끝나는 지휘 AI·작업자 프로세스의 결과는 runUnit의 공용 문(§(4))에서 id 불일치로 폐기된다.
     this.mentionCallCounts.clear();
     this.keepCallingCeilingNoticed.clear();
+    this.anchorMemoryRecalls.clear();
     this.resolveIdleWaiters();
     if (hadApprovals) this.emit("approval-wait");
   }
