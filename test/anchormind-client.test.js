@@ -30,7 +30,9 @@ test("전역 설정이 꺼져 있으면 recall은 동기로 null을 돌려주고
 test("recall은 정한 인자만 보내고, initialize는 한 번만 하며 접속 키는 요청마다 싣는다", async (t) => {
   const fake = await startFakeAnchorMind(t, { tools: { recall: () => ({ success: true, fragments: [], _meta: { evidence: { status: "no_evidence" } } }) } });
   const { client } = createTestAnchorMind(t, fake);
-  const first = await client.recall({ projectId: "p1", text: "가".repeat(1500) });
+  // 연결이 없을 때 세 번이 한꺼번에 들어와도 initialize는 한 번이다(분당 30회 한도에 initialize도 센다).
+  const long = { projectId: "p1", text: "가".repeat(1500) };
+  const [first] = await Promise.all([client.recall(long), client.recall(long), client.recall(long)]);
   const second = await client.recall(ask);
   assert.deepEqual(fake.toolCalls("recall")[0].args, {
     text: "가".repeat(1000), workspace: ws, tokenBudget: 1500, pageSize: 10, includeLinks: false, excludeSeen: false, intent: "lookup",
@@ -60,8 +62,9 @@ test("관련 있는 같은 공간 기억만 유형과 날짜를 붙여 한 줄�
     memoryFragment(ws, { id: "e", workspace: "agora-p10" }),
     memoryFragment(ws, { id: "f", similarity: undefined }),
     memoryFragment(ws, { id: "g", similarity: 0.1 }),
-    memoryFragment(ws, { id: "h", pending_review: true, low_trust: true }),
-    memoryFragment(ws, { id: "i", state: "superseded" }),
+    memoryFragment(ws, { id: "h", pending_review: true }),
+    memoryFragment(ws, { id: "i", low_trust: true }),
+    memoryFragment(ws, { id: "j", state: "superseded" }),
   ];
   const fake = await startFakeAnchorMind(t, { tools: { recall: () => ({ success: true, fragments, _meta: { evidence: { status: evidence } } }) } });
   const { client } = createTestAnchorMind(t, fake);
@@ -286,6 +289,12 @@ test("check는 /health와 initialize만 보내고 버전 차이와 001 종료 �
   assert.equal(checked.deprecationWarning, null);
   assert.deepEqual(old.calls.map((call) => [call.path, call.method]), [["/health", null], ["/mcp", "initialize"]]);
   for (let i = 1; i < a.statuses.length; i += 1) assert.notDeepEqual(a.statuses[i], a.statuses[i - 1]);
+  // 다시 확인하면 지난 연결을 쓰지 않고 /health와 initialize부터 다시 한다(폴더·포트·키가 바뀌었을 수 있다).
+  await a.client.check();
+  assert.deepEqual(old.calls.map((call) => [call.path, call.method]), [["/health", null], ["/mcp", "initialize"], ["/health", null], ["/mcp", "initialize"]]);
+  // 전역 설정을 끄면 지난 연결에서 알게 된 버전·경고도 보이지 않는다.
+  a.settings().anchorMind.enabled = false;
+  assert.deepEqual(a.client.status(), { enabled: false, state: "off", reason: null, serverVersion: null, versionWarning: null, deprecationWarning: null });
 
   const current = await startFakeAnchorMind(t);
   const b = createTestAnchorMind(t, current, { now: () => Date.parse("2028-02-14T12:00:00Z") });
@@ -341,8 +350,8 @@ test("recall 실행 기록은 내용 없이 남고 2MiB를 넘으면 한 번 돌
 });
 
 test("유휴로 끄기 직전 정리는 마지막 정리 뒤 하루가 지났을 때만 부르고 설정은 통째로 저장한다", async (t) => {
-  const clock = fakeClock(); let down = true; const spawned = [];
-  const fake = await startFakeAnchorMind(t, { tools: { memory_consolidate: () => ({ success: true }) } });
+  const clock = fakeClock(); let down = true; let consolidated = { success: true }; const spawned = [];
+  const fake = await startFakeAnchorMind(t, { tools: { memory_consolidate: () => consolidated } });
   const { client, settings } = createTestAnchorMind(t, fake, {
     anchorMind: { startCommand: "start-anchormind", stopCommand: "stop-anchormind" },
     now: clock.now, setTimer: clock.setTimer, clearTimer: clock.clearTimer,
@@ -372,6 +381,11 @@ test("유휴로 끄기 직전 정리는 마지막 정리 뒤 하루가 지났을
   await cycle();   // 하루가 지나지 않았다
   assert.equal(fake.toolCalls("memory_consolidate").length, 1);
   clock.advance(24 * 60 * 60 * 1000);
+  const lastAt = settings().anchorMind.lastConsolidateAt;
+  consolidated = { success: false, error: "x" };
+  await cycle();   // 정리에 실패하면 마지막 정리 시각을 옮기지 않는다(다음 유휴 끄기에서 다시 부른다)
+  assert.equal(fake.toolCalls("memory_consolidate").length, 2);
+  assert.equal(settings().anchorMind.lastConsolidateAt, lastAt);
   await cycle(() => { settings().anchorMind.enabled = false; });   // 하루가 지났어도 애드온을 끈 뒤에는 정리하지 않는다
-  assert.equal(fake.toolCalls("memory_consolidate").length, 1);
+  assert.equal(fake.toolCalls("memory_consolidate").length, 2);
 });

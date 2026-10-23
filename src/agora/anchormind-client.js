@@ -37,7 +37,7 @@ const LIST_LIMIT = 100;                          // search_traces 최대
 const EVIDENCE_STATUSES = ["no_evidence", "conflicting", "partial", "supported"];   // recall 응답의 근거 상태. 서버가 준 글이라 이 넷만 기록에 남긴다
 const VERSION_CHARS = 40;                        // 서버가 알린 버전 글자 상한(상태·경고·기록에 그대로 들어간다)
 // AnchorMind는 10자 미만이면서 3어절 미만인 본문을 거부하고 4,000자를 넘는 입력은 받지 않는다. 저장할 때는 300자
-// (요약 episode는 1,000자)에서 잘라 "..."을 붙인다(amend도 같다, WriteGate.lengthStep). 사람이 쓰는 칸은 화면이 300자로 막는다.
+// (요약 episode는 1,000자)에서 잘라 "..."을 붙인다(amend도 같다). 사람이 쓰는 칸은 화면이 300자로 막는다.
 const MIN_CONTENT_CHARS = 10;
 const MIN_CONTENT_WORDS = 3;
 const MAX_INPUT_CHARS = 4000;

@@ -159,6 +159,14 @@ test("켜기가 실패하면 오류로 끝낸다: 한 번 응답하고 죽은 �
   await exit1.poll();
   assert.equal(await exit1Result, false);
   assert.deepEqual(exit1.states, ["starting", "error"]);
+  // 켜기에 실패하면 Agora는 그 서버를 잊는다: 이어서 사용자가 직접 켠 서버는 유휴로도 앱 종료로도 끄지 않는다.
+  exit1.health.up = true;
+  assert.equal(await exit1.proc.ensureStarted(SETTINGS), true);
+  exit1.clock.advance(IDLE_MS);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(exit1.log, ["spawn my-start"]);
+  exit1.proc.stopOnQuitSync();
+  assert.deepEqual(exit1.syncs, []);
 
   const broken = setup({
     spawn: () => {
@@ -218,6 +226,16 @@ test("끄는 중에 켜 달라고 하면 끄기가 끝난 뒤에 켜고, 다시 
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(restarted.spawns.length, 2);
   assert.equal(restarted.log.includes("consolidate"), false);
+
+  // 이미 켜져 있는 서버를 확인하는 것도 쓴 것으로 센다: 유휴 시계가 그 시각부터 다시 간다.
+  const checked = setup();
+  await started(checked);
+  checked.clock.advance(IDLE_MS - 60 * 1000);
+  assert.equal(await checked.proc.ensureStarted(SETTINGS), true);
+  checked.clock.advance(60 * 1000);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(checked.spawns.length, 1);
+  assert.equal(checked.log.includes("consolidate"), false);
 });
 
 test("앱 종료 때는 켜는 중인 트리만 먼저 끊고 끄기 명령을 끝날 때까지 기다리며, 두 번 불려도 한 번만 끄고, 비동기 끄기가 도는 중에도 끈다", async () => {

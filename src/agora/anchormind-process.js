@@ -22,12 +22,11 @@ function shellOptions(cwd, extra) {
 
 // healthy()는 /health가 200이면 true, 200이 아닌 답이면 null, 거부·시간 초과면 false다. beforeIdleStop()은 유휴로
 // 끄기 직전에만 기다린다. 둘 다 던지거나 reject하지 않는다. onState는 "starting" | "error" | "off"이고 "connected"는
-// 클라이언트가 initialize 뒤에 정한다. idleMs·spawn·spawnSync·now·setTimer·clearTimer는 시험만 바꾼다.
+// 클라이언트가 initialize 뒤에 정한다. spawn·spawnSync·now·setTimer·clearTimer는 시험만 바꾼다.
 function createAnchorMindProcess({
   healthy,
   beforeIdleStop,
   onState,
-  idleMs = IDLE_MS,
   spawn = defaultSpawn,
   spawnSync = defaultSpawnSync,
   now = Date.now,
@@ -48,7 +47,7 @@ function createAnchorMindProcess({
   function touch() {
     if (!owned) return;
     clearTimer(idleTimer);
-    idleTimer = setTimer(onIdle, idleMs);
+    idleTimer = setTimer(onIdle, IDLE_MS);
     idleTimer?.unref?.();
   }
 
@@ -97,8 +96,7 @@ function createAnchorMindProcess({
       return false;
     }
     owned = { cwd: folder, stop: stopCommand, child };
-    // 켜기도 쓰는 것으로 센다. 전에 켠 서버의 유휴 타이머가 켜는 중에 끄지 않고, 켜지 못했으면 30분 뒤
-    // 끄기 명령이 반쯤 켜진 DB를 정리한다.
+    // 켜기도 쓰는 것으로 센다. 전에 켠 서버의 유휴 타이머가 켜는 중에 끄지 않는다.
     touch();
     onState("starting");
     let failed = false;
@@ -109,7 +107,7 @@ function createAnchorMindProcess({
     child.once("exit", (code) => {
       failed = code !== 0;
     });
-    // 서버는 listen한 뒤에 임베딩 차원을 검사하고 어긋나면 끝난다(AnchorMind server.js).
+    // 서버는 listen한 뒤에 임베딩 차원을 검사하고 어긋나면 끝난다.
     // 첫 응답 하나만 믿지 않고 두 번 잇달아 응답해야 준비로 본다.
     const deadline = now() + START_TIMEOUT_MS;
     let streak = 0;
@@ -123,6 +121,9 @@ function createAnchorMindProcess({
       if (failed) break;
     }
     killTree(child);
+    // 켜기에 실패하면 Agora는 그 서버를 잊으므로, 이어서 사용자가 직접 켠 서버는 끄지 않는다(반쯤 켜진 서버가
+    // 남을 수 있는 것은 위 ponytail의 비정상 종료와 같은 한계).
+    owned = null;
     onState("error");
     return false;
   }
@@ -137,7 +138,7 @@ function createAnchorMindProcess({
   }
 
   // will-quit·session-end 전용. 비동기로 띄운 끄기는 앱과 같은 자식 프로세스 묶음이라 앱이 먼저 끝나면
-  // 함께 죽는다(커밋 42325a2). 켜기 트리가 살아 있으면 먼저 끊어야 끄기 뒤에 서버가 떠 주인 없이 남지 않는다.
+  // 함께 죽는다. 켜기 트리가 살아 있으면 먼저 끊어야 끄기 뒤에 서버가 떠 주인 없이 남지 않는다.
   function stopOnQuitSync() {
     if (!owned) return;
     if (owned.child.exitCode == null) {
