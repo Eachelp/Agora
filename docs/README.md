@@ -50,6 +50,8 @@
 | [개정 기록 2026-10-11 바로 답하기](design/AGORA_REVISION_2026-10-11_REPLY_NOW.md) | 턴 스케줄러(빠른 줄·일반 줄·담당자 게이트) 설계, F24·F27, 불변식·시나리오·구현 결과 |
 | [개정 기록 2026-10-11 오케스트레이터](design/AGORA_REVISION_2026-10-11_ORCHESTRATOR.md) | 지휘 AI·작업자 모드, "AI끼리 계속 부르기" 설계·불변식·시나리오와 구현 결과(현재 기능) |
 | [개정 기록 2026-10-20 오케스트레이터 단계 실행](design/AGORA_REVISION_2026-10-20_ORCHESTRATOR_STAGES.md) | `STAGE`·`DONE` 제어 줄과 단계 실행, 자동 재촉, 지휘 모델·읽기 전용, 보고 보존, 실행별 토큰 기록, 불변식 18~24, 실제 환경 확인 목록(현재 기능, 앞 문서의 일부 절을 바꿈) |
+| [AnchorMind 기억 애드온 설계안](design/AGORA_PROPOSAL_2026-10-23_ANCHORMIND_ADDON.md) | AnchorMind 연결 방식, 기억 읽기·쓰기·보기, 켜고 끄기, 실패 처리, 알려진 제약 |
+| [AnchorMind 기억 애드온 실행 계획](design/AGORA_PLAN_2026-10-23_ANCHORMIND_ADDON.md) | 결정 현황, 단계별 할 일과 진행 표, 시험 계획, 임베딩 비교 근거, AnchorMind 운영 절차 |
 | [남은 버그 수정 A](design/AGORA_REVISION_2026-10-11_REMAINING_BUGS_A.md) | (작업 기록) 8a 단계 — 계정·로그인·프록시·설정·저장·첨부 묶음별 수정 내역 |
 | [남은 버그 정리 B](design/AGORA_REVISION_2026-10-11_REMAINING_BUGS_B.md) | (작업 기록) 8b 단계 — 채팅 화면·IPC·저장소·토론 프롬프트·실행기 묶음별 수정 내역 |
 | [D-0 결정 기록](design/AGORA_STAGE_D0_WORKSPACE_LEASE_DECISIONS.md) | (제거됨·역사 기록) 워크스페이스 변경 소유권의 결정·검수 이력. 2026-10-11 stage 4에서 lease 제거 — 개정 기록 §4a |
