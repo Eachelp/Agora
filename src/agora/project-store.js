@@ -253,6 +253,8 @@ class ProjectStore {
     // 자동 기록 담당: patch에 없으면 건드리지 않고(옛 역할 폴백 유지), 유효한 값만 저장한다("" = 끔).
     const recordAgent = sanitizeRecordAgent(patch.recordAgent);
     if (recordAgent !== undefined) defaults.recordAgent = recordAgent;
+    // AnchorMind 기억 사용(기본 꺼짐): patch에 있을 때만 바꾸고, 칸이 없으면 꺼진 것으로 읽는다(=== true).
+    if (typeof patch.anchorMindEnabled === "boolean") defaults.anchorMindEnabled = patch.anchorMindEnabled;
     // 옛 defaultRoles·autoRevisions를 지우지 않도록 디스크 원본 위에 합친다(호출자에게는 걸러서 돌려준다).
     const next = {
       ...(readJsonSafe(this.projectPath(id)) || current),

@@ -301,6 +301,8 @@ function attachmentContextLines({ attachments, deliveries, attachmentsDir }) {
 function createChatFeature(options) {
   const { electron, onWindowReady } = options;
   const { ipcMain, dialog, BrowserWindow, shell } = electron;
+  // AnchorMind 기억 애드온의 입구(main.js의 createAnchorMind). 없으면(기존 시험 전부) 기능이 통째로 꺼진다.
+  const anchorMind = options.anchorMind;
 
   // 출력 hard limit은 사용자 설정입니다. 설정이 없거나 0 이하이면 상한 없이 실행합니다.
   // getHardOutputLimitBytes를 주입하지 않으면 상한은 항상 비활성입니다.
@@ -707,8 +709,8 @@ function createChatFeature(options) {
     return store.createSession(sessionDefaultsFromProject(project));
   }
 
-  async function chooseWorkspace(title) {
-    const result = await dialog.showOpenDialog(chatWindow || undefined, {
+  async function chooseWorkspace(title, parent = chatWindow) {
+    const result = await dialog.showOpenDialog(parent || undefined, {
       properties: ["openDirectory"],
       title,
     });
@@ -1114,6 +1116,10 @@ function roomMeta(meta) {
       });
       if (entry) {
         setPendingDiscussionRecord(sessionId, null);
+        // 기록관 요약은 AnchorMind에도 남긴다. 같은 토론을 다시 기록해도 한 번만 저장되게 토론마다 고정 키를 쓴다.
+        rememberInBackground(project.id, {
+          type: "episode", content: entry.content, idempotencyKey: `agora-e-${discussionId}`,
+        }, sessionId);
         return { ok: true, entry };
       }
     }
@@ -1147,6 +1153,8 @@ function roomMeta(meta) {
         needsShellOf: (agent) => ensureCapabilityService().getRecord(agent.id)?.needsShell,
       }),
       initialQuestions: store.readUserQuestions(sessionId),
+      // 입구가 없으면 옵션 자체를 넘기지 않는다(기존 시험의 방은 그대로).
+      ...(anchorMind ? { recallMemory: (text) => recallAnchorMemory(sessionId, text) } : {}),
     });
 
     // 방 이벤트 리스너에서 난 예외는 emit한 방 코드(턴 시작·승인 카드·중지)로 올라가 응답을
@@ -1302,6 +1310,8 @@ function roomMeta(meta) {
     const room = getRoom(sessionId);
     const meta = store?.readMeta(sessionId);
     if (!room || !meta) return null;
+    // 기억을 쓰는 방을 열면 AnchorMind를 미리 깨운다. 처음 켜는 데 7~26초가 걸려 차례는 기다리지 않는다.
+    if (anchorMindProject(meta.projectId)) anchorMind.ensureStarted();
     return {
       meta: publicMeta(meta),
       agents: room.publicAgents(),
@@ -1335,6 +1345,52 @@ function roomMeta(meta) {
       const meta = store.readMeta(sessionId);
       if (projectIdForMeta(meta) === projectId) refreshRoomAgents(sessionId);
     }
+  }
+
+  // 기억을 쓰는 프로젝트인가. 방 정보(roomMeta)에 담지 않고 쓸 때마다 읽는다: 설정 창의 켜기·끄기는 방을 다시 만들지 않는다.
+  function anchorMindProject(projectId) {
+    if (!anchorMind?.status().enabled || store?.readOnly) return null;
+    const project = ensureProjectStore()?.getProject(projectId);
+    return project?.anchorMindEnabled === true && !project.readOnly ? project : null;
+  }
+
+  function requireAnchorMindProject(projectId) {
+    const project = requireProject(projectId);
+    if (!anchorMindProject(project.id)) {
+      throw new Error("이 프로젝트에서는 AnchorMind 기억을 쓸 수 없습니다. 설정의 기억 애드온과 프로젝트 설정을 확인해 주세요.");
+    }
+    return project;
+  }
+
+  // 방이 사용자 메시지마다 한 번 부른다(같은 메시지로 이어진 차례는 방이 결과를 다시 쓴다). 꺼져 있으면 방 정보를
+  // 읽기 전에 동기로 null — 방은 Promise를 받았을 때만 기다리므로 차례 순서가 지금과 같다. 꺼진 서버는 입구가 켠다.
+  function recallAnchorMemory(sessionId, text) {
+    if (!anchorMind.status().enabled || !String(text || "").trim()) return null;
+    const project = anchorMindProject(store.readMeta(sessionId)?.projectId);
+    return project ? anchorMind.recall({ projectId: project.id, text }) : null;
+  }
+
+  // 기록관 요약·확정된 결정을 AnchorMind에도 남긴다. 기다리지 않고, 실패해도 다시 보내지 않는다(같은 기억이 두 번
+  // 저장되지 않게). 안내는 방마다 한 번만, 그 방에서 저장이 다시 성공하면 또 알린다.
+  function rememberInBackground(projectId, memory, sessionId) {
+    if (!anchorMindProject(projectId)) return;
+    const roomId = sessionId || getActiveSessionId(projectId);
+    const noticeKey = `anchormind:${roomId}`;
+    anchorMind.remember(projectId, memory).then(() => saveFailureNoticed.delete(noticeKey), (error) => {
+      if (saveFailureNoticed.has(noticeKey)) return;
+      const what = memory.type === "episode" ? "토론 요약" : "확정한 결정";
+      const delivered = showSystemNotice(`AnchorMind에 ${what}을 저장하지 못했습니다. 자동으로 다시 보내지 않습니다. (${error?.message || error})`, roomId);
+      if (delivered) saveFailureNoticed.add(noticeKey);
+    });
+  }
+
+  // 사람이 확정한 결정만 남긴다(후보를 남기면 거부된 결정이 기억에 남는다). 결정마다 고정 키라 다시 보내도 한 번만 저장된다.
+  function rememberDecision(projectId, decision) {
+    rememberInBackground(projectId, {
+      type: "decision",
+      content: decision.title ? `${decision.title}: ${decision.content}` : decision.content,
+      idempotencyKey: `agora-d-${decision.id}`,
+    });
   }
 
   function saveRecorderOutput(projectId, content, title, options = {}) {
@@ -1578,6 +1634,13 @@ function roomMeta(meta) {
           next.defaultPermissionMode = patch.defaultPermissionMode;
         }
         if (typeof patch?.recordAgent === "string") next.recordAgent = patch.recordAgent;
+        if (typeof patch?.anchorMindEnabled === "boolean") {
+          // 미분류는 서로 관계없는 대화가 섞여 AnchorMind 기억 대상에서 뺀다. 읽기 전용은 requireProject가 막는다.
+          if (patch.anchorMindEnabled && projectId === UNCATEGORIZED_PROJECT_ID) {
+            throw new Error("기본 프로젝트(분류되지 않음)에서는 AnchorMind 기억을 켤 수 없습니다.");
+          }
+          next.anchorMindEnabled = patch.anchorMindEnabled;
+        }
         if (patch?.defaultAgents && typeof patch.defaultAgents === "object" && !Array.isArray(patch.defaultAgents)) {
           next.defaultAgents = patch.defaultAgents;
         }
@@ -1669,6 +1732,50 @@ function roomMeta(meta) {
       })
     );
 
+    // AnchorMind 기억 애드온. 기억을 쓰는 프로젝트에서만 받고, 값 검사와 꺼진 서버 켜기는 입구가 한다. 실패는 다시 보내지 않는다.
+    ipcMain.handle(
+      "chat:anchormind:status",
+      wrap(async () => ({ status: anchorMind?.status() ?? { enabled: false, state: "off" } }))
+    );
+
+    ipcMain.handle(
+      "chat:anchormind:remember",
+      wrap(async ({ sessionId, messageId, type, content }) => {
+        requireWritableSession(sessionId);
+        const project = requireAnchorMindProject(store.readMeta(sessionId)?.projectId);
+        const message = getRoom(sessionId).messages.find((entry) => entry.id === messageId);
+        if (!message || message.authorType === "system" || message.error) throw new Error("기억할 메시지를 찾을 수 없습니다.");
+        // 기록관 요약(episode)은 기록할 때만 만들어진다. 화면에서 온 요청으로는 만들 수 없다.
+        if (type === "episode") throw new Error("기록관 요약은 직접 저장할 수 없습니다.");
+        await anchorMind.remember(project.id, { type, content });
+        return {};
+      })
+    );
+
+    ipcMain.handle(
+      "chat:anchormind:list",
+      wrap(async ({ projectId }) => ({ items: await anchorMind.list(requireAnchorMindProject(projectId).id) }))
+    );
+
+    ipcMain.handle(
+      "chat:anchormind:forget",
+      wrap(async ({ projectId, id }) => {
+        await anchorMind.forget(requireAnchorMindProject(projectId).id, id);
+        return {};
+      })
+    );
+
+    ipcMain.handle(
+      "chat:anchormind:amend",
+      wrap(async ({ projectId, id, type, content }) => {
+        const project = requireAnchorMindProject(projectId);
+        // 기록관 요약(episode)은 AnchorMind의 amend 유형에 없고, 서버는 기본 설정(warn)에서 그 유형 검사를 강제하지 않는다. 화면도 요약에는 고치기를 두지 않는다.
+        if (type === "episode") throw new Error("기록관 요약은 직접 고칠 수 없습니다.");
+        await anchorMind.amend(project.id, id, { type, content });
+        return {};
+      })
+    );
+
     ipcMain.handle(
       "chat:projects:delete",
       wrap(async ({ projectId }) => {
@@ -1727,6 +1834,8 @@ function roomMeta(meta) {
           chatId: sourceChatId,
           messageIds,
         });
+        // 사람이 만든 결정은 확정으로 저장된다. 같은 내용의 기록관 후보가 이미 있으면 그 후보가 돌아오므로 상태를 본다.
+        if (decision.status === "confirmed") rememberDecision(project.id, decision);
         const payload = sessionsPayload();
         broadcast("chat:sessions-changed", payload);
         broadcast("chat:workflow-changed", { projectId: project.id, workflow: workflowForProject(project.id) });
@@ -1795,6 +1904,8 @@ function roomMeta(meta) {
             if (current.status === "rejected") workflow.updateDecision(id, { status: "proposed" });
           } else if (current.status === "proposed") {
             workflow.updateDecision(id, { status: action === "reject" ? "rejected" : "confirmed" });
+            // 사람이 확정한 결정만 AnchorMind에 남긴다(거부한 후보는 남기지 않는다).
+            if (action === "approve") rememberDecision(project.id, current);
           }
         }
         refreshMemoryForProject(project.id);
@@ -2542,6 +2653,7 @@ function roomMeta(meta) {
     showSystemNotice,
     notifyProviderAccountChanged,
     providerVersion,
+    chooseWorkspace,
   };
 }
 

@@ -7,6 +7,7 @@ const {
   fetchAntigravityUsage,
 } = require("./provider-usage");
 const { createAccountSwitching } = require("./agora/account-switching");
+const { createAnchorMind } = require("./agora/anchormind-client");
 const {
   normalizeFontFamily,
   normalizeFontSize,
@@ -17,6 +18,7 @@ const { createChatFeature } = require("./chat/chat-ipc");
 const { getInstalledFonts } = require("./installed-fonts");
 const { readSettingsFile, writeSettingsFile } = require("./settings-file");
 const { registerSessionEndTeardown } = require("./session-end");
+const { defaultAgoraHome } = require("./app-paths");
 const {
   isLinuxAutoLaunchEnabled,
   setLinuxAutoLaunchEnabled,
@@ -111,6 +113,13 @@ let isQuitting = false;
 // prepareAgent 콜백은 나중(실제 에이전트 실행 시점)에만 호출되므로, accountSwitching이
 // 뒤에서 할당돼도 안전합니다. (순환 초기화: chatFeature ↔ accountSwitching)
 let accountSwitching = null;
+// AnchorMind 기억 애드온. onStatus는 만드는 동안 불리지 않으므로 chatFeature보다 먼저 만들어도 된다(위 accountSwitching과 같은 순환 초기화).
+const anchorMind = createAnchorMind({
+  getSettings: readSettings,
+  saveSettings: writeSettings,
+  storeRoot: defaultAgoraHome(),
+  onStatus: sendAnchorMindStatus,
+});
 // 채팅 기능은 창·세션·IPC·프로세스 실행을 chat/chat-ipc.js가 조립합니다.
 const chatFeature = createChatFeature({
   electron: { ipcMain, dialog, BrowserWindow, shell },
@@ -123,6 +132,7 @@ const chatFeature = createChatFeature({
     const megabytes = Number(readSettings().agentOutputHardLimitMB);
     return Number.isFinite(megabytes) && megabytes > 0 ? Math.floor(megabytes * 1024 * 1024) : null;
   },
+  anchorMind,
 });
 
 // 계정 전환·로그인 스크립트·Codex 로컬 프록시 제어는 agora/account-switching.js가
@@ -318,10 +328,25 @@ function registerIpcHandlers() {
     if (typeof next.autoStart === "boolean" && next.autoStart !== isAutoLaunchEnabled()) {
       toggleAutoLaunch();
     }
+    // AnchorMind 기억 애드온: 화면의 네 칸만, 형식이 맞을 때만(폴더는 빈 값이거나 절대 경로) 받아 저장된 값 위에
+    // 합친다. writeSettings는 얕게 합치므로 보낸 칸만 쓰면 lastConsolidateAt 같은 나머지가 지워진다.
+    const form = next.anchorMind;
+    if (form && typeof form === "object") {
+      const changed = {};
+      if (typeof form.enabled === "boolean") changed.enabled = form.enabled;
+      for (const key of ["folder", "startCommand", "stopCommand"]) {
+        if (typeof form[key] !== "string") continue;
+        const value = form[key].trim();
+        if (key !== "folder" || !value || path.isAbsolute(value)) changed[key] = value;
+      }
+      patch.anchorMind = { ...readSettings().anchorMind, ...changed };
+    }
 
     writeSettings(patch);
     sendAppearanceToWindows();
     refreshTrayMenu();
+    // 켜기·끄기가 바뀌었을 수 있으니 채팅 창의 기억 표시를 맞춘다(입구는 설정 저장을 모른다).
+    if (patch.anchorMind) sendAnchorMindStatus(anchorMind.status());
     return { ok: true, data: await getSettingsData() };
   });
   ipcMain.handle("settings:account", async (_event, input) => {
@@ -399,6 +424,18 @@ function registerIpcHandlers() {
     }
   });
 
+  // AnchorMind 기억 애드온: 연결 확인(/health와 initialize만, 임베딩 호출 없음)과 폴더 고르기. 고른 폴더는 화면 칸에만 넣고 저장은 적용이 한다.
+  ipcMain.handle("settings:anchormind", async (_event, input) => {
+    try {
+      if (input?.action === "check") return { ok: true, status: await anchorMind.check() };
+      if (input?.action !== "choose-folder") return { ok: false, error: "알 수 없는 AnchorMind 작업입니다." };
+      const folder = await chatFeature.chooseWorkspace("AnchorMind 폴더 선택", settingsWindow);
+      return folder ? { ok: true, folder } : { ok: true, canceled: true };
+    } catch (error) {
+      return { ok: false, error: error.message || String(error) };
+    }
+  });
+
   ipcMain.on("settings:minimize", () => {
     if (settingsWindow && !settingsWindow.isDestroyed()) {
       settingsWindow.minimize();
@@ -461,12 +498,17 @@ app.whenReady().then(() => {
 
 // Windows 종료·재시작·로그오프에서는 before-quit이 오지 않는다. 같은 정리를 session-end에도 건다.
 registerSessionEndTeardown(app, teardownCodexProxyOnQuit);
+// Agora가 켠 AnchorMind도 끈다. 창이 없는 트레이 상태에서는 session-end가 오지 않고, 그때는 Windows가 함께 끝낸다.
+registerSessionEndTeardown(app, () => anchorMind.stopOnQuitSync());
 
 app.on("before-quit", () => {
   isQuitting = true;
   teardownCodexProxyOnQuit();
   chatFeature.shutdown();
 });
+
+// Agora가 켠 AnchorMind는 창이 다 닫힌 뒤 동기로 끈다. 비동기 끄기는 앱과 함께 죽는다.
+app.on("will-quit", () => anchorMind.stopOnQuitSync());
 
 app.on("window-all-closed", () => {
   // 채팅 창만 닫혀도 트레이 프로세스는 남습니다. "완전 종료"만 프로세스를 끝냅니다.
@@ -495,6 +537,10 @@ function sendAppearanceToWindows() {
   if (chatWindow) {
     chatWindow.webContents.send("appearance:update", payload);
   }
+}
+
+function sendAnchorMindStatus(status) {
+  chatFeature.getWindow()?.webContents.send("chat:anchormind-status", status);
 }
 
 function codexAccountRows() {
@@ -652,6 +698,7 @@ async function getUsageData({ forceUsage = false } = {}) {
 
 async function getSettingsData({ forceUsage = false } = {}) {
   const settings = readSettings();
+  const { enabled, folder, startCommand, stopCommand } = settings.anchorMind || {};
   const { codexUsage, agy, claude } = await loadProviderSnapshots(forceUsage);
   const codexAccounts = codexAccountRows();
 
@@ -672,6 +719,7 @@ async function getSettingsData({ forceUsage = false } = {}) {
       { id: "agy", label: "AGY", accounts: agy.accounts },
     ],
     usage: [claude.usage, codexUsage, agy.usage],
+    anchorMind: { enabled, folder, startCommand, stopCommand, status: anchorMind.status() },
   };
 }
 

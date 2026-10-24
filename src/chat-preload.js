@@ -19,6 +19,11 @@ const INVOKE = Object.freeze({
   MEMORY_APPEND: "chat:memory:append",
   RULES_READ: "chat:memory:rules:read",
   RULES_SAVE: "chat:memory:rules:save",
+  ANCHORMIND_STATUS: "chat:anchormind:status",
+  ANCHORMIND_REMEMBER: "chat:anchormind:remember",
+  ANCHORMIND_LIST: "chat:anchormind:list",
+  ANCHORMIND_FORGET: "chat:anchormind:forget",
+  ANCHORMIND_AMEND: "chat:anchormind:amend",
   DECISIONS_CREATE: "chat:decisions:create",
   DECISIONS_UPDATE: "chat:decisions:update",
   DECISIONS_DELETE: "chat:decisions:delete",
@@ -88,6 +93,14 @@ contextBridge.exposeInMainWorld("chatApi", {
     ipcRenderer.invoke(INVOKE.MEMORY_APPEND, { projectId, content, title }),
   rulesRead: (projectId) => ipcRenderer.invoke(INVOKE.RULES_READ, { projectId }),
   rulesSave: (projectId, content) => ipcRenderer.invoke(INVOKE.RULES_SAVE, { projectId, content }),
+  // AnchorMind 기억 애드온. 지우기·고치기는 그 프로젝트 목록에서 받은 id만 넘긴다.
+  anchorMindStatus: () => ipcRenderer.invoke(INVOKE.ANCHORMIND_STATUS),
+  anchorMindRemember: (sessionId, messageId, type, content) =>
+    ipcRenderer.invoke(INVOKE.ANCHORMIND_REMEMBER, { sessionId, messageId, type, content }),
+  anchorMindList: (projectId) => ipcRenderer.invoke(INVOKE.ANCHORMIND_LIST, { projectId }),
+  anchorMindForget: (projectId, id) => ipcRenderer.invoke(INVOKE.ANCHORMIND_FORGET, { projectId, id }),
+  anchorMindAmend: (projectId, id, type, content) =>
+    ipcRenderer.invoke(INVOKE.ANCHORMIND_AMEND, { projectId, id, type, content }),
 
   decisionsCreate: (input) => ipcRenderer.invoke(INVOKE.DECISIONS_CREATE, input),
   decisionsUpdate: (projectId, decisionId, patch) =>
@@ -190,6 +203,7 @@ contextBridge.exposeInMainWorld("chatApi", {
   onSystemNotice: (handler) => subscribe("chat:system-notice", handler),
   onOrchestration: (handler) => subscribe("chat:orchestration", handler),
   onMeta: (handler) => subscribe("chat:meta", handler),
+  onAnchorMindStatus: (handler) => subscribe("chat:anchormind-status", handler),
   onAppearance: (handler) => subscribe("appearance:update", handler),
   onMaximizedState: (handler) => subscribe("chat:maximized-state", handler),
 
