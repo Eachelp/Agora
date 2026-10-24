@@ -216,3 +216,176 @@ test("기억 없이 진행한 이유는 실패가 이어지는 동안 방에 한
   assert.equal(calls.length, 4, "기억이 없어도 차례는 모두 돈다");
   assert.deepEqual(systems, ["이유 1 기억 없이 진행합니다.", "이유 3 기억 없이 진행합니다."]);
 });
+
+// AI가 골라 저장하는 기억(REMEMBER 줄). 기억을 쓰는 차례(recall과 같은 문, 작업자는 빼고)에는 프롬프트에 안내가 붙고, 방이 답 끝의
+// REMEMBER 줄을 읽어 화면·기록에서 뺀 뒤 rememberMemory(items, { messageId })로 넘긴다. 저장(IPC·입구)은 anchormind-ipc 시험이 본다.
+// 안내 문구 전체는 프롬프트 시험이 고정하고, 여기서는 첫 줄의 형식 부분으로 안내가 붙었는지만 본다.
+const GUIDE = "`REMEMBER: <유형> | <내용>`";
+const agentTexts = (room) => room.messages.filter((message) => message.authorType === "agent").map((message) => message.text);
+
+// 기억을 쓰는 방: recall은 바로 기억을 주고, 저장 옵션은 받은 것을 쌓는다.
+function memoryRoom(options = {}) {
+  const saved = [];
+  const made = makeRoom({ recallMemory: () => Promise.resolve(FOUND), rememberMemory: (items, meta) => saved.push([items, meta]), ...options });
+  return { ...made, saved };
+}
+
+test("기억을 쓰는 차례는 답 끝 REMEMBER 줄을 화면·기록에서 빼고 그 메시지 id와 함께 넘긴다: 이어 발언과 그 답의 @멘션 호출 차례마다", async () => {
+  const { room, calls, saved } = memoryRoom();
+  room.sendUserMessage("@claude @codex 배포 규칙을 정하자");
+  await settle();
+  calls[0].finish("승인 뒤에만 배포합니다. @agy 확인해 주세요.\nREMEMBER: 결정 | 배포는 별도 승인을 받은 뒤에만 한다.\nREMEMBER: 선호 | 답은 한국어 합니다체로 쓴다.\n");
+  await settle();
+  calls[1].finish("동의합니다.\n\nremember: 절차 | 배포 전에 npm test 전체를 돌린다.");
+  await settle();
+  calls[2].finish("확인했습니다.");
+  await settle();
+  assert.deepEqual(ids(calls), ["claude", "codex", "agy"], "agy는 claude 답의 @멘션 호출이다");
+  for (const call of calls) assert.ok(call.prompt.includes(GUIDE), call.agentId);
+  const answers = room.messages.filter((message) => message.authorType === "agent");
+  assert.deepEqual(answers.map((message) => message.text), ["승인 뒤에만 배포합니다. @agy 확인해 주세요.", "동의합니다.", "확인했습니다."]);
+  assert.deepEqual(saved, [
+    [[{ type: "decision", content: "배포는 별도 승인을 받은 뒤에만 한다." }, { type: "preference", content: "답은 한국어 합니다체로 쓴다." }], { messageId: answers[0].id }],
+    [[{ type: "procedure", content: "배포 전에 npm test 전체를 돌린다." }], { messageId: answers[1].id }],
+  ]);
+});
+
+test("REMEMBER 줄 읽기: 답 맨 끝의 줄만 읽고(사이의 빈 줄과 CRLF는 괜찮다), 본문 앞·코드펜스·인라인 백틱 안·형식이 틀린 줄은 그대로 두며, 같은 내용은 한 번, 앞의 두 줄만 넘기고 나머지도 지운다. 줄만 쓴 답은 빈 말풍선 대신 자리 글이 된다", async () => {
+  const cases = [
+    // [답, 남는 글(null이면 답 그대로), 넘기는 항목]
+    ["본문입니다.\nREMEMBER: 사실 | 빈 줄을 사이에 두어도 끝의 줄로 읽는다.\n\nREMEMBER: 에러 | 포트가 막히면 다른 프로그램을 먼저 끈다.\n", "본문입니다.",
+      [{ type: "fact", content: "빈 줄을 사이에 두어도 끝의 줄로 읽는다." }, { type: "error", content: "포트가 막히면 다른 프로그램을 먼저 끈다." }]],
+    ["본문입니다.\r\nREMEMBER: 사실 | CRLF로 끝나는 줄도 읽는다.\r\nREMEMBER: 에러 | 줄바꿈이 CRLF여도 둘 다 읽는다.\r\n", "본문입니다.",
+      [{ type: "fact", content: "CRLF로 끝나는 줄도 읽는다." }, { type: "error", content: "줄바꿈이 CRLF여도 둘 다 읽는다." }]],
+    ["첫 줄입니다.\r\n둘째 줄입니다.", null, []],   // 읽은 줄이 없으면 글은 한 글자도 바뀌지 않는다(CRLF 그대로)
+    ["REMEMBER: 사실 | 본문 앞에 쓴 줄은 끝의 줄이 아니다.\n본문입니다.", null, []],
+    ["형식은 이렇습니다.\n```\nREMEMBER: 사실 | 코드펜스 안의 예시는 기억이 아니다.\n```", null, []],
+    ["예시입니다.\n```\nREMEMBER: 사실 | 닫히지 않은 코드펜스 안의 줄도 기억이 아니다.", null, []],
+    ["형식은 이렇습니다.\n`REMEMBER: 사실 | 인라인 백틱 안의 줄은 기억이 아니다.`", null, []],
+    ["본문\nREMEMBER: 결정 | 형식이 틀린 줄 위의 줄도 끝의 줄이 아니다.\nREMEMBER: 메모 | 모르는 유형은 형식이 틀린 줄이다.", null, []],
+    ["본문\nREMEMBER: 사실 | 같은 내용은 한 번만 넘긴다.\nREMEMBER: 결정 | 같은 내용은 한 번만 넘긴다.\nREMEMBER: 절차 | 둘째 줄까지만 넘긴다.\nREMEMBER: 선호 | 셋째 줄은 지우기만 한다.", "본문",
+      [{ type: "fact", content: "같은 내용은 한 번만 넘긴다." }, { type: "procedure", content: "둘째 줄까지만 넘긴다." }]],
+    ["빌드 방법입니다.\nREMEMBER: 절차 | 빌드는 `npm run build`로 하고 끝나면 @agy에게 알린다.", "빌드 방법입니다.",
+      [{ type: "procedure", content: "빌드는 `npm run build`로 하고 끝나면 @agy에게 알린다." }]],
+    ["REMEMBER: 결정 | 배포는 별도 승인을 받은 뒤에만 한다.", "(기억에 남깁니다)", [{ type: "decision", content: "배포는 별도 승인을 받은 뒤에만 한다." }]],
+  ];
+  const { room, calls, saved } = memoryRoom();
+  for (const [index, [answer, text, items]] of cases.entries()) {
+    const before = saved.length;
+    room.sendUserMessage(`@claude 질문 ${index}`);
+    await settle();
+    calls.at(-1).finish(answer);
+    await settle();
+    assert.equal(calls.length, index + 1, `경우 ${index}: REMEMBER 줄 안의 @이름은 호출이 아니다`);
+    const message = room.messages.findLast((entry) => entry.authorType === "agent");
+    assert.equal(message.text, text ?? answer, `경우 ${index}`);
+    assert.deepEqual(saved.slice(before), items.length > 0 ? [[items, { messageId: message.id }]] : [], `경우 ${index}`);
+  }
+});
+
+test("일반 차례: 끝 ASK_USER 줄 뒤에 쓴 REMEMBER 줄은 떼고 질문은 그대로 읽는다. 질문 줄 앞에 쓴 REMEMBER 줄은 끝의 줄이 아니라 남는다", async () => {
+  const { room, calls, saved } = memoryRoom();
+  room.sendUserMessage("@claude 배포 방식을 정하자");
+  await settle();
+  calls[0].finish("어느 쪽으로 할까요?\nASK_USER: 배포 방식을 고를까요?\nOPTION: 수동\nOPTION: 자동\nREMEMBER: 사실 | 배포 방식은 아직 정하지 않았다.");
+  await settle();
+  assert.equal(agentTexts(room).at(-1), "어느 쪽으로 할까요?");
+  assert.deepEqual(room.awaitingUsers.get("claude")?.options, ["수동", "자동"]);
+  assert.deepEqual(saved.map(([items]) => items), [[{ type: "fact", content: "배포 방식은 아직 정하지 않았다." }]]);
+  room.sendUserMessage("@claude 수동");
+  await settle();
+  calls[1].finish("본문\nREMEMBER: 사실 | 질문 줄 앞에 쓴 줄은 끝의 줄이 아니다.\nASK_USER: 진행할까요?");
+  await settle();
+  assert.equal(agentTexts(room).at(-1), "본문\nREMEMBER: 사실 | 질문 줄 앞에 쓴 줄은 끝의 줄이 아니다.");
+  assert.equal(room.awaitingUsers.get("claude")?.question, "진행할까요?");
+  assert.equal(saved.length, 1);
+});
+
+test("지휘 AI는 STAGE·DONE 줄의 앞에 쓰든 뒤에 쓰든 REMEMBER 줄을 읽고 계획·완료는 그대로 따르며(DONE과 REMEMBER뿐인 답은 \"(완료)\"), 작업자 차례는 안내도 읽기도 없다", async () => {
+  const { room, calls, saved } = memoryRoom({ meta: LEAD });
+  room.sendUserMessage("claude에게 맡겨줘");
+  await settle();
+  calls[0].finish("나눠 맡깁니다.\nREMEMBER: 결정 | 검수는 codex가 맡기로 했다.\nSTAGE: @codex");
+  await settle();
+  calls[1].finish("검수했습니다.\nREMEMBER: 사실 | 작업자의 줄은 기억으로 읽지 않는다.");
+  await settle();
+  calls[2].finish("DONE\nREMEMBER: 절차 | 배포 전에는 codex 검수를 거친다.");
+  await settle();
+  assert.deepEqual(ids(calls), ["claude", "codex", "claude"]);
+  assert.equal(room.orchestration, null, "DONE을 읽어 오케스트레이션이 끝났다");
+  assert.deepEqual(agentTexts(room), ["나눠 맡깁니다.", "검수했습니다.\nREMEMBER: 사실 | 작업자의 줄은 기억으로 읽지 않는다.", "(완료)"]);
+  assert.deepEqual(saved.map(([items]) => items), [
+    [{ type: "decision", content: "검수는 codex가 맡기로 했다." }],
+    [{ type: "procedure", content: "배포 전에는 codex 검수를 거친다." }],
+  ]);
+  assert.ok(calls[0].prompt.includes(GUIDE) && calls[2].prompt.includes(GUIDE));
+  assert.ok(!calls[1].prompt.includes(GUIDE), "작업자 프롬프트에는 안내가 없다");
+});
+
+test("기억을 쓰지 않는 차례는 안내도 읽기도 없이 지금과 같고(S9 시작 순간, REMEMBER 줄도 그대로), 실패하거나 중지한 차례는 아무것도 넘기지 않는다", async () => {
+  const answer = "본문\nREMEMBER: 결정 | 기억을 쓰지 않는 차례의 줄은 그대로 남는다.";
+  let remembered = 0;
+  // recall이 null(애드온 꺼짐·대상 아닌 프로젝트)이면 저장 옵션이 있어도 기다리지 않고 같은 순간에 시작한다.
+  const off = makeRoom({ recallMemory: () => null, rememberMemory: () => { remembered += 1; } });
+  off.room.sendUserMessage("@claude 질문");
+  assert.deepEqual(ids(off.calls), ["claude"]);
+  // 저장 옵션 없이 recall만 넘긴 방(기억 고르기를 더하기 전의 모양)은 기억 블록만 받는다.
+  const recallOnly = makeRoom({ recallMemory: () => Promise.resolve(FOUND) });
+  recallOnly.room.sendUserMessage("@claude 질문");
+  await settle();
+  for (const { room, calls } of [off, recallOnly]) {
+    assert.ok(!calls[0].prompt.includes(GUIDE));
+    calls[0].finish(answer);
+    await settle();
+    assert.deepEqual(agentTexts(room), [answer]);
+  }
+  assert.ok(recallOnly.calls[0].prompt.includes(BLOCK));
+  assert.equal(remembered, 0);
+
+  const { room, calls, saved } = memoryRoom();
+  room.sendUserMessage("@claude 하나");
+  await settle();
+  calls[0].fail("실행 오류", { partialText: answer });
+  await settle();
+  room.sendUserMessage("@claude 둘");
+  await settle();
+  room.stopAll();
+  await settle();
+  assert.equal(calls.length, 2);
+  assert.deepEqual(saved, []);
+  assert.deepEqual(agentTexts(room), ["실행 오류"]);
+});
+
+test("실시간 초안: 기억을 쓰는 차례는 끝의 REMEMBER 줄이 어떻게 쪼개져 와도 흘려 보내지 않고(지휘 차례는 DONE 줄과 함께), 쓰지 않는 차례는 지금처럼 그대로 흐른다", async () => {
+  // 일반 차례에서 DONE은 산문이라 최종 말풍선에 남고 초안에도 보인다. 숨기는 것은 REMEMBER 줄뿐이다.
+  const answer = "배포 순서입니다.\n1. 시험\n2. 승인\nDONE\nREMEMBER: 절차 | 배포는 시험과 승인을 거친 뒤에 한다.\n";
+  const leadAnswer = "정리했습니다.\nDONE\nREMEMBER: 결정 | 배포는 승인 뒤에만 한다.\n";
+  // 러너가 답을 size 글자씩 흘려 보낸 뒤 끝낸다. 방이 낸 초안(run-event delta)과 최종 말풍선을 돌려준다.
+  const stream = async (options, text, size, message = "@claude 배포 순서") => {
+    let shown = "";
+    const { room } = makeRoom({
+      ...options,
+      runAgent: ({ emitEvent }) => {
+        for (let at = 0; at < text.length; at += size) emitEvent({ kind: "delta", text: text.slice(at, at + size) });
+        return { promise: Promise.resolve({ ok: true, text }), cancel() {} };
+      },
+    });
+    room.on("run-event", (event) => { if (event.kind === "delta") shown += event.text; });
+    room.sendUserMessage(message);
+    await settle();
+    return { shown, final: agentTexts(room)[0] };
+  };
+  const memory = { recallMemory: () => Promise.resolve(FOUND), rememberMemory: () => {} };
+  const off = { recallMemory: () => null, rememberMemory: () => {} };
+  for (const size of [1, 2, 5, 1000]) {
+    assert.deepEqual(await stream(memory, answer, size), { shown: "배포 순서입니다.\n1. 시험\n2. 승인\nDONE\n", final: "배포 순서입니다.\n1. 시험\n2. 승인\nDONE" }, `조각 ${size}`);
+    // 마지막 줄이 줄바꿈 없이 끝나도(실행이 끝날 때 붙들린 줄을 판정한다) 숨긴다.
+    assert.equal((await stream(memory, answer.trimEnd(), size)).shown, "배포 순서입니다.\n1. 시험\n2. 승인\nDONE\n", `줄바꿈 없는 끝 조각 ${size}`);
+    assert.deepEqual(await stream({ ...memory, meta: LEAD }, leadAnswer, size, "claude에게 맡겨줘"), { shown: "정리했습니다.\n", final: "정리했습니다." }, `지휘 조각 ${size}`);
+    // 기억을 쓰지 않는 차례: 일반 차례는 필터가 없고, 지휘 차례는 지금의 필터라 REMEMBER 줄이 뒤에 오면 DONE 줄과 함께 그대로 흐른다.
+    assert.deepEqual(await stream(off, answer, size), { shown: answer, final: answer.trim() }, `꺼짐 조각 ${size}`);
+    // 끝의 빈 줄까지 그대로 흐른다(필터를 거치면 끝의 빈 줄을 붙들었다가 버린다).
+    assert.deepEqual(await stream(off, `${answer}\n`, size), { shown: `${answer}\n`, final: answer.trim() }, `꺼짐 끝 빈 줄 ${size}`);
+    assert.deepEqual(await stream({ ...off, meta: LEAD }, leadAnswer, size, "claude에게 맡겨줘"), { shown: leadAnswer, final: leadAnswer.trim() }, `꺼진 지휘 조각 ${size}`);
+  }
+});

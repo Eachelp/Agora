@@ -12,7 +12,7 @@ const {
 } = require("../agora/discussion-protocol");
 const { RATE_LIMITED_STOP_REASON } = require("./rate-limit-signal");
 // 응답 꼬리의 질문 계약(ASK_USER + OPTION).
-const { createLeadStreamFilter, parseControlOutput, parseOrchestrationControl, stripControlOutput } = require("./control-output");
+const { createLeadStreamFilter, parseControlOutput, parseOrchestrationControl, parseRememberLines, stripControlOutput } = require("./control-output");
 
 // 채팅방 오케스트레이션.
 // - 멘션이 없으면 세션 참가자 전체, 있으면 멘션된 참가자만 응답합니다.
@@ -217,6 +217,9 @@ class ChatRoom extends EventEmitter {
     // 뿌리 사용자 메시지 id → 그 메시지의 recall 약속(부르지 않았으면 null). 같은 뿌리의 다음 차례가 다시 쓴다.
     this.anchorMemoryRecalls = new Map();
     this.anchorMemoryNoticed = false;
+    // AI가 기억을 쓰는 차례의 답 끝에 고른 기억: rememberMemory(items, { messageId }). 기다리지 않고, 동기로 던지면 안 된다(그 차례의
+    // 결과가 사라져 지휘 AI의 계획도 읽히지 않는다). 옵션이 없으면 안내도 읽기도 없다.
+    this.rememberMemory = options.rememberMemory || null;
     this.meta = {
       permissionMode: "chat",
       ...(options.meta || {}),
@@ -1941,6 +1944,8 @@ class ChatRoom extends EventEmitter {
       this.anchorMemoryNoticed = Boolean(memory.reason);
       anchorMemoryContext = memory.block;
     }
+    // 기억을 쓰는 차례(작업자는 빼고)는 오래 남길 것을 답 끝 REMEMBER 줄로 고르게 하고 그 줄을 읽어 넘긴다. 쓰지 않는 차례는 지금과 같다.
+    const rememberable = Boolean(memoryPending && this.rememberMemory) && orchestrationRole !== "worker";
     let prompt;
     let buildPrompt;
     try {
@@ -1953,6 +1958,7 @@ class ChatRoom extends EventEmitter {
         projectContext: this.meta.projectContext,
         memoryContext: this.meta.memoryContext,
         anchorMemoryContext,
+        anchorMemoryRemember: rememberable,
         rulesContext: this.meta.rulesContext,
         workflowContext: this.meta.workflowContext,
         discussion: context.discussion || null,
@@ -2010,8 +2016,10 @@ class ChatRoom extends EventEmitter {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       this.runSeq += 1;
       runId = `r${this.sessionId || "s"}-${this.runSeq}`;
-      // 지휘 차례의 끝 제어 줄(STAGE·DONE …)은 최종 말풍선에서 빠지므로 흘러가는 초안에서도 숨긴다.
-      const leadStream = orchestrationRole === "lead" ? createLeadStreamFilter() : null;
+      // 지휘 차례의 끝 제어 줄(STAGE·DONE …)과 기억을 쓰는 차례의 끝 REMEMBER 줄은 최종 말풍선에서 빠지므로 흘러가는 초안에서도 숨긴다.
+      const leadStream = orchestrationRole === "lead" || rememberable
+        ? createLeadStreamFilter({ control: orchestrationRole === "lead", remember: rememberable })
+        : null;
       const publish = (event) => this.emit("run-event", {
         runId,
         agentId: agent.id,
@@ -2185,6 +2193,9 @@ class ChatRoom extends EventEmitter {
       discussionSignal = match ? match[1].toUpperCase() : "CONTINUE";
       if (match) rawText = rawText.slice(0, match.index).trim();
     }
+    // 기억을 쓰는 차례는 끝의 REMEMBER 줄부터 떼어 낸다. 그 줄이 맨 끝에 와도 아래에서 지휘 AI의 STAGE·DONE 줄과 끝 ASK_USER 줄을 읽는다.
+    const remembered = rememberable ? parseRememberLines(rawText, { control: orchestrationRole === "lead" }) : { items: [], text: rawText };
+    rawText = remembered.text;
     // 지휘 AI 턴은 답 끝의 STAGE·DONE 줄을 따로 읽고 화면 텍스트에서 뺀다(2026-10-20 개정). 일반·작업자 턴은 이 줄을 모른다.
     let orchestrationControl = null;
     if (orchestrationRole === "lead") {
@@ -2210,6 +2221,7 @@ class ChatRoom extends EventEmitter {
     let text = stripEmoticonTags(rawText);
     // 제어 줄만 쓴 답이 빈 말풍선으로 남지 않게 한다.
     if (!text && orchestrationControl) text = orchestrationControl.stageLines.length > 0 ? "(작업을 맡깁니다)" : "(완료)";
+    if (!text && remembered.items.length > 0) text = "(기억에 남깁니다)";
     if (context.discussion) {
       if (discussionSignal === "AGREE" && !text) {
         text = "동의합니다.";
@@ -2253,6 +2265,7 @@ class ChatRoom extends EventEmitter {
         : {}),
       ...(result.deliveries ? { deliveries: result.deliveries } : {}),
     });
+    if (remembered.items.length > 0) this.rememberMemory(remembered.items, { messageId: appended.id });
     // 토론 모드는 자체 턴 오케스트레이션이 있으므로 멘션 호출을 만들지 않습니다.
     if (!context.discussion && !context.discussionSummary && !context.simplifyMeta) {
       if (orchestrationRole === "lead") {

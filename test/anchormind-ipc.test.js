@@ -40,9 +40,9 @@ const RECORD = JSON.stringify({
 });
 
 // 실제 앱처럼 createChatFeature에 입구(anchorMind)를 넘긴다. 안 넘기면 기존 시험이 쓰는 모양이다.
-// runAgent는 기록관 차례에만 RECORD를, "실패시험"이 든 프롬프트에는 실패를 주고, 받은 프롬프트를 prompts에 쌓는다.
+// runAgent는 기록관 차례에만 RECORD를, "실패시험"이 든 프롬프트에는 실패를, 그 밖에는 answer()를 주고, 받은 프롬프트를 prompts에 쌓는다.
 // 창은 보낸 알림만 모으고, 폴더 대화 상자는 받은 인자를 dialogCalls에 쌓는다.
-function makeApp(t, anchorMind) {
+function makeApp(t, anchorMind, answer = () => `의견 ${CONCLUDE}`) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-anchormind-ipc-")));
   const records = [fakeRecord("claude", "Claude", ["claude"]), fakeRecord("codex", "GPT", ["gpt", "codex"])];
   const handlers = new Map();
@@ -73,7 +73,7 @@ function makeApp(t, anchorMind) {
     runAgent: ({ prompt }) => {
       prompts.push(prompt);
       const failing = prompt.includes("실패시험");
-      return { promise: Promise.resolve(failing ? { ok: false, error: "시험용 실패", text: "" } : { ok: true, text: prompt.includes("토론 기록자") ? RECORD : `의견 ${CONCLUDE}` }), cancel: () => {} };
+      return { promise: Promise.resolve(failing ? { ok: false, error: "시험용 실패", text: "" } : { ok: true, text: prompt.includes("토론 기록자") ? RECORD : answer() }), cancel: () => {} };
     },
     anchorMind,
   });
@@ -358,4 +358,49 @@ test("폴더 고르기는 부모 창을 받아 대화 상자에 넘기고, 안 �
   assert.equal(app.dialogCalls[0][0], parent);
   assert.notEqual(app.dialogCalls[1][0], parent);
   assert.equal(typeof app.dialogCalls[1][0], "object");
+});
+
+test("기억을 쓰는 방에서 AI가 답 끝에 고른 기억은 화면·기록에서 빠지고 메시지마다 고정 키로 저장된다. 짧은 줄은 보내기 전에 조용히 빠지고, 저장 실패는 방에 한 번 알린다", async (t) => {
+  // 진짜 입구와 가짜 서버로 chat:send부터 remember 도구 호출까지 이어서 본다(Gemini도 실제 서버도 쓰지 않는다).
+  const fake = await startFakeAnchorMind(t, {
+    tools: {
+      recall: () => ({ success: true, fragments: [] }),
+      remember: (args) => (args.content.includes("서버가 거절") ? { success: false, error: "거절" } : { success: true, id: "mem-1" }),
+    },
+  });
+  const answers = [
+    "배포 규칙을 정리했습니다.\nREMEMBER: 결정 | 배포는 별도 승인을 받은 뒤에만 한다.\nREMEMBER: 선호 | 짧음",
+    "알겠습니다.\nREMEMBER: 사실 | 이 문장은 서버가 거절하는 시험용 기억이다.",
+    "본문입니다.\nREMEMBER: 결정 | 기억을 쓰지 않는 방의 줄은 그대로 남는다.",
+  ];
+  const app = makeApp(t, createTestAnchorMind(t, fake).client, () => answers.shift());
+  const { projectId, sessionId } = await enabledProject(app);
+  const agentMessages = () => app.messages().filter((message) => message.authorType === "agent");
+  await app.invoke("chat:send", { sessionId, text: "@claude 배포 규칙을 정하자" });
+  await waitFor(() => fake.toolCalls("remember").length === 1, 4000);
+  // 찾은 기억이 없어 기억 블록이 없어도 안내는 붙는다.
+  assert.match(app.prompts[0], /`REMEMBER: <유형> \| <내용>`/);
+  assert.doesNotMatch(app.prompts[0], /=== AnchorMind 기억 ===/);
+  const [first] = agentMessages();
+  assert.equal(first.text, "배포 규칙을 정리했습니다.");
+  assert.deepEqual(fake.toolCalls("remember")[0].args, {
+    content: "배포는 별도 승인을 받은 뒤에만 한다.", topic: `agora-${projectId}`, type: "decision",
+    workspace: `agora-${projectId}`, idempotencyKey: `agora-r-${first.id}-0`,
+  });
+
+  // 서버가 거절한 저장은 다시 보내지 않고 그 방에 한 번 알린다(기억 내용은 안내에 넣지 않는다).
+  await app.invoke("chat:send", { sessionId, text: "@claude 하나 더" });
+  await waitFor(() => app.notices().length === 1, 4000);
+  assert.equal(app.notices()[0].sessionId, sessionId);
+  assert.equal(app.notices()[0].text, "AnchorMind에 AI가 고른 기억을 저장하지 못했습니다. 자동으로 다시 보내지 않습니다. (AnchorMind가 요청을 처리하지 못했습니다.)");
+
+  // 기억을 쓰지 않는 방: 안내도 읽기도 없이 REMEMBER 줄이 그대로 남는다.
+  const plain = await app.invoke("chat:projects:create", { name: "칸 없음" });
+  await app.invoke("chat:send", { sessionId: plain.session.meta.id, text: "@claude 질문" });
+  await waitFor(() => agentMessages().length === 3, 4000);
+  assert.equal(agentMessages()[2].text, "본문입니다.\nREMEMBER: 결정 | 기억을 쓰지 않는 방의 줄은 그대로 남는다.");
+  assert.doesNotMatch(app.prompts[2], /REMEMBER/);
+  // 짧은 줄("짧음")은 입구가 보내기 전에 거절해 서버에 가지 않았고 알림도 없었다(알림은 위의 서버 거절 한 번뿐이다).
+  assert.deepEqual(fake.toolCalls("remember").map((call) => call.args.idempotencyKey), [`agora-r-${first.id}-0`, `agora-r-${agentMessages()[1].id}-0`]);
+  assert.equal(app.notices().length, 1);
 });

@@ -132,29 +132,68 @@ function parseOrchestrationControl(text) {
   return { stages, done, text: kept.join("\n").trimEnd() };
 }
 
+// 기억을 쓰는 차례의 답 끝 줄 `REMEMBER: <유형> | <내용>`. 유형은 화면의 기억하기와 같은 다섯 이름이고 값은 입구가 받는 유형이다.
+const REMEMBER_TYPES = Object.freeze({ 사실: "fact", 결정: "decision", 절차: "procedure", 에러: "error", 선호: "preference" });
+const REMEMBER_LINE_PATTERN = new RegExp(`^[ \\t]*REMEMBER:[ \\t]*(${Object.keys(REMEMBER_TYPES).join("|")})[ \\t]*\\|[ \\t]*(\\S(?:[^\\r\\n]*\\S)?)[ \\t]*$`, "i");
+// 프롬프트가 안내한 최대 줄 수. 더 쓰면 모두 지우고 앞의 것만 저장한다.
+const REMEMBER_MAX = 2;
+
+// 끝 블록에 들 수 있는 줄인가(빈 줄은 부르는 쪽이 따로 본다). control: 지휘 차례의 STAGE·DONE과 기존 제어 줄, remember: REMEMBER 줄.
+function isTailLine(body, { control, remember }) {
+  return (control && (STAGE_LINE_PATTERN.test(body) || DONE_LINE_PATTERN.test(body) || isControlLine(body)))
+    || (remember && REMEMBER_LINE_PATTERN.test(body));
+}
+
+// 기억을 쓰는 차례의 답 끝에서 REMEMBER 줄을 떼어 낸다. 끝 블록은 그 차례의 초안 필터가 숨기는 줄과 빈 줄이 이어진
+// 끝부분이라 초안과 최종 말풍선이 같게 보인다. 지휘 차례(control)는 STAGE·DONE·ASK_USER 줄의 앞에 쓰든 뒤에 쓰든 읽고,
+// 그 줄은 그대로 남겨 뒤에서 따로 읽게 한다. 코드펜스·인라인 백틱 안의 줄과 형식이 틀린 줄은 남는다. 같은 내용은 한 번만,
+// 앞의 REMEMBER_MAX개만 저장한다. 반환: { items: [{ type, content }], text }. 읽은 줄이 없으면 text는 입력 그대로다.
+function parseRememberLines(text, { control }) {
+  const raw = String(text || "");
+  const rawLines = raw.split(/\r?\n/);
+  const maskedLines = maskCodeFences(raw).split(/\r?\n/);
+  let start = maskedLines.length;
+  for (let index = maskedLines.length - 1; index >= 0; index -= 1) {
+    if (maskedLines[index].trim() === "") continue;
+    if (!isTailLine(maskedLines[index], { control, remember: true })) break;
+    start = index;
+  }
+  const items = [];
+  const kept = rawLines.slice(0, start);
+  for (let index = start; index < rawLines.length; index += 1) {
+    // 끝 블록의 줄은 위에서 가린 줄로 골랐다. 값은 원문 줄에서 읽는다(가린 줄에서 읽으면 인라인 백틱 안 내용이 사라진다).
+    const match = REMEMBER_LINE_PATTERN.exec(rawLines[index]);
+    if (!match) kept.push(rawLines[index]);
+    else if (!items.some((item) => item.content === match[2])) items.push({ type: REMEMBER_TYPES[match[1]], content: match[2] });
+  }
+  if (items.length === 0) return { items, text: raw };
+  return { items: items.slice(0, REMEMBER_MAX), text: kept.join("\n") };
+}
+
 // 지휘 AI 답이 흘러나오는 동안 화면의 초안에서 끝의 제어 줄(STAGE·DONE·ASK_USER …)을 숨기는 필터. 최종 말풍선은 같은
 // 줄을 이미 지우므로(parseOrchestrationControl) 초안도 같게 보이게 한다. 제어 줄처럼 보이는 줄(과 그 사이 빈 줄)과, 아직
 // 끝나지 않았지만 제어 줄이 될 수 있는 줄의 앞머리는 잠시 붙들고, 뒤에 일반 줄이 이어지면 그대로 내보낸다. 끝날 때
 // 붙들려 있는 것은 버린다. 이미 앞머리를 내보낸 줄의 나머지는 판정 없이 잇는다.
+// 기억을 쓰는 차례의 끝 REMEMBER 줄도 같은 방법으로 숨긴다. kinds가 숨길 줄을 고른다(control: 지휘 차례의 제어 줄, remember: REMEMBER 줄).
 const CONTROL_KEYWORDS = Object.freeze(["STAGE", "DONE", "ASK_USER", "OPTION", "MULTI", "PURPOSE", "REASON", "HANDOFF", "COMPLETE"]);
 
-function isHideableLine(line) {
+function isHideableLine(line, kinds) {
   const body = line.replace(/\r?\n$/, "");
-  return body.trim() === "" || STAGE_LINE_PATTERN.test(body) || DONE_LINE_PATTERN.test(body) || isControlLine(body);
+  return body.trim() === "" || isTailLine(body, kinds);
 }
 
 // 끝나지 않은 줄의 앞머리가 아직 제어 줄이 될 수 있는가: "STAGE:"·"ASK_USER:" 같은 머리표의 앞부분이거나 이미 그 머리표로 시작할 때.
 // DONE·COMPLETE는 머리표 없이 낱말 하나만 있는 줄도 제어다. CRLF의 \r만 도착한 순간에도 줄이 끝난 것이 아니므로 \r은 뗀다.
-function mayBecomeControlLine(partial) {
+function mayBecomeControlLine(partial, { control, remember }) {
   const head = partial.replace(/^[ \t]+/, "").replace(/\r$/, "").toUpperCase();
   if (!head) return true;
-  return CONTROL_KEYWORDS.some((word) => {
+  return [...(control ? CONTROL_KEYWORDS : []), ...(remember ? ["REMEMBER"] : [])].some((word) => {
     const label = `${word}:`;
     return label.startsWith(head) || head.startsWith(label) || ((word === "DONE" || word === "COMPLETE") && head.trimEnd() === word);
   });
 }
 
-function createLeadStreamFilter() {
+function createLeadStreamFilter(kinds = { control: true, remember: false }) {
   let held = ""; // 붙들어 둔 줄들(제어 줄처럼 보이는 줄과 빈 줄)
   let partial = ""; // 아직 끝나지 않은 줄
   let midLine = false; // 이 줄의 앞머리를 이미 내보냈는가
@@ -165,7 +204,7 @@ function createLeadStreamFilter() {
       for (let newline = partial.indexOf("\n"); newline >= 0; newline = partial.indexOf("\n")) {
         const line = partial.slice(0, newline + 1);
         partial = partial.slice(newline + 1);
-        if (midLine || !isHideableLine(line)) {
+        if (midLine || !isHideableLine(line, kinds)) {
           out += held + line;
           held = "";
         } else {
@@ -173,7 +212,7 @@ function createLeadStreamFilter() {
         }
         midLine = false;
       }
-      if (partial && (midLine || !mayBecomeControlLine(partial))) {
+      if (partial && (midLine || !mayBecomeControlLine(partial, kinds))) {
         out += held + partial;
         held = "";
         partial = "";
@@ -182,7 +221,7 @@ function createLeadStreamFilter() {
       return out;
     },
     end() {
-      const out = midLine || (partial && !isHideableLine(partial)) ? held + partial : "";
+      const out = midLine || (partial && !isHideableLine(partial, kinds)) ? held + partial : "";
       held = "";
       partial = "";
       midLine = false;
@@ -258,5 +297,6 @@ module.exports = {
   createLeadStreamFilter,
   parseControlOutput,
   parseOrchestrationControl,
+  parseRememberLines,
   stripControlOutput,
 };

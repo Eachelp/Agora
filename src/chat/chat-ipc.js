@@ -1154,7 +1154,10 @@ function roomMeta(meta) {
       }),
       initialQuestions: store.readUserQuestions(sessionId),
       // 입구가 없으면 옵션 자체를 넘기지 않는다(기존 시험의 방은 그대로).
-      ...(anchorMind ? { recallMemory: (text) => recallAnchorMemory(sessionId, text) } : {}),
+      ...(anchorMind ? {
+        recallMemory: (text) => recallAnchorMemory(sessionId, text),
+        rememberMemory: (items, { messageId }) => rememberChosen(sessionId, items, messageId),
+      } : {}),
     });
 
     // 방 이벤트 리스너에서 난 예외는 emit한 방 코드(턴 시작·승인 카드·중지)로 올라가 응답을
@@ -1370,15 +1373,17 @@ function roomMeta(meta) {
     return project ? anchorMind.recall({ projectId: project.id, text }) : null;
   }
 
-  // 기록관 요약·확정된 결정을 AnchorMind에도 남긴다. 기다리지 않고, 실패해도 다시 보내지 않는다(같은 기억이 두 번
+  // 기록관 요약·확정된 결정·AI가 고른 기억을 AnchorMind에도 남긴다. 기다리지 않고, 실패해도 다시 보내지 않는다(같은 기억이 두 번
   // 저장되지 않게). 안내는 방마다 한 번만, 그 방에서 저장이 다시 성공하면 또 알린다.
   function rememberInBackground(projectId, memory, sessionId) {
     if (!anchorMindProject(projectId)) return;
     const roomId = sessionId || getActiveSessionId(projectId);
     const noticeKey = `anchormind:${roomId}`;
     anchorMind.remember(projectId, memory).then(() => saveFailureNoticed.delete(noticeKey), (error) => {
-      if (saveFailureNoticed.has(noticeKey)) return;
-      const what = memory.type === "episode" ? "토론 요약" : "확정한 결정";
+      // AI가 고른 기억(agora-r- 키)이 짧다고 입구가 거절하면(검증 거절에는 실패 종류 kind가 없다) 사람이 할 일이 없어 알리지 않는다.
+      const chosen = memory.idempotencyKey.startsWith("agora-r-");
+      if (saveFailureNoticed.has(noticeKey) || (chosen && !error?.kind)) return;
+      const what = chosen ? "AI가 고른 기억" : memory.type === "episode" ? "토론 요약" : "확정한 결정";
       const delivered = showSystemNotice(`AnchorMind에 ${what}을 저장하지 못했습니다. 자동으로 다시 보내지 않습니다. (${error?.message || error})`, roomId);
       if (delivered) saveFailureNoticed.add(noticeKey);
     });
@@ -1391,6 +1396,12 @@ function roomMeta(meta) {
       content: decision.title ? `${decision.title}: ${decision.content}` : decision.content,
       idempotencyKey: `agora-d-${decision.id}`,
     });
+  }
+
+  // AI가 기억을 쓰는 차례의 답 끝에 고른 기억(방이 REMEMBER 줄을 읽어 넘긴다). 메시지와 줄 순서로 키를 정해 한 번만 저장된다.
+  function rememberChosen(sessionId, items, messageId) {
+    const projectId = store.readMeta(sessionId)?.projectId;
+    items.forEach((item, index) => rememberInBackground(projectId, { ...item, idempotencyKey: `agora-r-${messageId}-${index}` }, sessionId));
   }
 
   function saveRecorderOutput(projectId, content, title, options = {}) {
