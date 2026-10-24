@@ -28,7 +28,7 @@ function fakeChild(log) {
   return child;
 }
 
-// log에 실행 순서(spawn·kill·sync·consolidate)가 남는다. health.up은 true · null(200이 아닌 답) · false(거부)이고,
+// log에 실행 순서(spawn·kill·sync·consolidate)가 남는다. health.up은 true · null(200이 아닌 답이나 시간 초과) · false(거부)이고,
 // idle.hold에 약속을 넣으면 밀린 정리가 그 약속이 끝날 때까지 끝나지 않는다.
 function setup(over = {}) {
   const clock = fakeClock();
@@ -237,6 +237,40 @@ test("끄는 중에 켜 달라고 하면 끄기가 끝난 뒤에 켜고, 다시 
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(checked.spawns.length, 1);
   assert.equal(checked.log.includes("consolidate"), false);
+});
+
+test("설정이 다른 폴더를 가리키면 전에 켠 서버를 먼저 끄고(정리 중이던 유휴 끄기는 또 끄지 않고) 새 폴더의 서버를 켠다: 소유 표지를 덮어 옛 서버가 남지 않는다", async () => {
+  const s = setup();
+  await started(s);
+  s.health.up = false;   // 바뀐 폴더의 서버는 꺼져 있다
+  void s.proc.ensureStarted({ ...SETTINGS, folder: "other-folder" });
+  await s.spawned(2);
+  assert.deepEqual(s.log, ["spawn my-start", "spawn my-stop"]);
+  assert.deepEqual(s.spawns[1].options, { cwd: SETTINGS.folder, ...SHELL, timeout: 15000 });
+  s.spawns[1].child.exit(0);
+  await s.spawned(3);
+  assert.deepEqual(s.spawns[2].options, { cwd: "other-folder", ...SHELL });
+  assert.deepEqual(s.states, ["starting", "off", "starting"]);
+  s.proc.stopOnQuitSync();
+  assert.deepEqual(s.syncs.map((entry) => entry.options.cwd), ["other-folder"]);
+
+  // 밀린 정리가 도는 동안 켜기가 먼저 껐으면, 정리를 마친 유휴 끄기가 같은 서버를 또 끄지 않는다(끝난 뒤 새로 켠 서버의 표지를 지우게 된다).
+  const idle = setup();
+  await started(idle);
+  let release;
+  idle.idle.hold = new Promise((resolve) => {
+    release = resolve;
+  });
+  idle.clock.advance(IDLE_MS);
+  await waitFor(() => idle.log.includes("consolidate"), 3000, "정리");
+  idle.health.up = false;
+  void idle.proc.ensureStarted({ ...SETTINGS, folder: "other-folder" });
+  await idle.spawned(2);
+  release();
+  await new Promise((resolve) => setImmediate(resolve));
+  idle.spawns[1].child.exit(0);
+  await idle.spawned(3);
+  assert.deepEqual(idle.spawns.map((entry) => entry.command), ["my-start", "my-stop", "my-start"]);
 });
 
 test("앱 종료 때는 켜는 중인 트리만 먼저 끊고 끄기 명령을 끝날 때까지 기다리며, 두 번 불려도 한 번만 끄고, 비동기 끄기가 도는 중에도 끈다", async () => {

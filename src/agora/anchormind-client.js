@@ -136,11 +136,11 @@ function createAnchorMind({
   let starting = null;
   let threshold = null;     // 연결한 서버의 임베딩 모델(.env)에 맞는 문턱값
   let rpcId = 0;
-  const listed = new Map(); // 공간 이름 → 마지막 목록에 나온 기억 id
+  const listed = new Map(); // 공간 이름 → 마지막 목록에 나온 기억 id와 유형(id → type)
   const proc = createAnchorMindProcess({
     healthy, beforeIdleStop: consolidateIfDue,
     onState: (state) => {
-      if (state === "off" || state === "starting") conn = null;   // 서버가 꺼졌거나 새로 켜는 중이다. 옛 연결(세션)은 쓸 수 없고, 켜지면 initialize부터 한다
+      conn = null;   // 서버가 꺼졌거나 켜는 중이거나 정상이 아니다. 옛 연결(세션)은 믿을 수 없고, 서버가 멀쩡해지면 initialize부터 한다
       setStatus({ state, reason: state === "error" ? REASONS.start : null });
     },
     now, setTimer, clearTimer, spawn, spawnSync,
@@ -347,10 +347,11 @@ function createAnchorMind({
     return reply.status === 200;
   }
 
-  // 켜기 모듈의 생존 확인. 200이면 true, 응답은 했지만 200이 아니면 null(사용자가 켠 서버의 DB가 꺼졌거나 다른 프로그램이
-  // 그 포트를 쓴다. 손대지 않는다), 거부·시간 초과·키 없음이면 false.
+  // 켜기 모듈의 생존 확인. 200이면 true, 응답은 했지만 200이 아니거나(사용자가 켠 서버의 DB가 꺼졌거나 다른 프로그램이 그 포트를
+  // 쓴다) 제때 답하지 않으면(바쁜 서버일 수 있다) null이다. 어느 쪽이든 손대지 않는다: 켜기 명령이 남의 서버를 잡아 나중에 끄지
+  // 않게. 연결 거부·키 없음이면 false.
   function healthy() {
-    return health().then((ok) => (ok ? true : null), () => false);
+    return health().then((ok) => (ok ? true : null), (error) => (error?.kind === "timeout" ? null : false));
   }
 
   // 설정 창 "확인". 폴더가 바뀌었을 수 있어 .env부터 다시 읽고 /health와 initialize만 보낸다(임베딩 0). 켜지는 않는다.
@@ -443,7 +444,7 @@ function createAnchorMind({
       .map(({ id, type, content, created_at: createdAt }) => ({
         id, type: typeof type === "string" ? type : "", content, createdAt: typeof createdAt === "string" ? createdAt : "",
       }));
-    listed.set(topic, new Set(items.map((item) => item.id)));
+    listed.set(topic, new Map(items.map((item) => [item.id, item.type])));
     return items;
   }
 
@@ -459,8 +460,9 @@ function createAnchorMind({
   }
 
   // 내용을 보내면 유형만 바꿔도 AnchorMind가 다음 5분 틱에 다시 임베딩한다(Gemini 1건). amend의 type에는 episode가
-  // 없어(6.7.1) 요약은 고치지 않는다. 화면에서 온 요청은 IPC가 그 유형을 막는다.
+  // 없어(6.7.1) 요약은 고치지 않는다. 요약으로 바꾸는 요청은 IPC가, 목록에서 요약이던 id에 다른 유형을 붙인 요청은 여기서 막는다.
   async function amend(projectId, id, { type, content } = {}) {
+    if (listed.get(workspaceFor(projectId))?.get(id) === "episode") throw new Error("기록관 요약은 직접 고칠 수 없습니다.");
     await callWhenStarted("amend", { id: listedId(projectId, id), content: memoryContent(type, content), type });
   }
 

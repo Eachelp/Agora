@@ -1,9 +1,10 @@
 "use strict";
 // AnchorMind 서버를 켜고 끈다. anchormind-client.js의 createAnchorMind 안에서만 만든다.
-// Agora가 켠 서버만 Agora가 끈다. /health가 200이면 사용자가 켜 둔 것으로 보고, 200이 아닌 다른 답이면(사용자가
-// 켠 서버의 DB가 꺼졌거나 다른 프로그램) 켜지도 끄지도 않고 오류로 알린다. 켜는 명령과 끄는 명령이 둘 다 설정에
-// 있을 때만 켠다. 끄지 못할 서버를 켜 두면 Agora가 끝난 뒤에도 수백 MB가 남기 때문이다.
-// 끄는 때는 유휴 30분(끄기 전에 밀린 정리를 먼저 한다)과 앱 종료(동기, 정리 없음)뿐이다. 방은 앱이 켜져 있는 동안 닫히지 않는다.
+// Agora가 켠 서버만 Agora가 끈다. /health가 200이면 사용자가 켜 둔 것으로 보고, 200이 아닌 다른 답을 하거나(사용자가
+// 켠 서버의 DB가 꺼졌거나 다른 프로그램) 제때 답하지 않으면(바쁜 서버) 켜지도 끄지도 않고 오류로 알린다. 켜는 명령과
+// 끄는 명령이 둘 다 설정에 있을 때만 켠다. 끄지 못할 서버를 켜 두면 Agora가 끝난 뒤에도 수백 MB가 남기 때문이다.
+// 끄는 때는 유휴 30분(끄기 전에 밀린 정리를 먼저 한다), 앱 종료(동기, 정리 없음), 설정이 다른 폴더를 가리킬 때의 켜기 앞뿐이다.
+// 방은 앱이 켜져 있는 동안 닫히지 않는다.
 const { spawn: defaultSpawn, spawnSync: defaultSpawnSync } = require("node:child_process");
 const { killTree, useSynchronousTreeKill } = require("../chat/chat-agent-runner");
 
@@ -20,7 +21,7 @@ function shellOptions(cwd, extra) {
   return { cwd, shell: true, windowsHide: true, stdio: "ignore", ...extra };
 }
 
-// healthy()는 /health가 200이면 true, 200이 아닌 답이면 null, 거부·시간 초과면 false다. beforeIdleStop()은 유휴로
+// healthy()는 /health가 200이면 true, 200이 아니거나 제때 답하지 않으면 null, 연결을 거부하면 false다. beforeIdleStop()은 유휴로
 // 끄기 직전에만 기다린다. 둘 다 던지거나 reject하지 않는다. onState는 "starting" | "error" | "off"이고 "connected"는
 // 클라이언트가 initialize 뒤에 정한다. spawn·spawnSync·now·setTimer·clearTimer는 시험만 바꾼다.
 function createAnchorMindProcess({
@@ -51,15 +52,10 @@ function createAnchorMindProcess({
     idleTimer?.unref?.();
   }
 
-  async function onIdle() {
-    idleTimer = null;
-    if (!owned) return;
-    await beforeIdleStop();
-    // 정리하는 동안 기억을 다시 썼거나(touch가 타이머를 새로 걸었다) 앱 종료가 먼저 껐으면 그만둔다.
-    if (idleTimer || !owned) return;
+  // Agora가 켠 서버를 끈다(유휴와, 설정이 다른 폴더를 가리킬 때의 켜기가 쓴다). owned 지우기까지 이 약속에 넣는다.
+  // 끄기를 기다리던 켜기가 깨어날 때 이미 지워져 있어야, 끄기가 새로 켠 서버의 표지까지 지우지 않는다.
+  function stopOwned() {
     const { cwd, stop } = owned;
-    // owned 지우기까지 이 약속에 넣는다. 끄기를 기다리던 켜기가 깨어날 때 이미 지워져 있어야, 끄기가 새로 켠
-    // 서버의 표지까지 지우지 않는다.
     stopping = new Promise((resolve) => {
       const child = spawn(stop, shellOptions(cwd, { timeout: STOP_TIMEOUT_MS }));
       child.once("error", resolve);
@@ -69,17 +65,29 @@ function createAnchorMindProcess({
       stopping = null;
       onState("off");
     });
+    return stopping;
+  }
+
+  async function onIdle() {
+    idleTimer = null;
+    if (!owned) return;
+    await beforeIdleStop();
+    // 정리하는 동안 기억을 다시 썼거나(touch가 타이머를 새로 걸었다) 앱 종료나 다른 폴더의 켜기가 먼저 껐으면 그만둔다.
+    if (idleTimer || !owned || stopping) return;
+    stopOwned();
   }
 
   async function start({ folder, startCommand, stopCommand }) {
     // 끄는 중에 켜면 DB가 꺼지는 사이에 켜기가 돈다. 끄기가 끝난 뒤에 본다.
     if (stopping) await stopping;
+    // 설정이 다른 폴더를 가리키면 전에 켠 서버부터 끈다. 그냥 켜면 아래가 소유 표지를 덮어 그 서버를 아무도 끄지 않는다.
+    if (owned && owned.cwd !== folder) await stopOwned();
     const up = await healthy();
     if (up) {
       touch();
       return true;
     }
-    // 200이 아닌 답이면 손대지 않는다. 켜 봐야 소용없고, 끄기 명령이 남의 서버를 끌 수 있다.
+    // 200이 아닌 답이나 시간 초과면 손대지 않는다. 켜 봐야 소용없고, 끄기 명령이 남의 서버를 끌 수 있다.
     if (up === null) {
       onState("error");
       return false;

@@ -216,13 +216,14 @@ test("ensureStarted는 이미 켜진 서버면 켜기 명령 없이 연결만 �
   assert.deepEqual(fake.calls.map((call) => call.path), ["/health", "/mcp", "/health"]);
 });
 
-test("/health가 200이 아니거나 접속 키를 읽지 못하면 서버를 켜지 않고 오류로 둔다", async (t) => {
+test("/health가 200이 아니거나 제때 답하지 않거나 접속 키를 읽지 못하면 서버를 켜지 않고 오류로 둔다", async (t) => {
   const spawned = [];
-  const fake = await startFakeAnchorMind(t, { intercept: (call) => call.path === "/health" && { status: 503, body: { status: "unhealthy" } } });
-  const { client } = createTestAnchorMind(t, fake, {
+  const withCommands = {
     anchorMind: { startCommand: "start-anchormind", stopCommand: "stop-anchormind" },
     spawn: (command) => { spawned.push(command); const child = new EventEmitter(); process.nextTick(() => child.emit("exit", 1, null)); return child; },
-  });
+  };
+  const fake = await startFakeAnchorMind(t, { intercept: (call) => call.path === "/health" && { status: 503, body: { status: "unhealthy" } } });
+  const { client } = createTestAnchorMind(t, fake, withCommands);
   await client.ensureStarted();
   assert.deepEqual(spawned, []);
   assert.equal(client.status().state, "error");
@@ -234,6 +235,14 @@ test("/health가 200이 아니거나 접속 키를 읽지 못하면 서버를 �
   assert.deepEqual(spawned, []);
   assert.match(client.status().reason, /접속 키/);
   assert.equal(fake.calls.length, 1);
+  // 2초 안에 답하지 않는 서버도 켜지 않는다(바쁜 서버일 수 있다). 켜기 명령이 그 서버를 잡아 나중에 끄지 않게. 연결 거부(꺼짐)와 다르다.
+  const slow = await startFakeAnchorMind(t, { intercept: (call) => call.path === "/health" && "hang" });
+  const waiting = createTestAnchorMind(t, slow, withCommands);
+  t.mock.method(AbortSignal, "timeout", () => AbortSignal.abort());   // 건강 확인의 2초를 기다리지 않는다
+  await waiting.client.ensureStarted();
+  assert.deepEqual(spawned, []);
+  assert.equal(waiting.client.status().state, "error");
+  assert.match(waiting.client.status().reason, /켜지 못했/);
 });
 
 test("remember는 공간·주제를 늘 넣고 본문 규칙에 맞춰 보낸다", async (t) => {
@@ -265,7 +274,7 @@ test("remember는 공간·주제를 늘 넣고 본문 규칙에 맞춰 보낸다
   assert.equal(client.status().state, "connected");
 });
 
-test("목록은 같은 주제만 보여 주고, 지우기·고치기는 그 프로젝트 목록에 나온 id만 받는다", async (t) => {
+test("목록은 같은 주제만 보여 주고, 지우기·고치기는 그 프로젝트 목록에 나온 id만 받으며 기록관 요약은 고치지 못한다", async (t) => {
   const trace = (id, topic, type = "fact") => ({ id, topic, type, content: `기억 ${id} 내용입니다.`, created_at: "2026-10-24T12:00:00.000Z" });
   const fake = await startFakeAnchorMind(t, {
     tools: {
@@ -293,6 +302,8 @@ test("목록은 같은 주제만 보여 주고, 지우기·고치기는 그 프�
   await client.amend("p1", "a", { type: "preference", content: "고친 내용은 열 자를 넘깁니다" });
   assert.deepEqual(fake.toolCalls("amend")[0].args, { id: "a", content: "고친 내용은 열 자를 넘깁니다", type: "preference" });
   await assert.rejects(client.amend("p1", "zz", { type: "fact", content: "고친 내용은 열 자를 넘깁니다" }), /목록에 없는/);
+  // 목록에서 기록관 요약(d)이던 id에 다른 유형을 붙여 보내도(위조 요청) 서버에는 가지 않는다.
+  await assert.rejects(client.amend("p1", "d", { type: "fact", content: "요약을 사실로 바꿔 쓰는 위조 요청입니다" }), /기록관 요약은 직접 고칠 수 없습니다/);
   assert.equal(fake.toolCalls("amend").length, 1);
 });
 
@@ -428,6 +439,21 @@ test("연결을 든 채 서버가 죽었다가 방 열기로 다시 켜지면 �
   const before = fake.toolCalls("recall").length;
   assert.equal((await client.recall(ask)).reason, null);
   assert.equal(fake.toolCalls("recall").length, before + 1);
+});
+
+test("/health가 잠깐 200이 아니어서 오류가 된 뒤 서버가 멀쩡해지면 방 열기 한 번으로 연결됨으로 돌아온다", async (t) => {
+  let unhealthy = false;
+  const fake = await startFakeAnchorMind(t, { intercept: (call) => call.path === "/health" && unhealthy && { status: 503, body: { status: "unhealthy" } } });
+  const { client } = createTestAnchorMind(t, fake);
+  await client.recall(ask);
+  assert.equal(client.status().state, "connected");
+  unhealthy = true;
+  await client.ensureStarted();
+  assert.equal(client.status().state, "error");
+  unhealthy = false;
+  await client.ensureStarted();
+  assert.equal(client.status().state, "connected");
+  assert.equal(client.status().reason, null);
 });
 
 test("폴더를 바꿔 적용하면 바뀐 폴더의 서버를 쓴다", async (t) => {
