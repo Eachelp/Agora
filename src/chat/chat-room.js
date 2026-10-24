@@ -1854,10 +1854,13 @@ class ChatRoom extends EventEmitter {
 
   // 이 차례에 붙일 AnchorMind 기억 약속(없으면 null). recall은 뿌리(이 차례를 일으킨 사용자 메시지)마다 처음 온 차례가 한 번만
   // 시작하고(갈아끼워지거나 중지돼 시작하지 못한 메시지는 부르지 않는다), 같은 뿌리의 다음 차례는 그 약속을 다시 쓴다. 작업자의
-  // turnRootId는 지휘 AI 답이라(scheduleStage) 오케스트레이션의 뿌리로 찾는다. 기록관·결론 종합·쉽게 설명·전달·토론 차례는 뿌리가 없어 기억이 없다.
+  // turnRootId는 지휘 AI 답이라(scheduleStage) 오케스트레이션의 뿌리로 찾는다. 토론 참가자 차례는 뿌리가 없어 토론의 주제 메시지를 뿌리로 삼는다:
+  // 그 메시지로 이미 받은 recall이 있으면 다시 쓰고, 없으면 토론 전체가 한 번만 부른다. 기록관·결론 종합·쉽게 설명·전달 차례는 뿌리가 없어 기억이 없다.
   anchorMemoryFor(context) {
     if (!this.recallMemory) return null;
-    const rootId = context.orchestration?.role === "worker" ? this.orchestration?.rootMessageId : context.turnRootId;
+    const rootId = context.orchestration?.role === "worker"
+      ? this.orchestration?.rootMessageId
+      : context.turnRootId || context.discussion?.topicMessageId;
     if (!rootId) return null;
     if (!this.anchorMemoryRecalls.has(rootId)) {
       const root = this.messages.find((message) => message.id === rootId);
@@ -1943,8 +1946,9 @@ class ChatRoom extends EventEmitter {
       this.anchorMemoryNoticed = Boolean(memory.reason);
       anchorMemoryContext = memory.block;
     }
-    // 기억을 쓰는 차례(작업자는 빼고)는 오래 남길 것을 답 끝 REMEMBER 줄로 고르게 하고 그 줄을 읽어 넘긴다. 쓰지 않는 차례는 지금과 같다.
-    const rememberable = Boolean(memoryPending && this.rememberMemory) && orchestrationRole !== "worker";
+    // 기억을 쓰는 차례(작업자는 빼고)는 오래 남길 것을 답 끝 REMEMBER 줄로 고르게 하고 그 줄을 읽어 넘긴다. 토론 발언은 확정된 사실이 아니라 주장이라
+    // 기억을 읽기만 하고 저장하지 않는다(토론의 결과는 기록관 요약이 맡는다). 쓰지 않는 차례는 지금과 같다.
+    const rememberable = Boolean(memoryPending && this.rememberMemory) && orchestrationRole !== "worker" && !context.discussion;
     let prompt;
     let buildPrompt;
     try {

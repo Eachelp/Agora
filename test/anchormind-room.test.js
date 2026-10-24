@@ -83,7 +83,7 @@ test("지휘 AI·STAGE 작업자·지휘 AI 회신도 사용자 메시지 하나
   for (const call of calls) assert.ok(call.prompt.includes(BLOCK), call.agentId);
 });
 
-test("토론·결론 종합·기록관·전달·쉽게 설명 차례는 recall하지 않고 기억 블록도 받지 않는다", async () => {
+test("토론 참가자 차례는 주제 메시지의 recall을 다시 쓰고, 결론 종합·기록관·전달·쉽게 설명 차례는 recall하지 않고 기억 블록도 받지 않는다", async () => {
   const prompts = [];
   const runAgent = ({ agent, prompt }) => {
     prompts.push(prompt);
@@ -98,6 +98,7 @@ test("토론·결론 종합·기록관·전달·쉽게 설명 차례는 recall�
   // 토론 길이는 최소 3턴으로 맞춰진다(clampDiscussionTurnBudget). 개수 대신 역할 표지로 확인한다.
   const { discussionId } = await room.startDiscussion({ turnBudget: 3 });
   await idle();
+  const discussionEnd = prompts.length;
   await room.summarizeDiscussion(discussionId, "claude");
   // 기록관 차례: chat-ipc.js recordDiscussion이 여는 것과 같은 context다.
   await room.scheduleResponse(room.findAgent("codex"), {
@@ -110,10 +111,12 @@ test("토론·결론 종합·기록관·전달·쉽게 설명 차례는 recall�
   room.handoffMessage("agy", source.id, "SIMPLIFY"); // SIMPLIFY_SELF는 원문 모델 기록이 있어야 해서 이 방에서는 안 열린다.
   await idle();
   assert.equal(userTurns, 3);
-  assert.equal(recalls, 1, "사용자 메시지 하나만 recall한다");
-  for (const prompt of prompts.slice(0, userTurns)) assert.ok(prompt.includes(BLOCK));
-  const helpers = prompts.slice(userTurns);
-  for (const marker of ["자율 토론", "토론 결론 종합자", "토론 기록자", "=== 이전 메시지 전달 (Handoff) ===", "=== 풀어볼 원문 메시지 ==="]) {
+  assert.equal(discussionEnd, userTurns + 3);
+  assert.equal(recalls, 1, "사용자 메시지 하나만 recall한다: 토론은 그 메시지(주제)로 받아 둔 recall을 다시 쓴다");
+  for (const prompt of prompts.slice(0, discussionEnd)) assert.ok(prompt.includes(BLOCK));
+  assert.ok(prompts.slice(userTurns, discussionEnd).every((prompt) => prompt.includes("자율 토론")));
+  const helpers = prompts.slice(discussionEnd);
+  for (const marker of ["토론 결론 종합자", "토론 기록자", "=== 이전 메시지 전달 (Handoff) ===", "=== 풀어볼 원문 메시지 ==="]) {
     assert.ok(helpers.some((prompt) => prompt.includes(marker)), marker);
   }
   assert.ok(helpers.every((prompt) => !prompt.includes("=== AnchorMind 기억 ===")));
@@ -394,4 +397,102 @@ test("실시간 초안: 기억을 쓰는 차례는 끝의 REMEMBER 줄이 어떻
     assert.deepEqual(await stream(off, `${answer}\n`, size), { shown: `${answer}\n`, final: answer.trim() }, `꺼짐 끝 빈 줄 ${size}`);
     assert.deepEqual(await stream({ ...off, meta: LEAD }, leadAnswer, size, "claude에게 맡겨줘"), { shown: leadAnswer, final: leadAnswer.trim() }, `꺼진 지휘 조각 ${size}`);
   }
+});
+
+// 토론 참가자 차례는 사용자 메시지에서 이어진 차례가 아니라서 토론의 주제 메시지를 뿌리로 기억을 읽고(그 메시지로 받아 둔 recall이 있으면 다시 쓴다:
+// 위 "토론 참가자 차례는 주제 메시지의 recall을 다시 쓰고…" 시험), 읽기만 한다. 저장된 대화를 다시 연 방은 주제 메시지의 recall이 아직 없는 경우다.
+const TOPIC_TEXT = "배포 방식을 정하자";
+const topicMessages = () => [{ id: "u1", authorType: "user", author: "user", text: TOPIC_TEXT }];
+
+test("토론 참가자 차례: recall이 없던 주제 메시지로 토론 전체가 한 번만 부르고 모두 같은 기억을 받는다. 답 끝의 REMEMBER 줄은 안내도 읽기도 없이 그대로 남고 아무것도 저장하지 않는다", async () => {
+  const recall = makeRecall();
+  const prompts = [];
+  const saved = [];
+  let shown = "";
+  // 끝이 REMEMBER 줄인 답(신호 줄이 없으면 이어 가기로 본다): 읽기·실시간 초안 거르기가 켜졌다면 여기서 줄이 빠진다.
+  const answer = "본문입니다.\nREMEMBER: 결정 | 배포는 별도 승인을 받은 뒤에만 한다.";
+  const { room } = makeRoom({
+    initialMessages: topicMessages(),
+    recallMemory: recall.recallMemory,
+    rememberMemory: (items, meta) => saved.push([items, meta]),
+    runAgent: ({ prompt, emitEvent }) => {
+      prompts.push(prompt);
+      for (let at = 0; at < answer.length; at += 7) emitEvent({ kind: "delta", text: answer.slice(at, at + 7) });
+      return { promise: Promise.resolve({ ok: true, text: answer }), cancel() {} };
+    },
+  });
+  room.on("run-event", (event) => { if (event.kind === "delta") shown += event.text; });
+  const discussion = room.startDiscussion({ turnBudget: 3 });
+  await settle();
+  assert.deepEqual(recall.queries, [TOPIC_TEXT], "첫 참가자 차례가 주제 메시지로 recall을 시작한다");
+  assert.equal(prompts.length, 0, "그 차례는 기억을 기다린다");
+  recall.gates[0].resolve(FOUND);
+  await discussion;
+  assert.equal(recall.queries.length, 1, "토론 전체가 한 번만 부른다");
+  assert.equal(prompts.length, 3);
+  for (const prompt of prompts) {
+    assert.ok(prompt.includes("자율 토론") && prompt.includes(BLOCK));
+    assert.ok(!prompt.includes(GUIDE), "REMEMBER 안내가 없다");
+  }
+  assert.deepEqual(agentTexts(room), [answer, answer, answer], "REMEMBER 줄이 화면·기록에 그대로 남는다");
+  assert.deepEqual(saved, []);
+  assert.equal(shown, answer.repeat(3), "실시간 초안에서도 걸러지는 줄이 없다");
+});
+
+test("기억을 쓰지 않는 방의 토론은 지금과 같다: recallMemory 옵션이 없거나, null을 주거나, 주제 메시지가 없으면 시작 순간(마이크로태스크 수)과 모든 차례의 프롬프트가 같다", async () => {
+  // 토론 첫 차례가 러너에 닿을 때까지 흘린 마이크로태스크 수(타이머 턴 없이 센다)와 세 차례의 프롬프트.
+  const run = async (options) => {
+    const { room, calls } = makeRoom(options);
+    const discussion = room.startDiscussion({ turnBudget: 3 });
+    let ticks = 0;
+    while (calls.length === 0 && ticks < 1000) { await Promise.resolve(); ticks += 1; }
+    for (let turn = 0; turn < 3; turn += 1) {
+      calls[turn].finish("의견");
+      await settle();
+    }
+    await discussion;
+    return { ticks, prompts: calls.map((call) => call.prompt) };
+  };
+  const base = await run({ initialMessages: topicMessages() });
+  assert.ok(base.prompts.every((prompt) => prompt.includes(TOPIC_TEXT) && !prompt.includes("AnchorMind")));
+  let asked = 0;
+  const off = await run({ initialMessages: topicMessages(), recallMemory: () => { asked += 1; return null; } });
+  assert.deepEqual(off, base);
+  assert.equal(asked, 1, "null도 그 메시지의 약속으로 적어 두어 토론 전체가 한 번만 부른다");
+  // 주제 메시지가 없는 방(빈 방)의 토론은 뿌리가 없어 부르지도 기다리지도 않는다.
+  const recall = makeRecall();
+  assert.deepEqual(await run({ recallMemory: recall.recallMemory }), await run({}));
+  assert.deepEqual(recall.queries, []);
+});
+
+test("다시 연 방(받아 둔 recall이 없는 방)에서도 끝난 토론의 결론 종합·기록관·전달·쉽게 설명 차례는 recall하지 않고 기억 블록도 받지 않는다", async () => {
+  const queries = [];
+  const { room, calls } = makeRoom({
+    recallMemory: (text) => { queries.push(text); return Promise.resolve(FOUND); },
+    initialMessages: [
+      ...topicMessages(),
+      { id: "a1", authorType: "agent", author: "claude", text: "의견입니다." },
+      { id: "c1", authorType: "system", author: "system", text: "토론을 마쳤습니다.", discussionMeta: { discussionId: "d1", startMessageId: "u1", endMessageId: "a1" } },
+    ],
+  });
+  // 차례를 하나씩 열어 끝낸다(일반 줄은 도는 차례가 끝나야 다음이 시작한다).
+  const turn = async (open) => {
+    open();
+    await settle();
+    calls.at(-1).finish("답");
+    await settle();
+  };
+  await turn(() => room.summarizeDiscussion("d1", "claude"));
+  // 기록관 차례: chat-ipc.js recordDiscussion이 여는 것과 같은 context다.
+  await turn(() => room.scheduleResponse(room.findAgent("codex"), {
+    discussionSummary: { record: true, discussionId: "d1" },
+    discussionSummaryMessages: room.discussionRecordOf("d1").messages,
+  }));
+  await turn(() => room.handoffMessage("codex", "a1", "REVIEW_OPINION"));
+  await turn(() => room.handoffMessage("agy", "a1", "SIMPLIFY"));
+  const markers = ["토론 결론 종합자", "토론 기록자", "=== 이전 메시지 전달 (Handoff) ===", "=== 풀어볼 원문 메시지 ==="];
+  assert.equal(calls.length, markers.length);
+  markers.forEach((marker, index) => assert.ok(calls[index].prompt.includes(marker), marker));
+  assert.deepEqual(queries, []);
+  assert.ok(calls.every((call) => !call.prompt.includes("=== AnchorMind 기억 ===")));
 });
