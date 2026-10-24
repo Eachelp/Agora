@@ -262,6 +262,7 @@ test("REMEMBER 줄 읽기: 답 맨 끝의 줄만 읽고(사이의 빈 줄과 CRL
     ["형식은 이렇습니다.\n```\nREMEMBER: 사실 | 코드펜스 안의 예시는 기억이 아니다.\n```", null, []],
     ["예시입니다.\n```\nREMEMBER: 사실 | 닫히지 않은 코드펜스 안의 줄도 기억이 아니다.", null, []],
     ["형식은 이렇습니다.\n`REMEMBER: 사실 | 인라인 백틱 안의 줄은 기억이 아니다.`", null, []],
+    ["본문\nREMEMBER: 사실: 막대 대신 콜론을 쓴 줄은 형식이 틀린 줄이다.", null, []],
     ["본문\nREMEMBER: 결정 | 형식이 틀린 줄 위의 줄도 끝의 줄이 아니다.\nREMEMBER: 메모 | 모르는 유형은 형식이 틀린 줄이다.", null, []],
     ["본문\nREMEMBER: 사실 | 같은 내용은 한 번만 넘긴다.\nREMEMBER: 결정 | 같은 내용은 한 번만 넘긴다.\nREMEMBER: 절차 | 둘째 줄까지만 넘긴다.\nREMEMBER: 선호 | 셋째 줄은 지우기만 한다.", "본문",
       [{ type: "fact", content: "같은 내용은 한 번만 넘긴다." }, { type: "procedure", content: "둘째 줄까지만 넘긴다." }]],
@@ -294,7 +295,12 @@ test("일반 차례: 끝 ASK_USER 줄 뒤에 쓴 REMEMBER 줄은 떼고 질문�
   assert.deepEqual(saved.map(([items]) => items), [[{ type: "fact", content: "배포 방식은 아직 정하지 않았다." }]]);
   room.sendUserMessage("@claude 수동");
   await settle();
-  calls[1].finish("본문\nREMEMBER: 사실 | 질문 줄 앞에 쓴 줄은 끝의 줄이 아니다.\nASK_USER: 진행할까요?");
+  calls[1].finish("ASK_USER: 진행할까요?");
+  await settle();
+  assert.equal(agentTexts(room).at(-1), "", "질문 줄만 쓴 답은 자리 글 없이 빈 글 그대로다(자리 글은 읽은 REMEMBER 줄이 있을 때만)");
+  room.sendUserMessage("@claude 진행해");
+  await settle();
+  calls[2].finish("본문\nREMEMBER: 사실 | 질문 줄 앞에 쓴 줄은 끝의 줄이 아니다.\nASK_USER: 진행할까요?");
   await settle();
   assert.equal(agentTexts(room).at(-1), "본문\nREMEMBER: 사실 | 질문 줄 앞에 쓴 줄은 끝의 줄이 아니다.");
   assert.equal(room.awaitingUsers.get("claude")?.question, "진행할까요?");

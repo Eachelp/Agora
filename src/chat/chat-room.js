@@ -217,8 +217,7 @@ class ChatRoom extends EventEmitter {
     // 뿌리 사용자 메시지 id → 그 메시지의 recall 약속(부르지 않았으면 null). 같은 뿌리의 다음 차례가 다시 쓴다.
     this.anchorMemoryRecalls = new Map();
     this.anchorMemoryNoticed = false;
-    // AI가 기억을 쓰는 차례의 답 끝에 고른 기억: rememberMemory(items, { messageId }). 기다리지 않고, 동기로 던지면 안 된다(그 차례의
-    // 결과가 사라져 지휘 AI의 계획도 읽히지 않는다). 옵션이 없으면 안내도 읽기도 없다.
+    // AI가 기억을 쓰는 차례의 답 끝에 고른 기억: rememberMemory(items, { messageId }). 기다리지 않고, 동기로 던지면 안 된다(그 차례의 결과가 사라져 지휘 AI의 계획도 읽히지 않는다).
     this.rememberMemory = options.rememberMemory || null;
     this.meta = {
       permissionMode: "chat",

@@ -2,7 +2,7 @@
 
 // AnchorMind 기억 애드온이 main 쪽에서 이어지는 곳(방 열기·찾기·자동 저장·IPC 다섯 채널)을 진입점
 // (createChatFeature + 가짜 ipcMain)에서 확인한다. 설계: docs/design/AGORA_PROPOSAL_2026-10-23_ANCHORMIND_ADDON.md.
-// 시험 2만 진짜 입구(createAnchorMind)와 가짜 서버를 쓰고, 나머지는 같은 모양의 가짜 입구를 쓴다.
+// 시험 2와 마지막 시험만 진짜 입구(createAnchorMind)와 가짜 서버를 쓰고, 나머지는 같은 모양의 가짜 입구를 쓴다.
 // 실제 AnchorMind(127.0.0.1:57332)와 Gemini는 부르지 않는다.
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -360,7 +360,7 @@ test("폴더 고르기는 부모 창을 받아 대화 상자에 넘기고, 안 �
   assert.equal(typeof app.dialogCalls[1][0], "object");
 });
 
-test("기억을 쓰는 방에서 AI가 답 끝에 고른 기억은 화면·기록에서 빠지고 메시지마다 고정 키로 저장된다. 짧은 줄은 보내기 전에 조용히 빠지고, 저장 실패는 방에 한 번 알린다", async (t) => {
+test("기억을 쓰는 방에서 AI가 답 끝에 고른 기억은 화면에서 빠지고 메시지마다 고정 키로 저장된다. 짧은 줄은 보내기 전에 조용히 빠지고, 저장 실패는 방에 한 번 알린다", async (t) => {
   // 진짜 입구와 가짜 서버로 chat:send부터 remember 도구 호출까지 이어서 본다(Gemini도 실제 서버도 쓰지 않는다).
   const fake = await startFakeAnchorMind(t, {
     tools: {
@@ -369,7 +369,7 @@ test("기억을 쓰는 방에서 AI가 답 끝에 고른 기억은 화면·기�
     },
   });
   const answers = [
-    "배포 규칙을 정리했습니다.\nREMEMBER: 결정 | 배포는 별도 승인을 받은 뒤에만 한다.\nREMEMBER: 선호 | 짧음",
+    "배포 규칙을 정리했습니다.\nREMEMBER: 선호 | 짧음\nREMEMBER: 결정 | 배포는 별도 승인을 받은 뒤에만 한다.",
     "알겠습니다.\nREMEMBER: 사실 | 이 문장은 서버가 거절하는 시험용 기억이다.",
     "본문입니다.\nREMEMBER: 결정 | 기억을 쓰지 않는 방의 줄은 그대로 남는다.",
   ];
@@ -385,10 +385,11 @@ test("기억을 쓰는 방에서 AI가 답 끝에 고른 기억은 화면·기�
   assert.equal(first.text, "배포 규칙을 정리했습니다.");
   assert.deepEqual(fake.toolCalls("remember")[0].args, {
     content: "배포는 별도 승인을 받은 뒤에만 한다.", topic: `agora-${projectId}`, type: "decision",
-    workspace: `agora-${projectId}`, idempotencyKey: `agora-r-${first.id}-0`,
+    workspace: `agora-${projectId}`, idempotencyKey: `agora-r-${first.id}-1`,
   });
 
   // 서버가 거절한 저장은 다시 보내지 않고 그 방에 한 번 알린다(기억 내용은 안내에 넣지 않는다).
+  await app.invoke("chat:sessions:create", { projectId }); // 다른 방이 활성 방이어도 알림은 답한 방으로 간다
   await app.invoke("chat:send", { sessionId, text: "@claude 하나 더" });
   await waitFor(() => app.notices().length === 1, 4000);
   assert.equal(app.notices()[0].sessionId, sessionId);
@@ -401,6 +402,6 @@ test("기억을 쓰는 방에서 AI가 답 끝에 고른 기억은 화면·기�
   assert.equal(agentMessages()[2].text, "본문입니다.\nREMEMBER: 결정 | 기억을 쓰지 않는 방의 줄은 그대로 남는다.");
   assert.doesNotMatch(app.prompts[2], /REMEMBER/);
   // 짧은 줄("짧음")은 입구가 보내기 전에 거절해 서버에 가지 않았고 알림도 없었다(알림은 위의 서버 거절 한 번뿐이다).
-  assert.deepEqual(fake.toolCalls("remember").map((call) => call.args.idempotencyKey), [`agora-r-${first.id}-0`, `agora-r-${agentMessages()[1].id}-0`]);
+  assert.deepEqual(fake.toolCalls("remember").map((call) => call.args.idempotencyKey), [`agora-r-${first.id}-1`, `agora-r-${agentMessages()[1].id}-0`]);
   assert.equal(app.notices().length, 1);
 });
