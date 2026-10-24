@@ -2,7 +2,7 @@
 
 // AnchorMind 기억 애드온이 main 쪽에서 이어지는 곳(방 열기·찾기·자동 저장·IPC 다섯 채널)을 진입점
 // (createChatFeature + 가짜 ipcMain)에서 확인한다. 설계: docs/design/AGORA_PROPOSAL_2026-10-23_ANCHORMIND_ADDON.md.
-// 시험 2와 마지막 시험만 진짜 입구(createAnchorMind)와 가짜 서버를 쓰고, 나머지는 같은 모양의 가짜 입구를 쓴다.
+// 시험 2와 AI가 고른 기억 시험만 진짜 입구(createAnchorMind)와 가짜 서버를 쓰고, 나머지는 같은 모양의 가짜 입구를 쓴다.
 // 실제 AnchorMind(127.0.0.1:57332)와 Gemini는 부르지 않는다.
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -41,9 +41,8 @@ const RECORD = JSON.stringify({
 
 // 실제 앱처럼 createChatFeature에 입구(anchorMind)를 넘긴다. 안 넘기면 기존 시험이 쓰는 모양이다.
 // runAgent는 기록관 차례에만 RECORD를, "실패시험"이 든 프롬프트에는 실패를, 그 밖에는 answer()를 주고, 받은 프롬프트를 prompts에 쌓는다.
-// 창은 보낸 알림만 모으고, 폴더 대화 상자는 받은 인자를 dialogCalls에 쌓는다.
-function makeApp(t, anchorMind, answer = () => `의견 ${CONCLUDE}`) {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-anchormind-ipc-")));
+// 창은 보낸 알림만 모으고, 폴더 대화 상자는 받은 인자를 dialogCalls에 쌓는다. 같은 저장소를 다시 열려면 root를 넘긴다.
+function makeApp(t, anchorMind, answer = () => `의견 ${CONCLUDE}`, root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-anchormind-ipc-")))) {
   const records = [fakeRecord("claude", "Claude", ["claude"]), fakeRecord("codex", "GPT", ["gpt", "codex"])];
   const handlers = new Map();
   const sent = [];
@@ -404,4 +403,23 @@ test("기억을 쓰는 방에서 AI가 답 끝에 고른 기억은 화면에서 
   // 짧은 줄("짧음")은 입구가 보내기 전에 거절해 서버에 가지 않았고 알림도 없었다(알림은 위의 서버 거절 한 번뿐이다).
   assert.deepEqual(fake.toolCalls("remember").map((call) => call.args.idempotencyKey), [`agora-r-${first.id}-1`, `agora-r-${agentMessages()[1].id}-0`]);
   assert.equal(app.notices().length, 1);
+});
+
+test("읽기 전용 저장소나 읽기 전용 프로젝트는 열어 보기만 해도 기억을 쓰는 프로젝트의 AnchorMind를 깨우지 않는다", async (t) => {
+  for (const newerFile of [() => "config.json", (projectId) => path.join("projects", `${projectId}.json`)]) {
+    const writable = fakeAnchorMind();
+    const first = makeApp(t, writable);
+    const { projectId } = await enabledProject(first);
+    await first.invoke("chat:state");
+    assert.ok(writable.of("ensureStarted").length > 0, "쓸 수 있으면 방을 열 때 깨운다");
+    first.feature.shutdown();
+    // 같은 저장소의 파일 하나를 더 새 버전이 만든 것처럼 바꿔 다시 연다(저장소 전체 또는 그 프로젝트가 읽기 전용).
+    const file = path.join(first.root, newerFile(projectId));
+    fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, "utf8")), schemaVersion: 999 }));
+    const readOnly = fakeAnchorMind();
+    const state = await makeApp(t, readOnly, undefined, first.root).invoke("chat:state");
+    assert.ok(state.readOnly || state.projects.find((project) => project.id === projectId).readOnly, "읽기 전용으로 열렸다");
+    assert.equal(state.session.meta.projectId, projectId);   // 기억 칸을 켠 프로젝트의 방이 열렸다
+    assert.deepEqual(readOnly.calls, []);
+  }
 });

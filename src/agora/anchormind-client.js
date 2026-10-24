@@ -28,7 +28,7 @@ const TESTED_VERSION = "6.7.1";
 const GEMINI_001 = "gemini-embedding-001";
 const GEMINI_001_WARN_FROM = Date.parse("2028-02-14");   // 종료(2028-05-14) 석 달 전
 // 관련 기억으로 볼 코사인 유사도 하한. 점수 범위가 모델마다 달라 모델별로 둔다. 모르는 모델이면 Agora 문턱값이 없다.
-// 실제 연결 1(2026-10-24, 3,072차원)에서 잰 값: 관련 최저 0.719와 엇갈린 기억·무관 질문 최고 0.638의 가운데(ops\rc1-result.json summary.threshold). 모델이 바뀌면 다시 잰다.
+// 실제 연결 1(2026-10-24, 3,072차원)에서 잰 값: 관련 최저 0.719와 엇갈린 기억·무관 질문 최고 0.638의 가운데. 모델이 바뀌면 다시 잰다.
 const THRESHOLDS = { [GEMINI_001]: 0.679 };
 const LOG_ROTATE_BYTES = 2 * 1024 * 1024;
 const DEFAULT_PORT = 57332;                      // .env에 PORT가 없을 때의 AnchorMind 기본값
@@ -125,7 +125,7 @@ function appendRecallLog(storeRoot, record) {
 }
 
 function createAnchorMind({
-  getSettings, saveSettings, storeRoot, onStatus = () => {},
+  getSettings, saveSettings, storeRoot, onStatus,
   // 시험 주입. 시계·타이머·프로세스는 anchormind-process.js로 그대로 넘긴다.
   now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout, spawn, spawnSync,
   request = http.request, timeoutMs = REQUEST_TIMEOUT_MS,
@@ -140,7 +140,7 @@ function createAnchorMind({
   const proc = createAnchorMindProcess({
     healthy, beforeIdleStop: consolidateIfDue,
     onState: (state) => {
-      if (state === "off") conn = null;   // 서버가 꺼졌다(유휴로 껐거나 켤 수 없다). 다시 켜면 initialize부터 한다
+      if (state === "off" || state === "starting") conn = null;   // 서버가 꺼졌거나 새로 켜는 중이다. 옛 연결(세션)은 쓸 수 없고, 켜지면 initialize부터 한다
       setStatus({ state, reason: state === "error" ? REASONS.start : null });
     },
     now, setTimer, clearTimer, spawn, spawnSync,
@@ -282,7 +282,18 @@ function createAnchorMind({
     });
   }
 
+  // 연결을 맺은 뒤 설정이 가리키는 서버(.env의 주소·접속 키)가 바뀌었는가. .env를 읽지 못해도 바뀐 것으로 본다.
+  function stale() {
+    try {
+      const env = readEnv();
+      return env.url !== conn.url || env.key !== conn.key;
+    } catch {
+      return true;
+    }
+  }
+
   async function connected() {
+    if (conn && stale()) conn = null;
     if (conn) return conn;
     if (!connecting) connecting = connect().finally(() => { connecting = null; });
     conn = await connecting;
@@ -422,13 +433,16 @@ function createAnchorMind({
 
   // 프로젝트 기록의 기억 목록. search_traces는 임베딩을 쓰지 않는다. entity_key는 주제 부분 일치라
   // 같은 주제만 한 번 더 남긴다(전역 기억도 여기서 빠진다). 지우기·고치기는 여기 나온 id만 받는다.
+  // 서버가 준 type·created_at이 글이 아니면 빈 글로 둔다(화면이 그대로 그린다).
   async function list(projectId) {
     const topic = workspaceFor(projectId);
     const result = await callWhenStarted("search_traces", { workspace: topic, entity_key: topic, limit: LIST_LIMIT }, { retry: true });
     // ponytail: 최신 100개만 보인다. 더 필요하면 time_range로 나눠 읽는다.
     const items = (Array.isArray(result.traces) ? result.traces : [])
       .filter((trace) => typeof trace?.id === "string" && trace.topic === topic && typeof trace.content === "string")
-      .map(({ id, type, content, created_at: createdAt }) => ({ id, type, content, createdAt }));
+      .map(({ id, type, content, created_at: createdAt }) => ({
+        id, type: typeof type === "string" ? type : "", content, createdAt: typeof createdAt === "string" ? createdAt : "",
+      }));
     listed.set(topic, new Set(items.map((item) => item.id)));
     return items;
   }

@@ -84,7 +84,8 @@ async function started(s) {
   assert.equal(await result, true);
 }
 
-test("이미 켜진 서버, 200이 아닌 답을 하는 서버, 명령이 모자란 꺼진 서버는 켜지도 끄지도 않는다", async () => {
+// 이 규칙이 깨지면 켜기가 실제로 시작돼 가짜 시계가 가지 않으므로 기다림이 끝나지 않는다. 시간 제한으로 그 자리에서 실패하게 한다.
+test("이미 켜진 서버, 200이 아닌 답을 하는 서버, 명령이 모자란 꺼진 서버는 켜지도 끄지도 않는다", { timeout: 5000 }, async () => {
   const up = setup();
   up.health.up = true;
   assert.equal(await up.proc.ensureStarted(SETTINGS), true);

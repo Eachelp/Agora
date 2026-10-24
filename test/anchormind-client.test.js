@@ -16,7 +16,7 @@ const supported = (fragments) => ({ success: true, fragments, _meta: { evidence:
 
 test("전역 설정이 꺼져 있으면 recall은 동기로 null을 돌려주고 서버에 묻지 않는다", async (t) => {
   const fake = await startFakeAnchorMind(t);
-  const { client, statuses, logFile } = createTestAnchorMind(t, fake, { anchorMind: { enabled: false } });
+  const { client, statuses, logFile, settings } = createTestAnchorMind(t, fake, { anchorMind: { enabled: false } });
   assert.equal(client.recall(ask), null);
   await client.ensureStarted();
   assert.equal(fake.calls.length, 0);
@@ -25,11 +25,16 @@ test("전역 설정이 꺼져 있으면 recall은 동기로 null을 돌려주고
     enabled: false, state: "off", reason: null, serverVersion: null, versionWarning: null, deprecationWarning: null,
   });
   assert.equal(fs.existsSync(logFile), false);
+  // 설정에 anchorMind 칸이 아예 없어도(애드온을 켠 적 없는 사용자) 기본은 꺼짐이다.
+  delete settings().anchorMind;
+  assert.equal(client.recall(ask), null);
+  assert.equal(client.status().enabled, false);
 });
 
 test("recall은 정한 인자만 보내고, initialize는 한 번만 하며 접속 키는 요청마다 싣는다", async (t) => {
   const fake = await startFakeAnchorMind(t, { tools: { recall: () => ({ success: true, fragments: [], _meta: { evidence: { status: "no_evidence" } } }) } });
-  const { client } = createTestAnchorMind(t, fake);
+  const agents = [];
+  const { client } = createTestAnchorMind(t, fake, { request: (url, options, callback) => { agents.push(options.agent); return http.request(url, options, callback); } });
   // 연결이 없을 때 세 번이 한꺼번에 들어와도 initialize는 한 번이다(분당 30회 한도에 initialize도 센다).
   const long = { projectId: "p1", text: "가".repeat(1500) };
   const [first] = await Promise.all([client.recall(long), client.recall(long), client.recall(long)]);
@@ -50,6 +55,9 @@ test("recall은 정한 인자만 보내고, initialize는 한 번만 하며 접�
   assert.equal(client.status().state, "connected");
   assert.equal(client.status().serverVersion, "6.7.1");
   assert.equal(client.status().versionWarning, null);
+  // 접속 키가 컴퓨터 밖으로 새지 않게: 프록시 환경 변수를 따르는 기본 연결 설정(전역 agent)이 아니라 요청마다 새 연결 설정을 쓰고, 루프백 주소로만 붙는다.
+  assert.ok(agents.length > 0 && agents.every((agent) => agent instanceof http.Agent && agent !== http.globalAgent));
+  for (const call of fake.calls) assert.equal(call.headers.host, `127.0.0.1:${fake.port}`);
 });
 
 test("관련 있는 같은 공간 기억만 유형과 날짜를 붙여 한 줄씩 넣는다", async (t) => {
@@ -203,6 +211,7 @@ test("ensureStarted는 이미 켜진 서버면 켜기 명령 없이 연결만 �
   assert.equal(client.status().enabled, true);
   assert.deepEqual(fake.calls.map((call) => call.path), ["/health", "/mcp"]);
   assert.equal(fake.calls[1].method, "initialize");
+  assert.equal(fake.calls[0].headers.authorization, undefined);   // 건강 확인은 접속 키 없이 보낸다(그 포트를 다른 프로그램이 쓸 수 있다)
   await client.ensureStarted();
   assert.deepEqual(fake.calls.map((call) => call.path), ["/health", "/mcp", "/health"]);
 });
@@ -260,7 +269,10 @@ test("목록은 같은 주제만 보여 주고, 지우기·고치기는 그 프�
   const trace = (id, topic, type = "fact") => ({ id, topic, type, content: `기억 ${id} 내용입니다.`, created_at: "2026-10-24T12:00:00.000Z" });
   const fake = await startFakeAnchorMind(t, {
     tools: {
-      search_traces: () => ({ success: true, traces: [trace("a", ws), trace("b", "agora-p10"), trace("c", "general"), trace("d", ws, "episode")] }),
+      search_traces: () => ({ success: true, traces: [
+        trace("a", ws), trace("b", "agora-p10"), trace("c", "general"), trace("d", ws, "episode"),
+        { ...trace("e", ws), type: { valueOf: 1, toString: 2 }, created_at: [{ valueOf: 1, toString: 2 }] },
+      ] }),
       forget: () => ({ success: true, deleted: 0, protected: 0 }),
       amend: () => ({ success: true, updated: true }),
     },
@@ -269,6 +281,8 @@ test("목록은 같은 주제만 보여 주고, 지우기·고치기는 그 프�
   assert.deepEqual(await client.list("p1"), [
     { id: "a", type: "fact", content: "기억 a 내용입니다.", createdAt: "2026-10-24T12:00:00.000Z" },
     { id: "d", type: "episode", content: "기억 d 내용입니다.", createdAt: "2026-10-24T12:00:00.000Z" },
+    // 서버가 type·created_at에 글이 아닌 값을 줘도 목록은 거절하지 않고 그 두 칸만 비워 화면이 멈추지 않게 한다.
+    { id: "e", type: "", content: "기억 e 내용입니다.", createdAt: "" },
   ]);
   assert.deepEqual(fake.toolCalls("search_traces")[0].args, { workspace: ws, entity_key: ws, limit: 100 });
   await assert.rejects(client.forget("p1", "b"), /목록에 없는/);
@@ -392,4 +406,43 @@ test("유휴로 끄기 직전 정리는 마지막 정리 뒤 하루가 지났을
   assert.equal(settings().anchorMind.lastConsolidateAt, lastAt);
   await cycle(() => { settings().anchorMind.enabled = false; });   // 하루가 지났어도 애드온을 끈 뒤에는 정리하지 않는다
   assert.equal(fake.toolCalls("memory_consolidate").length, 2);
+});
+
+test("연결을 든 채 서버가 죽었다가 방 열기로 다시 켜지면 상태가 starting에 남지 않고 recall이 서버에 닿는다", async (t) => {
+  let dead = false;
+  const clock = fakeClock();
+  const fake = await startFakeAnchorMind(t, { tools: { recall: (args) => supported([memoryFragment(args.workspace)]) } });
+  const { client } = createTestAnchorMind(t, fake, {
+    anchorMind: { startCommand: "start-anchormind", stopCommand: "stop-anchormind" },
+    now: clock.now, setTimer: clock.setTimer, clearTimer: clock.clearTimer,
+    request: (url, options, callback) => (dead ? refusingRequest() : http.request(url, options, callback)),
+    spawn: () => { dead = false; return Object.assign(new EventEmitter(), { exitCode: null, kill() {} }); },   // 켜기 명령이 서버를 살린다
+  });
+  assert.equal((await client.recall(ask)).reason, null);   // 연결을 만든다
+  dead = true;                                             // 서버가 죽는다: 아직 실패한 호출은 없다
+  let done = false;
+  const warm = client.ensureStarted().then(() => { done = true; });
+  await advanceUntil(clock, () => done);                   // /health가 두 번 잇달아 응답하면 켜기가 끝난다
+  await warm;
+  assert.equal(client.status().state, "connected");
+  const before = fake.toolCalls("recall").length;
+  assert.equal((await client.recall(ask)).reason, null);
+  assert.equal(fake.toolCalls("recall").length, before + 1);
+});
+
+test("폴더를 바꿔 적용하면 바뀐 폴더의 서버를 쓴다", async (t) => {
+  const tools = { remember: () => ({ success: true }) };
+  const a = await startFakeAnchorMind(t, { tools });
+  const b = await startFakeAnchorMind(t, { tools });
+  const { client, settings } = createTestAnchorMind(t, a);
+  await client.remember("p1", { type: "fact", content: "서버 A에 저장하는 기억입니다" });
+  // 이미 맺은 연결은 옛 서버의 것이다. 설정을 바꿔 적용하면 쓸 때마다 읽는 .env가 가리키는 서버로 새로 연결한다.
+  settings().anchorMind.folder = b.folder;
+  await client.remember("p1", { type: "fact", content: "서버 B에 저장하는 기억입니다" });
+  assert.deepEqual([a.toolCalls("remember").length, b.toolCalls("remember").length], [1, 1]);
+  // 접속 키를 읽지 못하면 옛 연결을 그대로 쓰지 않고 오류로 둔다.
+  fs.rmSync(`${b.folder}/.env`);
+  await assert.rejects(client.remember("p1", { type: "fact", content: "서버 B에 다시 저장하는 기억입니다" }), /접속 키/);
+  assert.equal(client.status().state, "error");
+  assert.equal(b.toolCalls("remember").length, 1);
 });
