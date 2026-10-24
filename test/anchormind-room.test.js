@@ -99,7 +99,7 @@ test("토론·결론 종합·기록관·전달·쉽게 설명 차례는 recall�
   const { discussionId } = await room.startDiscussion({ turnBudget: 3 });
   await idle();
   await room.summarizeDiscussion(discussionId, "claude");
-  // 기록관 차례: chat-ipc.js recordDiscussion(:1105-1109)이 여는 것과 같은 context다.
+  // 기록관 차례: chat-ipc.js recordDiscussion이 여는 것과 같은 context다.
   await room.scheduleResponse(room.findAgent("codex"), {
     discussionSummary: { record: true, discussionId },
     discussionSummaryMessages: room.discussionRecordOf(discussionId).messages,
@@ -119,14 +119,45 @@ test("토론·결론 종합·기록관·전달·쉽게 설명 차례는 recall�
   assert.ok(helpers.every((prompt) => !prompt.includes("=== AnchorMind 기억 ===")));
 });
 
+test("오케스트레이션이 도는 동안 사용자가 다른 AI에게 직접 @로 보낸 메시지: 그 자유 차례도 자기 기억을 받고 시작한다", async () => {
+  const recall = makeRecall();
+  const { room, calls } = makeRoom({ meta: LEAD, recallMemory: recall.recallMemory });
+  room.sendUserMessage("claude에게 맡겨줘");
+  recall.gates[0].resolve(FOUND);
+  await settle();
+  room.sendUserMessage("@codex 이건 따로 물어볼게"); // 오케스트레이션 id 보호 줄은 자유 차례를 거르지 않는다
+  recall.gates[1].resolve(FOUND);
+  await settle();
+  assert.deepEqual(ids(calls), ["claude", "codex"]);
+  assert.ok(calls[1].prompt.includes(BLOCK));
+});
+
+test("시작하지 못한 메시지는 recall하지 않는다: 다음 조각에 갈아끼워진 메시지, 줄에서 기다리다 중지된 메시지", async () => {
+  const recall = makeRecall();
+  const { room, calls } = makeRoom({ recallMemory: recall.recallMemory });
+  room.sendUserMessage("@claude 긴 작업");
+  recall.gates[0].resolve(FOUND);
+  await settle();
+  room.sendUserMessage("@claude 첫째 조각"); // claude가 돌고 있어 줄에서 기다린다
+  room.sendUserMessage("@claude 둘째 조각"); // 첫째 조각의 대기 턴을 갈아끼운다
+  calls[0].finish("끝");
+  await settle();
+  room.sendUserMessage("@claude 셋째 메시지"); // 둘째가 기억을 기다리는 중이라 줄에서 기다린다
+  room.stopAll();
+  await settle();
+  assert.deepEqual(recall.queries, ["@claude 긴 작업", "@claude 둘째 조각"]);
+});
+
 test("3초 안에 기억이 오지 않으면 그 차례는 기억 없이 시작해 이유를 한 번 알리고, 늦게 온 결과는 같은 메시지의 다음 차례가 쓴다", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const recall = makeRecall();
   const { room, calls, systems } = makeRoom({ recallMemory: recall.recallMemory });
   room.sendUserMessage("@claude @codex 배포 순서 알려 줘");
   await settle();
+  t.mock.timers.tick(2999);
+  await settle();
   assert.equal(calls.length, 0, "3초가 지나기 전에는 시작하지 않는다");
-  t.mock.timers.tick(3000);
+  t.mock.timers.tick(1);
   await settle();
   assert.deepEqual(ids(calls), ["claude"]);
   assert.ok(!calls[0].prompt.includes("=== AnchorMind 기억 ==="));
@@ -160,7 +191,8 @@ test("기억을 기다리는 사이 오케스트레이션이 끝나면(세대는
   assert.ok(room.orchestration, "지휘 차례가 기억을 기다리는 중이다");
   const notice = "오케스트레이터 모드를 꺼서 오케스트레이션을 끝냅니다. 지금까지의 결과는 위에 있습니다.";
   room.endOrchestration(notice); // chat-ipc의 chat:orchestrator:set이 모드를 끌 때 부르는 것과 같다.
-  recall.gates[0].resolve(FOUND);
+  // 실패 이유로 풀어, 두 보호 줄이 안내보다 먼저 도는지(안내가 새지 않는지)를 아래 systems 단정이 본다.
+  recall.gates[0].resolve({ block: "", reason: "AnchorMind가 제때 답하지 않았습니다." });
   await settle();
   assert.equal(calls.length, 0);
   assert.equal(room.isIdle(), true);

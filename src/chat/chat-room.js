@@ -212,7 +212,7 @@ class ChatRoom extends EventEmitter {
     // runAgent({agent, prompt, runId, attachments, emitEvent}) => { promise, cancel }
     this.runAgent = options.runAgent;
     this.prepareAgent = options.prepareAgent;
-    // AnchorMind 기억: recallMemory(text) => Promise<{ block, reason }> | null. 옵션이 없으면 기억 없이 돈다.
+    // AnchorMind 기억: recallMemory(text) => Promise<{ block, reason }> | null. 동기로 던지거나 reject하면 안 된다(방이 감싸지 않아 그 차례가 말없이 사라진다). 옵션이 없으면 기억 없이 돈다.
     this.recallMemory = options.recallMemory || null;
     // 뿌리 사용자 메시지 id → 그 메시지의 recall 약속(부르지 않았으면 null). 같은 뿌리의 다음 차례가 다시 쓴다.
     this.anchorMemoryRecalls = new Map();
@@ -1859,8 +1859,8 @@ class ChatRoom extends EventEmitter {
     if (!rootId) return null;
     if (!this.anchorMemoryRecalls.has(rootId)) {
       const root = this.messages.find((message) => message.id === rootId);
-      // 글이 있는 사용자 메시지만 질의가 된다(AI 답이나 첨부만 보낸 빈 글은 아니다). 부르지 않은 뿌리도 null로 적어 둔다.
-      this.anchorMemoryRecalls.set(rootId, root?.authorType === "user" && root.text ? this.recallMemory(root.text) : null);
+      // 글이 있는 사용자 메시지만 질의가 된다(첨부만 보낸 빈 글은 아니다). 부르지 않은 뿌리도 null로 적어 둔다.
+      this.anchorMemoryRecalls.set(rootId, root?.text ? this.recallMemory(root.text) : null);
       if (this.anchorMemoryRecalls.size > ANCHOR_MEMORY_ROOTS) this.anchorMemoryRecalls.delete(this.anchorMemoryRecalls.keys().next().value);
     }
     return this.anchorMemoryRecalls.get(rootId);

@@ -44,6 +44,9 @@ test("기억 블록은 누적 요약 블록 바로 뒤에 다섯 줄로만 들�
   const [plain, full] = golden.prompts;
   assert.match(lineBefore(full.input), /^- 누적 요약에는 검증되지 않은 기록관 초안이 섞여 있습니다\./);
   assert.equal(lineBefore(plain.input), "- 대화에서 쓰인 언어로 답하세요.");
+  // 뒤 줄: broadcast·parallel 줄이 둘 다 있는 입력(독립 발언 묶음)에서는 머리줄이 그 두 줄보다 앞이다.
+  const bundle = golden.prompts.find((item) => item.input.broadcast && item.input.parallel);
+  assert.match(withMemory(bundle.input), /=== AnchorMind 기억 ===\n[\s\S]*\n- 사용자 메시지에 참가자[\s\S]*\n- 지금 참가자/);
 });
 
 test("기억 블록은 16,000자 공유 한도 밖이다: 누적 요약이 잘리는 정도를 바꾸지 않고, 한도를 다 써도 들어간다", () => {
