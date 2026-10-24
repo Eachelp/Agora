@@ -134,7 +134,10 @@ function parseOrchestrationControl(text) {
 
 // 기억을 쓰는 차례의 답 끝 줄 `REMEMBER: <유형> | <내용>`. 유형은 화면의 기억하기와 같은 다섯 이름이고 값은 입구가 받는 유형이다.
 const REMEMBER_TYPES = Object.freeze({ 사실: "fact", 결정: "decision", 절차: "procedure", 에러: "error", 선호: "preference" });
-const REMEMBER_LINE_PATTERN = new RegExp(`^[ \\t]*REMEMBER:[ \\t]*(${Object.keys(REMEMBER_TYPES).join("|")})[ \\t]*\\|[ \\t]*(\\S(?:[^\\r\\n]*\\S)?)[ \\t]*$`, "i");
+// 줄 시작의 표시와 글줄 끝에 붙여 쓴 표시가 같은 머리(REMEMBER: 유형 |)를 읽도록 한 곳에 둔다.
+const REMEMBER_HEAD = `REMEMBER:[ \\t]*(${Object.keys(REMEMBER_TYPES).join("|")})[ \\t]*\\|`;
+const REMEMBER_LINE_PATTERN = new RegExp(`^[ \\t]*${REMEMBER_HEAD}[ \\t]*(\\S(?:[^\\r\\n]*\\S)?)[ \\t]*$`, "i");
+const REMEMBER_INLINE_HEAD = new RegExp(`[ \\t]${REMEMBER_HEAD}`, "i");
 // 프롬프트가 안내한 최대 줄 수. 더 쓰면 모두 지우고 앞의 것만 저장한다.
 const REMEMBER_MAX = 2;
 
@@ -148,6 +151,8 @@ function isTailLine(body, { control, remember }) {
 // 끝부분이라 초안과 최종 말풍선이 같게 보인다. 지휘 차례(control)는 STAGE·DONE·ASK_USER 줄의 앞에 쓰든 뒤에 쓰든 읽고,
 // 그 줄은 그대로 남겨 뒤에서 따로 읽게 한다. 코드펜스·인라인 백틱 안의 줄과 형식이 틀린 줄은 남는다. 같은 내용은 한 번만,
 // 앞의 REMEMBER_MAX개만 저장한다. 반환: { items: [{ type, content }], text }. 읽은 줄이 없으면 text는 입력 그대로다.
+// 끝 블록 바로 위 글줄의 끝에 붙여 쓴 표시도 한 개는 읽어 떼어 내고 맨 뒤 항목으로 센다(한 줄로 답하라는 요청에 줄을 바꾸지 않는 모델이 있다).
+// 실시간 초안 필터는 줄 시작의 표시만 숨기므로 이 표시는 최종 말풍선이 나올 때까지 초안에 보일 수 있다(받아들인다).
 function parseRememberLines(text, { control }) {
   const raw = String(text || "");
   const rawLines = raw.split(/\r?\n/);
@@ -160,6 +165,15 @@ function parseRememberLines(text, { control }) {
   }
   const items = [];
   const kept = rawLines.slice(0, start);
+  // 붙여 쓴 표시는 줄을 바꿔 쓴 것으로 보고 끝 블록 뒤에 잇는다. 머리는 가린 줄(원문과 길이가 같다)에서 찾아 백틱·펜스 안의 표시는 닿지 않고,
+  // 앞에 글자가 없는(`- REMEMBER:` 같은 꾸민) 줄도 아니며, 머리부터 줄 끝까지는 REMEMBER 줄의 형식과 같아야 한다.
+  let last = start - 1;
+  while (last >= 0 && maskedLines[last].trim() === "") last -= 1;
+  const at = last >= 0 ? maskedLines[last].search(REMEMBER_INLINE_HEAD) : -1;
+  if (at >= 0 && /\p{L}/u.test(kept[last].slice(0, at)) && REMEMBER_LINE_PATTERN.test(kept[last].slice(at))) {
+    rawLines.push(kept[last].slice(at));
+    kept[last] = kept[last].slice(0, at).trimEnd();
+  }
   for (let index = start; index < rawLines.length; index += 1) {
     // 끝 블록의 줄은 위에서 가린 줄로 골랐다. 값은 원문 줄에서 읽는다(가린 줄에서 읽으면 인라인 백틱 안 내용이 사라진다).
     const match = REMEMBER_LINE_PATTERN.exec(rawLines[index]);

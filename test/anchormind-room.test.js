@@ -8,6 +8,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { settle, makeRoom, ids } = require("./reply-now-helpers.cjs");
+const { parseRememberLines } = require("../src/chat/control-output");
 
 const MEMORY = "- [결정] 배포는 별도 승인 뒤에만 한다 (2026-10-24)";
 const FOUND = { block: MEMORY, reason: null };
@@ -253,7 +254,7 @@ test("기억을 쓰는 차례는 답 끝 REMEMBER 줄을 화면·기록에서 �
   ]);
 });
 
-test("REMEMBER 줄 읽기: 답 맨 끝의 줄만 읽고(사이의 빈 줄과 CRLF는 괜찮다), 본문 앞·코드펜스·인라인 백틱 안·형식이 틀린 줄은 그대로 두며, 같은 내용은 한 번, 앞의 두 줄만 넘기고 나머지도 지운다. 줄만 쓴 답은 빈 말풍선 대신 자리 글이 된다", async () => {
+test("REMEMBER 줄 읽기: 답 맨 끝의 줄과 끝 블록 바로 위 글줄 끝에 붙여 쓴 표시 하나(맨 뒤 항목)만 읽고(사이의 빈 줄과 CRLF는 괜찮다), 본문 앞·코드펜스·인라인 백틱 안·꾸민·형식이 틀린 표시는 그대로 두며, 같은 내용은 한 번, 앞의 두 개만 넘기고 나머지도 지운다. 줄만 쓴 답은 빈 말풍선 대신 자리 글이 된다", async () => {
   const cases = [
     // [답, 남는 글(null이면 답 그대로), 넘기는 항목]
     ["본문입니다.\nREMEMBER: 사실 | 빈 줄을 사이에 두어도 끝의 줄로 읽는다.\n\nREMEMBER: 에러 | 포트가 막히면 다른 프로그램을 먼저 끈다.\n", "본문입니다.",
@@ -272,6 +273,36 @@ test("REMEMBER 줄 읽기: 답 맨 끝의 줄만 읽고(사이의 빈 줄과 CRL
     ["빌드 방법입니다.\nREMEMBER: 절차 | 빌드는 `npm run build`로 하고 끝나면 @agy에게 알린다.", "빌드 방법입니다.",
       [{ type: "procedure", content: "빌드는 `npm run build`로 하고 끝나면 @agy에게 알린다." }]],
     ["REMEMBER: 결정 | 배포는 별도 승인을 받은 뒤에만 한다.", "(기억에 남깁니다)", [{ type: "decision", content: "배포는 별도 승인을 받은 뒤에만 한다." }]],
+    // 끝 블록 바로 위 글줄의 끝에 붙여 쓴 표시(한 줄로 답해 달라는 요청에 줄을 바꾸지 않는 모델이 있다). 표시 뒤 줄 끝까지가 내용이다(줄 시작의 표시와 같다).
+    ["정기 회의는 매주 화요일 오전 10시로 정했습니다. REMEMBER: 결정 | 정기 회의는 매주 화요일 오전 10시에 진행하기로 했다.", "정기 회의는 매주 화요일 오전 10시로 정했습니다.",
+      [{ type: "decision", content: "정기 회의는 매주 화요일 오전 10시에 진행하기로 했다." }]],
+    ["첫 줄입니다.\r\n둘째 줄입니다.  \tREMEMBER: 절차 | 빌드는 `npm run build`로 하고 끝나면 @agy에게 알린다.\r\n", "첫 줄입니다.\n둘째 줄입니다.",
+      [{ type: "procedure", content: "빌드는 `npm run build`로 하고 끝나면 @agy에게 알린다." }]],
+    ["본문입니다. REMEMBER: 결정 | 붙여 쓴 표시는 맨 뒤 항목이다.\nREMEMBER: 사실 | 줄로 쓴 표시를 먼저 넘긴다.", "본문입니다.",
+      [{ type: "fact", content: "줄로 쓴 표시를 먼저 넘긴다." }, { type: "decision", content: "붙여 쓴 표시는 맨 뒤 항목이다." }]],
+    ["본문입니다. REMEMBER: 결정 | 빈 줄을 사이에 두어도 읽는다.\n\nREMEMBER: 사실 | 끝 블록의 줄도 읽는다.", "본문입니다.",
+      [{ type: "fact", content: "끝 블록의 줄도 읽는다." }, { type: "decision", content: "빈 줄을 사이에 두어도 읽는다." }]],
+    ["본문입니다. REMEMBER: 절차 | 붙여 쓴 표시도 두 개 안에 든다.\nREMEMBER: 사실 | 첫째 줄은 넘긴다.\nREMEMBER: 선호 | 둘째 줄까지만 넘긴다.", "본문입니다.",
+      [{ type: "fact", content: "첫째 줄은 넘긴다." }, { type: "preference", content: "둘째 줄까지만 넘긴다." }]],
+    ["본문입니다. REMEMBER: 사실 | 같은 내용은 한 번만 넘긴다.\nREMEMBER: 결정 | 같은 내용은 한 번만 넘긴다.", "본문입니다.",
+      [{ type: "decision", content: "같은 내용은 한 번만 넘긴다." }]],
+    // 붙여 쓴 표시여도 끝 블록 바로 위 글줄이 아니거나, 백틱·펜스 안이거나, 공백 없이 붙었거나, 꾸몄거나, 형식이 틀리면 그대로 남는다(줄 시작의 표시와 같다).
+    ["정했습니다. REMEMBER: 결정 | 뒤에 글줄이 더 있으면 읽지 않는다.\n그 뒤에 글줄이 하나 더 있습니다.", null, []],
+    ["정했습니다. REMEMBER: 결정 | 끝 블록 바로 위가 아닌 글줄의 표시는 읽지 않는다.\n둘째 글줄입니다.\nREMEMBER: 사실 | 끝 블록의 줄은 읽는다.",
+      "정했습니다. REMEMBER: 결정 | 끝 블록 바로 위가 아닌 글줄의 표시는 읽지 않는다.\n둘째 글줄입니다.", [{ type: "fact", content: "끝 블록의 줄은 읽는다." }]],
+    ["형식은 이렇습니다. `예: REMEMBER: 사실 | 붙여 쓴 표시도 인라인 백틱 안이면 기억이 아니다.`", null, []],
+    ["예시입니다.\n```\n정했습니다. REMEMBER: 사실 | 닫히지 않은 코드펜스 안의 표시도 기억이 아니다.", null, []],
+    ["정했습니다.REMEMBER: 결정 | 공백 없이 붙은 표시는 읽지 않는다.", null, []],
+    ["정했습니다. **REMEMBER: 결정 | 굵게 꾸민 표시는 읽지 않는다.**", null, []],
+    ["- REMEMBER: 결정 | 글머리표를 단 줄은 읽지 않는다.", null, []],
+    ["> REMEMBER: 결정 | 인용 표시를 단 줄은 읽지 않는다.", null, []],
+    ["정했습니다. REMEMBER: 메모 | 모르는 유형은 형식이 틀린 표시다.", null, []],
+    ["저장하려면 REMEMBER: 줄을 쓰면 되고 형식은 따로 안내합니다.", null, []],
+    ["정했습니다. REMEMBER: 결정 |\nREMEMBER: 사실 | 내용이 없는 표시는 형식이 틀리고 끝 블록의 줄은 읽는다.", "정했습니다. REMEMBER: 결정 |",
+      [{ type: "fact", content: "내용이 없는 표시는 형식이 틀리고 끝 블록의 줄은 읽는다." }]],
+    // 끝 블록의 줄은 쪼개지 않는다: 줄 시작의 표시 안에 또 표시가 있어도 한 줄의 내용이다.
+    ["본문\nREMEMBER: 결정 | 이 줄 안의 REMEMBER: 사실 | 표시도 내용으로 읽는다.", "본문",
+      [{ type: "decision", content: "이 줄 안의 REMEMBER: 사실 | 표시도 내용으로 읽는다." }]],
   ];
   const { room, calls, saved } = memoryRoom();
   for (const [index, [answer, text, items]] of cases.entries()) {
@@ -285,6 +316,8 @@ test("REMEMBER 줄 읽기: 답 맨 끝의 줄만 읽고(사이의 빈 줄과 CRL
     assert.equal(message.text, text ?? answer, `경우 ${index}`);
     assert.deepEqual(saved.slice(before), items.length > 0 ? [[items, { messageId: message.id }]] : [], `경우 ${index}`);
   }
+  // 방은 말풍선 글을 다시 다듬어(앞뒤 공백 제거) 표시를 떼고 남은 앞 글의 끝 공백은 함수의 결과에서만 보인다.
+  assert.equal(parseRememberLines("정했습니다.   REMEMBER: 결정 | 내용을 정한다.", { control: false }).text, "정했습니다.");
 });
 
 test("일반 차례: 끝 ASK_USER 줄 뒤에 쓴 REMEMBER 줄은 떼고 질문은 그대로 읽는다. 질문 줄 앞에 쓴 REMEMBER 줄은 끝의 줄이 아니라 남는다", async () => {
@@ -331,8 +364,25 @@ test("지휘 AI는 STAGE·DONE 줄의 앞에 쓰든 뒤에 쓰든 REMEMBER 줄�
   assert.ok(!calls[1].prompt.includes(GUIDE), "작업자 프롬프트에는 안내가 없다");
 });
 
-test("기억을 쓰지 않는 차례는 안내도 읽기도 없이 지금과 같고(S9 시작 순간, REMEMBER 줄도 그대로), 실패하거나 중지한 차례는 아무것도 넘기지 않는다", async () => {
+test("지휘 AI: STAGE·DONE 줄 바로 위 글줄 끝에 붙여 쓴 표시는 읽고, STAGE·DONE 줄 끝에 붙은 표시는 그 줄과 함께 지나가며 계획·완료는 그대로 따른다", async () => {
+  const { room, calls, saved } = memoryRoom({ meta: LEAD });
+  room.sendUserMessage("claude에게 맡겨줘");
+  await settle();
+  calls[0].finish("나눠 맡깁니다. REMEMBER: 결정 | 검수는 codex가 맡기로 했다.\nSTAGE: @codex");
+  await settle();
+  calls[1].finish("검수했습니다.");
+  await settle();
+  calls[2].finish("정리했습니다.\nDONE: 마칩니다. REMEMBER: 절차 | 제어 줄 끝에 붙은 표시는 읽지 않는다.");
+  await settle();
+  assert.deepEqual(ids(calls), ["claude", "codex", "claude"]);
+  assert.equal(room.orchestration, null, "DONE을 읽어 오케스트레이션이 끝났다");
+  assert.deepEqual(agentTexts(room), ["나눠 맡깁니다.", "검수했습니다.", "정리했습니다."]);
+  assert.deepEqual(saved.map(([items]) => items), [[{ type: "decision", content: "검수는 codex가 맡기로 했다." }]]);
+});
+
+test("기억을 쓰지 않는 차례는 안내도 읽기도 없이 지금과 같고(S9 시작 순간, REMEMBER 줄과 글줄 끝에 붙은 표시도 그대로), 실패하거나 중지한 차례는 아무것도 넘기지 않는다", async () => {
   const answer = "본문\nREMEMBER: 결정 | 기억을 쓰지 않는 차례의 줄은 그대로 남는다.";
+  const glued = "정했습니다. REMEMBER: 결정 | 기억을 쓰지 않는 차례의 붙여 쓴 표시도 그대로 남는다.";
   let remembered = 0;
   // recall이 null(애드온 꺼짐·대상 아닌 프로젝트)이면 저장 옵션이 있어도 기다리지 않고 같은 순간에 시작한다.
   const off = makeRoom({ recallMemory: () => null, rememberMemory: () => { remembered += 1; } });
@@ -346,7 +396,11 @@ test("기억을 쓰지 않는 차례는 안내도 읽기도 없이 지금과 같
     assert.ok(!calls[0].prompt.includes(GUIDE));
     calls[0].finish(answer);
     await settle();
-    assert.deepEqual(agentTexts(room), [answer]);
+    room.sendUserMessage("@claude 또 질문");
+    await settle();
+    calls[1].finish(glued);
+    await settle();
+    assert.deepEqual(agentTexts(room), [answer, glued]);
   }
   assert.ok(recallOnly.calls[0].prompt.includes(BLOCK));
   assert.equal(remembered, 0);
