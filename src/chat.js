@@ -54,6 +54,7 @@ const workspaceButton = document.getElementById("btn-workspace");
 const workspaceLabel = document.getElementById("workspace-label");
 const permissionSelect = document.getElementById("permission-select");
 const enforcementHint = document.getElementById("enforcement-hint");
+const anchorMindStatusEl = document.getElementById("anchormind-status");
 const discussionButton = document.getElementById("btn-discussion");
 const workflowButton = document.getElementById("btn-workflow");
 const orchestratorChip = document.getElementById("btn-orchestrator");
@@ -965,6 +966,11 @@ function openProjectSettings(anchor, project) {
     record.value = recordCurrent;
     const recordInitial = record.value;
 
+    // AnchorMind 기억은 프로젝트마다 켠다. 미분류는 서로 관계없는 대화가 섞여 대상에서 뺀다(main도 막는다).
+    const anchorMind = document.createElement("input");
+    anchorMind.type = "checkbox";
+    anchorMind.checked = project.anchorMindEnabled === true;
+
     const actions = document.createElement("div");
     actions.className = "project-popover-actions";
     const save = document.createElement("button");
@@ -987,6 +993,7 @@ function openProjectSettings(anchor, project) {
         defaultAgents,
         // 건드리지 않았으면 보내지 않아 옛 역할 폴백을 그대로 둔다.
         ...(record.value !== recordInitial ? { recordAgent: record.value } : {}),
+        ...(anchorMind.checked !== (project.anchorMindEnabled === true) ? { anchorMindEnabled: anchorMind.checked } : {}),
       }));
       if (result) {
         closePopover();
@@ -1021,6 +1028,7 @@ function openProjectSettings(anchor, project) {
       makeField("프로젝트 폴더", workspaceField),
       defaultAgentSection,
       makeField("토론 자동 기록", record),
+      ...(project.id !== "uncategorized" ? [makeField("이 프로젝트에서 AnchorMind 기억 사용", anchorMind)] : []),
       actions
     );
   });
@@ -1369,6 +1377,23 @@ function activeSessionEntry() {
   return sessions.find((entry) => entry.id === activeSessionId) || null;
 }
 
+// 방 머리줄의 기억 상태. 앱 전체 스위치와 이 프로젝트의 스위치가 모두 켜졌을 때만 보인다(값이 없으면 꺼짐). 기억하기 버튼도
+// 같은 조건인데 메시지는 다시 그리지 않으므로, 목록에 is-anchormind 표시를 달아 CSS가 보이고 숨기게 한다.
+let anchorMindStatus = null;
+const ANCHORMIND_STATE_LABELS = Object.freeze({
+  connected: "기억 · 연결됨",
+  starting: "기억 · 켜는 중",
+  off: "기억 · 꺼짐",
+  error: "기억 · 오류",
+});
+
+function renderAnchorMindStatus() {
+  const enabled = activeProjectEntry()?.anchorMindEnabled === true && anchorMindStatus?.enabled === true;
+  messageList.classList.toggle("is-anchormind", enabled);
+  anchorMindStatusEl.textContent = ANCHORMIND_STATE_LABELS[anchorMindStatus?.state || "off"];
+  anchorMindStatusEl.hidden = !enabled;
+}
+
 function renderHeader() {
   const entry = activeSessionEntry();
   sessionTitleEl.textContent = sessionMeta?.title || entry?.title || "세션";
@@ -1406,6 +1431,7 @@ function renderHeader() {
   permissionSelect.title = enforcementDetail || "이 채팅에서 도구에 허용할 범위입니다";
 
   renderProviderHealth();
+  renderAnchorMindStatus();
 
   const discussable = agents.filter((agent) => agent.available && agent.enabled).length >= 2;
   discussionButton.disabled = !discussable;
@@ -1693,7 +1719,7 @@ function answerAwaitingAgent(agentId, option = "") {
   autoresize();
 }
 
-const POPOVER_VARIANTS = ["is-project-settings", "is-new-project", "is-workflow", "is-menu", "is-usage", "is-agent", "is-orchestrator"];
+const POPOVER_VARIANTS = ["is-project-settings", "is-new-project", "is-workflow", "is-menu", "is-usage", "is-agent", "is-orchestrator", "is-remember"];
 
 function closePopover() {
   popover.hidden = true;
@@ -1930,6 +1956,88 @@ function openHandoffPopover(anchor, messageId, sourceAuthor) {
     });
     actions.append(cancel, confirm);
     root.append(actions);
+  });
+}
+
+// AnchorMind 기억 유형. 사람이 고르는 것은 다섯 가지이고, episode(요약)는 기록관만 남겨 목록에서 보이기만 한다.
+const ANCHORMIND_TYPE_LABELS = Object.freeze({
+  fact: "사실",
+  decision: "결정",
+  procedure: "절차",
+  error: "에러",
+  preference: "선호",
+  episode: "요약",
+});
+// AnchorMind는 episode 밖의 기억을 300자에서 잘라 저장한다. 화면도 그 길이까지만 받는다.
+const ANCHORMIND_MAX_CHARS = 300;
+
+function anchorMindFields(type, text, rows) {
+  const select = document.createElement("select");
+  for (const [value, label] of Object.entries(ANCHORMIND_TYPE_LABELS)) {
+    if (value === "episode") continue;
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    select.append(option);
+  }
+  select.value = type;
+  const content = workflowTextarea("", rows);
+  content.maxLength = ANCHORMIND_MAX_CHARS;
+  content.setAttribute("aria-label", "기억 내용");
+  content.value = text;
+  return { select, content };
+}
+
+// 메시지를 AnchorMind 기억으로 저장한다. 원문을 그대로 넣으면 앞 300자만 남으므로, 유형을 고른 뒤 몇 달 뒤 다른 대화에서
+// 봐도 알 수 있게 다듬게 한다. 저장은 다시 시도하지 않으므로 보내는 동안 막고, 실패하면 고친 글을 그대로 두어 다시 누르게 한다.
+function openRememberPopover(anchor, message) {
+  // 팝오버가 떠 있는 사이 방이 바뀌어도(Ctrl+N) 이 메시지가 있던 방으로 보낸다.
+  const sessionId = activeSessionId;
+  openPopover(anchor, (root) => {
+    root.classList.add("is-remember");
+    const head = document.createElement("div");
+    head.className = "popover-head";
+    const title = document.createElement("strong");
+    title.textContent = "AnchorMind에 기억하기";
+    head.append(title);
+
+    // 내용 칸은 makeField로 감싸지 않는다(.popover-field textarea는 폭이 150px로 묶인다).
+    const { select, content } = anchorMindFields("fact", stripMarkdown(message.text).slice(0, ANCHORMIND_MAX_CHARS), 5);
+    const hint = document.createElement("p");
+    hint.className = "popover-hint";
+    hint.textContent = "몇 달 뒤 다른 대화에서 봐도 알 수 있게 한두 문장으로 다듬어 주세요.";
+    const count = document.createElement("p");
+    count.className = "workflow-count";
+    const updateCount = () => {
+      count.textContent = `${content.value.length} / ${ANCHORMIND_MAX_CHARS}`;
+    };
+    content.addEventListener("input", updateCount);
+    updateCount();
+
+    const actions = document.createElement("div");
+    actions.className = "popover-actions";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "취소";
+    cancel.addEventListener("click", closePopover);
+    const save = document.createElement("button");
+    save.type = "button";
+    save.className = "button-primary";
+    save.textContent = "저장";
+    save.addEventListener("click", async () => {
+      save.disabled = true;
+      const result = await call(window.chatApi.anchorMindRemember(sessionId, message.id, select.value, content.value));
+      if (!result) {
+        save.disabled = false;
+        return;
+      }
+      // 기다리는 사이 사용자가 닫고 다른 팝오버를 열었으면 그것은 닫지 않는다.
+      if (save.isConnected) closePopover();
+      flashNotice("AnchorMind에 기억했습니다.", false);
+    });
+    actions.append(cancel, save);
+    root.append(head, makeField("유형", select), hint, content, count, actions);
+    requestAnimationFrame(() => content.focus());
   });
 }
 
@@ -2222,6 +2330,81 @@ function makeDeliveryBadge(kind) {
   return badge;
 }
 
+// 프로젝트 기록의 AnchorMind 탭. 탭을 고를 때마다 이 프로젝트 공간의 기억을 새로 읽는다(목록 조회는 임베딩을 쓰지 않는다).
+function loadAnchorMindPanel(panel, projectId) {
+  const reload = () => loadAnchorMindPanel(panel, projectId);
+  const show = (...nodes) => {
+    const section = document.createElement("section");
+    section.className = "workflow-section";
+    section.append(...nodes);
+    panel.textContent = "";
+    panel.append(section);
+  };
+  const note = (text) => {
+    const line = document.createElement("p");
+    line.className = "workflow-empty";
+    line.textContent = text;
+    return line;
+  };
+  const makeButton = (label, className, onClick) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = className;
+    button.textContent = label;
+    button.addEventListener("click", onClick);
+    return button;
+  };
+
+  function showItem(card, item) {
+    const title = document.createElement("div");
+    title.className = "workflow-card-title";
+    title.textContent = ANCHORMIND_TYPE_LABELS[item.type] || item.type;
+    const text = document.createElement("div");
+    text.className = "workflow-card-text";
+    text.textContent = item.content;
+    const meta = document.createElement("div");
+    meta.className = "workflow-card-meta";
+    meta.textContent = new Date(item.createdAt).toLocaleDateString();
+    const actions = document.createElement("div");
+    actions.className = "workflow-card-actions";
+    // 기록관 요약(episode)은 고칠 수 있는 유형에 없어 지우기만 둔다.
+    if (item.type !== "episode") actions.append(makeButton("고치기", "button button-small", () => editItem(card, item)));
+    actions.append(makeButton("지우기", "button button-danger button-small", async () => {
+      if (!(await confirmInApp("이 기억을 지울까요?\nAnchorMind에서 지우며 되돌릴 수 없습니다."))) return;
+      if (await call(window.chatApi.anchorMindForget(projectId, item.id))) reload();
+    }));
+    card.textContent = "";
+    card.append(title, text, meta, actions);
+  }
+
+  function editItem(card, item) {
+    const { select, content } = anchorMindFields(item.type, item.content, 3);
+    const save = makeButton("저장", "button button-primary button-small", async () => {
+      save.disabled = true;
+      if (await call(window.chatApi.anchorMindAmend(projectId, item.id, select.value, content.value))) reload();
+      else save.disabled = false;
+    });
+    const actions = document.createElement("div");
+    actions.className = "workflow-card-actions";
+    actions.append(save, makeButton("취소", "button button-small", () => showItem(card, item)));
+    card.textContent = "";
+    card.append(makeField("유형", select), content, actions);
+    content.focus();
+  }
+
+  show(note("불러오는 중…"));
+  call(window.chatApi.anchorMindList(projectId)).then((result) => {
+    if (!result) return show(note("기억을 불러오지 못했습니다. AnchorMind가 켜지면 탭을 다시 눌러 주세요."));
+    if (result.items.length === 0) return show(note("아직 저장한 기억이 없습니다."));
+    show(...result.items.map((item) => {
+      const card = document.createElement("article");
+      card.className = "workflow-card";
+      showItem(card, item);
+      return card;
+    }));
+  });
+}
+
 // 결정·작업 탭의 동작은 목록을 새로 그리려고 팝오버를 다시 만든다. 그때 보던 탭과 아직 저장하지 않은 입력을 이어 주고,
 // 응답을 기다리는 사이 사용자가 팝오버를 닫았다면 다시 열지 않는다.
 let workflowView = null;
@@ -2253,6 +2436,8 @@ function openWorkflowPopover(anchor) {
       ["memory", "메모리"],
       ["decisions", "결정"],
       ["tasks", "작업"],
+      // AnchorMind 기억은 이 프로젝트와 앱 전체 스위치를 모두 켰을 때만 맨 뒤에 둔다.
+      ...(project.anchorMindEnabled === true && anchorMindStatus?.enabled === true ? [["anchormind", "AnchorMind"]] : []),
     ];
     for (const [id, label] of tabDefs) {
       const button = document.createElement("button");
@@ -2273,8 +2458,9 @@ function openWorkflowPopover(anchor) {
         tabButtons[key].classList.toggle("is-active", key === id);
         tabPanels[key].classList.toggle("is-active", key === id);
       }
+      if (id === "anchormind") loadAnchorMindPanel(tabPanels.anchormind, project.id);
     }
-    root.append(tabBar, tabPanels.memory, tabPanels.decisions, tabPanels.tasks);
+    root.append(tabBar, ...Object.values(tabPanels));
 
     // === 메모리 탭: 개요 · 현재 규칙 · 누적 요약 ===
     const overviewSection = document.createElement("section");
@@ -3655,12 +3841,13 @@ function renderMessage(message) {
 
   body.append(meta, bubble);
 
+  // 말풍선 하단 액션 줄. AI 답에는 복사 2종·쉽게 설명·전달을 두고, 기억하기는 사용자 말에도 둔다
+  // (선호·결정은 사용자 말에서 나온다).
+  const actions = document.createElement("div");
+  actions.className = "message-actions";
+
   // 전달(Handoff) 버튼: 다른 AI가 보낸 에이전트 메시지를 다른 에이전트에게 이어서 전달합니다.
   if (!isUser && message.id) {
-    // 말풍선 하단 액션 줄: 복사 2종 + 전달을 한 줄에 나란히 놓습니다.
-    const actions = document.createElement("div");
-    actions.className = "message-actions";
-
     // 복사 버튼 2종: 마크다운 원본(옵시디언/노션용)과 서식 없는 순수 텍스트(메모장/메신저용).
     const copyMarkdownBtn = makeCopyButton("복사", "마크다운 원본 그대로 복사", () => message.text || "");
     const copyPlainBtn = makeCopyButton("서식 없이 복사", "굵게·제목 등 기호를 걷어낸 순수 텍스트로 복사", () =>
@@ -3721,6 +3908,22 @@ function renderMessage(message) {
     });
     actions.append(handoffBtn);
     body.append(actions);
+  }
+
+  // 기억하기. 오류 메시지는 기억할 내용이 아니라 뺀다. 앱 전체와 이 프로젝트에서 기억을 모두 켰을 때만 보인다(목록의 is-anchormind와 CSS).
+  if (message.id && !message.error) {
+    const rememberBtn = document.createElement("button");
+    rememberBtn.type = "button";
+    rememberBtn.className = "message-remember-button";
+    rememberBtn.title = "이 메시지를 다듬어 AnchorMind 기억으로 저장";
+    rememberBtn.textContent = "기억하기";
+    rememberBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openRememberPopover(rememberBtn, message);
+    });
+    actions.append(rememberBtn);
+    // AI 답의 동작 줄은 위에서 붙였고, 사용자 말에는 기억하기만 있는 줄을 여기서 붙인다.
+    if (isUser) body.append(actions);
   }
 
   if (!isUser) {
@@ -4648,6 +4851,16 @@ window.chatApi.onProviders?.((payload) => {
   if (payload.modelsChanged) {
     flashNotice("모델 목록을 새로 불러왔습니다. 모델 선택을 다시 열면 반영됩니다.", false);
   }
+});
+// 기억(AnchorMind) 상태는 시작할 때 한 번 묻고, 그 뒤로는 바뀔 때마다 main이 밀어 준다.
+window.chatApi.onAnchorMindStatus?.((status) => {
+  anchorMindStatus = status;
+  renderAnchorMindStatus();
+});
+call(window.chatApi.anchorMindStatus?.()).then((result) => {
+  if (!result) return;
+  anchorMindStatus = result.status;
+  renderAnchorMindStatus();
 });
 function lockComposer(locked) {
   composerInput.disabled = locked;

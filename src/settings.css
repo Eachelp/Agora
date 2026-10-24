@@ -1335,3 +1335,13 @@ input[type="text"]:focus {
 #wipe-all {
   width: 100%;
 }
+
+/* 기억 애드온 입력 칸은 폭이 넉넉해야 해서 한 줄에 하나씩 둔다(.color-grid는 두 칸이다). */
+.anchormind-fields {
+  grid-template-columns: 1fr;
+}
+
+/* 연결한 AnchorMind에 문제가 있거나 시험한 버전과 다를 때만 보인다(채팅 창 경고와 같은 색). */
+.inline-note.is-warning {
+  color: #92400e;
+}

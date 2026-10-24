@@ -238,3 +238,58 @@ test("F132: 바뀐 것이 없으면 저장 요청을 보내지 않는다", async
   assert.deepEqual(saved, []);
   assert.match(ui.get("#toast").textContent, /바뀐 설정이 없/);
 });
+
+// 기억 애드온: 바꾼 칸만 anchorMind로 보내고, 폴더 선택·연결 확인 결과를 칸과 상태에 그린다.
+test("기억 애드온: 바꾼 칸만 anchorMind 한 묶음으로 보내고, 저장된 값으로 칸과 상태를 채운다", async () => {
+  const saved = [];
+  const addon = {
+    enabled: true, folder: "D:/AnchorMind", startCommand: "", stopCommand: "",
+    status: { enabled: true, state: "connected", reason: null, serverVersion: "6.8.0", versionWarning: "버전이 다릅니다.", deprecationWarning: null },
+  };
+  const ui = await loadSettings({
+    get: async () => ({ ok: true, data: baseState({ anchorMind: addon }) }),
+    save: async (value) => { saved.push(value); return { ok: true, data: baseState() }; },
+  });
+  assert.equal(ui.get("#anchormind-enabled").checked, true);
+  assert.equal(ui.get("#anchormind-folder").value, "D:/AnchorMind");
+  assert.equal(ui.get("#anchormind-status").textContent, "연결됨 · 6.8.0");
+  assert.equal(ui.get("#anchormind-note").hidden, false);
+  assert.equal(ui.get("#anchormind-note").textContent, "버전이 다릅니다.");
+  ui.save();
+  await settle();
+  assert.deepEqual(saved, [], "채운 값을 바꾸지 않았으면 보내지 않는다");
+
+  ui.get("#anchormind-enabled").checked = false;
+  ui.save();
+  await settle();
+  assert.equal(JSON.stringify(saved), JSON.stringify([{ anchorMind: { enabled: false, folder: "D:/AnchorMind", startCommand: "", stopCommand: "" } }]));
+});
+
+test("기억 애드온: [폴더 선택]은 고른 폴더를 칸에만 채우고, [연결 확인]은 받은 상태를 알약과 안내 줄에 그린다", async () => {
+  const saved = [];
+  const actions = [];
+  const reason = "AnchorMind 접속 키를 읽지 못했거나 키가 맞지 않습니다.";
+  const ui = await loadSettings({
+    save: async (value) => { saved.push(value); return { ok: true, data: baseState() }; },
+    anchorMind: async ({ action }) => {
+      actions.push(action);
+      return action === "choose-folder"
+        ? { ok: true, folder: "D:/Picked" }
+        : { ok: true, status: { enabled: true, state: "error", reason, serverVersion: null, versionWarning: null, deprecationWarning: null } };
+    },
+  });
+  assert.equal(ui.get("#anchormind-status").textContent, "꺼짐", "저장된 값이 없으면 꺼진 것으로 그린다");
+  assert.equal(ui.get("#anchormind-note").hidden, true);
+
+  ui.get("#anchormind-folder-pick").dispatch("click");
+  await settle();
+  assert.equal(ui.get("#anchormind-folder").value, "D:/Picked");
+  assert.deepEqual(saved, [], "고르기만으로는 저장하지 않는다");
+
+  ui.get("#anchormind-check").dispatch("click");
+  await settle();
+  assert.equal(ui.get("#anchormind-status").textContent, "오류");
+  assert.equal(ui.get("#anchormind-note").textContent, reason);
+  assert.equal(ui.get("#anchormind-note").hidden, false);
+  assert.deepEqual(actions, ["choose-folder", "check"]);
+});

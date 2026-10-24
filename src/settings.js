@@ -217,6 +217,12 @@ function renderGeneral({ resetAppearance = false } = {}) {
   renderUiTheme(state.appearance.uiTheme);
   $("#autostart").checked = state.autoStart;
   $("#show-awaiting").checked = state.appearance?.showAwaiting !== false;
+  const anchorMind = state.anchorMind || {};
+  $("#anchormind-enabled").checked = anchorMind.enabled === true;
+  $("#anchormind-folder").value = anchorMind.folder || "";
+  $("#anchormind-start").value = anchorMind.startCommand || "";
+  $("#anchormind-stop").value = anchorMind.stopCommand || "";
+  renderAnchorMindStatus(anchorMind.status);
 
   renderFonts();
   loadedSettings = currentSettings();
@@ -229,6 +235,13 @@ function currentSettings() {
     autoStart: $("#autostart").checked,
     uiTheme: readUiTheme(),
     showAwaiting: $("#show-awaiting").checked,
+    // 기억 애드온은 칸 넷을 한 묶음으로 보낸다. main이 저장된 값에 덮어 합쳐 화면에 없는 lastConsolidateAt을 지킨다.
+    anchorMind: {
+      enabled: $("#anchormind-enabled").checked,
+      folder: $("#anchormind-folder").value,
+      startCommand: $("#anchormind-start").value,
+      stopCommand: $("#anchormind-stop").value,
+    },
   };
 }
 
@@ -252,6 +265,18 @@ function readUiTheme() {
   return Object.fromEntries(
     UI_THEME_FIELDS.map((field) => [field.key, $(`#ui-${field.key}-color`).value.trim()])
   );
+}
+
+// 기억 애드온 상태. 알약에는 상태 이름만 두고, 이유와 경고는 main이 만든 문장 그대로 아래 안내 줄에 보인다.
+const ANCHORMIND_STATE_TEXT = Object.freeze({ connected: "연결됨", starting: "켜는 중", off: "꺼짐", error: "오류" });
+
+function renderAnchorMindStatus(status) {
+  const state = status?.state || "off";
+  const version = state === "connected" ? status.serverVersion : "";
+  $("#anchormind-status").textContent = [ANCHORMIND_STATE_TEXT[state], version].filter(Boolean).join(" · ");
+  const note = $("#anchormind-note");
+  note.textContent = [status?.reason, status?.versionWarning, status?.deprecationWarning].filter(Boolean).join(" ");
+  note.hidden = !note.textContent;
 }
 
 function accountInitial(account, provider) {
@@ -285,12 +310,12 @@ function adoptRunningLogins(data) {
   }
 }
 
-// 로그인 진행 조작(주소 열기·코드 보내기·취소). 실패는 토스트로만 알리고 패널은 그대로 둔다.
-async function loginAction(input, sourceButton) {
+// 로그인 진행 조작과 기억 애드온 조작이 같이 쓴다. request는 부를 설정 API이고, 실패는 토스트로만 알린다.
+async function loginAction(input, sourceButton, request = api.account) {
   setButtonBusy(sourceButton, true);
   try {
-    const response = await api.account(input);
-    if (!response?.ok) throw new Error(responseError(response, "로그인 작업에 실패했습니다."));
+    const response = await request(input);
+    if (!response?.ok) throw new Error(responseError(response, "작업에 실패했습니다."));
     return response;
   } catch (error) {
     showError(error.message || String(error));
@@ -731,6 +756,18 @@ function registerAppearanceControls() {
   });
 }
 
+// 고른 폴더는 칸에만 채우고, 저장은 다른 설정처럼 [변경 사항 적용]이 한다. 연결 확인은 적용한(저장된) 설정으로 한다.
+function registerAnchorMindControls() {
+  $("#anchormind-check").addEventListener("click", async (event) => {
+    const response = await loginAction({ action: "check" }, event.currentTarget, api.anchorMind);
+    if (response) renderAnchorMindStatus(response.status);
+  });
+  $("#anchormind-folder-pick").addEventListener("click", async (event) => {
+    const response = await loginAction({ action: "choose-folder" }, event.currentTarget, api.anchorMind);
+    if (response?.folder) $("#anchormind-folder").value = response.folder;
+  });
+}
+
 function registerProviderControls() {
   $("#refresh-accounts").addEventListener("click", async (event) => {
     const button = event.currentTarget;
@@ -874,6 +911,7 @@ async function initialize() {
   registerColorPickerControls();
   registerNavigation();
   registerAppearanceControls();
+  registerAnchorMindControls();
   registerProviderControls();
   registerAppearanceUpdates();
 
