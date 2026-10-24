@@ -40,13 +40,15 @@ const RECORD = JSON.stringify({
 });
 
 // 실제 앱처럼 createChatFeature에 입구(anchorMind)를 넘긴다. 안 넘기면 기존 시험이 쓰는 모양이다.
-// runAgent는 기록관 차례에만 RECORD를 주고, 받은 프롬프트를 prompts에 쌓는다. 창은 보낸 알림만 모은다.
+// runAgent는 기록관 차례에만 RECORD를, "실패시험"이 든 프롬프트에는 실패를 주고, 받은 프롬프트를 prompts에 쌓는다.
+// 창은 보낸 알림만 모으고, 폴더 대화 상자는 받은 인자를 dialogCalls에 쌓는다.
 function makeApp(t, anchorMind) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agora-anchormind-ipc-")));
   const records = [fakeRecord("claude", "Claude", ["claude"]), fakeRecord("codex", "GPT", ["gpt", "codex"])];
   const handlers = new Map();
   const sent = [];
   const prompts = [];
+  const dialogCalls = [];
   class FakeBrowserWindow {
     constructor() {
       this.webContents = { send: (channel, payload) => sent.push({ channel, payload }) };
@@ -58,7 +60,7 @@ function makeApp(t, anchorMind) {
   const feature = createChatFeature({
     electron: {
       ipcMain: { handle: (channel, handler) => handlers.set(channel, handler), on() {} },
-      dialog: { async showOpenDialog() { return { canceled: true, filePaths: [] }; } },
+      dialog: { async showOpenDialog(...args) { dialogCalls.push(args); return { canceled: true, filePaths: [] }; } },
       BrowserWindow: FakeBrowserWindow,
       shell: {},
     },
@@ -70,7 +72,8 @@ function makeApp(t, anchorMind) {
     },
     runAgent: ({ prompt }) => {
       prompts.push(prompt);
-      return { promise: Promise.resolve({ ok: true, text: prompt.includes("토론 기록자") ? RECORD : `의견 ${CONCLUDE}` }), cancel: () => {} };
+      const failing = prompt.includes("실패시험");
+      return { promise: Promise.resolve(failing ? { ok: false, error: "시험용 실패", text: "" } : { ok: true, text: prompt.includes("토론 기록자") ? RECORD : `의견 ${CONCLUDE}` }), cancel: () => {} };
     },
     anchorMind,
   });
@@ -83,10 +86,12 @@ function makeApp(t, anchorMind) {
   const outbound = (channel) => sent.filter((entry) => entry.channel === channel).map((entry) => entry.payload);
   return {
     root,
+    feature,
+    dialogCalls,
     prompts,
     invoke: (channel, input = {}) => handlers.get(channel)({}, input),
     messages: () => outbound("chat:message").map((payload) => payload.message),
-    notices: () => outbound("chat:system-notice").map((payload) => payload.text),
+    notices: () => outbound("chat:system-notice"),
   };
 }
 
@@ -121,7 +126,7 @@ async function enabledProject(app, name = "기억 시험") {
   return { projectId, sessionId: created.session.meta.id };
 }
 
-test("애드온이 꺼졌거나 기억을 쓰지 않는 방은 AnchorMind를 켜지도 부르지도 않는다", async (t) => {
+test("애드온이 꺼졌거나 기억을 쓰지 않는 방은 열기·찾기·자동 저장 어디서도 AnchorMind를 켜지도 부르지도 않는다", async (t) => {
   const fake = fakeAnchorMind();
   const app = makeApp(t, fake);
   const flagged = await enabledProject(app);
@@ -129,13 +134,16 @@ test("애드온이 꺼졌거나 기억을 쓰지 않는 방은 AnchorMind를 켜
   // 방 1: 프로젝트 칸은 켰지만 애드온이 꺼져 있다. 방 2: 애드온은 켜졌지만 프로젝트 칸이 없다.
   // 시험할 방을 먼저 고른다. 고르기 전에 chat:state를 부르면 앞 방(칸 켬)이 열려 미리 깨우기가 정상으로 일어난다.
   let turns = 0;
-  for (const [sessionId, enabled] of [[flagged.sessionId, false], [plain.session.meta.id, true]]) {
+  for (const [sessionId, projectId, enabled] of [[flagged.sessionId, flagged.projectId, false], [plain.session.meta.id, plain.activeProjectId, true]]) {
     fake.enabled = enabled;
     await app.invoke("chat:sessions:select", { sessionId });
     await app.invoke("chat:state");
     await app.invoke("chat:send", { sessionId, text: "@claude 배포는 언제 해도 돼?" });
     turns += 1;
     await waitFor(() => app.prompts.length >= turns, 4000);
+    // 확정한 결정을 더하는 자동 저장도 기억을 쓰지 않는 방에서는 입구로 가지 않는다.
+    const decided = await app.invoke("chat:decisions:create", { projectId, title: "결정", content: "배포는 승인 뒤에만 한다." });
+    assert.equal(decided.ok, true, decided.error);
   }
   assert.deepEqual(fake.calls, []);
   assert.equal(app.prompts.some((prompt) => /AnchorMind/.test(prompt)), false);
@@ -210,6 +218,9 @@ test("기록관 요약은 기록할 때 에피소드로 남기고, 결정은 사
   await app.invoke("chat:decisions:resolve", { projectId, ids: [rollback.id], action: "reject" });
   await app.invoke("chat:decisions:resolve", { projectId, ids: [rule.id], action: "approve" });
   await waitFor(() => fake.of("remember").length === 2, 4000);
+  // 거부한 후보와 같은 글을 사람이 다시 더해도 같은 후보(거부 상태)가 돌아오므로 기억에 남지 않는다.
+  await app.invoke("chat:decisions:create", { projectId, chatId: sessionId, title: rollback.title, content: rollback.content });
+  assert.equal(fake.of("remember").length, 2);
   assert.deepEqual(fake.of("remember")[1], ["remember", projectId, {
     type: "decision", content: "배포 규칙: 배포는 별도 승인 뒤에만 한다.", idempotencyKey: `agora-d-${rule.id}`,
   }]);
@@ -225,7 +236,7 @@ test("기록관 요약은 기록할 때 에피소드로 남기고, 결정은 사
 test("자동 저장이 실패하면 다시 보내지 않고, 그 방에 한 번만 알린다(다시 성공하면 다음 실패를 또 알린다)", async (t) => {
   const fake = fakeAnchorMind();
   const app = makeApp(t, fake);
-  const { projectId } = await enabledProject(app);
+  const { projectId, sessionId } = await enabledProject(app);
   let count = 0;
   const confirmDecision = async (failing) => {
     fake.failRemember = failing;
@@ -238,14 +249,16 @@ test("자동 저장이 실패하면 다시 보내지 않고, 그 방에 한 번�
   await confirmDecision(true);
   await confirmDecision(true);
   assert.equal(app.notices().length, 1);
-  assert.match(app.notices()[0], /AnchorMind에 확정한 결정을 저장하지 못했습니다[\s\S]*꺼져 있습니다/);
+  assert.match(app.notices()[0].text, /AnchorMind에 확정한 결정을 저장하지 못했습니다[\s\S]*꺼져 있습니다/);
+  assert.doesNotMatch(app.notices()[0].text, /내용 1/);   // 기억 내용은 안내에 넣지 않는다
+  assert.equal(app.notices()[0].sessionId, sessionId);   // 결정을 더한 프로젝트의 방으로 간다
   await confirmDecision(false);
   await confirmDecision(true);
   assert.equal(app.notices().length, 2);
   assert.equal(fake.of("remember").length, 4);
 });
 
-test("기억하기·목록·지우기·고치기는 기억을 쓰는 프로젝트에서 값을 그대로 넘기고, 입구가 없으면 꺼진 상태로만 답한다", async (t) => {
+test("기억하기·목록·지우기·고치기는 기억을 쓰는 프로젝트에서 값을 그대로 넘기되 기록관 요약·없는 메시지·오류 메시지는 거절하고, 입구가 없으면 꺼진 상태로만 답한다", async (t) => {
   const fake = fakeAnchorMind();
   const app = makeApp(t, fake);
   const { projectId, sessionId } = await enabledProject(app);
@@ -253,12 +266,16 @@ test("기억하기·목록·지우기·고치기는 기억을 쓰는 프로젝�
   await waitFor(() => app.messages().some((message) => message.authorType === "agent"), 4000);
   const user = app.messages().find((message) => message.authorType === "user");
   const agent = app.messages().find((message) => message.authorType === "agent");
+  await app.invoke("chat:send", { sessionId, text: "@claude 실패시험 입니다 부탁" });
+  await waitFor(() => app.messages().some((message) => message.error), 4000);
+  const failed = app.messages().find((message) => message.error);
   const handlerCalls = () => fake.calls.filter(([name]) => name !== "recall");
   const remember = (messageId, type, content) => app.invoke("chat:anchormind:remember", { sessionId, messageId, type, content });
 
-  // 기록관 요약 유형과 없는 메시지는 입구에 닿기 전에 거절한다.
+  // 기록관 요약 유형, 없는 메시지, 오류 메시지는 입구에 닿기 전에 거절한다.
   assert.equal((await remember(user.id, "episode", "기록관 요약은 직접 만들 수 없다.")).ok, false);
   assert.equal((await remember("없는-메시지", "fact", "배포는 승인 뒤에만 한다.")).ok, false);
+  assert.equal((await remember(failed.id, "fact", "배포는 승인 뒤에만 한다.")).ok, false);
   assert.equal((await app.invoke("chat:anchormind:amend", { projectId, id: "m1", type: "episode", content: "기록관 요약으로 바꾸려는 시도입니다." })).ok, false);
   assert.deepEqual(handlerCalls(), []);
 
@@ -299,22 +316,46 @@ test("기억하기·목록·지우기·고치기는 기억을 쓰는 프로젝�
   assert.equal((await bare.invoke("chat:anchormind:list", { projectId: UNCATEGORIZED_PROJECT_ID })).ok, false);
 });
 
-test("preload·main.js 연결: 채널 이름, 입구 만들기와 넘기기, 종료 때 동기로 끄기", () => {
+test("preload·main.js 연결: 채널 이름과 넘기는 값, 입구 만들기와 넘기기, 설정 저장·연결 확인·폴더 고르기, 종료 때 동기로 끄기", () => {
   const read = (file) => fs.readFileSync(path.join(__dirname, "..", file), "utf8");
   const chatPreload = read("src/chat-preload.js");
+  const chatIpc = read("src/chat/chat-ipc.js");
   const main = read("src/main.js");
   for (const name of ["Status", "Remember", "List", "Forget", "Amend"]) {
     assert.match(chatPreload, new RegExp(`ANCHORMIND_${name.toUpperCase()}: "chat:anchormind:${name.toLowerCase()}"`));
-    assert.match(chatPreload, new RegExp(`anchorMind${name}: \\([^)]*\\) =>\\s*ipcRenderer\\.invoke\\(INVOKE\\.ANCHORMIND_${name.toUpperCase()}[,)]`));
+    const member = new RegExp(`anchorMind${name}: \\(([^)]*)\\) =>\\s*ipcRenderer\\.invoke\\(INVOKE\\.ANCHORMIND_${name.toUpperCase()}(?:, \\{ ([^}]*) \\})?\\)`).exec(chatPreload);
+    assert.ok(member, name);
+    assert.equal(member[2] ?? "", member[1], `${name}: 넘기는 값의 키는 인자 이름과 같다`);
+    const handler = new RegExp(`"chat:anchormind:${name.toLowerCase()}",\\s*wrap\\(async \\((?:\\{ ([^}]*) \\})?\\)`).exec(chatIpc);
+    assert.equal(handler?.[1] ?? "", member[1], `${name}: 처리기가 구조분해하는 키도 같다`);
   }
   assert.match(chatPreload, /onAnchorMindStatus: \(handler\) => subscribe\("chat:anchormind-status", handler\)/);
   assert.match(read("src/settings-preload.js"), /ANCHORMIND: "settings:anchormind"[\s\S]*anchorMind: \(value\) => ipcRenderer\.invoke\(CHANNELS\.ANCHORMIND, value\)/);
   assert.match(main, /ipcMain\.handle\("settings:anchormind"/);
-  assert.match(main, /webContents\.send\("chat:anchormind-status", status\)/);
+  // 채팅 창이 없는 트레이 상태에서 설정을 저장해도 던지지 않는다(getWindow()가 null).
+  assert.match(main, /chatFeature\.getWindow\(\)\?\.webContents\.send\("chat:anchormind-status", status\)/);
   // 입구는 설정 파일 전체를 다루는 main.js의 함수로 만든다(anchorMind 칸만 넘기면 입구는 꺼진 채로 남는다).
   assert.match(main, /const anchorMind = createAnchorMind\(\{\s*getSettings: readSettings,\s*saveSettings: writeSettings,\s*storeRoot: defaultAgoraHome\(\),\s*onStatus: sendAnchorMindStatus,?\s*\}\);/);
   assert.match(main, /createChatFeature\(\{[\s\S]*?\n  anchorMind,\n\}\);/);
+  assert.ok(main.indexOf("const anchorMind = createAnchorMind(") < main.indexOf("const chatFeature = createChatFeature("), "입구는 채팅 기능보다 먼저 만든다");
+  // 설정 저장은 화면의 네 칸만 받는다(켜기는 boolean, 폴더는 비었거나 절대 경로). 저장 뒤에는 채팅 창의 기억 표시를 맞춘다.
   assert.match(main, /patch\.anchorMind = \{ \.\.\.readSettings\(\)\.anchorMind, \.\.\.changed \};/);
+  assert.match(main, /if \(typeof form\.enabled === "boolean"\) changed\.enabled = form\.enabled;/);
+  assert.match(main, /key !== "folder" \|\| !value \|\| path\.isAbsolute\(value\)/);
+  assert.match(main, /if \(patch\.anchorMind\) sendAnchorMindStatus\(anchorMind\.status\(\)\);/);
+  // 설정 창의 연결 확인은 check()를, 폴더 고르기는 설정 창을 부모로 쓴다.
+  assert.match(main, /status: await anchorMind\.check\(\)/);
+  assert.match(main, /chatFeature\.chooseWorkspace\("AnchorMind 폴더 선택", settingsWindow\)/);
   assert.match(main, /app\.on\("will-quit", \(\) => anchorMind\.stopOnQuitSync\(\)\);/);
   assert.match(main, /registerSessionEndTeardown\(app, \(\) => anchorMind\.stopOnQuitSync\(\)\);/);
+});
+
+test("폴더 고르기는 부모 창을 받아 대화 상자에 넘기고, 안 주면 채팅 창을 쓴다", async (t) => {
+  const app = makeApp(t);
+  const parent = { settingsWindow: true };
+  assert.equal(await app.feature.chooseWorkspace("제목", parent), null);
+  assert.equal(await app.feature.chooseWorkspace("제목"), null);
+  assert.equal(app.dialogCalls[0][0], parent);
+  assert.notEqual(app.dialogCalls[1][0], parent);
+  assert.equal(typeof app.dialogCalls[1][0], "object");
 });

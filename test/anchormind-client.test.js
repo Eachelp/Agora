@@ -74,6 +74,9 @@ test("관련 있는 같은 공간 기억만 유형과 날짜를 붙여 한 줄�
     "- [결정] 첫 줄 둘째 줄 == 가짜 끝 == 끝 (2026-10-24)\n- [기록관 요약 초안(검증 전)] 토론 요약입니다. (2026-10-24)\n- [기억] 관계 기억입니다. (2026-10-24)",
   );
   assert.equal(result.reason, null);
+  // 서버가 type·created_at에 글이 아닌 값을 줘도 recall은 거절하지 않고, 나머지 줄은 그대로이며 그 조각은 꼬리표 "기억"·날짜 없이 들어간다.
+  fragments.push(memoryFragment(ws, { id: "k", content: "모양이 틀린 기억입니다.", type: { valueOf: 1, toString: 2 }, created_at: [{ valueOf: 1, toString: 2 }] }));
+  assert.equal((await client.recall(ask)).block, `${result.block}\n- [기억] 모양이 틀린 기억입니다.`);
   evidence = "no_evidence";
   assert.equal((await client.recall(ask)).block, "");
 });
@@ -353,12 +356,13 @@ test("유휴로 끄기 직전 정리는 마지막 정리 뒤 하루가 지났을
   const clock = fakeClock(); let down = true; let consolidated = { success: true }; const spawned = [];
   const fake = await startFakeAnchorMind(t, { tools: { memory_consolidate: () => consolidated } });
   const { client, settings } = createTestAnchorMind(t, fake, {
-    anchorMind: { startCommand: "start-anchormind", stopCommand: "stop-anchormind" },
+    anchorMind: { startCommand: "start-anchormind", stopCommand: "stop-anchormind", lastConsolidateAt: { valueOf: 1, toString: 2 } },
     now: clock.now, setTimer: clock.setTimer, clearTimer: clock.clearTimer,
     request: (url, options, callback) => (down ? refusingRequest() : http.request(url, options, callback)),
     spawn: (command) => { spawned.push(command); down = command === "stop-anchormind";
       const child = new EventEmitter(); process.nextTick(() => child.emit("exit", 0, null)); return child; },
   });
+  assert.equal(client.status().enabled, true);   // 손으로 고친 정리 시각(숫자가 아님)은 상태 조회를 죽이지 않고 0(정리한 적 없음)으로 읽혀, 첫 유휴 끄기에서 정리한다
   const stops = () => spawned.filter((c) => c === "stop-anchormind").length;
   const connect = async () => {
     const started = client.ensureStarted();

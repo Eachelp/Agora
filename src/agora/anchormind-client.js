@@ -100,9 +100,10 @@ function renderBlock(fragments) {
   const lines = [];
   let used = 0;
   for (const f of fragments) {
-    const date = new Date(String(f.created_at));
+    // 서버가 준 type·created_at이 글이 아니면 변환하지 않고 모르는 값으로 본다(변환하다 던지면 recall이 거절된다).
+    const date = new Date(typeof f.created_at === "string" ? f.created_at : NaN);
     const day = Number.isNaN(date.getTime()) ? "" : ` (${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())})`;
-    const label = Object.hasOwn(TYPE_LABELS, f.type) ? TYPE_LABELS[f.type] : "기억";
+    const label = typeof f.type === "string" && Object.hasOwn(TYPE_LABELS, f.type) ? TYPE_LABELS[f.type] : "기억";
     const line = `- [${label}] ${f.content.replace(/[\s\p{Cc}]+/gu, " ").trim().replace(/={3,}/g, "==")}${day}`;
     used += line.length + (lines.length > 0 ? 1 : 0);
     if (used > BLOCK_CHARS) break;
@@ -155,7 +156,7 @@ function createAnchorMind({
       folder: text("folder"),
       startCommand: text("startCommand"),
       stopCommand: text("stopCommand"),
-      lastConsolidateAt: Number(value.lastConsolidateAt) || 0,
+      lastConsolidateAt: Number.isFinite(value.lastConsolidateAt) ? value.lastConsolidateAt : 0,
     };
   }
 
