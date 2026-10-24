@@ -66,7 +66,7 @@ test("기억하기: 오류가 아닌 AI 답과 사용자 말에 있고, 고른 �
       return calls.length === 1 ? { ok: false, error: "저장하지 못했습니다." } : { ok: true };
     } } },
   });
-  const long = "배포는 승인 뒤에만 한다. ".repeat(40);
+  const long = "**배포는** 승인 뒤에만 한다. ".repeat(40);
   const labels = (item) => item.findAll((node) => node.tagName === "BUTTON").map((node) => node.textContent);
 
   assert.deepEqual(labels(ui.renderMessage({ id: "a1", authorType: "agent", author: "claude", text: long, ts: 1 })),
@@ -119,6 +119,9 @@ test("방 머리줄: 앱 전체 스위치와 이 프로젝트의 스위치가 �
     } },
   });
   const shown = () => !statusEl.hidden && messageList.classList.contains("is-anchormind");
+  ui.renderAnchorMindStatus(); // 상태를 아직 모를 때의 첫 그림은 던지지 않고 숨는다
+  assert.equal(statusEl.hidden, true);
+  assert.equal(statusEl.textContent, "기억 · 꺼짐");
   await settle();
   assert.equal(statusEl.textContent, "기억 · 켜는 중");
   assert.equal(shown(), true);
@@ -215,6 +218,21 @@ test("AnchorMind 탭: 앱 전체와 프로젝트에서 모두 기억을 켰을 �
   for (const card of cards) assert.doesNotMatch(card.find((node) => node.className === "workflow-card-meta").textContent, /Invalid Date/);
   assert.deepEqual(view.labels(cards[0]), ["고치기", "지우기"]);
   assert.deepEqual(view.labels(cards[1]), ["지우기"], "기록관 요약은 지우기만 있다");
+
+  // 탭을 보던 중 앱 전체 스위치가 꺼진 뒤 팝오버가 다시 만들어져도, 없어진 탭 대신 메모리 탭이 열린다
+  view.ui.anchorMindStatus = { enabled: false };
+  view.ui.refreshWorkflowPopover({ getBoundingClientRect: () => ({}) });
+  const active = view.ui.popover.byClass("workflow-tab-button").filter((tab) => tab.classList.contains("is-active"));
+  assert.deepEqual(active.map((tab) => tab.textContent), ["메모리"]);
+
+  const lastPanel = (v) => v.ui.popover.byClass("workflow-tab-panel").at(-1).textContent;
+  const empty = loadWorkflow(ON, { items: [] });
+  await empty.open();
+  assert.match(lastPanel(empty), /아직 저장한 기억이 없습니다/);
+  const failing = loadWorkflow(ON);
+  failing.ui.window.chatApi.anchorMindList = async () => ({ ok: false, error: "연결하지 못했습니다." });
+  await failing.open();
+  assert.match(lastPanel(failing), /기억을 불러오지 못했습니다/);
 });
 
 test("AnchorMind 탭: 지우기는 확인을 받은 뒤 그 프로젝트의 그 기억만 지우고 목록을 다시 읽는다", async () => {
@@ -232,18 +250,20 @@ test("AnchorMind 탭: 지우기는 확인을 받은 뒤 그 프로젝트의 그 
 });
 
 test("AnchorMind 탭: 고치기는 카드 안에서 유형·내용을 바꿔 한 번만 보내고, 취소하면 원래 카드로 돌아간다", async () => {
-  const view = loadWorkflow(ON, { items: [{ id: "f1", type: "fact", content: "원래 내용입니다.", createdAt: "2026-10-24T01:02:03.000Z" }] });
+  const view = loadWorkflow(ON, { items: [{ id: "f1", type: "procedure", content: "원래 내용입니다.", createdAt: "2026-10-24T01:02:03.000Z" }] });
   await view.open();
   const card = () => view.cards()[0];
   button(card(), "고치기").click();
   const select = card().find((node) => node.tagName === "SELECT");
   const text = card().find((node) => node.tagName === "TEXTAREA");
-  assert.equal(select.value, "fact");
+  assert.equal(select.value, "procedure");
+  assert.deepEqual(view.labels(card()), ["저장", "취소"], "고치기 화면에는 보기 화면의 버튼이 남지 않는다");
   assert.deepEqual(plain(select.children.map((option) => [option.value, option.textContent])), TYPES);
   assert.equal(text.value, "원래 내용입니다.");
   assert.equal(text.maxLength, 300);
   button(card(), "취소").click();
   assert.equal(card().find((node) => node.className === "workflow-card-text").textContent, "원래 내용입니다.");
+  assert.deepEqual(view.labels(card()), ["고치기", "지우기"]);
 
   button(card(), "고치기").click();
   card().find((node) => node.tagName === "SELECT").value = "preference";
@@ -253,6 +273,16 @@ test("AnchorMind 탭: 고치기는 카드 안에서 유형·내용을 바꿔 한
   save.click();
   await settle();
   assert.deepEqual(plain(view.calls), [["list", "p"], ["amend", "p", "f1", "preference", "고친 내용입니다"], ["list", "p"]]);
+});
+
+test("기억 애드온 화면 연결: 꺼 두면 숨기는 CSS 규칙과 버튼 클래스, 기억하기 팝오버 변형, 설정 창이 찾는 id가 서로 맞는다", () => {
+  assert.match(read("src/chat.css"), /\.message-list:not\(\.is-anchormind\) \.message-remember-button,\s*\.message-list:not\(\.is-anchormind\) \.message\.is-user \.message-actions \{\s*display: none;/);
+  assert.match(source, /rememberBtn\.className = "message-remember-button"/);
+  assert.match(source, /const POPOVER_VARIANTS = \[[^\]]*"is-remember"/);
+  const settingsHtml = read("src/settings.html");
+  const ids = [...read("src/settings.js").matchAll(/\$\("#(anchormind-[\w-]+)"\)/g)].map((match) => match[1]);
+  assert.ok(ids.length >= 8, "설정 창이 쓰는 기억 애드온 id를 찾지 못했습니다");
+  for (const id of ids) assert.match(settingsHtml, new RegExp('id="' + id + '"'), "settings.html에 #" + id + "가 없습니다");
 });
 
 test("기억 애드온 화면이 부르는 API는 preload가 모두 내놓는다", () => {

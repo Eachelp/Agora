@@ -1991,8 +1991,6 @@ function anchorMindFields(type, text, rows) {
 // 메시지를 AnchorMind 기억으로 저장한다. 원문을 그대로 넣으면 앞 300자만 남으므로, 유형을 고른 뒤 몇 달 뒤 다른 대화에서
 // 봐도 알 수 있게 다듬게 한다. 저장은 다시 시도하지 않으므로 보내는 동안 막고, 실패하면 고친 글을 그대로 두어 다시 누르게 한다.
 function openRememberPopover(anchor, message) {
-  // 팝오버가 떠 있는 사이 방이 바뀌어도(Ctrl+N) 이 메시지가 있던 방으로 보낸다.
-  const sessionId = activeSessionId;
   openPopover(anchor, (root) => {
     root.classList.add("is-remember");
     const head = document.createElement("div");
@@ -2026,7 +2024,7 @@ function openRememberPopover(anchor, message) {
     save.textContent = "저장";
     save.addEventListener("click", async () => {
       save.disabled = true;
-      const result = await call(window.chatApi.anchorMindRemember(sessionId, message.id, select.value, content.value));
+      const result = await call(window.chatApi.anchorMindRemember(activeSessionId, message.id, select.value, content.value));
       if (!result) {
         save.disabled = false;
         return;
@@ -3145,7 +3143,7 @@ function openWorkflowPopover(anchor) {
         ),
       }),
     };
-    selectTab(resume?.tab || "memory");
+    selectTab(tabPanels[resume?.tab] ? resume.tab : "memory");
   });
 }
 
