@@ -967,6 +967,7 @@ function openProjectSettings(anchor, project) {
     const recordInitial = record.value;
 
     // AnchorMind 기억은 프로젝트마다 켠다. 미분류는 서로 관계없는 대화가 섞여 대상에서 뺀다(main도 막는다).
+    // 앱 전체 스위치를 켜지 않은 사람의 화면은 지금과 같아야 해서, 꺼져 있을 때도 칸을 두지 않는다.
     const anchorMind = document.createElement("input");
     anchorMind.type = "checkbox";
     anchorMind.checked = project.anchorMindEnabled === true;
@@ -1028,7 +1029,7 @@ function openProjectSettings(anchor, project) {
       makeField("프로젝트 폴더", workspaceField),
       defaultAgentSection,
       makeField("토론 자동 기록", record),
-      ...(project.id !== "uncategorized" ? [makeField("이 프로젝트에서 AnchorMind 기억 사용", anchorMind)] : []),
+      ...(project.id !== "uncategorized" && anchorMindStatus?.enabled === true ? [makeField("이 프로젝트에서 AnchorMind 기억 사용", anchorMind)] : []),
       actions
     );
   });

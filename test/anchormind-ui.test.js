@@ -142,11 +142,11 @@ test("방 머리줄: 앱 전체 스위치와 이 프로젝트의 스위치가 �
   assert.match(section("function renderHeader()", "const orchestrator = sessionMeta?.orchestrator"), /renderAnchorMindStatus\(\);/);
 });
 
-test("프로젝트 설정: 'AnchorMind 기억 사용'은 바꿨을 때만 보내고, 미분류 프로젝트에는 두지 않는다", async () => {
+test("프로젝트 설정: 'AnchorMind 기억 사용'은 앱 전체 스위치를 켠 뒤에만 보이고, 바꿨을 때만 보내며, 미분류 프로젝트에는 두지 않는다", async () => {
   const patches = [];
-  const open = (project) => {
+  const open = (project, status = { enabled: true }) => {
     const ui = load([section("function openProjectSettings(", "async function selectProject(")], {
-      agents: [], applyFullState() {}, confirmInApp: async () => true,
+      anchorMindStatus: status, agents: [], applyFullState() {}, confirmInApp: async () => true,
       window: { chatApi: { projectsUpdate: async (_id, patch) => { patches.push(plain(patch)); return {}; } } },
     });
     ui.openProjectSettings({}, { name: "P", context: "", defaultPermissionMode: "chat", defaultAgents: {}, ...project });
@@ -156,6 +156,8 @@ test("프로젝트 설정: 'AnchorMind 기억 사용'은 바꿨을 때만 보내
   const save = async (ui) => { button(ui.popover, "저장").click(); await settle(); };
 
   assert.equal(checkbox(open({ id: "uncategorized" })), null);
+  assert.equal(checkbox(open({ id: "p" }, { enabled: false })), null, "앱 전체 스위치가 꺼져 있으면 없다");
+  assert.equal(checkbox(open({ id: "p" }, null)), null, "상태를 아직 모르면 없다");
   const off = open({ id: "p" });
   assert.equal(checkbox(off).checked, false);
   await save(off);
@@ -169,6 +171,9 @@ test("프로젝트 설정: 'AnchorMind 기억 사용'은 바꿨을 때만 보내
   checkbox(turnOff).click();
   await save(turnOff);
   assert.equal(patches[2].anchorMindEnabled, false);
+  const hidden = open({ id: "p", anchorMindEnabled: true }, { enabled: false });
+  await save(hidden);
+  assert.equal("anchorMindEnabled" in patches[3], false, "칸이 없는 동안 저장해도 켜 둔 프로젝트의 값은 그대로다");
 });
 
 // 프로젝트 기록 팝오버를 실제 chat.js 구간으로 연다. 목록·지우기·고치기 호출은 calls에 쌓는다.
