@@ -219,6 +219,8 @@ class ChatRoom extends EventEmitter {
     this.anchorMemoryNoticed = false;
     // AI가 기억을 쓰는 차례의 답 끝에 고른 기억: rememberMemory(items, { messageId }). 기다리지 않고, 동기로 던지면 안 된다(그 차례의 결과가 사라져 지휘 AI의 계획도 읽히지 않는다).
     this.rememberMemory = options.rememberMemory || null;
+    // 지금 이 방이 기억을 쓰는지 동기로 답하는 문(던지면 안 된다). 토론은 주제 메시지로 받아 둔 recall을 다시 쓰므로 그 뒤에 기억을 끈 것을 이 문으로 안다. 옵션이 없으면 묻지 않는다.
+    this.memoryOn = options.memoryOn || null;
     this.meta = {
       permissionMode: "chat",
       ...(options.meta || {}),
@@ -1856,12 +1858,15 @@ class ChatRoom extends EventEmitter {
   // 시작하고(갈아끼워지거나 중지돼 시작하지 못한 메시지는 부르지 않는다), 같은 뿌리의 다음 차례는 그 약속을 다시 쓴다. 작업자의
   // turnRootId는 지휘 AI 답이라(scheduleStage) 오케스트레이션의 뿌리로 찾는다. 토론 참가자 차례는 뿌리가 없어 토론의 주제 메시지를 뿌리로 삼는다:
   // 그 메시지로 이미 받은 recall이 있으면 다시 쓰고, 없으면 토론 전체가 한 번만 부른다. 기록관·결론 종합·쉽게 설명·전달 차례는 뿌리가 없어 기억이 없다.
+  // 토론은 새 메시지 없이도 언제든 열 수 있어서 토론 차례는 받아 둔 약속을 꺼내기 전에 지금도 기억을 쓰는 방인지 먼저 본다(끈 뒤에 연 토론이 옛 기억을 쓰지 않게).
+  // 약속은 지우지 않는다: 다시 켜면 다시 쓰고, 끈 채 보낸 메시지의 null도 그대로라 그 뒤에 켜도 새 메시지 전까지는 기억이 없다. 한 메시지로 이어지는 다른 차례는 끈 뒤에도 받은 기억을 쓴다(끄기는 다음 메시지부터).
   anchorMemoryFor(context) {
     if (!this.recallMemory) return null;
     const rootId = context.orchestration?.role === "worker"
       ? this.orchestration?.rootMessageId
       : context.turnRootId || context.discussion?.topicMessageId;
     if (!rootId) return null;
+    if (context.discussion && this.memoryOn && !this.memoryOn()) return null;
     if (!this.anchorMemoryRecalls.has(rootId)) {
       const root = this.messages.find((message) => message.id === rootId);
       // 글이 있는 사용자 메시지만 질의가 된다(첨부만 보낸 빈 글은 아니다). 사용자 메시지가 없는 방의 토론은 첫 메시지(시스템·AI 글)를

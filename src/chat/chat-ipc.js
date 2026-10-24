@@ -1157,6 +1157,8 @@ function roomMeta(meta) {
       ...(anchorMind ? {
         recallMemory: (text) => recallAnchorMemory(sessionId, text),
         rememberMemory: (items, { messageId }) => rememberChosen(sessionId, items, messageId),
+        // 방은 전역 스위치·프로젝트 칸을 모른다. 토론이 받아 둔 기억을 쓰기 전에 지금도 기억을 쓰는 방인지 묻는 데 쓴다.
+        memoryOn: () => Boolean(anchorMindProject(store.readMeta(sessionId)?.projectId)),
       } : {}),
     });
 

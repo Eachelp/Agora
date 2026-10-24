@@ -151,7 +151,7 @@ function isTailLine(body, { control, remember }) {
 // 끝부분이라 초안과 최종 말풍선이 같게 보인다. 지휘 차례(control)는 STAGE·DONE·ASK_USER 줄의 앞에 쓰든 뒤에 쓰든 읽고,
 // 그 줄은 그대로 남겨 뒤에서 따로 읽게 한다. 코드펜스·인라인 백틱 안의 줄과 형식이 틀린 줄은 남는다. 같은 내용은 한 번만,
 // 앞의 REMEMBER_MAX개만 저장한다. 반환: { items: [{ type, content }], text }. 읽은 줄이 없으면 text는 입력 그대로다.
-// 끝 블록 바로 위 글줄의 끝에 붙여 쓴 표시도 한 개는 읽어 떼어 내고 맨 뒤 항목으로 센다(한 줄로 답하라는 요청에 줄을 바꾸지 않는 모델이 있다).
+// 끝 블록 바로 위 글줄의 끝에 붙여 쓴 표시도, 문장이 끝난 뒤에 붙었으면 한 개는 읽어 떼어 내고 맨 뒤 항목으로 센다(한 줄로 답하라는 요청에 줄을 바꾸지 않는 모델이 있다).
 // 실시간 초안 필터는 줄 시작의 표시만 숨기므로 이 표시는 최종 말풍선이 나올 때까지 초안에 보일 수 있다(받아들인다).
 function parseRememberLines(text, { control }) {
   const raw = String(text || "");
@@ -166,11 +166,13 @@ function parseRememberLines(text, { control }) {
   const items = [];
   const kept = rawLines.slice(0, start);
   // 붙여 쓴 표시는 줄을 바꿔 쓴 것으로 보고 끝 블록 뒤에 잇는다. 머리는 가린 줄(원문과 길이가 같다)에서 찾아 백틱·펜스 안의 표시는 닿지 않고,
-  // 앞에 글자가 없는(`- REMEMBER:` 같은 꾸민) 줄도 아니며, 머리부터 줄 끝까지는 REMEMBER 줄의 형식과 같아야 한다.
+  // 앞 글(끝 공백은 뗀다)은 글자가 있고 문장 끝 부호로 끝나야 하며(형식을 설명하는 산문·표 칸·인용 속 표시나 `- REMEMBER:` 같은 꾸민 줄은 아니다),
+  // 머리부터 줄 끝까지는 REMEMBER 줄의 형식과 같아야 한다.
+  // ponytail: 부호 없이 끝난 문장 뒤에 붙인 진짜 표시는 읽지 않는다(그대로 보이고 저장되지 않는다). 그런 표시가 잦으면 앞 글 조건을 다시 본다.
   let last = start - 1;
   while (last >= 0 && maskedLines[last].trim() === "") last -= 1;
   const at = last >= 0 ? maskedLines[last].search(REMEMBER_INLINE_HEAD) : -1;
-  if (at >= 0 && /\p{L}/u.test(kept[last].slice(0, at)) && REMEMBER_LINE_PATTERN.test(kept[last].slice(at))) {
+  if (at >= 0 && /\p{L}.*[.!?。…]$/u.test(kept[last].slice(0, at).trimEnd()) && REMEMBER_LINE_PATTERN.test(kept[last].slice(at))) {
     rawLines.push(kept[last].slice(at));
     kept[last] = kept[last].slice(0, at).trimEnd();
   }

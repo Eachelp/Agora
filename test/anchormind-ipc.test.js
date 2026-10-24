@@ -148,7 +148,7 @@ test("애드온이 꺼졌거나 기억을 쓰지 않는 방은 열기·찾기·�
   assert.equal(app.prompts.some((prompt) => /AnchorMind/.test(prompt)), false);
 });
 
-test("기억을 쓰는 방은 열 때 AnchorMind를 미리 깨우고, 사용자 메시지마다 한 번 찾아 그 결과가 프롬프트에 들어간다", async (t) => {
+test("기억을 쓰는 방은 열 때 AnchorMind를 미리 깨우고, 사용자 메시지마다 한 번 찾아 그 결과가 프롬프트에 들어가며, 기억을 끈 뒤 새 메시지 없이 여는 토론에는 넣지 않는다", async (t) => {
   // 진짜 입구와 가짜 서버로 chat:send부터 프롬프트까지 이어서 본다(Gemini도 실제 서버도 쓰지 않는다).
   const fake = await startFakeAnchorMind(t, {
     tools: {
@@ -159,7 +159,8 @@ test("기억을 쓰는 방은 열 때 AnchorMind를 미리 깨우고, 사용자 
       }),
     },
   });
-  const app = makeApp(t, createTestAnchorMind(t, fake).client);
+  // 답에 결론 신호가 없어 토론이 정해진 차례를 모두 돈다(결론이 나면 기록관 차례가 뒤따른다).
+  const app = makeApp(t, createTestAnchorMind(t, fake).client, () => "의견입니다.");
   const { projectId, sessionId } = await enabledProject(app);
   await app.invoke("chat:sessions:select", { sessionId });
   await waitFor(() => fake.calls.length > 0, 4000);   // 방을 열면 서버 확인이 간다
@@ -173,6 +174,13 @@ test("기억을 쓰는 방은 열 때 AnchorMind를 미리 깨우고, 사용자 
   for (const prompt of app.prompts) {
     assert.match(prompt, /=== AnchorMind 기억 ===[\s\S]*- \[결정\] 배포는 승인 뒤에만 한다\./);
   }
+  // 프로젝트 칸을 끄고 새 메시지 없이 토론을 열면, 그 메시지로 받아 둔 기억도 참가자 프롬프트에 넣지 않고 다시 찾지도 않는다.
+  await app.invoke("chat:projects:update", { projectId, patch: { anchorMindEnabled: false } });
+  await app.invoke("chat:discussion:start", { sessionId, agentIds: ["claude", "codex"], turnBudget: 3 });
+  await waitFor(() => app.messages().some((message) => message.discussionMeta), 4000);   // 토론이 끝난 뒤 알리는 마침 메시지
+  assert.equal(app.prompts.length, 5);
+  assert.deepEqual(app.prompts.slice(2).filter((prompt) => prompt.includes("=== AnchorMind 기억 ===")), []);
+  assert.equal(fake.toolCalls("recall").length, 1);
 });
 
 test("'AnchorMind 기억 사용'은 다른 설정을 저장해도 남고, 기본 프로젝트(분류되지 않음)에서는 켤 수 없다", async (t) => {

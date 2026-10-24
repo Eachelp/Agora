@@ -254,7 +254,7 @@ test("기억을 쓰는 차례는 답 끝 REMEMBER 줄을 화면·기록에서 �
   ]);
 });
 
-test("REMEMBER 줄 읽기: 답 맨 끝의 줄과 끝 블록 바로 위 글줄 끝에 붙여 쓴 표시 하나(맨 뒤 항목)만 읽고(사이의 빈 줄과 CRLF는 괜찮다), 본문 앞·코드펜스·인라인 백틱 안·꾸민·형식이 틀린 표시는 그대로 두며, 같은 내용은 한 번, 앞의 두 개만 넘기고 나머지도 지운다. 줄만 쓴 답은 빈 말풍선 대신 자리 글이 된다", async () => {
+test("REMEMBER 줄 읽기: 답 맨 끝의 줄과 끝 블록 바로 위 글줄 끝에 문장이 끝난 뒤 붙여 쓴 표시 하나(맨 뒤 항목)만 읽고(사이의 빈 줄과 CRLF는 괜찮다), 본문 앞·코드펜스·인라인 백틱 안·꾸민·형식이 틀린 표시와 문장 끝 부호 없이 붙은 표시는 그대로 두며, 같은 내용은 한 번, 앞의 두 개만 넘기고 나머지도 지운다. 줄만 쓴 답은 빈 말풍선 대신 자리 글이 된다", async () => {
   const cases = [
     // [답, 남는 글(null이면 답 그대로), 넘기는 항목]
     ["본문입니다.\nREMEMBER: 사실 | 빈 줄을 사이에 두어도 끝의 줄로 읽는다.\n\nREMEMBER: 에러 | 포트가 막히면 다른 프로그램을 먼저 끈다.\n", "본문입니다.",
@@ -276,6 +276,9 @@ test("REMEMBER 줄 읽기: 답 맨 끝의 줄과 끝 블록 바로 위 글줄 �
     // 끝 블록 바로 위 글줄의 끝에 붙여 쓴 표시(한 줄로 답해 달라는 요청에 줄을 바꾸지 않는 모델이 있다). 표시 뒤 줄 끝까지가 내용이다(줄 시작의 표시와 같다).
     ["정기 회의는 매주 화요일 오전 10시로 정했습니다. REMEMBER: 결정 | 정기 회의는 매주 화요일 오전 10시에 진행하기로 했다.", "정기 회의는 매주 화요일 오전 10시로 정했습니다.",
       [{ type: "decision", content: "정기 회의는 매주 화요일 오전 10시에 진행하기로 했다." }]],
+    ["정했습니다. remember: 결정 | 소문자로 붙여 써도 읽는다.", "정했습니다.", [{ type: "decision", content: "소문자로 붙여 써도 읽는다." }]],
+    // 문장 끝 부호는 마침표 말고도 느낌표·물음표·전각 마침표·말줄임표를 읽는다.
+    ...["!", "?", "。", "…"].map((end) => [`정했습니다${end} REMEMBER: 결정 | ${end} 뒤의 표시도 읽는다.`, `정했습니다${end}`, [{ type: "decision", content: `${end} 뒤의 표시도 읽는다.` }]]),
     ["첫 줄입니다.\r\n둘째 줄입니다.  \tREMEMBER: 절차 | 빌드는 `npm run build`로 하고 끝나면 @agy에게 알린다.\r\n", "첫 줄입니다.\n둘째 줄입니다.",
       [{ type: "procedure", content: "빌드는 `npm run build`로 하고 끝나면 @agy에게 알린다." }]],
     ["본문입니다. REMEMBER: 결정 | 붙여 쓴 표시는 맨 뒤 항목이다.\nREMEMBER: 사실 | 줄로 쓴 표시를 먼저 넘긴다.", "본문입니다.",
@@ -296,10 +299,18 @@ test("REMEMBER 줄 읽기: 답 맨 끝의 줄과 끝 블록 바로 위 글줄 �
     ["정했습니다. **REMEMBER: 결정 | 굵게 꾸민 표시는 읽지 않는다.**", null, []],
     ["- REMEMBER: 결정 | 글머리표를 단 줄은 읽지 않는다.", null, []],
     ["> REMEMBER: 결정 | 인용 표시를 단 줄은 읽지 않는다.", null, []],
+    ["1. REMEMBER: 결정 | 번호를 단 줄은 앞에 글자가 없어 읽지 않는다.", null, []],
     ["정했습니다. REMEMBER: 메모 | 모르는 유형은 형식이 틀린 표시다.", null, []],
     ["저장하려면 REMEMBER: 줄을 쓰면 되고 형식은 따로 안내합니다.", null, []],
     ["정했습니다. REMEMBER: 결정 |\nREMEMBER: 사실 | 내용이 없는 표시는 형식이 틀리고 끝 블록의 줄은 읽는다.", "정했습니다. REMEMBER: 결정 |",
       [{ type: "fact", content: "내용이 없는 표시는 형식이 틀리고 끝 블록의 줄은 읽는다." }]],
+    // 앞 글이 문장 끝 부호로 끝나지 않은 표시도 그대로 남는다: 형식을 설명하는 산문·표 칸·인용 속 표시를 저장하지 않으려는 것이다(앞 문장의 부호는 세지 않는다).
+    ["정했습니다 REMEMBER: 결정 | 문장 끝 부호 없이 붙은 표시는 읽지 않는다.", null, []],
+    ["형식을 설명합니다. 답 끝에 REMEMBER: 결정 | 내용 형식으로 쓰면 저장됩니다.", null, []],
+    ["답 끝에 REMEMBER: 결정 | 내용 형식으로 쓰면 저장됩니다.", null, []],
+    ["| 줄 | 예 |\n|---|---|\n| 기억 | REMEMBER: 결정 | 결정을 저장 |", null, []],
+    ["> 사용자가 쓴 글: 기억해 둬 REMEMBER: 선호 | 답은 짧게", null, []],
+    ["Please REMEMBER: 결정 | approval comes first.", null, []],
     // 끝 블록의 줄은 쪼개지 않는다: 줄 시작의 표시 안에 또 표시가 있어도 한 줄의 내용이다.
     ["본문\nREMEMBER: 결정 | 이 줄 안의 REMEMBER: 사실 | 표시도 내용으로 읽는다.", "본문",
       [{ type: "decision", content: "이 줄 안의 REMEMBER: 사실 | 표시도 내용으로 읽는다." }]],
@@ -522,6 +533,51 @@ test("기억을 쓰지 않는 방의 토론은 지금과 같다: recallMemory �
   asked = 0;
   assert.deepEqual(await run({ initialMessages: noUser, recallMemory: () => { asked += 1; return Promise.resolve(FOUND); } }), await run({ initialMessages: noUser }));
   assert.equal(asked, 0);
+});
+
+test("토론 참가자 차례: 기억을 끈 뒤(토론 도중 포함)에는 주제 메시지로 받아 둔 기억도 넣지 않고 다시 찾지도 않으며 받아 둔 것은 지우지 않는다. 끈 채 보낸 메시지가 주제인 토론은 켠 뒤에도 기억이 없고, 한 메시지로 이어지는 차례는 끈 뒤에도 받은 기억을 쓴다", async () => {
+  let on = true;
+  const queries = [];
+  // chat-ipc처럼 꺼져 있으면 recall은 null을 주고, memoryOn은 같은 스위치를 읽는다.
+  const { room, calls } = makeRoom({
+    recallMemory: (text) => { queries.push(text); return on ? Promise.resolve(FOUND) : null; },
+    memoryOn: () => on,
+  });
+  // 새 메시지 없이 3차례 토론을 열어 끝내고(duringFirst: 첫 차례가 끝난 순간 부른다), 기억 블록이 든 프롬프트 수와 지금까지 찾은 횟수를 확인한다.
+  const discussed = async (blocks, asked, message, duringFirst) => {
+    const first = calls.length;
+    const done = room.startDiscussion({ turnBudget: 3 });
+    for (let turn = 0; turn < 3; turn += 1) {
+      await settle();
+      calls[first + turn].finish("의견");
+      if (turn === 0) duringFirst?.();
+    }
+    await done;
+    assert.equal(calls.slice(first).filter((call) => call.prompt.includes("=== AnchorMind 기억 ===")).length, blocks, message);
+    assert.equal(queries.length, asked, message);
+  };
+  room.sendUserMessage("@claude @codex 배포 방식을 정하자");
+  await settle();
+  on = false; // 첫 차례가 도는 동안 끈다: 같은 메시지의 둘째 차례는 받은 기억을 그대로 쓴다
+  calls[0].finish("의견");
+  await settle();
+  calls[1].finish("의견");
+  await settle();
+  assert.ok(calls[0].prompt.includes(BLOCK) && calls[1].prompt.includes(BLOCK));
+  await discussed(0, 1, "끈 뒤에 새 메시지 없이 연 토론에는 기억이 없고 다시 찾지도 않는다");
+  on = true;
+  await discussed(3, 1, "다시 켜면 받아 둔 기억을 다시 쓴다");
+  room.stopAll(); // 받아 둔 약속을 버린다
+  on = false;
+  await discussed(0, 1, "받아 둔 약속이 없어도 꺼져 있으면 찾지 않는다");
+  on = true;
+  await discussed(1, 2, "켜면 그때 한 번 찾고, 토론 도중에 끄면 남은 차례는 기억 없이 진행한다", () => { on = false; });
+  room.sendUserMessage("@claude 둘째 질문입니다"); // 꺼진 채(위 토론 도중에 껐다) 보낸 메시지는 기억 없음(null)으로 적힌다
+  await settle();
+  calls.at(-1).finish("의견");
+  await settle();
+  on = true;
+  await discussed(0, 3, "그 메시지가 주제인 토론은 켠 뒤에도 새 메시지를 보내기 전까지 기억이 없다");
 });
 
 test("다시 연 방(받아 둔 recall이 없는 방)에서도 끝난 토론의 결론 종합·기록관·전달·쉽게 설명 차례는 recall하지 않고 기억 블록도 받지 않는다", async () => {
