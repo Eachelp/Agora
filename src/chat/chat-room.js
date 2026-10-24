@@ -1864,8 +1864,9 @@ class ChatRoom extends EventEmitter {
     if (!rootId) return null;
     if (!this.anchorMemoryRecalls.has(rootId)) {
       const root = this.messages.find((message) => message.id === rootId);
-      // 글이 있는 사용자 메시지만 질의가 된다(첨부만 보낸 빈 글은 아니다). 부르지 않은 뿌리도 null로 적어 둔다.
-      this.anchorMemoryRecalls.set(rootId, root?.text ? this.recallMemory(root.text) : null);
+      // 글이 있는 사용자 메시지만 질의가 된다(첨부만 보낸 빈 글은 아니다). 사용자 메시지가 없는 방의 토론은 첫 메시지(시스템·AI 글)를
+      // 주제 메시지로 삼아 뿌리가 사용자 글이 아닐 수 있다. 부르지 않은 뿌리도 null로 적어 둔다.
+      this.anchorMemoryRecalls.set(rootId, root?.authorType === "user" && root.text ? this.recallMemory(root.text) : null);
       if (this.anchorMemoryRecalls.size > ANCHOR_MEMORY_ROOTS) this.anchorMemoryRecalls.delete(this.anchorMemoryRecalls.keys().next().value);
     }
     return this.anchorMemoryRecalls.get(rootId);

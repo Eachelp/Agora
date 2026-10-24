@@ -29,18 +29,19 @@ function fakeChild(log) {
 }
 
 // log에 실행 순서(spawn·kill·sync·consolidate)가 남는다. health.up은 true · null(200이 아닌 답이나 시간 초과) · false(거부)이고,
-// idle.hold에 약속을 넣으면 밀린 정리가 그 약속이 끝날 때까지 끝나지 않는다.
+// health.folders에는 /health를 어느 폴더의 서버에 물었는지가 남는다. idle.hold에 약속을 넣으면 밀린 정리가 그 약속이 끝날 때까지 끝나지 않는다.
 function setup(over = {}) {
   const clock = fakeClock();
   const log = [];
   const spawns = [];
   const syncs = [];
   const states = [];
-  const health = { up: false, calls: 0 };
+  const health = { up: false, calls: 0, folders: [] };
   const idle = { hold: null };
   const proc = createAnchorMindProcess({
-    healthy: async () => {
+    healthy: async (folder) => {
       health.calls += 1;
+      health.folders.push(folder);
       return health.up;
     },
     beforeIdleStop: async () => {
@@ -251,6 +252,8 @@ test("설정이 다른 폴더를 가리키면 전에 켠 서버를 먼저 끄고
   await s.spawned(3);
   assert.deepEqual(s.spawns[2].options, { cwd: "other-folder", ...SHELL });
   assert.deepEqual(s.states, ["starting", "off", "starting"]);
+  // /health는 켜기를 시작한 폴더의 서버에 묻는다(첫 확인도 대기 루프도). 켜는 동안 설정이 다른 폴더로 바뀌어도 켜기 명령·소유 표지와 같은 서버를 본다.
+  assert.deepEqual([...new Set(s.health.folders)], [SETTINGS.folder, "other-folder"]);
   s.proc.stopOnQuitSync();
   assert.deepEqual(s.syncs.map((entry) => entry.options.cwd), ["other-folder"]);
 

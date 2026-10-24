@@ -178,9 +178,8 @@ function createAnchorMind({
     }
   }
 
-  // 접속 키·포트·임베딩 모델은 필요할 때 .env에서 읽는다. 서버 주소 칸은 없고 늘 루프백이다.
-  function readEnv() {
-    const { folder } = settings();
+  // 접속 키·포트·임베딩 모델은 필요할 때 .env에서 읽는다(폴더를 주지 않으면 지금 설정의 폴더). 서버 주소 칸은 없고 늘 루프백이다.
+  function readEnv(folder = settings().folder) {
     let env = null;
     if (path.isAbsolute(folder)) {
       try {
@@ -318,9 +317,10 @@ function createAnchorMind({
     return value;
   }
 
-  // 쓰기·목록은 연결이 없으면 서버부터 확인한다(유휴로 끈 서버는 여기서 켠다). 검증은 이 앞에서 끝난다.
+  // 쓰기·목록은 연결이 없거나 설정이 다른 서버를 가리키면 서버부터 확인한다(유휴로 끈 서버와 폴더를 바꾼 새 서버는 여기서 켠다).
+  // 낡은 연결 검사를 connected()에만 두면 첫 작업이 새 서버를 켜지 못한 채 거절된다. 검증은 이 앞에서 끝난다.
   async function callWhenStarted(name, args, options) {
-    if (!conn) await ensureStarted();
+    if (!conn || stale()) await ensureStarted();
     return callTool(name, args, options);
   }
 
@@ -342,16 +342,16 @@ function createAnchorMind({
   }
 
   // GET /health(인증 없음)가 200인가. DB가 죽으면 503이다. initialize는 DB 없이도 되므로 따로 본다.
-  async function health() {
-    const reply = await send(`${readEnv().url}/health`, { method: "GET", ms: HEALTH_TIMEOUT_MS });
+  async function health(folder) {
+    const reply = await send(`${readEnv(folder).url}/health`, { method: "GET", ms: HEALTH_TIMEOUT_MS });
     return reply.status === 200;
   }
 
   // 켜기 모듈의 생존 확인. 200이면 true, 응답은 했지만 200이 아니거나(사용자가 켠 서버의 DB가 꺼졌거나 다른 프로그램이 그 포트를
   // 쓴다) 제때 답하지 않으면(바쁜 서버일 수 있다) null이다. 어느 쪽이든 손대지 않는다: 켜기 명령이 남의 서버를 잡아 나중에 끄지
-  // 않게. 연결 거부·키 없음이면 false.
-  function healthy() {
-    return health().then((ok) => (ok ? true : null), (error) => (error?.kind === "timeout" ? null : false));
+  // 않게. 연결 거부·키 없음이면 false. 켜기 모듈이 켜는 폴더를 넘겨, 켜는 중에 설정의 폴더가 바뀌어도 켜기 명령·소유 표지와 같은 서버를 묻는다.
+  function healthy(folder) {
+    return health(folder).then((ok) => (ok ? true : null), (error) => (error?.kind === "timeout" ? null : false));
   }
 
   // 설정 창 "확인". 폴더가 바뀌었을 수 있어 .env부터 다시 읽고 /health와 initialize만 보낸다(임베딩 0). 켜지는 않는다.

@@ -21,7 +21,7 @@ function shellOptions(cwd, extra) {
   return { cwd, shell: true, windowsHide: true, stdio: "ignore", ...extra };
 }
 
-// healthy()는 /health가 200이면 true, 200이 아니거나 제때 답하지 않으면 null, 연결을 거부하면 false다. beforeIdleStop()은 유휴로
+// healthy(folder)는 그 폴더 서버의 /health가 200이면 true, 200이 아니거나 제때 답하지 않으면 null, 연결을 거부하면 false다. beforeIdleStop()은 유휴로
 // 끄기 직전에만 기다린다. 둘 다 던지거나 reject하지 않는다. onState는 "starting" | "error" | "off"이고 "connected"는
 // 클라이언트가 initialize 뒤에 정한다. spawn·spawnSync·now·setTimer·clearTimer는 시험만 바꾼다.
 function createAnchorMindProcess({
@@ -82,7 +82,8 @@ function createAnchorMindProcess({
     if (stopping) await stopping;
     // 설정이 다른 폴더를 가리키면 전에 켠 서버부터 끈다. 그냥 켜면 아래가 소유 표지를 덮어 그 서버를 아무도 끄지 않는다.
     if (owned && owned.cwd !== folder) await stopOwned();
-    const up = await healthy();
+    // 켜는 동안 설정의 폴더가 바뀔 수 있다. 켜기 명령·소유 표지와 같은 폴더의 서버를 확인해야 멀쩡히 켜진 서버를 실패로 보고 잊지 않는다.
+    const up = await healthy(folder);
     if (up) {
       touch();
       return true;
@@ -121,7 +122,7 @@ function createAnchorMindProcess({
     let streak = 0;
     while (now() < deadline) {
       await sleep(POLL_MS);
-      streak = (await healthy()) ? streak + 1 : 0;
+      streak = (await healthy(folder)) ? streak + 1 : 0;
       if (streak === 2) {
         touch();
         return true;

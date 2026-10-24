@@ -472,3 +472,62 @@ test("폴더를 바꿔 적용하면 바뀐 폴더의 서버를 쓴다", async (t
   assert.equal(client.status().state, "error");
   assert.equal(b.toolCalls("remember").length, 1);
 });
+
+// 서버 둘(A·B)이 꺼진 채 있고, 켜기·끄기 명령은 그 명령을 돌린 폴더의 서버를 살리고 죽인다. commands에 실행한 명령이 순서대로 남는다.
+async function twoServers(t, tools = {}) {
+  const a = await startFakeAnchorMind(t, { tools });
+  const b = await startFakeAnchorMind(t, { tools });
+  const folderOf = { [a.port]: a.folder, [b.port]: b.folder };
+  const label = (folder) => (folder === a.folder ? "A" : "B");
+  const up = new Set();
+  const clock = fakeClock();
+  const commands = [];
+  const harness = createTestAnchorMind(t, a, {
+    anchorMind: { startCommand: "start-am", stopCommand: "stop-am" },
+    now: clock.now, setTimer: clock.setTimer, clearTimer: clock.clearTimer,
+    request: (url, options, callback) => (up.has(folderOf[new URL(url).port]) ? http.request(url, options, callback) : refusingRequest()),
+    spawn: (command, options) => {
+      commands.push(`${command} ${label(options.cwd)}`);
+      if (command === "start-am") up.add(options.cwd);
+      else up.delete(options.cwd);
+      const child = Object.assign(new EventEmitter(), { exitCode: null, kill() {} });
+      process.nextTick(() => { child.exitCode = 0; child.emit("exit", 0, null); });   // 서버를 띄우고 바로 끝나는 명령
+      return child;
+    },
+    spawnSync: (command, options) => {
+      commands.push(`sync ${command} ${label(options.cwd)}`);
+      up.delete(options.cwd);
+      return { status: 0 };
+    },
+  });
+  return { a, b, up, clock, commands, ...harness };
+}
+
+test("켜는 중에 설정의 폴더를 바꿔도 Agora가 켠 서버를 잊지 않고 종료 때 끈다", async (t) => {
+  const { a, b, up, clock, commands, client, settings } = await twoServers(t);
+  let done = false;
+  const warm = client.ensureStarted().then(() => { done = true; });
+  await advanceUntil(clock, () => commands.length > 0);   // 켜기 명령이 돌았다(A가 켜진다)
+  // 켜는 중에 폴더를 B(꺼져 있음)로 바꿔 적용해도, 켜기 대기는 켜기를 시작한 폴더(A)의 서버를 본다. B를 보면 멀쩡히 켜진 A를 실패로 보고 잊는다.
+  settings().anchorMind.folder = b.folder;
+  await advanceUntil(clock, () => done, 1000, 400);       // 켜기 대기 3분 시한까지 돌려도 끝난다
+  await warm;
+  client.stopOnQuitSync();
+  assert.deepEqual(commands, ["start-am A", "sync stop-am A"]);
+  assert.equal(up.has(a.folder), false);
+});
+
+test("폴더를 바꾼 뒤 첫 저장도 바뀐 폴더의 서버가 꺼져 있으면 옛 서버를 끄고 새 서버를 켠 뒤 성공한다", async (t) => {
+  const { a, b, clock, commands, client, settings } = await twoServers(t, { remember: () => ({ success: true }) });
+  const write = async (content) => {
+    let done = false;
+    const saved = client.remember("p1", { type: "fact", content }).finally(() => { done = true; });
+    await Promise.all([saved, advanceUntil(clock, () => done)]);
+  };
+  await write("서버 A에 저장하는 기억입니다");
+  // 이미 맺은 연결은 옛 서버(A)의 것이다. 바뀐 폴더의 서버(B)는 꺼져 있으므로 방 열기를 거치지 않은 첫 저장이 B를 켜야 한다.
+  settings().anchorMind.folder = b.folder;
+  await write("서버 B에 저장하는 기억입니다");
+  assert.deepEqual(commands, ["start-am A", "stop-am A", "start-am B"]);
+  assert.deepEqual([a.toolCalls("remember").length, b.toolCalls("remember").length], [1, 1]);
+});

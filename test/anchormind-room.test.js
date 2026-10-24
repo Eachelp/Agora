@@ -439,7 +439,7 @@ test("토론 참가자 차례: recall이 없던 주제 메시지로 토론 전�
   assert.equal(shown, answer.repeat(3), "실시간 초안에서도 걸러지는 줄이 없다");
 });
 
-test("기억을 쓰지 않는 방의 토론은 지금과 같다: recallMemory 옵션이 없거나, null을 주거나, 주제 메시지가 없으면 시작 순간(마이크로태스크 수)과 모든 차례의 프롬프트가 같다", async () => {
+test("기억을 쓰지 않는 방의 토론은 지금과 같다: recallMemory 옵션이 없거나, null을 주거나, 주제 메시지가 없거나 사용자 글이 아니면 시작 순간(마이크로태스크 수)과 모든 차례의 프롬프트가 같다", async () => {
   // 토론 첫 차례가 러너에 닿을 때까지 흘린 마이크로태스크 수(타이머 턴 없이 센다)와 세 차례의 프롬프트.
   const run = async (options) => {
     const { room, calls } = makeRoom(options);
@@ -463,6 +463,11 @@ test("기억을 쓰지 않는 방의 토론은 지금과 같다: recallMemory �
   const recall = makeRecall();
   assert.deepEqual(await run({ recallMemory: recall.recallMemory }), await run({}));
   assert.deepEqual(recall.queries, []);
+  // 사용자 메시지가 없는 방은 첫 메시지(여기서는 AI 글)가 주제 메시지가 되지만 사용자 글이 아니라 마찬가지로 부르지 않는다.
+  const noUser = [{ id: "a0", authorType: "agent", author: "claude", text: "사용자 메시지가 없는 방의 첫 글입니다." }];
+  asked = 0;
+  assert.deepEqual(await run({ initialMessages: noUser, recallMemory: () => { asked += 1; return Promise.resolve(FOUND); } }), await run({ initialMessages: noUser }));
+  assert.equal(asked, 0);
 });
 
 test("다시 연 방(받아 둔 recall이 없는 방)에서도 끝난 토론의 결론 종합·기록관·전달·쉽게 설명 차례는 recall하지 않고 기억 블록도 받지 않는다", async () => {
