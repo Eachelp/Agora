@@ -580,6 +580,13 @@ test("사용량은 채팅 사이드바에서 바로 보이고 설정은 사용�
   assert.match(renderer, /function makeStripHead\(text\)/);
   assert.match(renderer, /makeStripHead\("사용량"\)/);
   assert.match(css, /\.usage-strip-items \{[^}]*grid-template-columns: auto minmax\(0, 1fr\) minmax\(0, 1fr\)/s);
+  // 한도 창이 하나뿐인 줄(주간 전용 Argon·Fable 등)은 한쪽 열에 두고 다른 열을 비우지 않고,
+  // 두 열을 합친 막대 하나로 그리며 창 이름을 막대 안에 적습니다.
+  assert.match(renderer, /summary\.windows\.length === 1/);
+  assert.match(renderer, /const span = scope\.windows\.length === 1;/);
+  assert.match(renderer, /name\.className = "usage-mini-window";\s*\n\s*name\.textContent = window\.label;/);
+  assert.match(css, /\.usage-mini\.is-span \{[^}]*grid-column: span 2/s);
+  assert.doesNotMatch(renderer, /usage-mini-gap/);
   // 연결이 끊긴 공급자는 진단 버튼에 표시가 붙습니다.
   assert.match(renderer, /function renderProviderHealth\(\)/);
   assert.match(renderer, /doctorButton\.classList\.toggle\("has-issue"/);

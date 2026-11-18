@@ -2006,7 +2006,19 @@ textarea:focus-visible {
   color: var(--muted);
 }
 
-/* 창이 하나뿐인 공급자가 있어도 열이 어긋나지 않게 자리만 채운다. */
+/* 한도 창이 하나뿐인 줄은 두 열을 합친 막대 하나다. 머리글 아래에 놓이지 않으므로
+   어느 창인지(주간 등)를 막대 안에 함께 적는다. 글자색은 칸의 색(경고·위험 포함)을
+   그대로 물려받고 한 단계만 흐리게 해 숫자가 먼저 읽히게 한다. */
+.usage-mini.is-span {
+  grid-column: span 2;
+  gap: 4px;
+}
+
+.usage-mini-window {
+  opacity: 0.7;
+}
+
+/* 기본 창을 하나도 알아보지 못한 공급자도 열이 어긋나지 않게 자리만 채운다. */
 .usage-mini.usage-mini-empty {
   background: none;
   color: var(--muted);

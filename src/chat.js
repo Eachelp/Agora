@@ -4991,10 +4991,18 @@ function makeStripHead(text) {
 }
 
 // 칸 자체가 막대입니다. --fill(남은 %)만큼 채워지므로 숫자와 길이가 같은 뜻을 가집니다.
-function makeUsageCell(window, owner, extraClass = "") {
+// span이면 두 열을 합친 막대 하나로 그립니다. 열 머리글 아래에 놓이지 않으므로 어느
+// 창인지(주간 등)를 막대 안에 함께 적습니다.
+function makeUsageCell(window, owner, extraClass = "", { span = false } = {}) {
   const cell = document.createElement("span");
-  cell.className = ["usage-mini", window.tone, extraClass].filter(Boolean).join(" ");
+  cell.className = ["usage-mini", window.tone, extraClass, span ? "is-span" : ""].filter(Boolean).join(" ");
   cell.style.setProperty("--fill", `${window.remaining}%`);
+  if (span) {
+    const name = document.createElement("span");
+    name.className = "usage-mini-window";
+    name.textContent = window.label;
+    cell.append(name);
+  }
   const value = document.createElement("strong");
   value.textContent = `${window.remaining}%`;
   cell.append(value);
@@ -5034,42 +5042,43 @@ function renderUsageStrip() {
       continue;
     }
 
-    // 머리글(5시간/주간)과 일치하는 창을 찾아 알맞은 열에 넣습니다.
-    for (const header of headers) {
-      const window = summary.windows.find((w) => w.label === header);
-      if (window) {
-        usageStripItems.append(makeUsageCell(window, summary.label));
-      } else {
-        const emptyCell = document.createElement("span");
-        emptyCell.className = "usage-mini usage-mini-empty";
-        const emptyVal = document.createElement("span");
-        emptyVal.className = "usage-mini-blank";
-        emptyVal.textContent = "—";
-        emptyCell.append(emptyVal);
-        emptyCell.title = `${summary.label} ${header} 한도 없음`;
-        usageStripItems.append(emptyCell);
+    // 한도 창이 하나뿐인 줄(주간만 주는 계정, Argon·Fable의 주간 전용 한도)은 한쪽 열에만
+    // 두면 나머지 열이 비어 값이 빠진 것처럼 보입니다. 그 줄의 한도는 그것 하나뿐이므로
+    // 두 열을 합친 막대 하나로 그립니다.
+    if (summary.windows.length === 1) {
+      usageStripItems.append(makeUsageCell(summary.windows[0], summary.label, "", { span: true }));
+    } else {
+      // 머리글(5시간/주간)과 일치하는 창을 찾아 알맞은 열에 넣습니다.
+      for (const header of headers) {
+        const window = summary.windows.find((w) => w.label === header);
+        if (window) {
+          usageStripItems.append(makeUsageCell(window, summary.label));
+        } else {
+          const emptyCell = document.createElement("span");
+          emptyCell.className = "usage-mini usage-mini-empty";
+          const emptyVal = document.createElement("span");
+          emptyVal.className = "usage-mini-blank";
+          emptyVal.textContent = "—";
+          emptyCell.append(emptyVal);
+          emptyCell.title = `${summary.label} ${header} 한도 없음`;
+          usageStripItems.append(emptyCell);
+        }
       }
     }
 
     // 모델 전용 한도(Claude Fable, AGY Argon)는 공급자 줄 바로 아래 들여 쓴 줄로 둡니다.
-    // 그 모델에 따로 없는 창은 "—" 대신 비워 둡니다. "—"는 공급자에게 그런 한도가 없다는
-    // 뜻인데, 하위 줄의 빈 창은 공급자 한도를 함께 쓴다는 뜻이라 다릅니다.
+    // 창은 5시간·주간 순으로 정렬돼 오므로 둘 다 있으면 그대로 두 열에 놓이고, 하나뿐이면
+    // 공급자 줄과 같은 규칙으로 두 열을 합칩니다.
     for (const scope of summary.scopes || []) {
       const scopeName = document.createElement("span");
       scopeName.className = "usage-row-name is-scope";
       scopeName.textContent = scope.label;
       scopeName.title = `${summary.label} ${scope.label} 전용 한도`;
       usageStripItems.append(scopeName);
-      for (const header of headers) {
-        const window = scope.windows.find((w) => w.label === header);
-        if (window) {
-          usageStripItems.append(makeUsageCell(window, `${summary.label} ${scope.label}`, "is-scope"));
-        } else {
-          const gap = document.createElement("span");
-          gap.className = "usage-mini-gap";
-          gap.setAttribute("aria-hidden", "true");
-          usageStripItems.append(gap);
-        }
+      const owner = `${summary.label} ${scope.label}`;
+      const span = scope.windows.length === 1;
+      for (const window of scope.windows) {
+        usageStripItems.append(makeUsageCell(window, owner, "is-scope", { span }));
       }
     }
   }
