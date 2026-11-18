@@ -182,6 +182,34 @@ test("예전에 저장한 gemini 변형 id는 접힌 모델과 노력으로 이�
   assert.equal(current.effort, "medium");
 });
 
+// agy 1.5.11의 Gemini 4 Neon은 -xhigh 변형까지 접혀 "매우 높음"을 고를 수 있다.
+test("AGY Neon은 xhigh를 유지하고, 접히기 전에 저장한 -xhigh 변형 id는 이관된다", () => {
+  const variants = (base, efforts) => Object.fromEntries(efforts.map((effort) => [effort, `${base}-${effort}`]));
+  const modelOptions = [
+    { id: "default", efforts: [] },
+    {
+      id: "gemini-4-neon",
+      efforts: ["low", "medium", "high", "xhigh"],
+      effortModels: variants("gemini-4-neon", ["low", "medium", "high", "xhigh"]),
+    },
+    {
+      id: "gemini-4-argon",
+      efforts: ["low", "medium", "high"],
+      effortModels: variants("gemini-4-argon", ["low", "medium", "high"]),
+    },
+  ];
+  const agy = record("agy", modelOptions);
+
+  assert.equal(roomAgentFromCapability(agy, { model: "gemini-4-neon", effort: "xhigh" }).effort, "xhigh");
+  // xhigh가 없는 모델로 옮기면 그 모델에 있는 단계로 돌아간다.
+  assert.equal(roomAgentFromCapability(agy, { model: "gemini-4-argon", effort: "xhigh" }).effort, "medium");
+
+  // 접는 규칙이 xhigh를 모를 때는 gemini-4-neon-xhigh가 노력 없는 별도 모델로 저장됐다.
+  const migrated = roomAgentFromCapability(agy, { model: "gemini-4-neon-xhigh", effort: "default" });
+  assert.equal(migrated.model, "gemini-4-neon");
+  assert.equal(migrated.effort, "xhigh");
+});
+
 test("목록에 없는 저장값은 같은 계열의 별칭으로 돌아간다", () => {
   const options = [
     { id: "default", efforts: ["default", "low"] },

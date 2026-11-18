@@ -371,9 +371,9 @@ function foldSavedModel(options, savedModel, savedEffort = "default") {
 // 노력 변형 id(gemini-3.8-flash-high)를 사람이 읽기 좋은 라벨로. 접힐 짝(베이스)이
 // 지금 목록에 없어 "저장된 값"으로 남을 때 원시 id 대신 이 라벨을 쓴다.
 function effortVariantLabel(id) {
-  const match = /^(.+)-(low|medium|high)$/.exec(String(id || ""));
+  const match = /^(.+)-(low|medium|high|xhigh)$/.exec(String(id || ""));
   if (!match) return null;
-  const ko = { low: "낮음", medium: "중간", high: "높음" }[match[2]];
+  const ko = { low: "낮음", medium: "중간", high: "높음", xhigh: "매우 높음" }[match[2]];
   return `${match[1]} (${ko})`;
 }
 
@@ -1512,6 +1512,15 @@ function openOrchestratorPopover(anchor) {
       const saved = sessionMeta?.orchestrator || {};
       return saved.enabled && saved.leadId === leadSelect.value ? saved : {};
     };
+    // 접히기 전에 저장한 변형 id(gemini-4-neon-xhigh)는 지금 목록의 접힌 모델 + 노력으로 옮겨 읽는다.
+    // 그대로 두면 목록에 없어 "참가자 설정 그대로"로 보이고, 다음 저장 때 지휘 모델 선택이 조용히 지워진다.
+    const savedLeadFold = () => {
+      const saved = savedLead();
+      if (!saved.leadModel) return { model: "", effort: saved.leadEffort || "" };
+      const provider = providerById(leadSelect.value);
+      const fold = foldSavedModel(provider ? modelOptionsForProvider(provider) : [], saved.leadModel, saved.leadEffort || "default");
+      return { model: fold.model, effort: fold.effort === "default" ? "" : fold.effort };
+    };
     const addKeepOption = (select) => {
       const option = document.createElement("option");
       option.value = "";
@@ -1528,7 +1537,7 @@ function openOrchestratorPopover(anchor) {
         option.textContent = model.label || model.id;
         leadModelSelect.append(option);
       }
-      const saved = savedLead().leadModel || "";
+      const saved = savedLeadFold().model;
       leadModelSelect.value = Array.from(leadModelSelect.children).some((option) => option.value === saved) ? saved : "";
     }
     function populateLeadEfforts(selected) {
@@ -1546,7 +1555,7 @@ function openOrchestratorPopover(anchor) {
     }
     function syncLeadControls() {
       populateLeadModels();
-      populateLeadEfforts(savedLead().leadEffort || "");
+      populateLeadEfforts(savedLeadFold().effort);
       leadReadOnlyToggle.checked = Boolean(sessionMeta?.orchestrator?.leadReadOnly);
     }
     syncLeadControls();

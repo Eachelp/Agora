@@ -822,11 +822,14 @@ test("모델 드롭다운은 저장된 노력 변형 id를 접힌 베이스+노�
   const options = [
     { id: "default" },
     { id: "gemini-3.8-flash", efforts: ["low", "medium", "high"], effortModels: { high: "gemini-3.8-flash-high", medium: "gemini-3.8-flash-medium", low: "gemini-3.8-flash-low" } },
+    { id: "gemini-4-neon", efforts: ["high", "xhigh"], effortModels: { high: "gemini-4-neon-high", xhigh: "gemini-4-neon-xhigh" } },
   ];
   // vm 컨텍스트가 만든 객체는 프로토타입이 달라 strict deep-equal이 걸린다 — 값으로 비교한다.
   const fold = (m, e) => { const r = context.foldSavedModel(options, m, e); return `${r.model}|${r.effort}`; };
   // 저장된 원시 변형 → 접힌 베이스 + 그 노력.
   assert.equal(fold("gemini-3.8-flash-high", "default"), "gemini-3.8-flash|high");
+  // -xhigh가 접히기 전에는 gemini-4-neon-xhigh가 별도 모델로 저장됐다.
+  assert.equal(fold("gemini-4-neon-xhigh", "default"), "gemini-4-neon|xhigh");
   // 사용자가 따로 고른 노력이 있으면 그 값을 지킨다.
   assert.equal(fold("gemini-3.8-flash-high", "low"), "gemini-3.8-flash|low");
   // 이미 접힌 베이스는 그대로.
@@ -855,6 +858,7 @@ test("목록에 없는 저장 노력 변형은 드롭다운에 접힌 라벨로 
     vm.runInContext(src.slice(start, end), context);
   }
   assert.equal(context.effortVariantLabel("gemini-3.8-flash-high"), "gemini-3.8-flash (높음)");
+  assert.equal(context.effortVariantLabel("gemini-4-neon-xhigh"), "gemini-4-neon (매우 높음)");
   assert.equal(context.effortVariantLabel("claude-opus-4-6-thinking"), null);
   // 원시 접미사가 그대로 노출되지 않는다.
   assert.equal(context.strayModelLabel("gemini-3.8-flash-high"), "gemini-3.8-flash (높음) · 현재 설정");

@@ -154,7 +154,8 @@ function loadOrchestratorBlock(agents, initialMeta, providers = []) {
   vm.createContext(context);
   vm.runInContext(
     [
-      section("function providerById(id)", "// 저장된 모델이 노력 변형 id"),
+      // 지휘 모델 칸이 저장된 변형 id를 접어 읽으므로 foldSavedModel까지 함께 들여온다.
+      section("function providerById(id)", "// 노력 변형 id(gemini-3.8-flash-high)를 사람이 읽기 좋은 라벨로"),
       section("function orchestratorLeadCandidates()", "// 참가자 칩 툴팁."),
       section("window.chatApi.onOrchestration(", "window.chatApi.onUserQuestion?.("),
     ].join("\n"),
@@ -423,6 +424,35 @@ test("지휘 모델 칸: 저장된 지휘 모델·노력·읽기 전용을 그�
   const readOnly = popover.findAll((node) => node.tagName === "INPUT" && node.type === "checkbox")[1];
   assert.equal(readOnly.checked, true);
   assert.equal(readOnly.disabled, false);
+});
+
+// agy의 -xhigh 변형이 접히기 전에는 gemini-4-neon-xhigh가 목록의 별도 모델이라 지휘 모델로 저장될 수 있었다.
+test("지휘 모델 칸: 접히기 전에 저장한 변형 id는 접힌 모델과 노력으로 보여 주고, 다음 저장 때 그 값으로 보낸다", async () => {
+  const providers = [{
+    id: "agy",
+    efforts: ["default", "low", "medium", "high"],
+    modelOptions: [
+      { id: "gemini-4-neon", label: "gemini-4-neon", efforts: ["low", "medium", "high", "xhigh"],
+        effortModels: { low: "gemini-4-neon-low", medium: "gemini-4-neon-medium", high: "gemini-4-neon-high", xhigh: "gemini-4-neon-xhigh" } },
+      { id: "gemini-3.8-flash", label: "gemini-3.8-flash", efforts: ["low", "medium", "high"],
+        effortModels: { low: "gemini-3.8-flash-low", medium: "gemini-3.8-flash-medium", high: "gemini-3.8-flash-high" } },
+    ],
+  }];
+  const agents = [{ id: "agy", name: "Gemini", available: true, enabled: true, model: "gemini-3.8-flash" }];
+  const meta = { permissionMode: "workspace-write", orchestrator: { enabled: true, leadId: "agy", leadModel: "gemini-4-neon-xhigh" } };
+  const { ui, popover, calls } = loadOrchestratorBlock(agents, meta, providers);
+  ui.openOrchestratorPopover({});
+  const [, model, effort] = selectsOf(popover);
+  // 예전에는 목록에 없는 값이라 "참가자 설정 그대로"로 보였고, 다음 저장 때 선택이 지워졌다.
+  assert.equal(model.value, "gemini-4-neon");
+  assert.deepEqual(effort.children.map((option) => option.value), ["", "low", "medium", "high", "xhigh"]);
+  assert.equal(effort.value, "xhigh");
+
+  const readOnly = popover.findAll((node) => node.tagName === "INPUT" && node.type === "checkbox")[1];
+  readOnly.checked = true;
+  readOnly.dispatch("change");
+  await flush();
+  assert.deepEqual(plain(calls.orchestratorLead.at(-1)), { leadModel: "gemini-4-neon", leadEffort: "xhigh", leadReadOnly: true });
 });
 
 test("지휘 모델을 고르면 켜진 상태에서 그 값을 orchestratorSet에 실어 보내고, 노력 목록이 그 모델 기준으로 바뀐다", async () => {

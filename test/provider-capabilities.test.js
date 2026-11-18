@@ -11,6 +11,7 @@ const {
   guiEvidencePaths,
   createCapabilityService,
   parseClaudeHelpModels,
+  probeAgyModelCatalog,
   claudeResolvedModelLabel,
   claudeAliasFallbackLabel,
   claudeObservationContext,
@@ -1200,6 +1201,146 @@ test("agy Claude 5.5는 한 모델로 접혀 낮음·중간·높음을 고를 �
   }
   // 변형이 하나뿐인 고정 모델은 접히지 않고 노력을 고를 수 없다.
   assert.deepEqual(agy.modelOptions.find((entry) => entry.id === "gpt-oss-120b-medium").efforts, []);
+});
+
+// agy 1.5.11이 실제로 내놓는 `agy models` 출력이다. Gemini 4 Neon·Hydrogen은 -xhigh
+// 변형까지 보고하고, Argon·Flash는 -high까지다.
+const AGY_1_5_11_MODELS = [
+  "gemini-4-neon-high\tGemini 4 Neon (High)",
+  "gemini-4-neon-xhigh\tGemini 4 Neon (XHigh)",
+  "gemini-4-neon-medium\tGemini 4 Neon (Medium)",
+  "gemini-4-neon-low\tGemini 4 Neon (Low)",
+  "gemini-4-argon-medium\tGemini 4 Argon (Medium)",
+  "gemini-4-argon-high\tGemini 4 Argon (High)",
+  "gemini-4-argon-low\tGemini 4 Argon (Low)",
+  "gemini-4-hydrogen-high\tGemini 4 Hydrogen (High)",
+  "gemini-4-hydrogen-xhigh\tGemini 4 Hydrogen (XHigh)",
+  "gemini-4-hydrogen-medium\tGemini 4 Hydrogen (Medium)",
+  "gemini-4-hydrogen-low\tGemini 4 Hydrogen (Low)",
+  "gemini-pro-orchestrator-neon\tOrchestrator (Neon)",
+  "gemini-pro-orchestrator-g1-pro\tOrchestrator (Argon)",
+  "gemini-3.8-flash-high\tGemini 3.8 Flash (High)",
+  "gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)",
+  "gemini-3.8-flash-low\tGemini 3.8 Flash (Low)",
+  "claude-opus-5-5-low\tClaude Opus 5.5 (Low)",
+  "claude-opus-5-5-medium\tClaude Opus 5.5 (Medium)",
+  "claude-opus-5-5-high\tClaude Opus 5.5 (High)",
+  "claude-sonnet-5-5-low\tClaude Sonnet 5.5 (Low)",
+  "claude-sonnet-5-5-medium\tClaude Sonnet 5.5 (Medium)",
+  "claude-sonnet-5-5-high\tClaude Sonnet 5.5 (High)",
+  "gpt-oss-120b-medium\tGPT-OSS 120B (Medium)",
+  "",
+].join("\n");
+
+test("agy의 -xhigh 변형은 별도 모델로 남지 않고 그 모델의 노력 단계로 접힌다", async () => {
+  // 예전에는 접는 규칙이 -low/-medium/-high만 알아, gemini-4-neon-xhigh가 노력을 고를 수
+  // 없는 별도 모델 한 줄로 떴고 Neon의 노력 선택에는 "매우 높음"이 없었다.
+  const agy = (await agyServiceReporting(AGY_1_5_11_MODELS).discover()).find((record) => record.id === "agy");
+  assert.deepEqual(agy.models, [
+    "default",
+    "gemini-4-neon",
+    "gemini-4-argon",
+    "gemini-4-hydrogen",
+    "gemini-pro-orchestrator-neon",
+    "gemini-pro-orchestrator-g1-pro",
+    "gemini-3.8-flash",
+    "claude-opus-5-5",
+    "claude-sonnet-5-5",
+    "gpt-oss-120b-medium",
+  ]);
+  for (const id of ["gemini-4-neon", "gemini-4-hydrogen"]) {
+    const option = agy.modelOptions.find((entry) => entry.id === id);
+    // CLI가 보고한 순서(high, xhigh, medium, low)와 상관없이 낮은 단계부터 놓인다.
+    assert.deepEqual(option.efforts, ["low", "medium", "high", "xhigh"]);
+    assert.deepEqual(option.effortModels, {
+      low: `${id}-low`,
+      medium: `${id}-medium`,
+      high: `${id}-high`,
+      xhigh: `${id}-xhigh`,
+    });
+  }
+  // xhigh를 보고하지 않은 모델에는 그 단계가 생기지 않는다.
+  for (const id of ["gemini-4-argon", "gemini-3.8-flash", "claude-opus-5-5"]) {
+    assert.deepEqual(agy.modelOptions.find((entry) => entry.id === id).efforts, ["low", "medium", "high"]);
+  }
+  // 노력 변형이 아닌 모델은 그대로 남는다.
+  assert.deepEqual(agy.modelOptions.find((entry) => entry.id === "gemini-pro-orchestrator-neon").efforts, []);
+});
+
+test("앱이 아직 모르는 agy 모델은 CLI가 알려 준 표시명을 라벨로 쓴다", async () => {
+  // 예전에는 `agy models`의 둘째 칸(표시명)을 버려, 새 모델이 "gemini-4-neon" 같은 원시 id로 보였다.
+  const agy = (await agyServiceReporting(AGY_1_5_11_MODELS).discover()).find((record) => record.id === "agy");
+  const label = (id) => agy.modelOptions.find((entry) => entry.id === id).label;
+  // 접힌 모델은 노력 표기((High)·(XHigh))를 뗀 이름이다.
+  assert.equal(label("gemini-4-neon"), "Gemini 4 Neon");
+  assert.equal(label("gemini-4-argon"), "Gemini 4 Argon");
+  assert.equal(label("gemini-4-hydrogen"), "Gemini 4 Hydrogen");
+  assert.equal(label("gemini-3.8-flash"), "Gemini 3.8 Flash");
+  // 접히지 않는 모델은 표시명 그대로다. 괄호 안이 노력 단계가 아니면 떼지 않는다.
+  assert.equal(label("gemini-pro-orchestrator-neon"), "Orchestrator (Neon)");
+  assert.equal(label("gemini-pro-orchestrator-g1-pro"), "Orchestrator (Argon)");
+  // 앱이 아는 모델은 정해 둔 한글 라벨을 그대로 쓴다.
+  assert.equal(label("claude-opus-5-5"), "Claude Opus 5.5");
+  assert.equal(label("gpt-oss-120b-medium"), "GPT-OSS 120B (중간)");
+  // models 목록과 캐시에는 id만 남는다.
+  assert.ok(agy.models.every((id) => typeof id === "string"));
+});
+
+test("agy models에 표시명 칸이 없는 줄은 id를 라벨로 쓴다", async () => {
+  const agy = (await agyServiceReporting([
+    "gemini-9-xenon-high",
+    "gemini-9-xenon-low\t",
+    "gemini-9-krypton",
+    "gemini-9-radon   Gemini 9 Radon",
+    "",
+  ].join("\n")).discover()).find((record) => record.id === "agy");
+  assert.deepEqual(agy.modelOptions.map((option) => [option.id, option.label]), [
+    ["default", "AGY 기본값"],
+    ["gemini-9-xenon", "gemini-9-xenon"],
+    ["gemini-9-krypton", "gemini-9-krypton"],
+    // 탭 없이 공백으로 나뉜 예전 출력 형식도 읽는다.
+    ["gemini-9-radon", "Gemini 9 Radon"],
+  ]);
+});
+
+// 실제 앱은 runCommand가 아니라 spawn으로 `agy models`를 읽는다(파이프가 오래 열려 있어도
+// 끊으려고). 위 시험들은 runCommand 경로만 지나므로 spawn 경로를 따로 확인한다.
+test("probeAgyModelCatalog(spawn 경로)도 표시명을 함께 읽는다", async () => {
+  const { EventEmitter } = require("node:events");
+  const spawned = [];
+  const spawnFn = (file, args) => {
+    spawned.push([file, args]);
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.kill = () => {};
+    setImmediate(() => {
+      // 출력은 줄 중간에서 끊겨 여러 조각으로 올 수 있다.
+      child.stdout.emit("data", Buffer.from("gemini-4-neon-high\tGemini 4 Ne"));
+      child.stdout.emit("data", Buffer.from("on (High)\r\ngemini-4-neon-xhigh\tGemini 4 Neon (XHigh)\r\n"));
+      child.emit("close", 0);
+    });
+    return child;
+  };
+  const models = await probeAgyModelCatalog("C:\\agy\\agy.exe", false, 2000, { spawnFn });
+  assert.deepEqual(spawned, [["C:\\agy\\agy.exe", ["models"]]]);
+  assert.deepEqual(models, [
+    "default",
+    { id: "gemini-4-neon-high", label: "Gemini 4 Neon (High)" },
+    { id: "gemini-4-neon-xhigh", label: "Gemini 4 Neon (XHigh)" },
+  ]);
+});
+
+test("collapseEffortVariants: 표시명의 (XHigh)·(매우 높음)도 접힌 라벨에서 뗀다", () => {
+  const out = collapseEffortVariants([
+    { id: "gemini-4-neon-xhigh", label: "Gemini 4 Neon (XHigh)", efforts: ["xhigh"] },
+    { id: "gemini-4-neon-high", label: "Gemini 4 Neon (High)", efforts: ["high"] },
+    { id: "gemini-4-hydrogen-xhigh", label: "Gemini 4 Hydrogen (매우 높음)", efforts: ["xhigh"] },
+    { id: "gemini-4-hydrogen-low", label: "Gemini 4 Hydrogen (낮음)", efforts: ["low"] },
+  ]);
+  assert.deepEqual(out.map((option) => [option.id, option.label, option.efforts]), [
+    ["gemini-4-neon", "Gemini 4 Neon", ["high", "xhigh"]],
+    ["gemini-4-hydrogen", "Gemini 4 Hydrogen", ["low", "xhigh"]],
+  ]);
 });
 
 test("agy models 조회가 실패해도 기본 목록에서 Claude 5.5의 노력을 고를 수 있다", async () => {

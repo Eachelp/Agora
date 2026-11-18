@@ -363,6 +363,36 @@ test("AGY 접힌 gemini 모델은 노력에 맞는 변형 id로 호출된다", (
   assert.equal(fixed.argv.includes("--effort"), false);
 });
 
+// agy 1.5.11의 Gemini 4 Neon은 -xhigh 변형도 받는다. CLI는 변형 id와 같은 단계의 --effort만
+// 함께 받으므로(--model gemini-4-neon-high --effort xhigh는 오류) 둘이 늘 같은 단계여야 한다.
+test("AGY 접힌 Neon 모델은 xhigh를 고르면 -xhigh 변형 id와 --effort xhigh로 호출된다", () => {
+  const variants = (base, efforts) => Object.fromEntries(efforts.map((effort) => [effort, `${base}-${effort}`]));
+  const modelOptions = [
+    { id: "gemini-4-neon", label: "gemini-4-neon", efforts: ["low", "medium", "high", "xhigh"],
+      effortModels: variants("gemini-4-neon", ["low", "medium", "high", "xhigh"]) },
+    { id: "gemini-4-argon", label: "gemini-4-argon", efforts: ["low", "medium", "high"],
+      effortModels: variants("gemini-4-argon", ["low", "medium", "high"]) },
+  ];
+  const call = (model, effort) => buildAgentInvocation({
+    provider: { ...provider("agy"), modelOptions },
+    chatCwd: CHAT_CWD,
+    permissionMode: "chat",
+    model,
+    effort,
+  });
+  const option = (result, flag) => result.argv[result.argv.indexOf(flag) + 1];
+
+  const xhigh = call("gemini-4-neon", "xhigh");
+  assert.equal(xhigh.ok, true);
+  assert.equal(option(xhigh, "--model"), "gemini-4-neon-xhigh");
+  assert.equal(option(xhigh, "--effort"), "xhigh");
+
+  // xhigh가 없는 모델은 있는 단계의 변형으로 떨어지고, 어긋나는 --effort xhigh는 붙지 않는다.
+  const argon = call("gemini-4-argon", "xhigh");
+  assert.equal(option(argon, "--model"), "gemini-4-argon-medium");
+  assert.equal(argon.argv.includes("--effort"), false);
+});
+
 // agy 1.2.x의 Claude 5.5도 노력마다 변형 id(claude-opus-5-5-high)를 따로 보고한다.
 // 단계는 변형 id가 정하므로 --effort를 따로 붙이지 않는다. 변형 id와 다른 --effort를
 // 함께 주면 CLI가 오류로 끝난다(agy 1.2.16: claude-opus-5-5-low + --effort high).

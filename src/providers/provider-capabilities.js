@@ -104,6 +104,31 @@ function probeCodexModelCatalog(commandPath, needsShell, timeoutMs = 8000, deps 
   });
 }
 
+// `agy models` 출력을 [{ id, label }]로 읽습니다. 한 줄은 "모델이름<탭>표시명"이고
+// (agy 1.1.x는 탭 대신 공백 여러 칸), 표시명은 "Gemini 4 Neon (High)" 같은 사람이 읽는 이름입니다.
+// - 줄 전체가 아니라 앞쪽 첫 토큰만 모델 이름으로 검증해야, 뒤에 붙는 표시명 때문에 정상 모델
+//   줄이 통째로 걸러지지 않습니다.
+// - 표시명은 드롭다운 라벨로 씁니다. 예전에는 버리고 id를 라벨로 써서, 앱이 아직 모르는
+//   새 모델은 "gemini-4-neon"처럼 원시 id로 보였습니다. 표시명이 없는 줄은 label을 두지 않습니다.
+function parseModelListing(output) {
+  const entries = [];
+  for (const rawLine of String(output || "").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const id = line.split(/\s+/)[0];
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/.test(id)) continue;
+    // 탭으로 나뉜 출력이면 둘째 칸만 이름입니다(뒤에 칸이 더 붙어도 섞이지 않게).
+    const rest = line.includes("\t") ? line.split("\t")[1] : line.slice(id.length);
+    const label = String(rest || "")
+      .replace(/[\u0000-\u001f\u007f]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 80);
+    entries.push(label ? { id, label } : { id });
+  }
+  return entries;
+}
+
 function probeAgyModelCatalog(commandPath, needsShell, timeoutMs = MODEL_PROBE_TIMEOUT_MS, deps = {}) {
   return new Promise((resolve) => {
     let child;
@@ -116,15 +141,7 @@ function probeAgyModelCatalog(commandPath, needsShell, timeoutMs = MODEL_PROBE_T
       clearTimeout(hardTimer);
       if (quietTimer) clearTimeout(quietTimer);
       try { child?.kill(); } catch {}
-      // agy models는 "모델이름   설명" 두 열로 출력됩니다. 줄 전체가 아니라
-      // 앞쪽 첫 토큰(모델 이름)만 뽑아 검증해야, 뒤에 붙는 설명 때문에
-      // 정상 모델 줄이 통째로 걸러지지 않습니다.
-      const models = output
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .map((line) => line.split(/\s+/)[0])
-        .filter((token) => /^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/.test(token));
+      const models = parseModelListing(output);
       resolve(models.length > 0 ? ["default", ...models] : null);
     };
     const hardTimer = setTimeout(finish, timeoutMs);
@@ -155,6 +172,8 @@ function probeAgyModelCatalog(commandPath, needsShell, timeoutMs = MODEL_PROBE_T
 // AGY는 모델마다 reasoning effort를 받는 방식이 다릅니다. Gemini와 Claude 5.5는
 // -low/-medium/-high 변형을 따로 보고하며 단계를 고를 수 있습니다(agy 1.2.16의
 // `-p "/effort"`가 Claude 5.5에 adjustable·available [low, medium, high]로 응답).
+// agy 1.5.11부터 Gemini 4 Neon·Hydrogen은 -xhigh 변형도 보고합니다(같은 명령이
+// [low, medium, high, xhigh]로 응답). Argon·Flash는 여전히 high까지입니다.
 // Claude Thinking·GPT-OSS Medium은 모델 자체가 고정 변형이라 노력을 고를 수 없고
 // --effort를 추가하면 CLI가 거부할 수 있습니다.
 const AGY_MODEL_OPTIONS = Object.freeze([
@@ -182,7 +201,9 @@ const AGY_MODEL_OPTIONS = Object.freeze([
 ]);
 // 노력 변형을 접는 규칙(코드)이 바뀌면 이 번호를 올려서 저장된 capability 캐시를 무효화합니다.
 // v5: 자동 발견한 노력 변형(efforts 표기 없음)도 접미사로 접는다.
-const AGY_COLLAPSE_RULES_VERSION = 6;
+// v7: -xhigh 변형도 접는다(예전 캐시는 gemini-4-neon-xhigh를 별도 모델로 담고 있다).
+// v8: `agy models`의 표시명 칸을 라벨로 쓴다(예전 캐시는 id를 라벨로 담고 있다).
+const AGY_COLLAPSE_RULES_VERSION = 8;
 // 위 표(AGY_MODEL_OPTIONS)의 내용 지문도 버전에 넣는다. 표에 모델이나 표시명을 더하고
 // 번호 올리는 것을 잊어도(예전에 Claude 5.5 표시명을 더하고 6에 그대로 둔 일) 옛 캐시가
 // 자동으로 무효화된다.
@@ -192,8 +213,10 @@ const AGY_MODEL_OPTIONS_VERSION = `${AGY_COLLAPSE_RULES_VERSION}:${crypto
   .digest("hex")
   .slice(0, 10)}`;
 
-const EFFORT_VARIANT_ID = /^(.+)-(low|medium|high)$/;
-const EFFORT_ORDER = Object.freeze(["low", "medium", "high"]);
+// agy가 모델 id 끝에 붙여 보고하는 노력 단계. CLI의 --effort는 max도 받지만 max 변형을
+// 보고하는 모델은 아직 없고, -max는 모델 이름의 일부일 수도 있어 넣지 않는다.
+const EFFORT_VARIANT_ID = /^(.+)-(low|medium|high|xhigh)$/;
+const EFFORT_ORDER = Object.freeze(["low", "medium", "high", "xhigh"]);
 
 // 버전 숫자를 지운 계열 서명. gemini-3.8-flash → "gemini-#-flash".
 // 같은 계열의 다른 버전이 이미 노력 접미사로 접혔다면, 새 버전이 변형 하나만
@@ -205,7 +228,7 @@ function modelFamilyKey(baseId) {
 // "Gemini 3.7 Flash (높음)" → "Gemini 3.7 Flash".
 function baseModelLabel(label, baseId) {
   const stripped = String(label || "")
-    .replace(/\s*[(（]\s*(?:높음|중간|낮음|high|medium|low)\s*[)）]\s*$/i, "")
+    .replace(/\s*[(（]\s*(?:매우\s*높음|높음|중간|낮음|xhigh|high|medium|low)\s*[)）]\s*$/i, "")
     .trim();
   return stripped || baseId;
 }
@@ -215,7 +238,7 @@ function baseModelLabel(label, baseId) {
 // 늘 비활성이 되고 같은 선택을 두 곳에서 하게 됩니다. 모델 한 줄로 접고 단계는
 // 노력 선택이 맡되, CLI에 넘길 실제 id는 effortModels에 남겨 둡니다.
 function collapseEffortVariants(options) {
-  // 같은 베이스를 공유하는 노력 접미사(-low/-medium/-high) 변형을 먼저 센다.
+  // 같은 베이스를 공유하는 노력 접미사(-low/-medium/-high/-xhigh) 변형을 먼저 센다.
   // agy가 한 모델을 노력마다 따로 보고하는 건 이 모양뿐이라, 같은 베이스에
   // 서로 다른 노력 변형이 2개 이상이면 그 접미사 자체가 노력 지원의 증거다.
   // curated 목록(gemini-3.7-flash-*)도 이 규칙으로 함께 접히고, 자동 발견한
@@ -307,13 +330,18 @@ function resolveEffortVariant(modelOptions, model) {
   return null;
 }
 
+// models의 항목은 id 문자열이거나, CLI가 표시명까지 알려 준 { id, label }입니다.
 function modelOptionsFor(def, models) {
-  const mapped = (models || []).map((id) => {
+  const mapped = (models || []).map((entry) => {
+    const id = typeof entry === "string" ? entry : entry?.id;
+    const reportedLabel = typeof entry === "string" ? "" : String(entry?.label || "").trim();
+    // 앱이 아는 모델은 정해 둔 라벨(한글 표기)을 그대로 씁니다.
     const known = (def.modelOptions || []).find((option) => option.id === id);
     if (known) return { ...known, efforts: [...(known.efforts || [])] };
-    // `agy models`가 새 모델을 먼저 알려도 지원 여부를 추측해 잘못된
-    // --effort를 붙이지 않습니다. 다음 앱 업데이트에서 규칙을 추가하면 됩니다.
-    return { id, label: id, efforts: def.id === "agy" ? [] : [...def.efforts] };
+    // 앱이 모르는 새 모델은 CLI가 알려 준 표시명을 라벨로 씁니다(없으면 id).
+    // `agy models`가 새 모델을 먼저 알려도 지원 여부를 추측해 잘못된 --effort를
+    // 붙이지 않습니다. 노력 단계는 아래 접기가 보고된 변형 id에서만 읽습니다.
+    return { id, label: reportedLabel || id, efforts: def.id === "agy" ? [] : [...def.efforts] };
   });
   return def.id === "agy" ? collapseEffortVariants(mapped) : mapped;
 }
@@ -751,14 +779,7 @@ function createCapabilityService(options = {}) {
       shell: needsShell,
     });
     if (!result.ok) return null;
-    // agy models처럼 "이름   설명" 두 열로 나오는 CLI도 있어, 줄 전체가 아니라
-    // 앞쪽 첫 토큰만 모델 이름으로 취급합니다.
-    const models = String(result.stdout || "")
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => line.split(/\s+/)[0])
-      .filter((token) => /^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/.test(token));
+    const models = parseModelListing(result.stdout);
     return models.length > 0 ? ["default", ...models] : null;
   }
 
@@ -909,8 +930,9 @@ function createCapabilityService(options = {}) {
     if (!probedModels) return null;
     const modelOptions = modelOptionsFor(def, probedModels);
     return {
-      // AGY는 노력 변형을 접어 보여주므로 models 목록도 접힌 id와 맞춥니다.
-      models: def.id === "agy" ? modelOptions.map((option) => option.id) : probedModels,
+      // models에는 id만 둡니다. AGY는 노력 변형을 접어 보여주므로 접힌 id와 맞추고,
+      // 프로브가 표시명을 함께 돌려준 항목({ id, label })도 여기서 id로 줄어듭니다.
+      models: modelOptions.map((option) => option.id),
       modelOptions,
     };
   }
